@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from live15_quant.config import Settings
+from live15_quant.models import DataRole
 from live15_quant.providers.coinbase import CoinbasePayloadError, CoinbaseRestClient
 
 
@@ -55,6 +56,7 @@ def test_rest_client_normalizes_ticker() -> None:
     assert tick.price == Decimal("68123.45")
     assert tick.spread == Decimal("0.02")
     assert tick.exchange_time is not None
+    assert tick.role is DataRole.PREDICTIVE_MARKET_DATA
     assert session.request == (
         "https://api.exchange.coinbase.com/products/BTC-USD/ticker",
         {"timeout": 10.0},

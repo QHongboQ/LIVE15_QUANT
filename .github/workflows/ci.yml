@@ -25,7 +25,9 @@ jobs:
           python -m pip check
       - name: Lint
         run: ruff check .
+      - name: Format check
+        run: ruff format --check .
       - name: Import check
-        run: python -c "import live15_quant; import live15_quant.providers.coinbase; import btc_price_test; import btc_stream; import market_stream"
+        run: python -c "import live15_quant; import live15_quant.providers.coinbase; import live15_quant.providers.robinhood_15min; import live15_quant.settlement; import btc_price_test; import btc_stream; import market_stream"
       - name: Test
         run: pytest

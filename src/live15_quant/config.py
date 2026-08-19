@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 DEFAULT_PRODUCTS = ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD")
+ROBINHOOD_15MIN_PUBLIC_URL = "https://robinhood.com/us/en/prediction-markets/15-min/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,12 +16,14 @@ class Settings:
 
     coinbase_rest_base_url: str = "https://api.exchange.coinbase.com"
     coinbase_websocket_url: str = "wss://ws-feed.exchange.coinbase.com"
+    robinhood_15min_url: str = ROBINHOOD_15MIN_PUBLIC_URL
     products: tuple[str, ...] = DEFAULT_PRODUCTS
     request_timeout_seconds: float = 10.0
     reconnect_delay_seconds: float = 3.0
     websocket_ping_interval_seconds: float = 20.0
     websocket_ping_timeout_seconds: float = 20.0
     rest_poll_interval_seconds: float = 5.0
+    robinhood_max_source_age_seconds: float = 360.0
     log_level: str = "INFO"
 
 
@@ -50,6 +53,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         coinbase_websocket_url=source.get(
             "LIVE15_COINBASE_WS_URL", defaults.coinbase_websocket_url
         ),
+        robinhood_15min_url=defaults.robinhood_15min_url,
         products=products,
         request_timeout_seconds=_positive_float(
             source, "LIVE15_REQUEST_TIMEOUT_SECONDS", defaults.request_timeout_seconds
@@ -67,6 +71,11 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         ),
         rest_poll_interval_seconds=_positive_float(
             source, "LIVE15_REST_POLL_INTERVAL_SECONDS", defaults.rest_poll_interval_seconds
+        ),
+        robinhood_max_source_age_seconds=_positive_float(
+            source,
+            "LIVE15_ROBINHOOD_MAX_SOURCE_AGE_SECONDS",
+            defaults.robinhood_max_source_age_seconds,
         ),
         log_level=source.get("LIVE15_LOG_LEVEL", defaults.log_level).upper(),
     )

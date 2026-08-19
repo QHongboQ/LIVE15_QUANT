@@ -6,6 +6,7 @@ import os
 import pytest
 
 from live15_quant.config import Settings
+from live15_quant.models import DataRole
 from live15_quant.providers.coinbase import CoinbaseRestClient, CoinbaseWebSocketClient
 
 pytestmark = [
@@ -23,6 +24,7 @@ def test_coinbase_rest_live() -> None:
     assert tick.symbol == "BTC-USD"
     assert tick.bid > 0
     assert tick.ask >= tick.bid
+    assert tick.role is DataRole.PREDICTIVE_MARKET_DATA
 
 
 async def test_coinbase_websocket_live() -> None:
@@ -34,3 +36,4 @@ async def test_coinbase_websocket_live() -> None:
 
     assert tick.symbol == "BTC-USD"
     assert tick.price > 0
+    assert tick.role is DataRole.PREDICTIVE_MARKET_DATA

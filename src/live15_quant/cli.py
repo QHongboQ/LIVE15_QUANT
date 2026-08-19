@@ -16,6 +16,7 @@ from live15_quant.providers.coinbase import (
     CoinbaseRestClient,
     CoinbaseWebSocketClient,
 )
+from live15_quant.providers.robinhood_15min import Robinhood15MinuteProvider
 
 logger = logging.getLogger(__name__)
 
@@ -85,3 +86,41 @@ def btc_stream_main() -> None:
 
     settings = load_settings()
     _run_stream(settings, ("BTC-USD",))
+
+
+def discover_main() -> None:
+    """Discover one public snapshot of Robinhood Live 15-minute events."""
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    contracts = Robinhood15MinuteProvider(settings).discover()
+    for contract in contracts:
+        logger.info(
+            "Robinhood 15-minute contract",
+            extra={
+                "event": "robinhood_15min_contract",
+                "asset": contract.asset,
+                "event_id": contract.event_id,
+                "contract_id": contract.contract_id,
+                "start_time": contract.start_time,
+                "end_time": contract.end_time,
+                "target_price": contract.target_price,
+                "displayed_yes_probability": contract.quote.yes_probability,
+                "displayed_no_probability": contract.quote.no_probability,
+                "displayed_quote_availability": contract.quote.availability,
+                "quote_is_executable": contract.quote.is_executable,
+                "quote_data_role": contract.quote.role,
+                "venue": contract.venue,
+                "venue_candidates": contract.venue_candidates,
+                "settlement_benchmark": contract.settlement.benchmark,
+                "settlement_method": contract.settlement.method,
+                "settlement_decimal_places": contract.settlement.decimal_places,
+                "settlement_data_access": contract.settlement.data_access,
+                "settlement_data_role": contract.settlement.role,
+                "lifecycle_state": contract.lifecycle_state,
+                "source_url": contract.source_url,
+                "fetched_at": contract.fetched_at,
+                "freshness_state": contract.freshness_state,
+                "source_age_seconds": contract.source_age_seconds,
+            },
+        )
