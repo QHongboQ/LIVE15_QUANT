@@ -42,6 +42,19 @@ def _parse_time(value: object) -> datetime | None:
         raise CoinbasePayloadError("invalid Coinbase timestamp") from error
 
 
+def _source_decimal(value: object, name: str) -> Decimal:
+    if isinstance(value, (float, bool)):
+        raise CoinbasePayloadError(f"{name} must be a source precision string")
+    return Decimal(str(value))
+
+
+def _optional_decimal(payload: Mapping[str, Any], name: str) -> Decimal | None:
+    value: object = payload.get(name)
+    if value is None or value == "":
+        return None
+    return _source_decimal(value, name)
+
+
 def parse_ticker_payload(
     payload: Mapping[str, Any], *, received_at: datetime | None = None
 ) -> MarketTick | None:
@@ -52,13 +65,17 @@ def parse_ticker_payload(
     try:
         return MarketTick(
             symbol=str(payload["product_id"]),
-            price=Decimal(str(payload["price"])),
-            bid=Decimal(str(payload["best_bid"])),
-            ask=Decimal(str(payload["best_ask"])),
+            price=_source_decimal(payload["price"], "price"),
+            bid=_source_decimal(payload["best_bid"], "best_bid"),
+            ask=_source_decimal(payload["best_ask"], "best_ask"),
             exchange_time=_parse_time(payload.get("time")),
             received_at=received_at or datetime.now(UTC),
+            bid_size=_optional_decimal(payload, "best_bid_size"),
+            ask_size=_optional_decimal(payload, "best_ask_size"),
+            last_size=_optional_decimal(payload, "last_size"),
+            volume_24h=_optional_decimal(payload, "volume_24h"),
         )
-    except (KeyError, InvalidOperation, TypeError) as error:
+    except (KeyError, InvalidOperation, TypeError, ValueError) as error:
         raise CoinbasePayloadError("invalid Coinbase ticker payload") from error
 
 
@@ -73,19 +90,24 @@ class CoinbaseRestClient:
         url = f"{self._settings.coinbase_rest_base_url}/products/{product_id}/ticker"
         response = self._session.get(url, timeout=self._settings.request_timeout_seconds)
         response.raise_for_status()
+        received_at = datetime.now(UTC)
         payload = response.json()
         if not isinstance(payload, Mapping):
             raise CoinbasePayloadError("Coinbase REST ticker payload must be an object")
         try:
             return MarketTick(
                 symbol=product_id,
-                price=Decimal(str(payload["price"])),
-                bid=Decimal(str(payload["bid"])),
-                ask=Decimal(str(payload["ask"])),
+                price=_source_decimal(payload["price"], "price"),
+                bid=_source_decimal(payload["bid"], "bid"),
+                ask=_source_decimal(payload["ask"], "ask"),
                 exchange_time=_parse_time(payload.get("time")),
-                received_at=datetime.now(UTC),
+                received_at=received_at,
+                bid_size=_optional_decimal(payload, "bid_size"),
+                ask_size=_optional_decimal(payload, "ask_size"),
+                last_size=_optional_decimal(payload, "size"),
+                volume_24h=_optional_decimal(payload, "volume"),
             )
-        except (KeyError, InvalidOperation, TypeError) as error:
+        except (KeyError, InvalidOperation, TypeError, ValueError) as error:
             raise CoinbasePayloadError("invalid Coinbase REST ticker payload") from error
 
 
@@ -117,13 +139,14 @@ class CoinbaseWebSocketClient:
                         extra={"event": "coinbase_ws_connected", "products": self._products},
                     )
                     async for message in websocket:
+                        received_at = datetime.now(UTC)
                         try:
                             payload = json.loads(message)
                             if not isinstance(payload, Mapping):
                                 raise CoinbasePayloadError(
                                     "Coinbase WebSocket payload must be an object"
                                 )
-                            tick = parse_ticker_payload(payload)
+                            tick = parse_ticker_payload(payload, received_at=received_at)
                         except (json.JSONDecodeError, CoinbasePayloadError) as error:
                             logger.warning(
                                 "Discarding invalid Coinbase message",

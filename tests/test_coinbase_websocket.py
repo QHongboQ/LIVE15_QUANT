@@ -50,6 +50,10 @@ async def test_websocket_client_subscribes_and_normalizes_ticker(monkeypatch: An
                     "best_bid": "67999.99",
                     "best_ask": "68000.01",
                     "time": "2026-08-20T01:00:00Z",
+                    "best_bid_size": "1.000000000001",
+                    "best_ask_size": "2.000000000002",
+                    "last_size": "0.0000000100",
+                    "volume_24h": "123.456789012345",
                 }
             ),
         ]
@@ -67,6 +71,10 @@ async def test_websocket_client_subscribes_and_normalizes_ticker(monkeypatch: An
 
     assert tick.symbol == "BTC-USD"
     assert tick.spread == Decimal("0.02")
+    assert tick.last_size == Decimal("0.0000000100")
+    assert tick.bid_size == Decimal("1.000000000001")
+    assert tick.ask_size == Decimal("2.000000000002")
+    assert tick.volume_24h == Decimal("123.456789012345")
     assert websocket.sent == [
         {"type": "subscribe", "product_ids": ["BTC-USD"], "channels": ["ticker"]}
     ]
@@ -100,6 +108,19 @@ async def test_websocket_client_discards_invalid_messages(monkeypatch: Any) -> N
 def test_websocket_client_rejects_empty_products() -> None:
     with pytest.raises(ValueError, match="must not be empty"):
         coinbase.CoinbaseWebSocketClient(Settings(), products=())
+
+
+def test_ticker_parser_rejects_float_price_to_prevent_precision_pollution() -> None:
+    with pytest.raises(coinbase.CoinbasePayloadError, match="invalid Coinbase ticker"):
+        coinbase.parse_ticker_payload(
+            {
+                "type": "ticker",
+                "product_id": "BTC-USD",
+                "price": 68159.123456789,
+                "best_bid": "68159.12",
+                "best_ask": "68159.13",
+            }
+        )
 
 
 async def test_websocket_client_reconnects_after_connection_error(monkeypatch: Any) -> None:

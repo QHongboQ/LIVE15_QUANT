@@ -20,6 +20,8 @@ class FakeResponse:
             "bid": "68123.44",
             "ask": "68123.46",
             "time": "2026-08-20T01:00:00Z",
+            "size": "0.0000123400",
+            "volume": "1234.567890123456789",
         }
 
 
@@ -56,6 +58,8 @@ def test_rest_client_normalizes_ticker() -> None:
     assert tick.price == Decimal("68123.45")
     assert tick.spread == Decimal("0.02")
     assert tick.exchange_time is not None
+    assert tick.last_size == Decimal("0.0000123400")
+    assert tick.volume_24h == Decimal("1234.567890123456789")
     assert tick.role is DataRole.PREDICTIVE_MARKET_DATA
     assert session.request == (
         "https://api.exchange.coinbase.com/products/BTC-USD/ticker",

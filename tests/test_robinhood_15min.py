@@ -201,6 +201,66 @@ def test_conflicting_duplicate_asset_events_fail_safely() -> None:
         )
 
 
+def test_adjacent_events_for_same_asset_are_both_retained() -> None:
+    def add_upcoming(payload: dict[str, Any]) -> None:
+        page_props = payload["props"]["pageProps"]
+        current = page_props["eventStates"]["event-1"]
+        page_props["eventStates"]["event-2"] = {
+            **current,
+            "eventId": "event-2",
+            "subtitle": "BTC 15 min · 2:30\N{EN DASH}2:45 PM EDT",
+            "eventStatus": "EVENT_STATUS_UPCOMING",
+        }
+        component = page_props["nodeLayouts"]["layout"]["results"]["components"][0][
+            "eventComponent"
+        ]
+        page_props["nodeLayouts"]["layout"]["results"]["components"].append(
+            {
+                "eventComponent": {
+                    **component,
+                    "eventId": "event-2",
+                    "contractInfo": [
+                        {"contractId": "contract-2", "longName": "$68,200.00 or above"}
+                    ],
+                }
+            }
+        )
+
+    contracts = parse_public_15min_page(
+        _mutate_payload(_page(), add_upcoming),
+        source_url=ROBINHOOD_15MIN_PUBLIC_URL,
+        headers={"Date": "Wed, 19 Aug 2026 18:25:00 GMT"},
+        fetched_at=datetime(2026, 8, 19, 18, 25, tzinfo=UTC),
+        max_source_age_seconds=360,
+    )
+
+    assert [item.event_id for item in contracts] == ["event-1", "event-2"]
+    assert contracts[1].lifecycle_state is LifecycleState.UPCOMING
+    assert contracts[1].quote.availability is SupportLevel.UNSUPPORTED
+
+
+def test_upcoming_placeholder_without_contract_metadata_does_not_block_live_event() -> None:
+    def add_placeholder(payload: dict[str, Any]) -> None:
+        page_props = payload["props"]["pageProps"]
+        current = page_props["eventStates"]["event-1"]
+        page_props["eventStates"]["event-2"] = {
+            **current,
+            "eventId": "event-2",
+            "subtitle": "BTC 15 min · 2:30\N{EN DASH}2:45 PM EDT",
+            "eventStatus": "EVENT_STATUS_UPCOMING",
+        }
+
+    contracts = parse_public_15min_page(
+        _mutate_payload(_page(), add_placeholder),
+        source_url=ROBINHOOD_15MIN_PUBLIC_URL,
+        headers={"Date": "Wed, 19 Aug 2026 18:25:00 GMT"},
+        fetched_at=datetime(2026, 8, 19, 18, 25, tzinfo=UTC),
+        max_source_age_seconds=360,
+    )
+
+    assert [item.event_id for item in contracts] == ["event-1"]
+
+
 def test_duplicate_identical_quote_card_is_deduplicated() -> None:
     card = (
         "<h2>BTC 15 min · 2:15\N{EN DASH}2:30 PM EDT</h2>"

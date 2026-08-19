@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 DEFAULT_PRODUCTS = ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD")
 ROBINHOOD_15MIN_PUBLIC_URL = "https://robinhood.com/us/en/prediction-markets/15-min/"
@@ -24,6 +25,10 @@ class Settings:
     websocket_ping_timeout_seconds: float = 20.0
     rest_poll_interval_seconds: float = 5.0
     robinhood_max_source_age_seconds: float = 360.0
+    robinhood_poll_interval_seconds: float = 15.0
+    recorder_data_path: Path = Path("data/live15.sqlite3")
+    recorder_health_interval_seconds: float = 30.0
+    recorder_coinbase_stale_seconds: float = 30.0
     log_level: str = "INFO"
 
 
@@ -76,6 +81,24 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             source,
             "LIVE15_ROBINHOOD_MAX_SOURCE_AGE_SECONDS",
             defaults.robinhood_max_source_age_seconds,
+        ),
+        robinhood_poll_interval_seconds=_positive_float(
+            source,
+            "LIVE15_ROBINHOOD_POLL_INTERVAL_SECONDS",
+            defaults.robinhood_poll_interval_seconds,
+        ),
+        recorder_data_path=Path(
+            source.get("LIVE15_RECORDER_DATA_PATH", str(defaults.recorder_data_path))
+        ),
+        recorder_health_interval_seconds=_positive_float(
+            source,
+            "LIVE15_RECORDER_HEALTH_INTERVAL_SECONDS",
+            defaults.recorder_health_interval_seconds,
+        ),
+        recorder_coinbase_stale_seconds=_positive_float(
+            source,
+            "LIVE15_RECORDER_COINBASE_STALE_SECONDS",
+            defaults.recorder_coinbase_stale_seconds,
         ),
         log_level=source.get("LIVE15_LOG_LEVEL", defaults.log_level).upper(),
     )

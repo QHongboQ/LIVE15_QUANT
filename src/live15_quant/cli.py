@@ -17,6 +17,8 @@ from live15_quant.providers.coinbase import (
     CoinbaseWebSocketClient,
 )
 from live15_quant.providers.robinhood_15min import Robinhood15MinuteProvider
+from live15_quant.recorder import HistoricalRecorder
+from live15_quant.storage import RecorderStore
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,10 @@ def _tick_fields(tick: MarketTick) -> dict[str, object]:
         "bid": tick.bid,
         "ask": tick.ask,
         "spread": tick.spread,
+        "bid_size": tick.bid_size,
+        "ask_size": tick.ask_size,
+        "last_size": tick.last_size,
+        "volume_24h": tick.volume_24h,
         "exchange_time": tick.exchange_time,
         "received_at": tick.received_at,
     }
@@ -124,3 +130,19 @@ def discover_main() -> None:
                 "source_age_seconds": contract.source_age_seconds,
             },
         )
+
+
+async def _run_recorder(settings: Settings) -> None:
+    with RecorderStore(settings.recorder_data_path) as store:
+        await HistoricalRecorder(settings, store).run()
+
+
+def recorder_main() -> None:
+    """Continuously persist public event snapshots and predictive ticks."""
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    try:
+        asyncio.run(_run_recorder(settings))
+    except KeyboardInterrupt:
+        logger.info("Recorder interrupted safely", extra={"event": "recorder_interrupted"})

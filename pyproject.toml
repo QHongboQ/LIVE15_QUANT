@@ -27,6 +27,7 @@ live15-rest = "live15_quant.cli:rest_main"
 live15-stream = "live15_quant.cli:stream_main"
 live15-btc-stream = "live15_quant.cli:btc_stream_main"
 live15-discover = "live15_quant.cli:discover_main"
+live15-record = "live15_quant.cli:recorder_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -34,6 +35,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
 asyncio_mode = "auto"
+pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
     "smoke: tests that access public external services",

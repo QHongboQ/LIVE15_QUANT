@@ -121,7 +121,7 @@ class _CardParser(HTMLParser):
         self._title: str | None = None
         self._texts: list[str] = []
         self._source_url: str | None = None
-        self.cards: dict[Asset, _PublicCard] = {}
+        self.cards: dict[str, _PublicCard] = {}
 
     def _finish_card(self) -> None:
         if self._title is None or self._source_url is None:
@@ -149,10 +149,10 @@ class _CardParser(HTMLParser):
             yes_probability=probability,
             source_url=self._source_url,
         )
-        existing = self.cards.get(asset)
+        existing = self.cards.get(self._title)
         if existing is not None and existing != card:
             raise RobinhoodPublicPageError(f"conflicting public quote cards for {asset}")
-        self.cards[asset] = card
+        self.cards[self._title] = card
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "h2":
@@ -224,7 +224,7 @@ def _parse_next_data(html: str) -> Mapping[str, Any]:
     return page_props
 
 
-def _parse_cards(html: str, base_url: str) -> dict[Asset, _PublicCard]:
+def _parse_cards(html: str, base_url: str) -> dict[str, _PublicCard]:
     parser = _CardParser(base_url)
     parser.feed(html)
     parser.close()
@@ -237,9 +237,10 @@ def _mapping(value: object, name: str) -> Mapping[str, Any]:
     return value
 
 
-def _asset_states(page_props: Mapping[str, Any]) -> dict[Asset, Mapping[str, Any]]:
+def _asset_states(page_props: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     states = _mapping(page_props.get("eventStates"), "eventStates")
-    result: dict[Asset, Mapping[str, Any]] = {}
+    result: dict[str, Mapping[str, Any]] = {}
+    windows: dict[tuple[Asset, str], str] = {}
     for value in states.values():
         if not isinstance(value, Mapping):
             continue
@@ -252,10 +253,15 @@ def _asset_states(page_props: Mapping[str, Any]) -> dict[Asset, Mapping[str, Any
             event_id = value.get("eventId")
             if not isinstance(event_id, str) or not event_id:
                 raise RobinhoodPublicPageError(f"missing public event id for {asset}")
-            existing = result.get(asset)
-            if existing is not None and existing.get("eventId") != event_id:
+            window = (asset, subtitle)
+            existing_event_id = windows.get(window)
+            if existing_event_id is not None and existing_event_id != event_id:
                 raise RobinhoodPublicPageError(f"conflicting public events for {asset}")
-            result[asset] = value
+            existing = result.get(event_id)
+            if existing is not None and existing != value:
+                raise RobinhoodPublicPageError(f"conflicting metadata for event {event_id}")
+            windows[window] = event_id
+            result[event_id] = value
     return result
 
 
@@ -419,18 +425,27 @@ def parse_public_15min_page(
     source_age = _source_age(headers, fetched_at)
     reference = _header_date(headers) or fetched_at
     contracts: list[FifteenMinuteContract] = []
-    for asset in Asset:
-        state = states.get(asset)
-        if state is None:
-            continue
-        card = cards.get(asset)
-        event_id = state.get("eventId")
-        if not isinstance(event_id, str) or event_id not in contract_details:
-            raise RobinhoodPublicPageError(f"missing public event/contract id for {asset}")
-        contract_id, layout_target = contract_details[event_id]
+    for event_id, state in states.items():
         subtitle = state.get("subtitle")
-        if not isinstance(subtitle, str):
-            raise RobinhoodPublicPageError(f"missing public event subtitle for {asset}")
+        if (
+            not isinstance(subtitle, str)
+            or (title_match := _TITLE_PATTERN.fullmatch(subtitle)) is None
+        ):
+            raise RobinhoodPublicPageError(f"missing public event subtitle for {event_id}")
+        asset = Asset(title_match.group("asset"))
+        card = cards.get(subtitle)
+        if event_id not in contract_details:
+            logger.warning(
+                "Skipping public event placeholder without contract metadata",
+                extra={
+                    "event": "robinhood_contract_metadata_unavailable",
+                    "asset": asset,
+                    "event_id": event_id,
+                    "lifecycle": _lifecycle(state.get("eventStatus")),
+                },
+            )
+            continue
+        contract_id, layout_target = contract_details[event_id]
         start, end = _window(subtitle, state.get("eventProgress"), reference)
         if card is not None and (card.title != subtitle or card.target_price != layout_target):
             logger.warning(
@@ -489,7 +504,12 @@ def parse_public_15min_page(
         )
     if not contracts:
         raise RobinhoodPublicPageError("no supported Live 15-minute events found on public page")
-    return tuple(contracts)
+    return tuple(
+        sorted(
+            contracts,
+            key=lambda contract: (contract.start_time, contract.asset.value, contract.event_id),
+        )
+    )
 
 
 class Robinhood15MinuteProvider:
@@ -502,7 +522,6 @@ class Robinhood15MinuteProvider:
         self._session = session or _retrying_session()
 
     def discover(self) -> tuple[FifteenMinuteContract, ...]:
-        fetched_at = datetime.now(UTC)
         try:
             response = self._session.get(
                 self._settings.robinhood_15min_url,
@@ -517,6 +536,7 @@ class Robinhood15MinuteProvider:
                 raise RobinhoodPublicPageError(
                     "public Robinhood category request redirected to an unexpected URL"
                 )
+            fetched_at = datetime.now(UTC)
             contracts = parse_public_15min_page(
                 response.text,
                 source_url=self._settings.robinhood_15min_url,

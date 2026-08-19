@@ -57,6 +57,14 @@ class SupportLevel(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class RecorderDiagnosticKind(StrEnum):
+    """Recorder observations that must never enter the training snapshot stream."""
+
+    POST_END_EVENT_RETURNED = "post_end_event_returned"
+    ROLLOVER_GAP_STARTED = "rollover_gap_started"
+    ROLLOVER_GAP_ENDED = "rollover_gap_ended"
+
+
 @dataclass(frozen=True, slots=True)
 class MarketTick:
     """Normalized top-of-book market observation."""
@@ -67,7 +75,24 @@ class MarketTick:
     ask: Decimal
     received_at: datetime
     exchange_time: datetime | None = None
+    bid_size: Decimal | None = None
+    ask_size: Decimal | None = None
+    last_size: Decimal | None = None
+    volume_24h: Decimal | None = None
     role: DataRole = field(init=False, default=DataRole.PREDICTIVE_MARKET_DATA)
+
+    def __post_init__(self) -> None:
+        timestamps = (self.received_at, self.exchange_time)
+        if any(
+            timestamp is not None and (timestamp.tzinfo is None or timestamp.utcoffset() is None)
+            for timestamp in timestamps
+        ):
+            raise ValueError("market tick timestamps must be timezone-aware")
+        if self.price <= 0 or self.bid < 0 or self.ask < self.bid:
+            raise ValueError("market tick prices must form a valid non-negative book")
+        sizes = (self.bid_size, self.ask_size, self.last_size, self.volume_24h)
+        if any(value is not None and value < 0 for value in sizes):
+            raise ValueError("market tick sizes must be non-negative")
 
     @property
     def spread(self) -> Decimal:

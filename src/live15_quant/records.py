@@ -1,0 +1,88 @@
+"""Versioned recorder records independent from live provider objects."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+
+from live15_quant.models import (
+    Asset,
+    DataRole,
+    FreshnessState,
+    LifecycleState,
+    RecorderDiagnosticKind,
+    SupportLevel,
+)
+
+SCHEMA_VERSION = 2
+
+
+@dataclass(frozen=True, slots=True)
+class RobinhoodSnapshotRecord:
+    """One unaggregated public Robinhood event observation."""
+
+    row_id: int
+    schema_version: int
+    asset: Asset
+    event_id: str
+    contract_id: str
+    start_time: datetime
+    end_time: datetime
+    fetched_timestamp: datetime
+    seconds_remaining: int
+    target_price: Decimal
+    displayed_yes: Decimal | None
+    displayed_no: Decimal | None
+    quote_availability: SupportLevel
+    lifecycle: LifecycleState
+    freshness: FreshnessState
+    venue: str | None
+    settlement_benchmark: str
+    settlement_method: str
+    settlement_decimal_places: int | None
+    settlement_source_url: str
+    settlement_benchmark_data_url: str
+    settlement_data_access: SupportLevel
+    settlement_access_notes: str
+    settlement_role: DataRole
+    source_age_seconds: int | None
+    venue_candidates: tuple[str, ...]
+    source_url: str
+    role: DataRole
+
+
+@dataclass(frozen=True, slots=True)
+class CoinbaseTickRecord:
+    """One unaggregated Coinbase predictive-market observation."""
+
+    row_id: int
+    schema_version: int
+    exchange_timestamp: datetime | None
+    received_timestamp: datetime
+    product: str
+    price: Decimal
+    bid: Decimal
+    ask: Decimal
+    spread: Decimal
+    bid_size: Decimal | None
+    ask_size: Decimal | None
+    last_size: Decimal | None
+    volume_24h: Decimal | None
+    role: DataRole
+
+
+@dataclass(frozen=True, slots=True)
+class RobinhoodDiagnosticRecord:
+    """A non-training observation retained for recorder/upstream diagnosis."""
+
+    row_id: int
+    schema_version: int
+    kind: RecorderDiagnosticKind
+    asset: Asset
+    event_id: str
+    contract_id: str
+    observed_timestamp: datetime
+    event_end_time: datetime
+    related_event_id: str | None
+    source_url: str

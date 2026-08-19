@@ -1,6 +1,6 @@
 # LIVE15_QUANT
 
-LIVE15_QUANT 是一个**只针对 Robinhood Live 15-minute prediction-market contracts** 的数据研究项目。范围不包括小时、日、周、体育、政治合约，也暂不包括模型、特征工程、回测、数据库、Paper Trading 或真钱交易。
+LIVE15_QUANT 是一个**只针对 Robinhood Live 15-minute prediction-market contracts** 的数据研究项目。当前实现持续采集并持久化原始事件快照和对应的 Coinbase predictive ticks；范围不包括小时、日、周、体育、政治合约，也暂不包括模型、特征工程、回测、Paper Trading 或真钱交易。
 
 项目仅使用无需登录且允许公开访问的数据：Coinbase Exchange 公共市场数据和 Robinhood 服务端渲染的公开网页。代码不调用 Robinhood 私有/未公开 API，不访问账户，不包含订单或交易能力。
 
@@ -33,7 +33,7 @@ LIVE15_QUANT 是一个**只针对 Robinhood Live 15-minute prediction-market con
 
 ## Discovery 与标准化
 
-`Robinhood15MinuteProvider` 读取公开的 [Robinhood 15-minute category page](https://robinhood.com/us/en/prediction-markets/15-min/)，解析页面 HTML 和公开嵌入的 `__NEXT_DATA__`。`robots.txt` 没有禁止该路径。provider 不调用浏览器后台接口，也不依赖认证。
+`Robinhood15MinuteProvider` 读取公开的 [Robinhood 15-minute category page](https://robinhood.com/us/en/prediction-markets/15-min/)，解析页面 HTML 和公开嵌入的 `__NEXT_DATA__`。provider 不调用浏览器后台接口，也不依赖认证。
 
 每个事件输出 typed `FifteenMinuteContract`：
 
@@ -77,6 +77,12 @@ Robinhood 公共事件页只说明合约可能由 KalshiEX、ForecastEx 或 Roth
 
 由于缺少 Robinhood event ID 到 partner ticker 的官方映射，本项目不会通过标题或价格模糊匹配生成“可执行报价”。当前合法获得的是 Robinhood 网页的**信息性 displayed quote**；不是 executable quote。
 
+### Detail-page live quote audit
+
+2026-08-20 对未登录公开详情页的浏览器网络行为进行了审计。页面通过重复 XHR 读取 `api.robinhood.com` 下的 event-state、contract quote、fundamentals 和 15-second historical 数据；未观察到 SSE 或 WebSocket。全新无 Cookie、无 Authorization header 的 HTTP session 能读取 quote JSON，字段包括 Yes/No bid/ask、last trade、instrument ID 和源更新时间。
+
+这些 Prediction Market 路由没有出现在 [Robinhood 的公开 API 文档](https://docs.robinhood.com/) 中；[Robinhood 官方 third-party connections 说明](https://robinhood.com/us/en/support/articles/third-party-connections/) 也没有授权此类未发布接口供第三方 collector 使用。因此“无需认证即可响应”不被当作“公开且允许的 API”。本项目**不调用、不封装、不持久化这些路由**，SSR discovery/quote 路径继续保留，quote capability 明确保持 Partial。若 Robinhood 或 partner venue 后续发布允许自动采集的官方 market-data API，再以独立 typed provider 接入。
+
 ## 安装
 
 要求 Windows PowerShell 和 Python 3.13：
@@ -93,6 +99,9 @@ python -m pip install --no-deps -e .
 ## 运行
 
 ```powershell
+# 持续记录全部 Robinhood 目标资产 + 5 个 Coinbase predictive products
+live15-record
+
 # 一次性发现并输出当前公开 Robinhood 15-minute snapshot（JSON logs）
 live15-discover
 
@@ -110,6 +119,57 @@ python btc_stream.py
 python market_stream.py
 ```
 
+### Recorder 生命周期
+
+`live15-record` 启动三个协作任务：Robinhood category page 默认每 15 秒轮询一次；Coinbase 对 `BTC-USD`、`ETH-USD`、`SOL-USD`、`XRP-USD`、`DOGE-USD` 使用一个公共 WebSocket ticker subscription；health 默认每 30 秒写一条结构化日志。每次 discovery 会记录当前 10 个目标资产中实际公开的事件，从首次出现持续观察到 category page 将其标为 closed/settled、窗口结束或事件被新窗口替换。
+
+明确的 `end_time` 是训练 snapshot 的硬边界：`fetched_timestamp >= end_time` 的旧事件永不写入 `robinhood_snapshots`。如果旧事件结束而新事件尚未公开，recorder 进入可持久恢复的 `rollover_gap`，在 health/log 中报告 gap 开始时间和持续时间；它不会延长旧窗口、猜测下一事件或伪造 quote。上游页面继续返回旧事件的事实只写入隔离的 diagnostics 表。真正的新 event ID/contract ID 出现后才关闭 gap 并恢复正常记录。
+
+按 `Ctrl+C` 即可安全停止。`asyncio` 会取消等待中的网络任务，已完成的 SQLite 事务不会丢失；下次运行同一命令会打开原数据库继续追加，不覆盖已有历史。
+
+## 持久化设计
+
+默认数据文件为 `data/live15.sqlite3`，整个 `data/` 继续由 Git ignore。可用 `LIVE15_RECORDER_DATA_PATH` 指向其他位置；在线 smoke test 始终使用 pytest 临时目录，不会接触正式历史。
+
+当前选择 **SQLite + WAL** 作为热存储：
+
+- WAL 和原子事务适合长时间持续追加及进程崩溃后的自动恢复；`synchronous=NORMAL` 在可靠性和行情写入吞吐间取平衡。WAL 每 1,000 pages 自动 checkpoint，并设置 64 MiB journal size limit，避免 checkpoint 后的 WAL 文件无界保留。
+- `INSERT OR IGNORE` 与 observation fingerprint 只拒绝 event/product、receive timestamp 和完整内容都相同的精确重复；同一时刻的真实价格变化会保留。
+- `(event_id, fetched_timestamp, id)` 和 `(product, received_timestamp, id)` 索引支持单事件/产品确定性读取，不在热路径重写整个文件。
+- 所有 price、bid、ask、spread、size、volume 和 probability 均以 Decimal 原始字符串保存；绝不按 settlement rounding precision 截断。
+- SQLite 可直接被 pandas、Polars 或 DuckDB 查询，后续可批量导出 Parquet。JSONL 缺少可靠事务和索引；Parquet 更适合冷数据批量文件，不适合当前逐 tick append 和 crash recovery，因此两者均未用作热存储。
+
+数据库 metadata 和每一行都包含 `schema_version=2`。已有 v1 recorder 数据库会在一个 `BEGIN IMMEDIATE` transaction 内创建 diagnostics schema、保留原数据精度并把兼容行升级到 v2；任何检查失败都会 rollback。未知或未来版本会在修改 recorder tables 前明确拒绝，避免静默误读。
+
+### Robinhood snapshot schema
+
+表 `robinhood_snapshots` 每行是一条未聚合 observation：`asset`、`event_id`、`contract_id`、UTC `start_time`/`end_time`、HTTP 响应到达本地时记录的独立 UTC `fetched_timestamp`、`seconds_remaining`、完整精度 `target_price`、`displayed_yes`、`displayed_no`、`quote_availability`、`lifecycle`、`freshness`、`venue`、settlement benchmark/method/precision/source/data-access metadata、`source_url`、data role、schema version 和 content hash。缺失的 displayed No 或 venue 保持 SQL `NULL`；displayed probability 仍不是 executable quote。
+
+表 `robinhood_diagnostics` 与训练 snapshots 隔离，保存 `post_end_event_returned`、`rollover_gap_started` 和 `rollover_gap_ended`。每种 diagnostic 按 asset + event ID 只保留一次，持续 gap 的时长由 health 和 ended record 表达，不会每 15 秒重复扩张 diagnostics。重启时 recorder 从此表恢复仍未结束的 gap。`ReplayReader.event()` 只读取严格早于 event end 的正常 snapshot；诊断信息只能通过显式 `event_diagnostics()` 读取。
+
+### Coinbase tick schema
+
+表 `coinbase_ticks` 保存 Coinbase payload 提供的 exchange timestamp，以及 WebSocket message/REST response 到达后、解析前立即记录的本地 receive timestamp；另存 product、完整精度 price/bid/ask/spread、公开 ticker 提供时的 bid size、ask size、last size 与 24-hour volume、predictive data role、schema version 和 content hash。Coinbase 仅是 BTC/ETH/XRP/SOL/DOGE 的 predictive source，绝不被标记或使用为 Robinhood settlement truth。
+
+### Deterministic replay
+
+`ReplayReader(path).event(event_id)` 按 `fetched_timestamp, insertion id` 稳定重放单个 Robinhood event，并防御性排除 `fetched_timestamp >= end_time` 的遗留 active observations；`ReplayReader(path).coinbase(product)` 按本地 `received_timestamp, insertion id` 稳定重放一个 Coinbase product。reader 只恢复 typed records，不包含策略、回测或 time-alignment 假设。损坏的时间、Decimal 或 enum 会显式抛出 `RecorderStorageError`，不会静默跳过。
+
+### Health
+
+结构化 `recorder_health` 日志包含：当前 tracking event 数、最后 Robinhood snapshot 时间、各 Coinbase product 最后 receive 时间、stale/missing source 数、本进程成功写入记录数，以及每个 active rollover gap 的资产、前一 event ID、开始时间和持续秒数。Robinhood 使用 provider 的 freshness 判断；Coinbase 默认 30 秒未更新即 stale。数据库行数也可用只读 SQL 核查：
+
+```powershell
+@'
+from pathlib import Path
+from live15_quant.storage import RecorderStore
+with RecorderStore(Path("data/live15.sqlite3")) as store:
+    print("Robinhood:", store.count("robinhood_snapshots"))
+    print("Diagnostics:", store.count("robinhood_diagnostics"))
+    print("Coinbase:", store.count("coinbase_ticks"))
+'@ | python
+```
+
 ## 配置
 
 | Variable | Default |
@@ -118,6 +178,10 @@ python market_stream.py
 | `LIVE15_COINBASE_REST_URL` | `https://api.exchange.coinbase.com` |
 | `LIVE15_COINBASE_WS_URL` | `wss://ws-feed.exchange.coinbase.com` |
 | `LIVE15_ROBINHOOD_MAX_SOURCE_AGE_SECONDS` | `360` |
+| `LIVE15_ROBINHOOD_POLL_INTERVAL_SECONDS` | `15` |
+| `LIVE15_RECORDER_DATA_PATH` | `data/live15.sqlite3` |
+| `LIVE15_RECORDER_HEALTH_INTERVAL_SECONDS` | `30` |
+| `LIVE15_RECORDER_COINBASE_STALE_SECONDS` | `30` |
 | `LIVE15_REQUEST_TIMEOUT_SECONDS` | `10` |
 | `LIVE15_RECONNECT_DELAY_SECONDS` | `3` |
 | `LIVE15_WS_PING_INTERVAL_SECONDS` | `20` |
@@ -130,7 +194,7 @@ python market_stream.py
 ```powershell
 ruff check .
 ruff format --check .
-python -c "import live15_quant.providers.coinbase; import live15_quant.providers.robinhood_15min"
+python -c "import live15_quant.providers.coinbase; import live15_quant.providers.robinhood_15min; import live15_quant.recorder; import live15_quant.records; import live15_quant.replay; import live15_quant.storage"
 pytest
 python -m pip check
 git diff --check
@@ -150,4 +214,8 @@ pytest -m smoke
 - 部分公开页面快照只在 `__NEXT_DATA__` 中提供 event/contract metadata、不渲染 quote card；这类 quote 的 `availability=unsupported`，Yes/No 均为 `null`。
 - 页面不披露单事件的 partner venue ticker，无法合法、可靠地映射 executable orderbook。
 - CF Benchmarks/Pyth 实际 settlement truth 尚未自动采集；不得用 Coinbase spot 替代。
-- 当前不持久化任何数据，这是后续 milestone 的范围。
+- Coinbase 不覆盖 Gold、Silver、WTI Oil、HYPE、BNB，因此这些资产当前只有 Robinhood event snapshots，没有同步 predictive ticks。
+- Robinhood public category page 只暴露当前 snapshot，若页面缓存、暂时缺少 card 或事件在两次轮询之间出现并消失，recorder 无法补回从未公开观察到的数据。
+- 页面偶尔先发布 upcoming event state、稍后才发布 contract ID/target；这类 placeholder 会产生结构化 warning 并暂不写入，待公开 metadata 完整后才开始记录，绝不猜测 ID 或 target。
+- 当前没有实际 CF Benchmarks/Pyth settlement series、partner venue executable orderbook 或最终 payout；数据库只保存已验证的 settlement metadata。
+- SQLite recorder 尚未实现 retention、压缩、Parquet export 或多进程同时写入；单 recorder 进程是当前支持的运行模式。

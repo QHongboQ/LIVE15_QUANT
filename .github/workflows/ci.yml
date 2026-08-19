@@ -28,6 +28,6 @@ jobs:
       - name: Format check
         run: ruff format --check .
       - name: Import check
-        run: python -c "import live15_quant; import live15_quant.providers.coinbase; import live15_quant.providers.robinhood_15min; import live15_quant.settlement; import btc_price_test; import btc_stream; import market_stream"
+        run: python -c "import live15_quant; import live15_quant.providers.coinbase; import live15_quant.providers.robinhood_15min; import live15_quant.recorder; import live15_quant.records; import live15_quant.replay; import live15_quant.storage; import live15_quant.settlement; import btc_price_test; import btc_stream; import market_stream"
       - name: Test
         run: pytest

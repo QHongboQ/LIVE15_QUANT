@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from live15_quant.config import DEFAULT_PRODUCTS, ROBINHOOD_15MIN_PUBLIC_URL, load_settings
@@ -11,6 +13,7 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.products == DEFAULT_PRODUCTS
     assert settings.request_timeout_seconds == 10.0
     assert settings.robinhood_max_source_age_seconds == 360.0
+    assert settings.recorder_data_path == Path("data/live15.sqlite3")
     assert settings.log_level == "INFO"
 
 
@@ -21,6 +24,8 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_COINBASE_REST_URL": "https://example.test/",
             "LIVE15_LOG_LEVEL": "debug",
             "LIVE15_REQUEST_TIMEOUT_SECONDS": "2.5",
+            "LIVE15_RECORDER_DATA_PATH": "scratch/test.sqlite3",
+            "LIVE15_ROBINHOOD_POLL_INTERVAL_SECONDS": "7.5",
             "LIVE15_ROBINHOOD_15MIN_URL": "https://private.example.test/hidden",
         }
     )
@@ -29,6 +34,8 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.coinbase_rest_base_url == "https://example.test"
     assert settings.log_level == "DEBUG"
     assert settings.request_timeout_seconds == 2.5
+    assert settings.recorder_data_path == Path("scratch/test.sqlite3")
+    assert settings.robinhood_poll_interval_seconds == 7.5
     assert settings.robinhood_15min_url == ROBINHOOD_15MIN_PUBLIC_URL
 
 
