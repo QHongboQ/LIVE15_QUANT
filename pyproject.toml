@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools==82.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "live15-quant"
+version = "0.1.0"
+description = "Research foundation for multi-asset 15-minute crypto prediction markets"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = "LicenseRef-Proprietary"
+authors = [{ name = "LIVE15_QUANT contributors" }]
+dependencies = [
+    "requests==2.34.2",
+    "websockets==17.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "ruff==0.16.3",
+]
+
+[project.scripts]
+live15-rest = "live15_quant.cli:rest_main"
+live15-stream = "live15_quant.cli:stream_main"
+live15-btc-stream = "live15_quant.cli:btc_stream_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "smoke: tests that access public external services",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "UP"]

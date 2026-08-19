@@ -1,0 +1,15 @@
+certifi==2026.7.22
+charset-normalizer==3.5.1
+colorama==0.4.6
+idna==3.19
+iniconfig==2.3.0
+packaging==26.3
+pip==26.2.1
+pluggy==1.6.0
+Pygments==2.21.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+requests==2.34.2
+ruff==0.16.3
+urllib3==2.7.0
+websockets==17.0.1
