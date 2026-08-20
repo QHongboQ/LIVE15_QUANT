@@ -31,6 +31,38 @@ class DataRole(StrEnum):
     SETTLEMENT_BENCHMARK = "settlement_benchmark"
 
 
+class Venue(StrEnum):
+    """Regulated venues named by Robinhood for event contracts."""
+
+    KALSHI = "KalshiEX LLC"
+    FORECASTEX = "ForecastEX, LLC"
+    ROTHERA = "Rothera Exchange and Clearing LLC"
+
+
+class MappingConfidence(StrEnum):
+    """Strength of a Robinhood-contract to venue-instrument mapping."""
+
+    VERIFIED = "verified"
+    PARTIAL = "partial"
+    UNSUPPORTED = "unsupported"
+
+
+class ExecutabilityClassification(StrEnum):
+    """What a quote can, and deliberately cannot, claim to represent."""
+
+    OFFICIAL_VENUE_ORDER_BOOK = "official_venue_order_book"
+    INDICATIVE_ONLY = "indicative_only"
+    UNSUPPORTED = "unsupported"
+
+
+class SourceTimestampKind(StrEnum):
+    """Semantics of a provider-supplied timestamp."""
+
+    HTTP_RESPONSE_DATE = "http_response_date"
+    EXCHANGE_EVENT_TIME = "exchange_event_time"
+    UNAVAILABLE = "unavailable"
+
+
 class LifecycleState(StrEnum):
     """Normalized contract lifecycle."""
 
@@ -63,6 +95,112 @@ class RecorderDiagnosticKind(StrEnum):
     POST_END_EVENT_RETURNED = "post_end_event_returned"
     ROLLOVER_GAP_STARTED = "rollover_gap_started"
     ROLLOVER_GAP_ENDED = "rollover_gap_ended"
+
+
+@dataclass(frozen=True, slots=True)
+class OrderBookLevel:
+    """One explicit venue order-book bid level."""
+
+    price: Decimal
+    quantity: Decimal
+
+    def __post_init__(self) -> None:
+        if not Decimal(0) <= self.price <= Decimal(1):
+            raise ValueError("order-book price must be within [0, 1]")
+        if self.quantity < 0:
+            raise ValueError("order-book quantity must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class VenueMapping:
+    """Auditable mapping from Robinhood identifiers to one venue instrument."""
+
+    asset: Asset
+    robinhood_event_id: str
+    robinhood_contract_id: str
+    venue: Venue | None
+    venue_series: str | None
+    venue_ticker: str | None
+    confidence: MappingConfidence
+    matched_fields: tuple[str, ...]
+    evidence_urls: tuple[str, ...]
+    notes: str
+
+    def __post_init__(self) -> None:
+        if not self.robinhood_event_id or not self.robinhood_contract_id:
+            raise ValueError("Robinhood mapping identifiers must not be empty")
+        if self.confidence is MappingConfidence.VERIFIED and (
+            self.venue is None or self.venue_series is None or self.venue_ticker is None
+        ):
+            raise ValueError("verified mappings require a venue, series, and ticker")
+
+
+@dataclass(frozen=True, slots=True)
+class PredictionMarketQuote:
+    """Official venue quote kept separate from Robinhood SSR and predictive ticks."""
+
+    asset: Asset
+    robinhood_event_id: str
+    robinhood_contract_id: str
+    venue: Venue
+    venue_series: str
+    venue_ticker: str
+    mapping_confidence: MappingConfidence
+    source_timestamp: datetime | None
+    source_timestamp_kind: SourceTimestampKind
+    received_timestamp: datetime
+    yes_bid: Decimal | None
+    yes_ask: Decimal | None
+    no_bid: Decimal | None
+    no_ask: Decimal | None
+    last_trade: Decimal | None
+    volume: Decimal | None
+    yes_bid_depth: tuple[OrderBookLevel, ...]
+    no_bid_depth: tuple[OrderBookLevel, ...]
+    source: str
+    freshness: FreshnessState
+    executability: ExecutabilityClassification
+    evidence_urls: tuple[str, ...]
+    role: DataRole = field(init=False, default=DataRole.CONTRACT_MARKET_QUOTE)
+
+    def __post_init__(self) -> None:
+        if not all(
+            (
+                self.robinhood_event_id,
+                self.robinhood_contract_id,
+                self.venue_series,
+                self.venue_ticker,
+                self.source,
+            )
+        ):
+            raise ValueError("prediction quote identifiers and source must not be empty")
+        if self.mapping_confidence is not MappingConfidence.VERIFIED:
+            raise ValueError("prediction quotes require a verified venue mapping")
+        timestamps = (self.source_timestamp, self.received_timestamp)
+        if any(
+            value is not None and (value.tzinfo is None or value.utcoffset() is None)
+            for value in timestamps
+        ):
+            raise ValueError("prediction quote timestamps must be timezone-aware")
+        prices = (self.yes_bid, self.yes_ask, self.no_bid, self.no_ask, self.last_trade)
+        if any(value is not None and not Decimal(0) <= value <= Decimal(1) for value in prices):
+            raise ValueError("prediction quote prices must be within [0, 1]")
+        if self.yes_bid is not None and self.yes_ask is not None and self.yes_ask < self.yes_bid:
+            raise ValueError("Yes ask must not be below Yes bid")
+        if self.no_bid is not None and self.no_ask is not None and self.no_ask < self.no_bid:
+            raise ValueError("No ask must not be below No bid")
+        if self.volume is not None and self.volume < 0:
+            raise ValueError("prediction quote volume must be non-negative")
+        if (
+            self.source_timestamp is None
+            and self.source_timestamp_kind is not SourceTimestampKind.UNAVAILABLE
+        ):
+            raise ValueError("missing source timestamp must be classified unavailable")
+        if (
+            self.source_timestamp is not None
+            and self.source_timestamp_kind is SourceTimestampKind.UNAVAILABLE
+        ):
+            raise ValueError("available source timestamp requires explicit semantics")
 
 
 @dataclass(frozen=True, slots=True)

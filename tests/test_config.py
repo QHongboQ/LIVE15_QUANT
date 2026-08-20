@@ -26,6 +26,9 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_REQUEST_TIMEOUT_SECONDS": "2.5",
             "LIVE15_RECORDER_DATA_PATH": "scratch/test.sqlite3",
             "LIVE15_ROBINHOOD_POLL_INTERVAL_SECONDS": "7.5",
+            "LIVE15_OFFICIAL_QUOTE_POLL_INTERVAL_SECONDS": "1.5",
+            "LIVE15_OFFICIAL_QUOTE_MAX_SOURCE_AGE_SECONDS": "12",
+            "LIVE15_OFFICIAL_QUOTE_ORDERBOOK_DEPTH": "20",
             "LIVE15_ROBINHOOD_15MIN_URL": "https://private.example.test/hidden",
         }
     )
@@ -36,12 +39,20 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.request_timeout_seconds == 2.5
     assert settings.recorder_data_path == Path("scratch/test.sqlite3")
     assert settings.robinhood_poll_interval_seconds == 7.5
+    assert settings.official_quote_poll_interval_seconds == 1.5
+    assert settings.official_quote_max_source_age_seconds == 12
+    assert settings.official_quote_orderbook_depth == 20
     assert settings.robinhood_15min_url == ROBINHOOD_15MIN_PUBLIC_URL
 
 
 def test_load_settings_rejects_non_positive_timeout() -> None:
     with pytest.raises(ValueError, match="must be positive"):
         load_settings({"LIVE15_REQUEST_TIMEOUT_SECONDS": "0"})
+
+
+def test_load_settings_rejects_non_positive_orderbook_depth() -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        load_settings({"LIVE15_OFFICIAL_QUOTE_ORDERBOOK_DEPTH": "0"})
 
 
 def test_load_settings_rejects_empty_products() -> None:

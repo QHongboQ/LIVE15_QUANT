@@ -14,11 +14,13 @@ from live15_quant.models import (
     Asset,
     FifteenMinuteContract,
     MarketTick,
+    PredictionMarketQuote,
     RecorderDiagnosticKind,
 )
 from live15_quant.records import (
     SCHEMA_VERSION,
     CoinbaseTickRecord,
+    PredictionQuoteRecord,
     RobinhoodDiagnosticRecord,
     RobinhoodSnapshotRecord,
 )
@@ -73,6 +75,27 @@ def _parse_string_tuple(value: object, field: str) -> tuple[str, ...]:
     return tuple(parsed)
 
 
+def _book_levels(value: object, field: str) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, str):
+        raise RecorderStorageError(f"malformed {field}")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise RecorderStorageError(f"malformed {field}") from error
+    if not isinstance(parsed, list):
+        raise RecorderStorageError(f"malformed {field}")
+    result: list[tuple[str, str]] = []
+    for item in parsed:
+        if (
+            not isinstance(item, list)
+            or len(item) != 2
+            or not all(isinstance(part, str) for part in item)
+        ):
+            raise RecorderStorageError(f"malformed {field}")
+        result.append((item[0], item[1]))
+    return tuple(result)
+
+
 def _fingerprint(values: Sequence[object]) -> str:
     encoded = json.dumps(values, ensure_ascii=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -103,6 +126,48 @@ ON robinhood_diagnostics(asset, observed_timestamp, id)
 _DIAGNOSTIC_LOGICAL_KEY_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_robinhood_diagnostic_logical_key
 ON robinhood_diagnostics(kind, asset, event_id, id)
+"""
+
+_QUOTE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS prediction_market_quotes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version INTEGER NOT NULL,
+    asset TEXT NOT NULL,
+    robinhood_event_id TEXT NOT NULL,
+    robinhood_contract_id TEXT NOT NULL,
+    venue TEXT NOT NULL,
+    venue_series TEXT NOT NULL,
+    venue_ticker TEXT NOT NULL,
+    mapping_confidence TEXT NOT NULL,
+    source_timestamp TEXT,
+    source_timestamp_kind TEXT NOT NULL,
+    received_timestamp TEXT NOT NULL,
+    yes_bid TEXT,
+    yes_ask TEXT,
+    no_bid TEXT,
+    no_ask TEXT,
+    last_trade TEXT,
+    volume TEXT,
+    yes_bid_depth TEXT NOT NULL,
+    no_bid_depth TEXT NOT NULL,
+    source TEXT NOT NULL,
+    freshness TEXT NOT NULL,
+    executability TEXT NOT NULL,
+    evidence_urls TEXT NOT NULL,
+    data_role TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    UNIQUE(robinhood_event_id, venue_ticker, received_timestamp, content_hash)
+) STRICT
+"""
+
+_QUOTE_EVENT_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_prediction_quote_event_replay
+ON prediction_market_quotes(robinhood_event_id, received_timestamp, id)
+"""
+
+_QUOTE_TICKER_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_prediction_quote_ticker_replay
+ON prediction_market_quotes(venue_ticker, received_timestamp, id)
 """
 
 _SCHEMA = f"""
@@ -172,6 +237,10 @@ CREATE TABLE IF NOT EXISTS coinbase_ticks (
 
 CREATE INDEX IF NOT EXISTS idx_coinbase_product_replay
 ON coinbase_ticks(product, received_timestamp, id);
+
+{_QUOTE_TABLE_SQL};
+{_QUOTE_EVENT_INDEX_SQL};
+{_QUOTE_TICKER_INDEX_SQL};
 """
 
 
@@ -202,7 +271,7 @@ class RecorderStore:
             """
         ).fetchone()
         if metadata_exists is None:
-            self._create_v2_schema()
+            self._create_schema()
             return
 
         row = self._connection.execute(
@@ -211,16 +280,21 @@ class RecorderStore:
         if row is None:
             raise RecorderStorageError("database schema metadata is missing")
         if row["value"] == str(SCHEMA_VERSION):
-            self._ensure_v2_schema_objects()
+            self._ensure_schema_objects()
             return
-        if row["value"] == "1" and SCHEMA_VERSION == 2:
+        if row["value"] == "1":
             self._migrate_v1_to_v2()
+            row = self._connection.execute(
+                "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        if row is not None and row["value"] == "2" and SCHEMA_VERSION == 3:
+            self._migrate_v2_to_v3()
             return
         raise RecorderStorageError(
             f"database schema {row['value']} is incompatible with {SCHEMA_VERSION}"
         )
 
-    def _create_v2_schema(self) -> None:
+    def _create_schema(self) -> None:
         try:
             self._connection.executescript(
                 "BEGIN IMMEDIATE;\n"
@@ -233,7 +307,7 @@ class RecorderStore:
             self._connection.rollback()
             raise
 
-    def _ensure_v2_schema_objects(self) -> None:
+    def _ensure_schema_objects(self) -> None:
         try:
             self._connection.executescript(f"BEGIN IMMEDIATE;\n{_SCHEMA}\nCOMMIT;")
         except Exception:
@@ -256,12 +330,40 @@ class RecorderStore:
             self._connection.execute(_DIAGNOSTIC_LOGICAL_KEY_INDEX_SQL)
             self._connection.execute(
                 "UPDATE robinhood_snapshots SET schema_version = ? WHERE schema_version = 1",
-                (SCHEMA_VERSION,),
+                (2,),
             )
             self._connection.execute(
                 "UPDATE coinbase_ticks SET schema_version = ? WHERE schema_version = 1",
-                (SCHEMA_VERSION,),
+                (2,),
             )
+            self._connection.execute(
+                "UPDATE recorder_metadata SET value = ? WHERE key = 'schema_version'",
+                ("2",),
+            )
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+
+    def _migrate_v2_to_v3(self) -> None:
+        """Atomically add the independent official quote stream."""
+
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            for table in ("robinhood_snapshots", "coinbase_ticks", "robinhood_diagnostics"):
+                invalid = self._connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE schema_version != 2"
+                ).fetchone()
+                if invalid is None or invalid[0] != 0:
+                    raise RecorderStorageError(f"mixed schema versions in {table}")
+            for table in ("robinhood_snapshots", "coinbase_ticks", "robinhood_diagnostics"):
+                self._connection.execute(
+                    f"UPDATE {table} SET schema_version = ? WHERE schema_version = 2",
+                    (SCHEMA_VERSION,),
+                )
+            self._connection.execute(_QUOTE_TABLE_SQL)
+            self._connection.execute(_QUOTE_EVENT_INDEX_SQL)
+            self._connection.execute(_QUOTE_TICKER_INDEX_SQL)
             self._connection.execute(
                 "UPDATE recorder_metadata SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),
@@ -408,6 +510,78 @@ class RecorderStore:
         self._connection.commit()
         return cursor.rowcount == 1
 
+    def append_prediction_quote(self, quote: PredictionMarketQuote) -> bool:
+        """Append a changed official quote; suppress only consecutive identical states."""
+
+        yes_depth = json.dumps(
+            [[str(level.price), str(level.quantity)] for level in quote.yes_bid_depth],
+            separators=(",", ":"),
+        )
+        no_depth = json.dumps(
+            [[str(level.price), str(level.quantity)] for level in quote.no_bid_depth],
+            separators=(",", ":"),
+        )
+        evidence = json.dumps(quote.evidence_urls, separators=(",", ":"))
+        state_values: tuple[object, ...] = (
+            quote.asset.value,
+            quote.robinhood_event_id,
+            quote.robinhood_contract_id,
+            quote.venue.value,
+            quote.venue_series,
+            quote.venue_ticker,
+            quote.mapping_confidence.value,
+            _decimal(quote.yes_bid),
+            _decimal(quote.yes_ask),
+            _decimal(quote.no_bid),
+            _decimal(quote.no_ask),
+            _decimal(quote.last_trade),
+            _decimal(quote.volume),
+            yes_depth,
+            no_depth,
+            quote.source,
+            quote.freshness.value,
+            quote.executability.value,
+            evidence,
+            quote.role.value,
+        )
+        content_hash = _fingerprint(state_values)
+        latest = self._connection.execute(
+            """
+            SELECT content_hash FROM prediction_market_quotes
+            WHERE robinhood_event_id = ? AND venue_ticker = ?
+            ORDER BY received_timestamp DESC, id DESC LIMIT 1
+            """,
+            (quote.robinhood_event_id, quote.venue_ticker),
+        ).fetchone()
+        if latest is not None and latest["content_hash"] == content_hash:
+            return False
+
+        values: tuple[object, ...] = (
+            SCHEMA_VERSION,
+            *state_values[:7],
+            _timestamp(quote.source_timestamp) if quote.source_timestamp is not None else None,
+            quote.source_timestamp_kind.value,
+            _timestamp(quote.received_timestamp),
+            *state_values[7:],
+        )
+        cursor = self._connection.execute(
+            """
+            INSERT OR IGNORE INTO prediction_market_quotes (
+                schema_version, asset, robinhood_event_id, robinhood_contract_id,
+                venue, venue_series, venue_ticker, mapping_confidence,
+                source_timestamp, source_timestamp_kind, received_timestamp,
+                yes_bid, yes_ask, no_bid, no_ask, last_trade, volume,
+                yes_bid_depth, no_bid_depth, source, freshness, executability,
+                evidence_urls, data_role, content_hash
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            (*values, content_hash),
+        )
+        self._connection.commit()
+        return cursor.rowcount == 1
+
     def replay_robinhood(self, event_id: str) -> Iterator[RobinhoodSnapshotRecord]:
         """Yield one event deterministically by timestamp and insertion id."""
 
@@ -476,6 +650,19 @@ class RecorderStore:
         )
         for row in rows:
             yield self._tick_record(row)
+
+    def replay_prediction_quotes(self, event_id: str) -> Iterator[PredictionQuoteRecord]:
+        """Yield official quotes deterministically by receive time and insertion id."""
+
+        rows = self._connection.execute(
+            """
+            SELECT * FROM prediction_market_quotes
+            WHERE robinhood_event_id = ? ORDER BY received_timestamp ASC, id ASC
+            """,
+            (event_id,),
+        )
+        for row in rows:
+            yield self._prediction_quote_record(row)
 
     @staticmethod
     def _snapshot_record(row: sqlite3.Row) -> RobinhoodSnapshotRecord:
@@ -588,11 +775,104 @@ class RecorderStore:
         except (ValueError, TypeError, AssertionError) as error:
             raise RecorderStorageError("malformed Robinhood diagnostic record") from error
 
+    @staticmethod
+    def _prediction_quote_record(row: sqlite3.Row) -> PredictionQuoteRecord:
+        from live15_quant.models import (
+            DataRole,
+            ExecutabilityClassification,
+            FreshnessState,
+            MappingConfidence,
+            OrderBookLevel,
+            SourceTimestampKind,
+            Venue,
+        )
+
+        try:
+            yes_depth = tuple(
+                OrderBookLevel(
+                    price=Decimal(price),
+                    quantity=Decimal(quantity),
+                )
+                for price, quantity in _book_levels(row["yes_bid_depth"], "yes_bid_depth")
+            )
+            no_depth = tuple(
+                OrderBookLevel(
+                    price=Decimal(price),
+                    quantity=Decimal(quantity),
+                )
+                for price, quantity in _book_levels(row["no_bid_depth"], "no_bid_depth")
+            )
+            if row["schema_version"] != SCHEMA_VERSION:
+                raise RecorderStorageError("malformed prediction quote record")
+            quote = PredictionMarketQuote(
+                asset=Asset(row["asset"]),
+                robinhood_event_id=row["robinhood_event_id"],
+                robinhood_contract_id=row["robinhood_contract_id"],
+                venue=Venue(row["venue"]),
+                venue_series=row["venue_series"],
+                venue_ticker=row["venue_ticker"],
+                mapping_confidence=MappingConfidence(row["mapping_confidence"]),
+                source_timestamp=(
+                    _parse_timestamp(row["source_timestamp"], "source_timestamp")
+                    if row["source_timestamp"] is not None
+                    else None
+                ),
+                source_timestamp_kind=SourceTimestampKind(row["source_timestamp_kind"]),
+                received_timestamp=_parse_timestamp(
+                    row["received_timestamp"], "received_timestamp"
+                ),
+                yes_bid=_parse_decimal(row["yes_bid"], "yes_bid", optional=True),
+                yes_ask=_parse_decimal(row["yes_ask"], "yes_ask", optional=True),
+                no_bid=_parse_decimal(row["no_bid"], "no_bid", optional=True),
+                no_ask=_parse_decimal(row["no_ask"], "no_ask", optional=True),
+                last_trade=_parse_decimal(row["last_trade"], "last_trade", optional=True),
+                volume=_parse_decimal(row["volume"], "volume", optional=True),
+                yes_bid_depth=yes_depth,
+                no_bid_depth=no_depth,
+                source=row["source"],
+                freshness=FreshnessState(row["freshness"]),
+                executability=ExecutabilityClassification(row["executability"]),
+                evidence_urls=_parse_string_tuple(row["evidence_urls"], "evidence_urls"),
+            )
+            role = DataRole(row["data_role"])
+            if role is not quote.role:
+                raise RecorderStorageError("malformed prediction quote record")
+            return PredictionQuoteRecord(
+                row_id=row["id"],
+                schema_version=row["schema_version"],
+                asset=quote.asset,
+                robinhood_event_id=quote.robinhood_event_id,
+                robinhood_contract_id=quote.robinhood_contract_id,
+                venue=quote.venue,
+                venue_series=quote.venue_series,
+                venue_ticker=quote.venue_ticker,
+                mapping_confidence=quote.mapping_confidence,
+                source_timestamp=quote.source_timestamp,
+                source_timestamp_kind=quote.source_timestamp_kind,
+                received_timestamp=quote.received_timestamp,
+                yes_bid=quote.yes_bid,
+                yes_ask=quote.yes_ask,
+                no_bid=quote.no_bid,
+                no_ask=quote.no_ask,
+                last_trade=quote.last_trade,
+                volume=quote.volume,
+                yes_bid_depth=quote.yes_bid_depth,
+                no_bid_depth=quote.no_bid_depth,
+                source=quote.source,
+                freshness=quote.freshness,
+                executability=quote.executability,
+                evidence_urls=quote.evidence_urls,
+                role=role,
+            )
+        except (ValueError, TypeError, AssertionError) as error:
+            raise RecorderStorageError("malformed prediction quote record") from error
+
     def count(self, table: str) -> int:
         if table not in {
             "robinhood_snapshots",
             "robinhood_diagnostics",
             "coinbase_ticks",
+            "prediction_market_quotes",
         }:
             raise ValueError("unknown recorder table")
         row = self._connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()

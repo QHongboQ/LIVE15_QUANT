@@ -9,6 +9,7 @@ from pathlib import Path
 
 DEFAULT_PRODUCTS = ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD")
 ROBINHOOD_15MIN_PUBLIC_URL = "https://robinhood.com/us/en/prediction-markets/15-min/"
+KALSHI_PUBLIC_API_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +27,10 @@ class Settings:
     rest_poll_interval_seconds: float = 5.0
     robinhood_max_source_age_seconds: float = 360.0
     robinhood_poll_interval_seconds: float = 15.0
+    kalshi_public_api_base_url: str = KALSHI_PUBLIC_API_BASE_URL
+    official_quote_poll_interval_seconds: float = 2.0
+    official_quote_max_source_age_seconds: float = 15.0
+    official_quote_orderbook_depth: int = 10
     recorder_data_path: Path = Path("data/live15.sqlite3")
     recorder_health_interval_seconds: float = 30.0
     recorder_coinbase_stale_seconds: float = 30.0
@@ -34,6 +39,13 @@ class Settings:
 
 def _positive_float(source: Mapping[str, str], name: str, default: float) -> float:
     value = float(source.get(name, default))
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+def _positive_int(source: Mapping[str, str], name: str, default: int) -> int:
+    value = int(source.get(name, default))
     if value <= 0:
         raise ValueError(f"{name} must be positive")
     return value
@@ -86,6 +98,22 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             source,
             "LIVE15_ROBINHOOD_POLL_INTERVAL_SECONDS",
             defaults.robinhood_poll_interval_seconds,
+        ),
+        kalshi_public_api_base_url=KALSHI_PUBLIC_API_BASE_URL,
+        official_quote_poll_interval_seconds=_positive_float(
+            source,
+            "LIVE15_OFFICIAL_QUOTE_POLL_INTERVAL_SECONDS",
+            defaults.official_quote_poll_interval_seconds,
+        ),
+        official_quote_max_source_age_seconds=_positive_float(
+            source,
+            "LIVE15_OFFICIAL_QUOTE_MAX_SOURCE_AGE_SECONDS",
+            defaults.official_quote_max_source_age_seconds,
+        ),
+        official_quote_orderbook_depth=_positive_int(
+            source,
+            "LIVE15_OFFICIAL_QUOTE_ORDERBOOK_DEPTH",
+            defaults.official_quote_orderbook_depth,
         ),
         recorder_data_path=Path(
             source.get("LIVE15_RECORDER_DATA_PATH", str(defaults.recorder_data_path))

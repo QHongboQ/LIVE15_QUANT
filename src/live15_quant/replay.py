@@ -7,6 +7,7 @@ from pathlib import Path
 
 from live15_quant.records import (
     CoinbaseTickRecord,
+    PredictionQuoteRecord,
     RobinhoodDiagnosticRecord,
     RobinhoodSnapshotRecord,
 )
@@ -24,6 +25,11 @@ class ReplayReader:
 
     def coinbase(self, product: str) -> Iterator[CoinbaseTickRecord]:
         return self._store.replay_coinbase(product)
+
+    def quotes(self, event_id: str) -> Iterator[PredictionQuoteRecord]:
+        """Replay official venue quotes by receive timestamp and insertion id."""
+
+        return self._store.replay_prediction_quotes(event_id)
 
     def event_diagnostics(self, event_id: str) -> Iterator[RobinhoodDiagnosticRecord]:
         """Read upstream/post-end diagnostics separately from training observations."""

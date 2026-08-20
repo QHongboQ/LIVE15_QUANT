@@ -16,9 +16,11 @@ from live15_quant.models import (
     FreshnessState,
     LifecycleState,
     MarketTick,
+    PredictionMarketQuote,
     RecorderDiagnosticKind,
 )
 from live15_quant.providers.coinbase import CoinbaseWebSocketClient
+from live15_quant.providers.kalshi import KalshiOfficialQuoteProvider
 from live15_quant.providers.robinhood_15min import Robinhood15MinuteProvider
 from live15_quant.storage import RecorderStore
 
@@ -33,6 +35,12 @@ class TickStream(Protocol):
     def ticks(self) -> AsyncIterator[MarketTick]: ...
 
 
+class OfficialQuoteSource(Protocol):
+    def quotes(
+        self, contracts: Sequence[FifteenMinuteContract]
+    ) -> Sequence[PredictionMarketQuote]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class RecorderHealth:
     """Immutable public health snapshot."""
@@ -40,6 +48,7 @@ class RecorderHealth:
     tracked_event_count: int
     last_robinhood_snapshot: datetime | None
     coinbase_last_updates: dict[str, datetime]
+    official_quote_last_updates: dict[Asset, datetime]
     stale_source_count: int
     written_record_count: int
     rollover_gaps: tuple[RolloverGapStatus, ...]
@@ -60,6 +69,8 @@ class _MutableHealth:
     tracked_events: dict[str, FifteenMinuteContract] = field(default_factory=dict)
     last_robinhood_snapshot: datetime | None = None
     coinbase_last_updates: dict[str, datetime] = field(default_factory=dict)
+    official_quote_last_updates: dict[Asset, datetime] = field(default_factory=dict)
+    stale_official_quotes: set[Asset] = field(default_factory=set)
     stale_robinhood_events: set[str] = field(default_factory=set)
     written_record_count: int = 0
     rollover_gaps: dict[Asset, RolloverGapStatus] = field(default_factory=dict)
@@ -75,6 +86,7 @@ class HistoricalRecorder:
         *,
         robinhood: ContractDiscovery | None = None,
         coinbase_factory: Callable[[], TickStream] | None = None,
+        official_quotes: OfficialQuoteSource | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._settings = settings
@@ -83,6 +95,7 @@ class HistoricalRecorder:
         self._coinbase_factory = coinbase_factory or (
             lambda: CoinbaseWebSocketClient(settings, products=settings.products)
         )
+        self._official_quotes = official_quotes or KalshiOfficialQuoteProvider(settings)
         self._now = now or (lambda: datetime.now(UTC))
         self._health = _MutableHealth()
         for asset, diagnostic in self._store.open_rollover_gaps().items():
@@ -126,6 +139,19 @@ class HistoricalRecorder:
             or bool(self._health.stale_robinhood_events)
             or bool(self._health.rollover_gaps)
         )
+        tracked_assets = {contract.asset for contract in self._health.tracked_events.values()}
+        missing_official_quotes = len(
+            tracked_assets - self._health.official_quote_last_updates.keys()
+        )
+        aged_official_quotes = {
+            asset
+            for asset, updated in self._health.official_quote_last_updates.items()
+            if (now - updated).total_seconds()
+            > self._settings.official_quote_max_source_age_seconds
+        }
+        stale_official_quotes = len(
+            (self._health.stale_official_quotes | aged_official_quotes) & tracked_assets
+        )
         gaps = tuple(
             RolloverGapStatus(
                 asset=gap.asset,
@@ -141,7 +167,14 @@ class HistoricalRecorder:
             tracked_event_count=len(self._health.tracked_events),
             last_robinhood_snapshot=self._health.last_robinhood_snapshot,
             coinbase_last_updates=dict(self._health.coinbase_last_updates),
-            stale_source_count=int(robinhood_stale) + stale_coinbase + missing_coinbase,
+            official_quote_last_updates=dict(self._health.official_quote_last_updates),
+            stale_source_count=(
+                int(robinhood_stale)
+                + stale_coinbase
+                + missing_coinbase
+                + missing_official_quotes
+                + stale_official_quotes
+            ),
             written_record_count=self._health.written_record_count,
             rollover_gaps=gaps,
         )
@@ -153,6 +186,7 @@ class HistoricalRecorder:
         tasks = [
             asyncio.create_task(self._record_robinhood(), name="robinhood-recorder"),
             asyncio.create_task(self._record_coinbase(), name="coinbase-recorder"),
+            asyncio.create_task(self._record_official_quotes(), name="official-quote-recorder"),
             asyncio.create_task(self._report_health(), name="recorder-health"),
         ]
         logger.info(
@@ -264,7 +298,7 @@ class HistoricalRecorder:
                     self._end_rollover_gap(gap, contract)
 
     def _record_post_end_diagnostic(self, contract: FifteenMinuteContract) -> None:
-        if self._store.append_robinhood_diagnostic(
+        diagnostic_written = self._store.append_robinhood_diagnostic(
             kind=RecorderDiagnosticKind.POST_END_EVENT_RETURNED,
             asset=contract.asset,
             event_id=contract.event_id,
@@ -272,19 +306,22 @@ class HistoricalRecorder:
             observed_at=contract.fetched_at,
             event_end_time=contract.end_time,
             source_url=contract.source_url,
-        ):
-            self._health.written_record_count += 1
-        logger.warning(
-            "Upstream public page returned a post-end event; training snapshot suppressed",
-            extra={
-                "event": "robinhood_post_end_event_returned",
-                "asset": contract.asset,
-                "event_id": contract.event_id,
-                "event_end_time": contract.end_time,
-                "observed_at": contract.fetched_at,
-                "seconds_post_end": int((contract.fetched_at - contract.end_time).total_seconds()),
-            },
         )
+        if diagnostic_written:
+            self._health.written_record_count += 1
+            logger.warning(
+                "Upstream public page returned a post-end event; training snapshot suppressed",
+                extra={
+                    "event": "robinhood_post_end_event_returned",
+                    "asset": contract.asset,
+                    "event_id": contract.event_id,
+                    "event_end_time": contract.end_time,
+                    "observed_at": contract.fetched_at,
+                    "seconds_post_end": int(
+                        (contract.fetched_at - contract.end_time).total_seconds()
+                    ),
+                },
+            )
 
     def _start_rollover_gap(self, previous: FifteenMinuteContract, observed_at: datetime) -> None:
         if previous.asset in self._health.rollover_gaps:
@@ -359,6 +396,77 @@ class HistoricalRecorder:
                 )
             await asyncio.sleep(self._settings.reconnect_delay_seconds)
 
+    async def _record_official_quotes(self) -> None:
+        while True:
+            try:
+                now = self._now().astimezone(UTC)
+                contracts = tuple(
+                    contract
+                    for contract in self._health.tracked_events.values()
+                    if now < contract.end_time
+                    and contract.lifecycle_state
+                    not in {LifecycleState.CLOSED, LifecycleState.SETTLED}
+                )
+                if contracts:
+                    quotes = await asyncio.to_thread(self._official_quotes.quotes, contracts)
+                    self._accept_official_quotes(quotes)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.exception(
+                    "Official quote recorder poll failed",
+                    extra={"event": "recorder_official_quote_error", "error": str(error)},
+                )
+            await asyncio.sleep(self._settings.official_quote_poll_interval_seconds)
+
+    def _accept_official_quotes(self, quotes: Sequence[PredictionMarketQuote]) -> None:
+        for quote in quotes:
+            tracked = self._health.tracked_events.get(quote.robinhood_event_id)
+            if (
+                tracked is None
+                or tracked.contract_id != quote.robinhood_contract_id
+                or tracked.asset is not quote.asset
+            ):
+                logger.warning(
+                    "Official quote did not match the active Robinhood contract",
+                    extra={
+                        "event": "official_quote_contract_mismatch",
+                        "asset": quote.asset,
+                        "event_id": quote.robinhood_event_id,
+                        "venue_ticker": quote.venue_ticker,
+                    },
+                )
+                continue
+            if quote.received_timestamp >= tracked.end_time:
+                logger.warning(
+                    "Post-end official quote suppressed",
+                    extra={
+                        "event": "official_quote_post_end_suppressed",
+                        "asset": quote.asset,
+                        "event_id": quote.robinhood_event_id,
+                        "venue_ticker": quote.venue_ticker,
+                    },
+                )
+                continue
+            if self._store.append_prediction_quote(quote):
+                self._health.written_record_count += 1
+                logger.debug(
+                    "Official venue quote written",
+                    extra={
+                        "event": "official_quote_written",
+                        "asset": quote.asset,
+                        "event_id": quote.robinhood_event_id,
+                        "venue": quote.venue,
+                        "venue_ticker": quote.venue_ticker,
+                        "received_at": quote.received_timestamp,
+                    },
+                )
+            self._health.official_quote_last_updates[quote.asset] = quote.received_timestamp
+            if quote.freshness is FreshnessState.STALE:
+                self._health.stale_official_quotes.add(quote.asset)
+            else:
+                self._health.stale_official_quotes.discard(quote.asset)
+
     async def _report_health(self) -> None:
         while True:
             await asyncio.sleep(self._settings.recorder_health_interval_seconds)
@@ -373,6 +481,7 @@ class HistoricalRecorder:
             "tracked_event_count": health.tracked_event_count,
             "last_robinhood_snapshot": health.last_robinhood_snapshot,
             "coinbase_last_updates": health.coinbase_last_updates,
+            "official_quote_last_updates": health.official_quote_last_updates,
             "stale_source_count": health.stale_source_count,
             "written_record_count": health.written_record_count,
             "rollover_gap_count": len(health.rollover_gaps),

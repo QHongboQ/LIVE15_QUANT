@@ -10,12 +10,18 @@ import pytest
 from live15_quant.models import (
     Asset,
     ContractQuote,
+    ExecutabilityClassification,
     FifteenMinuteContract,
     FreshnessState,
     LifecycleState,
+    MappingConfidence,
     MarketTick,
+    OrderBookLevel,
+    PredictionMarketQuote,
     RecorderDiagnosticKind,
+    SourceTimestampKind,
     SupportLevel,
+    Venue,
 )
 from live15_quant.replay import ReplayReader
 from live15_quant.settlement import SETTLEMENT_SPECS
@@ -66,25 +72,61 @@ def tick(received_at: datetime = datetime(2026, 8, 20, 12, 1, tzinfo=UTC)) -> Ma
     )
 
 
+def prediction_quote(
+    received_at: datetime = datetime(2026, 8, 20, 12, 1, tzinfo=UTC),
+    *,
+    yes_bid: Decimal = Decimal("0.5100"),
+) -> PredictionMarketQuote:
+    return PredictionMarketQuote(
+        asset=Asset.BTC,
+        robinhood_event_id="event-1",
+        robinhood_contract_id="contract-1",
+        venue=Venue.KALSHI,
+        venue_series="KXBTC15M",
+        venue_ticker="KXBTC15M-26AUG201215-00",
+        mapping_confidence=MappingConfidence.VERIFIED,
+        source_timestamp=received_at - timedelta(milliseconds=25),
+        source_timestamp_kind=SourceTimestampKind.HTTP_RESPONSE_DATE,
+        received_timestamp=received_at,
+        yes_bid=yes_bid,
+        yes_ask=Decimal("0.5200"),
+        no_bid=Decimal("0.4800"),
+        no_ask=Decimal("0.4900"),
+        last_trade=Decimal("0.5150"),
+        volume=Decimal("1234.567890123456789"),
+        yes_bid_depth=(OrderBookLevel(Decimal("0.5100"), Decimal("12.340000")),),
+        no_bid_depth=(OrderBookLevel(Decimal("0.4800"), Decimal("8.900000")),),
+        source="https://external-api.kalshi.com/trade-api/v2/markets/example",
+        freshness=FreshnessState.FRESH,
+        executability=ExecutabilityClassification.OFFICIAL_VENUE_ORDER_BOOK,
+        evidence_urls=("https://docs.kalshi.com/getting_started/quick_start_market_data",),
+    )
+
+
 def test_first_create_append_and_full_decimal_precision(tmp_path) -> None:
     path = tmp_path / "history.sqlite3"
 
     with RecorderStore(path) as store:
         assert store.append_robinhood(contract()) is True
         assert store.append_coinbase(tick()) is True
+        assert store.append_prediction_quote(prediction_quote()) is True
         assert store.count("robinhood_snapshots") == 1
         assert store.count("coinbase_ticks") == 1
+        assert store.count("prediction_market_quotes") == 1
         assert store._connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert store._connection.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
         assert store._connection.execute("PRAGMA journal_size_limit").fetchone()[0] == 67108864
         snapshot = next(store.replay_robinhood("event-1"))
         saved_tick = next(store.replay_coinbase("BTC-USD"))
+        saved_quote = next(store.replay_prediction_quotes("event-1"))
 
     assert path.exists()
     assert snapshot.target_price == Decimal("68159.82000001")
     assert saved_tick.price == Decimal("68159.1234567890123456789")
     assert saved_tick.last_size == Decimal("0.000000010000")
     assert saved_tick.bid_size == Decimal("1.000000000001")
+    assert saved_quote.volume == Decimal("1234.567890123456789")
+    assert saved_quote.yes_bid_depth[0].quantity == Decimal("12.340000")
 
 
 def test_restart_continues_without_overwriting_history(tmp_path) -> None:
@@ -120,9 +162,9 @@ def test_v1_database_is_atomically_migrated_without_losing_history(tmp_path) -> 
             "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
 
-    assert version == "2"
-    assert snapshot.schema_version == 2
-    assert saved_tick.schema_version == 2
+    assert version == "3"
+    assert snapshot.schema_version == 3
+    assert saved_tick.schema_version == 3
     assert snapshot.target_price == Decimal("68159.82000001")
     assert saved_tick.price == Decimal("68159.1234567890123456789")
 
@@ -150,6 +192,67 @@ def test_failed_v1_migration_rolls_back_all_schema_changes(tmp_path) -> None:
 
     assert version == "1"
     assert diagnostic_table is None
+
+
+def test_v2_database_is_atomically_migrated_with_quote_stream(tmp_path) -> None:
+    path = tmp_path / "history.sqlite3"
+    with RecorderStore(path) as store:
+        store.append_robinhood(contract())
+        store.append_coinbase(tick())
+
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE prediction_market_quotes")
+    connection.execute("UPDATE recorder_metadata SET value = '2'")
+    connection.execute("UPDATE robinhood_snapshots SET schema_version = 2")
+    connection.execute("UPDATE coinbase_ticks SET schema_version = 2")
+    connection.execute("UPDATE robinhood_diagnostics SET schema_version = 2")
+    connection.commit()
+    connection.close()
+
+    with RecorderStore(path) as migrated:
+        assert migrated.count("robinhood_snapshots") == 1
+        assert migrated.count("coinbase_ticks") == 1
+        assert migrated.count("prediction_market_quotes") == 0
+        version = migrated._connection.execute(
+            "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
+        ).fetchone()[0]
+
+    assert version == "3"
+
+
+def test_failed_v2_migration_rolls_back_version_and_quote_table(tmp_path) -> None:
+    path = tmp_path / "history.sqlite3"
+    with RecorderStore(path) as store:
+        store.append_robinhood(contract())
+        store.append_coinbase(tick())
+
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE prediction_market_quotes")
+    connection.execute("UPDATE recorder_metadata SET value = '2'")
+    connection.execute("UPDATE robinhood_snapshots SET schema_version = 2")
+    connection.execute("UPDATE coinbase_ticks SET schema_version = 1")
+    connection.execute("UPDATE robinhood_diagnostics SET schema_version = 2")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RecorderStorageError, match="mixed schema"):
+        RecorderStore(path)
+
+    connection = sqlite3.connect(path)
+    version = connection.execute(
+        "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    snapshot_version = connection.execute(
+        "SELECT schema_version FROM robinhood_snapshots"
+    ).fetchone()[0]
+    quote_table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'prediction_market_quotes'"
+    ).fetchone()
+    connection.close()
+
+    assert version == "2"
+    assert snapshot_version == 2
+    assert quote_table is None
 
 
 def test_future_schema_is_rejected_before_recorder_tables_are_created(tmp_path) -> None:
@@ -194,6 +297,45 @@ def test_exact_duplicate_is_ignored_but_price_change_is_retained(tmp_path) -> No
         records = list(store.replay_robinhood("event-1"))
 
     assert [record.displayed_yes for record in records] == [Decimal("0.5100"), Decimal("0.5200")]
+
+
+def test_prediction_quote_suppresses_only_consecutive_duplicate_state(tmp_path) -> None:
+    with RecorderStore(tmp_path / "history.sqlite3") as store:
+        first = prediction_quote()
+        repeated = prediction_quote(datetime(2026, 8, 20, 12, 1, 1, tzinfo=UTC))
+        changed = prediction_quote(
+            datetime(2026, 8, 20, 12, 1, 2, tzinfo=UTC), yes_bid=Decimal("0.5000")
+        )
+        returned = prediction_quote(datetime(2026, 8, 20, 12, 1, 3, tzinfo=UTC))
+
+        assert store.append_prediction_quote(first) is True
+        assert store.append_prediction_quote(repeated) is False
+        assert store.append_prediction_quote(changed) is True
+        assert store.append_prediction_quote(returned) is True
+        records = list(store.replay_prediction_quotes("event-1"))
+
+    assert [item.yes_bid for item in records] == [
+        Decimal("0.5100"),
+        Decimal("0.5000"),
+        Decimal("0.5100"),
+    ]
+
+
+def test_replay_reader_orders_official_quotes_by_receive_timestamp(tmp_path) -> None:
+    path = tmp_path / "history.sqlite3"
+    later = prediction_quote(datetime(2026, 8, 20, 12, 3, tzinfo=UTC))
+    earlier = prediction_quote(datetime(2026, 8, 20, 12, 2, tzinfo=UTC), yes_bid=Decimal("0.5000"))
+    with RecorderStore(path) as store:
+        store.append_prediction_quote(later)
+        store.append_prediction_quote(earlier)
+
+    with ReplayReader(path) as reader:
+        records = list(reader.quotes("event-1"))
+
+    assert [item.received_timestamp for item in records] == [
+        earlier.received_timestamp,
+        later.received_timestamp,
+    ]
 
 
 def test_lifecycle_diagnostics_are_deduplicated_by_logical_event(tmp_path) -> None:
@@ -287,6 +429,20 @@ def test_malformed_record_fails_explicitly_during_replay(tmp_path) -> None:
 
     with RecorderStore(path) as store, pytest.raises(RecorderStorageError, match="malformed"):
         next(store.replay_coinbase("BTC-USD"))
+
+
+def test_malformed_prediction_quote_fails_explicitly_during_replay(tmp_path) -> None:
+    path = tmp_path / "history.sqlite3"
+    with RecorderStore(path) as store:
+        store.append_prediction_quote(prediction_quote())
+
+    connection = sqlite3.connect(path)
+    connection.execute("UPDATE prediction_market_quotes SET mapping_confidence = 'partial'")
+    connection.commit()
+    connection.close()
+
+    with RecorderStore(path) as store, pytest.raises(RecorderStorageError, match="malformed"):
+        next(store.replay_prediction_quotes("event-1"))
 
 
 def test_unknown_count_table_is_rejected(tmp_path) -> None:

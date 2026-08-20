@@ -9,13 +9,18 @@ from decimal import Decimal
 from live15_quant.models import (
     Asset,
     DataRole,
+    ExecutabilityClassification,
     FreshnessState,
     LifecycleState,
+    MappingConfidence,
+    OrderBookLevel,
     RecorderDiagnosticKind,
+    SourceTimestampKind,
     SupportLevel,
+    Venue,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,3 +91,34 @@ class RobinhoodDiagnosticRecord:
     event_end_time: datetime
     related_event_id: str | None
     source_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class PredictionQuoteRecord:
+    """One deduplicated official venue quote observation."""
+
+    row_id: int
+    schema_version: int
+    asset: Asset
+    robinhood_event_id: str
+    robinhood_contract_id: str
+    venue: Venue
+    venue_series: str
+    venue_ticker: str
+    mapping_confidence: MappingConfidence
+    source_timestamp: datetime | None
+    source_timestamp_kind: SourceTimestampKind
+    received_timestamp: datetime
+    yes_bid: Decimal | None
+    yes_ask: Decimal | None
+    no_bid: Decimal | None
+    no_ask: Decimal | None
+    last_trade: Decimal | None
+    volume: Decimal | None
+    yes_bid_depth: tuple[OrderBookLevel, ...]
+    no_bid_depth: tuple[OrderBookLevel, ...]
+    source: str
+    freshness: FreshnessState
+    executability: ExecutabilityClassification
+    evidence_urls: tuple[str, ...]
+    role: DataRole
