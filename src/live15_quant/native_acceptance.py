@@ -7,7 +7,6 @@ import json
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,7 +20,7 @@ from live15_quant.kalshi_lifecycle import (
     KalshiMarket,
     KalshiNativeMarketProvider,
 )
-from live15_quant.providers.kalshi import KalshiOfficialQuoteProvider
+from live15_quant.providers.kalshi import KalshiOfficialQuoteProvider, KalshiTargetUnavailableError
 from live15_quant.storage import RecorderStore
 
 MAX_ACCEPTANCE_SECONDS = 1800.0
@@ -37,14 +36,9 @@ def _persist_discoveries(
     for discovery in discoveries:
         for market in discovery.valid_markets:
             prior = states.get(market.ticker)
-            transitions = (
-                (market.lifecycle,)
-                if prior is None
-                else KalshiLifecycleStateMachine.transition(prior, market.lifecycle)
-            )
-            for state in transitions:
-                store.append_kalshi_market(replace(market, lifecycle=state))
-                states[market.ticker] = state
+            for observation in KalshiLifecycleStateMachine.observations(prior, market):
+                store.append_kalshi_market(observation)
+                states[market.ticker] = observation.lifecycle
 
 
 def _nearest_current(
@@ -204,6 +198,8 @@ def run_acceptance(
                                 baseline_quote_available = True
                                 if store.append_kalshi_quote(baseline_quote):
                                     baseline_quote_writes += 1
+                        except KalshiTargetUnavailableError:
+                            upstream_unavailable_polls += 1
                         except requests.RequestException:
                             network_retry_exhaustions += 1
                 elif current is not None and current.ticker != baseline.ticker:
@@ -239,6 +235,8 @@ def run_acceptance(
                             successor_quote_available = True
                             if store.append_kalshi_quote(successor_quote):
                                 successor_quote_writes += 1
+                    except KalshiTargetUnavailableError:
+                        upstream_unavailable_polls += 1
                     except requests.RequestException:
                         network_retry_exhaustions += 1
 

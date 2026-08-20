@@ -85,7 +85,9 @@ class HttpSession(Protocol):
     ) -> HttpResponse: ...
 
 
-def _retrying_session(retry_total: int = 4) -> requests.Session:
+def _retrying_session(
+    retry_total: int = 4, *, respect_retry_after_header: bool = True
+) -> requests.Session:
     session = requests.Session()
     retry = Retry(
         total=retry_total,
@@ -95,7 +97,7 @@ def _retrying_session(retry_total: int = 4) -> requests.Session:
         backoff_factor=0.5,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET"}),
-        respect_retry_after_header=True,
+        respect_retry_after_header=respect_retry_after_header,
     )
     session.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10))
     return session
@@ -184,6 +186,7 @@ class KalshiOfficialQuoteProvider:
         session: HttpSession | None = None,
         *,
         retry_total: int = 4,
+        respect_retry_after_header: bool = True,
         deadline_monotonic: float | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -192,7 +195,14 @@ class KalshiOfficialQuoteProvider:
         if retry_total < 0:
             raise ValueError("retry_total must be non-negative")
         self._settings = settings
-        self._owned_session = _retrying_session(retry_total) if session is None else None
+        self._owned_session = (
+            _retrying_session(
+                retry_total,
+                respect_retry_after_header=respect_retry_after_header,
+            )
+            if session is None
+            else None
+        )
         self._session = self._owned_session or session
         self._deadline_monotonic = deadline_monotonic
         self._monotonic = monotonic

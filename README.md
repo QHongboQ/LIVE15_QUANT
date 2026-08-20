@@ -125,6 +125,8 @@ paper schema version 1 使用独立的 `paper_metadata`、`paper_decisions`、`p
 
 Milestone 7 以 `data/live15.sqlite3` 的 raw recorder 为只读 source of truth，并把可重建训练数据写入独立的 `data/features.sqlite3`。`live15-dataset` 会按 exact ticker/window 将 decision-time metadata、Kalshi quote/orderbook、Coinbase predictive ticks 与 Kalshi 官方 finalized YES/NO label 组合；它不会改写 raw 数据，也不会读取 paper ledger。
 
+Milestone 7.5 将该路径升级为无需人工盯守的连续采集服务：十个资产逐一隔离发现，rollover 后继续有界追踪 predecessor 到官方 finalized，重启时完全从 SQLite 恢复，并原子输出机器可读 health。长期运行、恢复、容量规划与 Windows restart helper 见 [Continuous training-data recorder](docs/continuous_recorder.md)。
+
 默认 sampling grid 是距结束 14m、12m、10m、8m、5m、3m、2m、1m、30s，可通过 `LIVE15_DATASET_DECISION_OFFSETS_SECONDS` 配置。核心 `SamplingPolicy` 不含固定现实日期、固定 UTC 时刻或固定 grid。每个 event 可以产生多行，但 chronological/expanding/rolling split 都以完整 ticker event 为 group，同一 event 不会跨 train/validation/test。
 
 Feature schema `1.0.0` 当前有 42 个具名、Decimal-safe feature：contract geometry/target distance、15s/30s/1m/2m/5m returns、return acceleration/momentum、1m/2m/5m realized volatility、range/regime、Kalshi Yes/No bid/ask/spread/midpoint/last、quote age、top/cumulative depth、imbalance/depth ratio/book change，以及只作描述的 spread-aware market-implied quantities。midpoint 不是模拟成交价，也不被宣称为真实 probability。
@@ -154,6 +156,12 @@ live15-record
 
 # 从 raw recorder 构建或幂等恢复版本化训练数据集
 live15-dataset
+
+# 构建一致快照并输出当前训练覆盖
+live15-coverage
+
+# 读取 recorder 的原子 health heartbeat
+live15-status
 
 # 真实公开 Kalshi 行情驱动、只写本地 SQLite 的 deterministic paper runtime
 live15-paper

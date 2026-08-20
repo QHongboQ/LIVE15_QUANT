@@ -26,6 +26,10 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.enable_robinhood_reference is False
     assert settings.feature_store_path == Path("data/features.sqlite3")
     assert settings.dataset_decision_offsets_seconds == DEFAULT_DATASET_DECISION_OFFSETS_SECONDS
+    assert settings.native_discovery_poll_interval_seconds == 15
+    assert settings.settlement_followup_batch_size == 25
+    assert settings.dataset_build_interval_seconds is None
+    assert settings.recorder_max_backoff_seconds == 60
 
 
 def test_load_settings_normalizes_environment_values() -> None:
@@ -48,6 +52,14 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_DATASET_DECISION_OFFSETS_SECONDS": "600,60,30",
             "LIVE15_DATASET_QUOTE_MAX_AGE_SECONDS": "9",
             "LIVE15_DATASET_UNDERLYING_MAX_AGE_SECONDS": "8",
+            "LIVE15_NATIVE_DISCOVERY_POLL_INTERVAL_SECONDS": "4",
+            "LIVE15_SETTLEMENT_FOLLOWUP_INTERVAL_SECONDS": "6",
+            "LIVE15_SETTLEMENT_FOLLOWUP_BATCH_SIZE": "12",
+            "LIVE15_RECORDER_OPERATION_TIMEOUT_SECONDS": "14",
+            "LIVE15_RECORDER_MAX_BACKOFF_SECONDS": "55",
+            "LIVE15_RECORDER_CHECKPOINT_INTERVAL_SECONDS": "20",
+            "LIVE15_RECORDER_HEALTH_PATH": "scratch/health.json",
+            "LIVE15_DATASET_BUILD_INTERVAL_SECONDS": "3600",
             "LIVE15_ROBINHOOD_15MIN_URL": "https://private.example.test/hidden",
             "LIVE15_KALSHI_DEMO_API_KEY_ID": "demo-key-id",
             "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH": "C:/safe/kalshi-demo.key",
@@ -71,6 +83,14 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.dataset_decision_offsets_seconds == (600, 60, 30)
     assert settings.dataset_quote_max_age_seconds == 9
     assert settings.dataset_underlying_max_age_seconds == 8
+    assert settings.native_discovery_poll_interval_seconds == 4
+    assert settings.settlement_followup_interval_seconds == 6
+    assert settings.settlement_followup_batch_size == 12
+    assert settings.recorder_operation_timeout_seconds == 14
+    assert settings.recorder_max_backoff_seconds == 55
+    assert settings.recorder_checkpoint_interval_seconds == 20
+    assert settings.recorder_health_path == Path("scratch/health.json")
+    assert settings.dataset_build_interval_seconds == 3600
     assert settings.robinhood_15min_url == ROBINHOOD_15MIN_PUBLIC_URL
     assert settings.kalshi_demo_api_key_id == "demo-key-id"
     assert settings.kalshi_demo_private_key_path == Path("C:/safe/kalshi-demo.key")
@@ -87,6 +107,11 @@ def test_load_settings_rejects_non_positive_timeout() -> None:
 def test_load_settings_rejects_non_positive_orderbook_depth() -> None:
     with pytest.raises(ValueError, match="must be positive"):
         load_settings({"LIVE15_OFFICIAL_QUOTE_ORDERBOOK_DEPTH": "0"})
+
+
+def test_load_settings_rejects_non_positive_optional_dataset_interval() -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        load_settings({"LIVE15_DATASET_BUILD_INTERVAL_SECONDS": "0"})
 
 
 def test_load_settings_rejects_empty_products() -> None:
@@ -121,5 +146,15 @@ def test_load_settings_rejects_feature_store_shared_with_raw_data() -> None:
             {
                 "LIVE15_RECORDER_DATA_PATH": "data/shared.sqlite3",
                 "LIVE15_FEATURE_STORE_PATH": "data/shared.sqlite3",
+            }
+        )
+
+
+def test_load_settings_rejects_health_file_shared_with_database() -> None:
+    with pytest.raises(ValueError, match="must be different"):
+        load_settings(
+            {
+                "LIVE15_RECORDER_DATA_PATH": "data/shared.sqlite3",
+                "LIVE15_RECORDER_HEALTH_PATH": "data/shared.sqlite3",
             }
         )

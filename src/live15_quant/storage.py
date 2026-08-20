@@ -219,6 +219,11 @@ CREATE INDEX IF NOT EXISTS idx_kalshi_market_replay
 ON kalshi_market_lifecycle(ticker, fetched_timestamp, id)
 """
 
+_KALSHI_MARKET_FOLLOWUP_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_kalshi_market_followup
+ON kalshi_market_lifecycle(window_end, lifecycle, ticker, fetched_timestamp, id)
+"""
+
 _KALSHI_SETTLEMENT_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS kalshi_settlements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -244,6 +249,11 @@ CREATE TABLE IF NOT EXISTS kalshi_settlements (
 _KALSHI_SETTLEMENT_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_kalshi_settlement_window
 ON kalshi_settlements(series, window_start, ticker)
+"""
+
+_KALSHI_SETTLEMENT_ASSET_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_kalshi_settlement_asset_cursor
+ON kalshi_settlements(asset, settlement_timestamp, id)
 """
 
 _KALSHI_NATIVE_QUOTE_TABLE_SQL = """
@@ -278,6 +288,11 @@ CREATE TABLE IF NOT EXISTS kalshi_prediction_quotes (
 _KALSHI_NATIVE_QUOTE_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_kalshi_native_quote_replay
 ON kalshi_prediction_quotes(ticker, received_timestamp, id)
+"""
+
+_KALSHI_NATIVE_QUOTE_ASSET_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_kalshi_native_quote_asset_cursor
+ON kalshi_prediction_quotes(asset, received_timestamp, id)
 """
 
 _KALSHI_CONFLICT_TABLE_SQL = """
@@ -380,10 +395,13 @@ ON coinbase_ticks(product, received_timestamp, id);
 
 {_KALSHI_MARKET_TABLE_SQL};
 {_KALSHI_MARKET_INDEX_SQL};
+{_KALSHI_MARKET_FOLLOWUP_INDEX_SQL};
 {_KALSHI_SETTLEMENT_TABLE_SQL};
 {_KALSHI_SETTLEMENT_INDEX_SQL};
+{_KALSHI_SETTLEMENT_ASSET_INDEX_SQL};
 {_KALSHI_NATIVE_QUOTE_TABLE_SQL};
 {_KALSHI_NATIVE_QUOTE_INDEX_SQL};
+{_KALSHI_NATIVE_QUOTE_ASSET_INDEX_SQL};
 {_KALSHI_CONFLICT_TABLE_SQL};
 {_KALSHI_BACKFILL_TABLE_SQL};
 """
@@ -557,10 +575,13 @@ class RecorderStore:
             for statement in (
                 _KALSHI_MARKET_TABLE_SQL,
                 _KALSHI_MARKET_INDEX_SQL,
+                _KALSHI_MARKET_FOLLOWUP_INDEX_SQL,
                 _KALSHI_SETTLEMENT_TABLE_SQL,
                 _KALSHI_SETTLEMENT_INDEX_SQL,
+                _KALSHI_SETTLEMENT_ASSET_INDEX_SQL,
                 _KALSHI_NATIVE_QUOTE_TABLE_SQL,
                 _KALSHI_NATIVE_QUOTE_INDEX_SQL,
+                _KALSHI_NATIVE_QUOTE_ASSET_INDEX_SQL,
                 _KALSHI_CONFLICT_TABLE_SQL,
                 _KALSHI_BACKFILL_TABLE_SQL,
             ):
@@ -1057,12 +1078,20 @@ class RecorderStore:
             yield self._kalshi_native_quote_record(row)
 
     def latest_kalshi_states(
-        self, *, window_end_at_or_after: datetime | None = None
+        self,
+        *,
+        window_end_at_or_after: datetime | None = None,
+        window_end_before: datetime | None = None,
     ) -> tuple[KalshiMarketRecord, ...]:
-        predicate = "" if window_end_at_or_after is None else "AND current.window_end >= ?"
-        parameters: tuple[object, ...] = (
-            () if window_end_at_or_after is None else (_timestamp(window_end_at_or_after),)
-        )
+        predicates: list[str] = []
+        parameters: list[object] = []
+        if window_end_at_or_after is not None:
+            predicates.append("AND current.window_end >= ?")
+            parameters.append(_timestamp(window_end_at_or_after))
+        if window_end_before is not None:
+            predicates.append("AND current.window_end < ?")
+            parameters.append(_timestamp(window_end_before))
+        predicate = "\n".join(predicates)
         rows = self._connection.execute(
             f"""
             SELECT current.* FROM kalshi_market_lifecycle AS current
@@ -1074,7 +1103,7 @@ class RecorderStore:
             {predicate}
             ORDER BY current.ticker ASC
             """,
-            parameters,
+            tuple(parameters),
         )
         return tuple(self._kalshi_market_record(row) for row in rows)
 
@@ -1087,6 +1116,119 @@ class RecorderStore:
             (ticker,),
         ).fetchone()
         return None if row is None else self._kalshi_market_record(row)
+
+    def unsettled_kalshi_markets(
+        self,
+        *,
+        now: datetime,
+        asset: Asset | None = None,
+        after_ticker: str | None = None,
+        limit: int = 25,
+    ) -> tuple[KalshiMarketRecord, ...]:
+        """Return a bounded deterministic batch of closed markets without official truth."""
+
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        rows = self._connection.execute(
+            """
+            SELECT current.* FROM kalshi_market_lifecycle AS current
+            WHERE current.id = (
+                SELECT latest.id FROM kalshi_market_lifecycle AS latest
+                WHERE latest.ticker = current.ticker
+                ORDER BY latest.fetched_timestamp DESC, latest.id DESC LIMIT 1
+            )
+              AND current.window_end <= ?
+              AND current.lifecycle != 'invalid'
+              AND NOT (
+                  current.lifecycle IN ('settled_yes', 'settled_no')
+                  AND EXISTS (
+                      SELECT 1 FROM kalshi_settlements AS settled
+                      WHERE settled.ticker = current.ticker
+                  )
+              )
+              AND (? IS NULL OR current.asset = ?)
+              AND (? IS NULL OR current.ticker > ?)
+            ORDER BY current.ticker ASC LIMIT ?
+            """,
+            (
+                _timestamp(now),
+                asset.value if asset is not None else None,
+                asset.value if asset is not None else None,
+                after_ticker,
+                after_ticker,
+                limit,
+            ),
+        )
+        return tuple(self._kalshi_market_record(row) for row in rows)
+
+    def unsettled_kalshi_count(self, *, now: datetime) -> int:
+        row = self._connection.execute(
+            """
+            SELECT COUNT(*) FROM kalshi_market_lifecycle AS current
+            WHERE current.id = (
+                SELECT latest.id FROM kalshi_market_lifecycle AS latest
+                WHERE latest.ticker = current.ticker
+                ORDER BY latest.fetched_timestamp DESC, latest.id DESC LIMIT 1
+            )
+              AND current.window_end <= ?
+              AND current.lifecycle != 'invalid'
+              AND NOT (
+                  current.lifecycle IN ('settled_yes', 'settled_no')
+                  AND EXISTS (
+                      SELECT 1 FROM kalshi_settlements AS settled
+                      WHERE settled.ticker = current.ticker
+                  )
+              )
+            """,
+            (_timestamp(now),),
+        ).fetchone()
+        return 0 if row is None else int(row[0])
+
+    def latest_native_cursors(self) -> tuple[dict[Asset, datetime], dict[str, datetime]]:
+        """Recover last persisted quote and underlying receive timestamps."""
+
+        quote_rows = self._connection.execute(
+            """
+            SELECT asset, MAX(received_timestamp) AS received_timestamp
+            FROM kalshi_prediction_quotes GROUP BY asset
+            """
+        )
+        tick_rows = self._connection.execute(
+            """
+            SELECT product, MAX(received_timestamp) AS received_timestamp
+            FROM coinbase_ticks GROUP BY product
+            """
+        )
+        quotes = {
+            Asset(row["asset"]): _parse_timestamp(row["received_timestamp"], "received_timestamp")
+            for row in quote_rows
+        }
+        ticks = {
+            str(row["product"]): _parse_timestamp(row["received_timestamp"], "received_timestamp")
+            for row in tick_rows
+        }
+        return quotes, ticks
+
+    def latest_finalized_by_asset(self) -> dict[Asset, KalshiSettlementRecord]:
+        rows = self._connection.execute(
+            """
+            SELECT settlement.* FROM kalshi_settlements AS settlement
+            WHERE settlement.id = (
+                SELECT latest.id FROM kalshi_settlements AS latest
+                WHERE latest.asset = settlement.asset
+                ORDER BY latest.settlement_timestamp DESC, latest.id DESC LIMIT 1
+            )
+            """
+        )
+        return {Asset(row["asset"]): self._kalshi_settlement_record(row) for row in rows}
+
+    def settlement_counts_by_asset(self) -> dict[Asset, int]:
+        counts = {asset: 0 for asset in Asset}
+        for row in self._connection.execute(
+            "SELECT asset, COUNT(*) AS count FROM kalshi_settlements GROUP BY asset"
+        ):
+            counts[Asset(row["asset"])] = int(row["count"])
+        return counts
 
     def replay_kalshi_settlements(
         self, *, series: str | None = None, max_row_id: int | None = None
@@ -1744,6 +1886,33 @@ class RecorderStore:
             raise RecorderStorageError(f"could not count {table}")
         return int(row["count"])
 
+    def row_counts(self) -> dict[str, int]:
+        """Return bounded health counters for the training source-of-truth tables."""
+
+        return {
+            table: self.count(table)
+            for table in (
+                "kalshi_market_lifecycle",
+                "kalshi_prediction_quotes",
+                "coinbase_ticks",
+                "kalshi_settlements",
+                "kalshi_settlement_conflicts",
+            )
+        }
+
+    def checkpoint(self) -> tuple[int, int, int]:
+        """Run a non-blocking passive WAL checkpoint and return SQLite counters."""
+
+        row = self._connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        if row is None:
+            raise RecorderStorageError("WAL checkpoint returned no result")
+        return int(row[0]), int(row[1]), int(row[2])
+
+    def database_sizes(self) -> tuple[int, int]:
+        database = self.path.stat().st_size if self.path.exists() else 0
+        wal = self.path.with_name(f"{self.path.name}-wal")
+        return database, wal.stat().st_size if wal.exists() else 0
+
     def training_source_snapshot(self) -> dict[str, object]:
         """Return path-free immutable row boundaries for a reproducible dataset build."""
 
@@ -1775,6 +1944,12 @@ class RecorderStore:
 
     def integrity_check(self) -> str:
         row = self._connection.execute("PRAGMA integrity_check").fetchone()
+        return "missing_result" if row is None else str(row[0])
+
+    def quick_check(self) -> str:
+        """Run SQLite's bounded-error structural check for periodic health monitoring."""
+
+        row = self._connection.execute("PRAGMA quick_check(1)").fetchone()
         return "missing_result" if row is None else str(row[0])
 
     def close(self) -> None:

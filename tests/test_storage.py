@@ -117,6 +117,17 @@ def test_first_create_append_and_full_decimal_precision(tmp_path) -> None:
         assert store._connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert store._connection.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
         assert store._connection.execute("PRAGMA journal_size_limit").fetchone()[0] == 67108864
+        indexes = {
+            row[0]
+            for row in store._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+        assert {
+            "idx_kalshi_market_followup",
+            "idx_kalshi_settlement_asset_cursor",
+            "idx_kalshi_native_quote_asset_cursor",
+        } <= indexes
         snapshot = next(store.replay_robinhood("event-1"))
         saved_tick = next(store.replay_coinbase("BTC-USD"))
         saved_quote = next(store.replay_prediction_quotes("event-1"))

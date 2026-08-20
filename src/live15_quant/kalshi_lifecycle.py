@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
+from urllib.parse import quote as url_quote
 
 from live15_quant.models import Asset, DataRole
 from live15_quant.providers.kalshi import (
@@ -279,6 +280,33 @@ class KalshiLifecycleStateMachine:
             raise KalshiPublicApiError(f"invalid lifecycle transition {current} -> {observed}")
         return (observed,)
 
+    @classmethod
+    def observations(
+        cls, current: KalshiLifecycle | None, market: KalshiMarket
+    ) -> tuple[KalshiMarket, ...]:
+        """Expand a reported state without leaking finalized truth into bridge states."""
+
+        states = (
+            (market.lifecycle,) if current is None else cls.transition(current, market.lifecycle)
+        )
+        pending_or_terminal = {
+            KalshiLifecycle.SETTLEMENT_PENDING,
+            KalshiLifecycle.SETTLED_YES,
+            KalshiLifecycle.SETTLED_NO,
+        }
+        terminal = {KalshiLifecycle.SETTLED_YES, KalshiLifecycle.SETTLED_NO}
+        return tuple(
+            replace(
+                market,
+                lifecycle=state,
+                settlement=market.settlement if state in terminal else None,
+                determination_result=(
+                    market.determination_result if state in pending_or_terminal else None
+                ),
+            )
+            for state in states
+        )
+
 
 class KalshiNativeMarketProvider:
     """Discover exact official 15-minute markets without Robinhood metadata."""
@@ -477,6 +505,24 @@ class KalshiNativeMarketProvider:
 
     def discover_all(self, now: datetime | None = None) -> tuple[KalshiDiscovery, ...]:
         return tuple(self.discover(asset, now) for asset in KALSHI_15MIN_SERIES)
+
+    def get_market(self, asset: Asset, ticker: str, *, historical: bool = False) -> KalshiMarket:
+        """Fetch one exact official instrument for durable settlement follow-up."""
+
+        series = KALSHI_15MIN_SERIES[asset]
+        if not ticker.startswith(f"{series}-"):
+            raise KalshiPublicApiError("settlement follow-up ticker does not match exact series")
+        root = "/historical/markets" if historical else "/markets"
+        path = f"{root}/{url_quote(ticker, safe='')}"
+        payload, _, _ = self._client.get_public(path)
+        raw = payload.get("market")
+        if not isinstance(raw, Mapping):
+            raise KalshiPublicApiError("Kalshi market detail must be an object")
+        fetched = self._now().astimezone(UTC)
+        market = self.parse_market(asset, raw, fetched, source_path=root)
+        if market.ticker != ticker:
+            raise KalshiPublicApiError("settlement follow-up returned another ticker")
+        return market
 
     def backfill_pages(
         self,

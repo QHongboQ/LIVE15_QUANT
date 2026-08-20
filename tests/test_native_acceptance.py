@@ -9,6 +9,7 @@ import requests
 import live15_quant.native_acceptance as acceptance
 from live15_quant.kalshi_lifecycle import KalshiDiscovery, KalshiLifecycle
 from live15_quant.models import Asset
+from live15_quant.providers.kalshi import KalshiTargetUnavailableError
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 
 
@@ -143,12 +144,18 @@ def test_acceptance_dynamically_observes_adjacent_rollover(
     after = KalshiDiscovery(Asset.BTC, rollover_observed, finalized, successor, None, (), ())
     successor_at = 102.0
     discovery_times: list[float] = []
+    successor_quote_calls = 0
 
     class FakeClient:
         def __init__(self, settings, **kwargs) -> None:
             del settings, kwargs
 
         def quote_native(self, market):
+            nonlocal successor_quote_calls
+            if market.ticker == successor.ticker:
+                successor_quote_calls += 1
+                if successor_quote_calls == 1:
+                    raise KalshiTargetUnavailableError("official target not published yet")
             received = first_observed if market.ticker == first.ticker else rollover_observed
             return replace(
                 quote(market.ticker, market.event_ticker, received),
@@ -190,6 +197,7 @@ def test_acceptance_dynamically_observes_adjacent_rollover(
     assert clock.sleeps == [1, 1, 1, 1]
     assert clock.now == 104.0 < 110.0
     assert result["discovery_polls"] == 5
+    assert result["upstream_unavailable_polls"] == 1
     assert result["baseline_ticker"] == first.ticker
     assert result["announced_next_ticker"] == announced.ticker
     assert result["successor_ticker"] == successor.ticker

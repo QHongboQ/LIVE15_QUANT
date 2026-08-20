@@ -134,6 +134,9 @@ def test_multiple_decisions_pooled_and_per_asset_builds(tmp_path) -> None:
             "300": 1,
             "600": 1,
         }
+        assert destination.coverage_by_asset(pooled.build_id)[Asset.BTC] == (1, 2)
+        assert destination.coverage_by_asset(pooled.build_id)[Asset.ETH] == (0, 0)
+        assert source.settlement_counts_by_asset()[Asset.BTC] == 1
 
 
 def test_empty_dataset_diagnostics_report_rates_as_not_applicable() -> None:

@@ -72,8 +72,8 @@ class FakePublicClient:
         self.pages = pages
         self.calls: list[tuple[str, dict[str, object]]] = []
 
-    def get_public(self, path: str, params: dict[str, object]):
-        self.calls.append((path, params))
+    def get_public(self, path: str, params: dict[str, object] | None = None):
+        self.calls.append((path, params or {}))
         page = self.pages.pop(0)
         return page, {}, f"{self.base_url}{path}"
 
@@ -147,6 +147,34 @@ def test_default_discovery_timestamp_is_local_receive_time() -> None:
     assert discovery.fetched_timestamp == received
     assert discovery.current is not None
     assert discovery.current.fetched_timestamp == received
+
+
+def test_exact_market_followup_validates_ticker_and_historical_path() -> None:
+    raw = raw_market(status="finalized", result="yes")
+    reader = provider({"market": raw})
+
+    market = reader.get_market(Asset.BTC, raw["ticker"], historical=True)
+
+    assert market.lifecycle is KalshiLifecycle.SETTLED_YES
+    assert reader._client.calls[0][0] == f"/historical/markets/{raw['ticker']}"
+    with pytest.raises(KalshiPublicApiError, match="exact series"):
+        reader.get_market(Asset.ETH, raw["ticker"])
+
+
+def test_finalized_transition_exposes_truth_only_on_terminal_observation() -> None:
+    finalized = provider().parse_market(
+        Asset.BTC, raw_market(status="finalized", result="yes"), FINALIZED_FETCH
+    )
+
+    observations = KalshiLifecycleStateMachine.observations(KalshiLifecycle.OPEN, finalized)
+
+    assert [item.lifecycle for item in observations] == [
+        KalshiLifecycle.CLOSED,
+        KalshiLifecycle.SETTLEMENT_PENDING,
+        KalshiLifecycle.SETTLED_YES,
+    ]
+    assert [item.settlement is not None for item in observations] == [False, False, True]
+    assert observations[0].determination_result is None
 
 
 def test_missing_or_malformed_target_fails_closed() -> None:

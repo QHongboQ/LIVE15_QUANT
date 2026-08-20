@@ -42,6 +42,14 @@ class Settings:
     recorder_data_path: Path = Path("data/live15.sqlite3")
     recorder_health_interval_seconds: float = 30.0
     recorder_coinbase_stale_seconds: float = 30.0
+    native_discovery_poll_interval_seconds: float = 15.0
+    settlement_followup_interval_seconds: float = 15.0
+    settlement_followup_batch_size: int = 25
+    recorder_checkpoint_interval_seconds: float = 300.0
+    recorder_operation_timeout_seconds: float = 45.0
+    recorder_max_backoff_seconds: float = 60.0
+    recorder_health_path: Path = Path("data/health.json")
+    dataset_build_interval_seconds: float | None = None
     feature_store_path: Path = Path("data/features.sqlite3")
     dataset_decision_offsets_seconds: tuple[int, ...] = DEFAULT_DATASET_DECISION_OFFSETS_SECONDS
     dataset_quote_max_age_seconds: float = 15.0
@@ -110,6 +118,18 @@ def _boolean(source: Mapping[str, str], name: str, default: bool) -> bool:
     return raw in {"true", "1"}
 
 
+def _optional_positive_float(
+    source: Mapping[str, str], name: str, default: float | None
+) -> float | None:
+    raw = source.get(name)
+    if raw is None or not raw.strip():
+        return default
+    value = float(raw)
+    if value <= 0:
+        raise ValueError(f"{name} must be positive when configured")
+    return value
+
+
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     """Load settings from LIVE15_* environment variables."""
 
@@ -128,13 +148,17 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     feature_store_path = Path(
         source.get("LIVE15_FEATURE_STORE_PATH", str(defaults.feature_store_path))
     )
+    recorder_health_path = Path(
+        source.get("LIVE15_RECORDER_HEALTH_PATH", str(defaults.recorder_health_path))
+    )
     resolved_paths = {
         recorder_data_path.resolve(),
         paper_data_path.resolve(),
         feature_store_path.resolve(),
+        recorder_health_path.resolve(),
     }
-    if len(resolved_paths) != 3:
-        raise ValueError("raw recorder, paper, and feature-store paths must be different")
+    if len(resolved_paths) != 4:
+        raise ValueError("raw recorder, paper, feature-store, and health paths must be different")
     paper_account_id = source.get("LIVE15_PAPER_ACCOUNT_ID", defaults.paper_account_id).strip()
     if not paper_account_id:
         raise ValueError("LIVE15_PAPER_ACCOUNT_ID must not be empty")
@@ -212,6 +236,42 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             source,
             "LIVE15_RECORDER_COINBASE_STALE_SECONDS",
             defaults.recorder_coinbase_stale_seconds,
+        ),
+        native_discovery_poll_interval_seconds=_positive_float(
+            source,
+            "LIVE15_NATIVE_DISCOVERY_POLL_INTERVAL_SECONDS",
+            defaults.native_discovery_poll_interval_seconds,
+        ),
+        settlement_followup_interval_seconds=_positive_float(
+            source,
+            "LIVE15_SETTLEMENT_FOLLOWUP_INTERVAL_SECONDS",
+            defaults.settlement_followup_interval_seconds,
+        ),
+        settlement_followup_batch_size=_positive_int(
+            source,
+            "LIVE15_SETTLEMENT_FOLLOWUP_BATCH_SIZE",
+            defaults.settlement_followup_batch_size,
+        ),
+        recorder_checkpoint_interval_seconds=_positive_float(
+            source,
+            "LIVE15_RECORDER_CHECKPOINT_INTERVAL_SECONDS",
+            defaults.recorder_checkpoint_interval_seconds,
+        ),
+        recorder_operation_timeout_seconds=_positive_float(
+            source,
+            "LIVE15_RECORDER_OPERATION_TIMEOUT_SECONDS",
+            defaults.recorder_operation_timeout_seconds,
+        ),
+        recorder_max_backoff_seconds=_positive_float(
+            source,
+            "LIVE15_RECORDER_MAX_BACKOFF_SECONDS",
+            defaults.recorder_max_backoff_seconds,
+        ),
+        recorder_health_path=recorder_health_path,
+        dataset_build_interval_seconds=_optional_positive_float(
+            source,
+            "LIVE15_DATASET_BUILD_INTERVAL_SECONDS",
+            defaults.dataset_build_interval_seconds,
         ),
         feature_store_path=feature_store_path,
         dataset_decision_offsets_seconds=_decision_offsets(source),

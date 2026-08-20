@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+import requests
 
+import live15_quant.cli as cli
 from live15_quant.config import Settings
 from live15_quant.kalshi_lifecycle import (
     KalshiDiscovery,
@@ -20,23 +25,30 @@ from tests.test_storage import prediction_quote
 
 class FakeDiscovery:
     def __init__(self, discoveries: tuple[KalshiDiscovery, ...]) -> None:
-        self.discoveries = discoveries
+        self.discoveries = {item.asset: item for item in discoveries}
+        self.followups = {
+            market.ticker: market for item in discoveries for market in item.valid_markets
+        }
         self.calls = 0
 
-    def discover_all(self, now=None):
+    def discover(self, asset, now=None):
         del now
         self.calls += 1
-        return self.discoveries
+        return self.discoveries.get(asset, KalshiDiscovery(asset, NOW, None, None, None, (), ()))
+
+    def get_market(self, asset, ticker, *, historical=False):
+        del asset, historical
+        return self.followups[ticker]
 
 
 class FakeQuotes:
     def __init__(self) -> None:
         self.calls = 0
 
-    def quotes_native(self, markets):
+    def quote_native(self, market):
         self.calls += 1
-        assert all(market.lifecycle is KalshiLifecycle.OPEN for market in markets)
-        return tuple(quote(market.ticker, market.event_ticker, NOW) for market in markets)
+        assert market.lifecycle is KalshiLifecycle.OPEN
+        return quote(market.ticker, market.event_ticker, NOW)
 
 
 class OneTickStream:
@@ -79,7 +91,9 @@ def test_robinhood_disabled_core_records_lifecycle_and_coinbase(tmp_path) -> Non
                     enable_robinhood_reference=False,
                     robinhood_poll_interval_seconds=0.01,
                     official_quote_poll_interval_seconds=0.01,
+                    native_discovery_poll_interval_seconds=0.01,
                     recorder_health_interval_seconds=1,
+                    recorder_health_path=tmp_path / "health.json",
                 ),
                 store,
                 discovery=fake_discovery,
@@ -114,7 +128,9 @@ def test_robinhood_reference_failure_never_blocks_kalshi_core(tmp_path) -> None:
                     enable_robinhood_reference=True,
                     robinhood_poll_interval_seconds=0.01,
                     official_quote_poll_interval_seconds=0.01,
+                    native_discovery_poll_interval_seconds=0.01,
                     recorder_health_interval_seconds=1,
+                    recorder_health_path=tmp_path / "health.json",
                 ),
                 store,
                 discovery=FakeDiscovery((discovery(),)),
@@ -164,8 +180,8 @@ def test_rollover_and_restart_recover_deterministic_lifecycle(tmp_path) -> None:
             coinbase_factory=OneTickStream,
             now=lambda: NOW,
         )
-        recorder._accept_discoveries((first_discovery,))
-        recorder._accept_discoveries((second_discovery,))
+        recorder._accept_discovery(first_discovery)
+        recorder._accept_discovery(second_discovery)
         states = [record.lifecycle for record in store.replay_kalshi_markets(open_market.ticker)]
         assert states == [
             KalshiLifecycle.OPEN,
@@ -186,6 +202,155 @@ def test_rollover_and_restart_recover_deterministic_lifecycle(tmp_path) -> None:
         assert restarted._health.states[open_market.ticker] is KalshiLifecycle.SETTLED_YES
         assert restarted.health().settlement_count == 1
         assert store.count("kalshi_settlements") == 1
+
+
+class IsolatedDiscovery(FakeDiscovery):
+    def __init__(self, failures: set[Asset] | None = None) -> None:
+        super().__init__((discovery(),))
+        self.failures = failures or set()
+        self.called: set[Asset] = set()
+        self.all_called = threading.Event()
+
+    def discover(self, asset, now=None):
+        self.called.add(asset)
+        if len(self.called) == len(Asset):
+            self.all_called.set()
+        if asset in self.failures:
+            raise requests.ConnectionError("bounded source outage")
+        return super().discover(asset, now)
+
+
+def test_multi_asset_network_failure_isolated_and_health_is_machine_readable(tmp_path) -> None:
+    fake = IsolatedDiscovery({Asset.ETH})
+    health_path = tmp_path / "health.json"
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    native_discovery_poll_interval_seconds=60,
+                    recorder_health_path=health_path,
+                ),
+                store,
+                discovery=fake,
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                now=lambda: NOW,
+            )
+            task = asyncio.create_task(recorder.run())
+            assert await asyncio.to_thread(fake.all_called.wait, 1)
+            await asyncio.sleep(0)
+            recorder.request_stop()
+            await asyncio.wait_for(task, 1)
+            health = recorder.health()
+            assert Asset.BTC in health.current_markets
+            assert health.retry_counts["kalshi_discovery:ETH"] == 1
+            assert health.source_failures["kalshi_discovery:ETH"] == "ConnectionError"
+            assert health.integrity == "ok"
+
+    asyncio.run(scenario())
+    payload = json.loads(health_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "degraded"
+    assert payload["current_markets"]["BTC"].startswith("KXBTC15M-")
+
+
+def test_settlement_followup_survives_rollover_and_restart(tmp_path) -> None:
+    path = tmp_path / "native.sqlite3"
+    open_market = provider().parse_market(Asset.BTC, raw_market(), NOW)
+    closed = provider().parse_market(
+        Asset.BTC, raw_market(status="closed"), NOW + timedelta(minutes=16)
+    )
+    finalized = provider().parse_market(
+        Asset.BTC, raw_market(status="finalized", result="no"), NOW + timedelta(minutes=17)
+    )
+    fake = FakeDiscovery(())
+    fake.followups[closed.ticker] = finalized
+
+    with RecorderStore(path) as store:
+        store.append_kalshi_market(open_market)
+        store.append_kalshi_market(closed)
+        assert store.unsettled_kalshi_count(now=NOW + timedelta(minutes=16)) == 1
+
+    async def scenario() -> None:
+        with RecorderStore(path) as store:
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    settlement_followup_interval_seconds=60,
+                    recorder_health_path=tmp_path / "health.json",
+                ),
+                store,
+                discovery=fake,
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                now=lambda: NOW + timedelta(minutes=17),
+            )
+            task = asyncio.create_task(recorder._record_settlements_asset(Asset.BTC))
+            for _ in range(100):
+                if store.count("kalshi_settlements") == 1:
+                    break
+                await asyncio.sleep(0.001)
+            recorder.request_stop()
+            await asyncio.wait_for(task, 1)
+            assert store.unsettled_kalshi_count(now=NOW + timedelta(minutes=17)) == 0
+            assert recorder.health().last_finalized_settlement[Asset.BTC].endswith(":no")
+
+    asyncio.run(scenario())
+
+    with RecorderStore(path) as recovered:
+        assert recovered.count("kalshi_settlements") == 1
+        assert recovered.unsettled_kalshi_markets(now=NOW + timedelta(minutes=18)) == ()
+
+
+@pytest.mark.parametrize("missing_side", ("terminal_lifecycle", "settlement_truth"))
+def test_crash_window_remains_recoverable_until_terminal_and_truth_exist(
+    tmp_path, missing_side
+) -> None:
+    finalized = provider().parse_market(
+        Asset.BTC, raw_market(status="finalized", result="yes"), NOW + timedelta(minutes=16)
+    )
+    assert finalized.settlement is not None
+    with RecorderStore(tmp_path / f"{missing_side}.sqlite3") as store:
+        if missing_side == "terminal_lifecycle":
+            store.append_kalshi_market(
+                provider().parse_market(
+                    Asset.BTC, raw_market(status="closed"), NOW + timedelta(minutes=16)
+                )
+            )
+            store.append_kalshi_settlement(finalized.settlement)
+        else:
+            store.append_kalshi_market(replace(finalized, settlement=None))
+
+        pending = store.unsettled_kalshi_markets(now=NOW + timedelta(minutes=17))
+
+    assert [item.ticker for item in pending] == [finalized.ticker]
+
+
+def test_periodic_dataset_failure_does_not_terminate_scheduler(monkeypatch) -> None:
+    called = threading.Event()
+    calls = 0
+
+    def failing_build(_settings):
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            called.set()
+        raise RuntimeError("derived feature store unavailable")
+
+    monkeypatch.setattr(cli, "_build_dataset", failing_build)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            cli._periodic_dataset_build(Settings(dataset_build_interval_seconds=0.01))
+        )
+        assert await asyncio.to_thread(called.wait, 1)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
 
 
 def test_v3_to_v4_migration_failure_rolls_back(tmp_path) -> None:

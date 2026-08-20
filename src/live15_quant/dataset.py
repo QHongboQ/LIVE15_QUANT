@@ -450,6 +450,20 @@ class FeatureStore:
         ).fetchone()
         return 0 if row is None else int(row["count"])
 
+    def coverage_by_asset(self, build_id: str) -> dict[Asset, tuple[int, int]]:
+        """Return distinct trainable events and rows without loading the dataset."""
+
+        coverage = {asset: (0, 0) for asset in Asset}
+        for row in self._connection.execute(
+            """
+            SELECT asset, COUNT(DISTINCT ticker) AS events, COUNT(*) AS rows
+            FROM training_examples WHERE build_id=? GROUP BY asset
+            """,
+            (build_id,),
+        ):
+            coverage[Asset(row["asset"])] = (int(row["events"]), int(row["rows"]))
+        return coverage
+
     def integrity_check(self) -> str:
         row = self._connection.execute("PRAGMA integrity_check").fetchone()
         return "missing_result" if row is None else str(row[0])

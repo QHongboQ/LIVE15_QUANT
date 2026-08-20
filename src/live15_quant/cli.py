@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
 import time
+from collections.abc import Sequence
 from datetime import timedelta
 
 import requests
 
 from live15_quant.config import Settings, load_settings
-from live15_quant.dataset import DatasetBuildConfig, DatasetBuilder, FeatureStore
+from live15_quant.dataset import (
+    DatasetBuildConfig,
+    DatasetBuilder,
+    DatasetBuildSummary,
+    FeatureStore,
+)
 from live15_quant.features import SamplingPolicy
 from live15_quant.kalshi_lifecycle import KalshiNativeMarketProvider
 from live15_quant.logging_config import configure_logging
-from live15_quant.models import MarketTick
+from live15_quant.models import Asset, MarketTick
 from live15_quant.native_recorder import KalshiNativeRecorder
 from live15_quant.paper_runtime import PaperRuntime
 from live15_quant.paper_storage import PaperStore
@@ -140,12 +147,58 @@ def discover_main() -> None:
 
 async def _run_recorder(settings: Settings) -> None:
     with RecorderStore(settings.recorder_data_path) as store:
-        await KalshiNativeRecorder(settings, store).run()
+        recorder = KalshiNativeRecorder(settings, store)
+        if settings.dataset_build_interval_seconds is None:
+            await recorder.run()
+            return
+        recorder_task = asyncio.create_task(recorder.run())
+        snapshot_task = asyncio.create_task(_periodic_dataset_build(settings))
+        try:
+            await recorder_task
+        finally:
+            snapshot_task.cancel()
+            await asyncio.gather(snapshot_task, return_exceptions=True)
 
 
-def recorder_main() -> None:
+async def _periodic_dataset_build(settings: Settings) -> None:
+    assert settings.dataset_build_interval_seconds is not None
+    while True:
+        await asyncio.sleep(settings.dataset_build_interval_seconds)
+        try:
+            summary = await asyncio.to_thread(_build_dataset, settings)
+            logger.info(
+                "Periodic dataset snapshot completed",
+                extra={
+                    "event": "periodic_dataset_complete",
+                    "build_id": summary.build_id,
+                    "events": summary.events,
+                    "rows": summary.rows,
+                },
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.exception(
+                "Periodic dataset snapshot failed; raw collection continues",
+                extra={
+                    "event": "periodic_dataset_error",
+                    "error_type": type(error).__name__,
+                },
+            )
+
+
+def _parse_no_args(
+    program: str,
+    description: str,
+    argv: Sequence[str] | None,
+) -> None:
+    argparse.ArgumentParser(prog=program, description=description).parse_args(argv)
+
+
+def recorder_main(argv: Sequence[str] | None = None) -> None:
     """Continuously persist public event snapshots and predictive ticks."""
 
+    _parse_no_args("live15-record", recorder_main.__doc__ or "", argv)
     settings = load_settings()
     configure_logging(settings.log_level)
     try:
@@ -203,11 +256,7 @@ def kalshi_demo_audit_main() -> None:
     )
 
 
-def dataset_main() -> None:
-    """Build or resume a deterministic training dataset from the raw recorder store."""
-
-    settings = load_settings()
-    configure_logging(settings.log_level)
+def _build_dataset(settings: Settings) -> DatasetBuildSummary:
     policy = SamplingPolicy(
         tuple(timedelta(seconds=value) for value in settings.dataset_decision_offsets_seconds),
         quote_max_age=timedelta(seconds=settings.dataset_quote_max_age_seconds),
@@ -217,7 +266,15 @@ def dataset_main() -> None:
         RecorderStore(settings.recorder_data_path) as source,
         FeatureStore(settings.feature_store_path) as destination,
     ):
-        summary = DatasetBuilder(source, destination).build(DatasetBuildConfig(policy))
+        return DatasetBuilder(source, destination).build(DatasetBuildConfig(policy))
+
+
+def dataset_main() -> None:
+    """Build or resume a deterministic training dataset from the raw recorder store."""
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    summary = _build_dataset(settings)
     print(
         json.dumps(
             {
@@ -233,3 +290,63 @@ def dataset_main() -> None:
             sort_keys=True,
         )
     )
+
+
+def coverage_main(argv: Sequence[str] | None = None) -> None:
+    """Build a consistent snapshot and print machine-readable training coverage."""
+
+    _parse_no_args("live15-coverage", coverage_main.__doc__ or "", argv)
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    summary = _build_dataset(settings)
+    with (
+        RecorderStore(settings.recorder_data_path) as source,
+        FeatureStore(settings.feature_store_path) as destination,
+    ):
+        finalized = source.count("kalshi_settlements")
+        finalized_by_asset = source.settlement_counts_by_asset()
+        trainable_by_asset = destination.coverage_by_asset(summary.build_id)
+        integrity = source.integrity_check()
+    print(
+        json.dumps(
+            {
+                "finalized_events": finalized,
+                "trainable_events": summary.events,
+                "training_rows": summary.rows,
+                "rows_written": summary.rows_written,
+                "skipped_decisions": summary.skipped_decisions,
+                "per_asset": {
+                    asset.value: {
+                        "finalized_events": finalized_by_asset[asset],
+                        "trainable_events": trainable_by_asset[asset][0],
+                        "training_rows": trainable_by_asset[asset][1],
+                    }
+                    for asset in Asset
+                },
+                "label_balance": summary.diagnostics["label_balance"],
+                "decision_time_bucket_coverage": summary.diagnostics[
+                    "rows_per_decision_bucket_seconds"
+                ],
+                "missing_feature_rates": summary.diagnostics["missing_feature_rates"],
+                "stale_feature_rates": summary.diagnostics["stale_feature_rates"],
+                "raw_store_integrity": integrity,
+                "build_id": summary.build_id,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def status_main(argv: Sequence[str] | None = None) -> None:
+    """Print the last atomic recorder heartbeat without opening the writer database."""
+
+    _parse_no_args("live15-status", status_main.__doc__ or "", argv)
+    settings = load_settings()
+    try:
+        payload = json.loads(settings.recorder_health_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise SystemExit(
+            "Recorder health file does not exist; start live15-record first"
+        ) from error
+    print(json.dumps(payload, indent=2, sort_keys=True))
