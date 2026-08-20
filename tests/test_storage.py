@@ -23,6 +23,8 @@ from live15_quant.models import (
     RecorderEventType,
     SourceTimestampKind,
     SupportLevel,
+    UnderlyingObservation,
+    UnderlyingProvider,
     Venue,
 )
 from live15_quant.records import SCHEMA_VERSION
@@ -146,6 +148,142 @@ def test_first_create_append_and_full_decimal_precision(tmp_path) -> None:
     assert saved_quote.yes_bid_depth[0].quantity == Decimal("12.340000")
 
 
+def test_provider_neutral_underlying_is_idempotent_and_decimal_safe(tmp_path) -> None:
+    observed = UnderlyingObservation(
+        asset=Asset.GOLD,
+        provider=UnderlyingProvider.PYTH_HERMES,
+        symbol="Metal.XAU/USD",
+        feed_id="a" * 64,
+        price=Decimal("3388.1234567890123456789"),
+        source_timestamp=NOW,
+        received_timestamp=NOW + timedelta(milliseconds=12),
+        confidence=Decimal("0.01234567890123456789"),
+        provenance="https://official.example/hermes",
+        freshness=FreshnessState.FRESH,
+    )
+    with RecorderStore(tmp_path / "underlying.sqlite3") as store:
+        assert store.append_underlying(observed) is True
+        assert store.append_underlying(observed) is False
+        replayed = tuple(
+            store.replay_underlying_range(
+                Asset.GOLD,
+                UnderlyingProvider.PYTH_HERMES,
+                start=NOW - timedelta(seconds=1),
+                end=NOW + timedelta(seconds=1),
+            )
+        )
+    assert len(replayed) == 1
+    assert replayed[0].price == observed.price
+    assert replayed[0].confidence == observed.confidence
+
+
+def test_changed_underlying_state_in_same_publish_second_is_preserved(tmp_path) -> None:
+    observed = UnderlyingObservation(
+        asset=Asset.GOLD,
+        provider=UnderlyingProvider.PYTH_HERMES,
+        symbol="Metal.XAU/USD",
+        feed_id="a" * 64,
+        price=Decimal("3388.1"),
+        source_timestamp=NOW,
+        received_timestamp=NOW,
+        confidence=None,
+        provenance="official",
+        freshness=FreshnessState.FRESH,
+    )
+    with RecorderStore(tmp_path / "conflict.sqlite3") as store:
+        store.append_underlying(observed)
+        changed = replace(observed, price=Decimal("3388.2"))
+        assert store.append_underlying(changed) is True
+        assert store.append_underlying(changed) is False
+        assert store.count("underlying_observations") == 2
+
+
+def test_underlying_same_fact_from_fallback_is_not_a_duplicate(tmp_path) -> None:
+    observed = UnderlyingObservation(
+        asset=Asset.GOLD,
+        provider=UnderlyingProvider.PYTH_HERMES,
+        symbol="Metal.XAU/USD",
+        feed_id="a" * 64,
+        price=Decimal("3388.1"),
+        source_timestamp=NOW,
+        received_timestamp=NOW,
+        confidence=Decimal("0.01"),
+        provenance="official-sse",
+        freshness=FreshnessState.FRESH,
+    )
+    with RecorderStore(tmp_path / "fallback.sqlite3") as store:
+        assert store.append_underlying(observed) is True
+        repeated = replace(
+            observed,
+            received_timestamp=NOW + timedelta(seconds=30),
+            provenance="official-rest-fallback",
+            freshness=FreshnessState.STALE,
+        )
+        assert store.append_underlying(repeated) is False
+        assert store.count("underlying_observations") == 1
+
+
+def test_v5_to_v6_migration_adds_underlying_without_rewriting_history(tmp_path) -> None:
+    path = tmp_path / "v5.sqlite3"
+    with RecorderStore(path) as store:
+        store.append_coinbase(tick())
+
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE underlying_observations")
+    connection.execute("UPDATE recorder_metadata SET value='5'")
+    for table in (
+        "robinhood_snapshots",
+        "coinbase_ticks",
+        "robinhood_diagnostics",
+        "prediction_market_quotes",
+        "kalshi_market_lifecycle",
+        "kalshi_settlements",
+        "kalshi_prediction_quotes",
+        "kalshi_settlement_conflicts",
+        "recorder_events",
+    ):
+        connection.execute(f"UPDATE {table} SET schema_version=5")
+    connection.commit()
+    connection.close()
+
+    with RecorderStore(path) as store:
+        assert store.count("coinbase_ticks") == 1
+        assert store.count("underlying_observations") == 0
+        assert next(store.replay_coinbase("BTC-USD")).schema_version == 5
+        assert store.integrity_check() == "ok"
+        assert store._connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_v5_to_v6_migration_failure_rolls_back_new_table(tmp_path) -> None:
+    path = tmp_path / "v5-rollback.sqlite3"
+    with RecorderStore(path) as store:
+        store.append_coinbase(tick())
+
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE underlying_observations")
+    connection.execute("UPDATE recorder_metadata SET value='5'")
+    connection.execute("UPDATE coinbase_ticks SET schema_version=4")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RecorderStorageError, match="mixed schema versions in coinbase_ticks"):
+        RecorderStore(path)
+    connection = sqlite3.connect(path)
+    assert (
+        connection.execute(
+            "SELECT value FROM recorder_metadata WHERE key='schema_version'"
+        ).fetchone()[0]
+        == "5"
+    )
+    assert (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='underlying_observations'"
+        ).fetchone()
+        is None
+    )
+    connection.close()
+
+
 def test_restart_continues_without_overwriting_history(tmp_path) -> None:
     path = tmp_path / "history.sqlite3"
     with RecorderStore(path) as store:
@@ -180,8 +318,9 @@ def test_v1_database_is_atomically_migrated_without_losing_history(tmp_path) -> 
         ).fetchone()[0]
 
     assert version == str(SCHEMA_VERSION)
-    assert snapshot.schema_version == SCHEMA_VERSION
-    assert saved_tick.schema_version == SCHEMA_VERSION
+    # v6 adds a new table; immutable v5 payload rows are intentionally not rewritten.
+    assert snapshot.schema_version == 5
+    assert saved_tick.schema_version == 5
     assert snapshot.target_price == Decimal("68159.82000001")
     assert saved_tick.price == Decimal("68159.1234567890123456789")
 

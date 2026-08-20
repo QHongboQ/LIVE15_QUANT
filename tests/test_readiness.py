@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import sqlite3
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+
+from live15_quant.models import Asset, FreshnessState, UnderlyingObservation, UnderlyingProvider
+from live15_quant.readiness import (
+    ReadinessStatus,
+    _live_source_ready_by_asset,
+    _quality,
+    _readiness_status,
+    snapshot_database,
+)
+from live15_quant.storage import RecorderStore
+
+NOW = datetime(2026, 8, 21, tzinfo=UTC)
+
+
+def test_snapshot_database_is_consistent_and_does_not_modify_source(tmp_path: Path) -> None:
+    source = tmp_path / "raw.sqlite3"
+    destination = tmp_path / "snapshot.sqlite3"
+    with RecorderStore(source) as store:
+        store.append_underlying(
+            UnderlyingObservation(
+                asset=Asset.GOLD,
+                provider=UnderlyingProvider.PYTH_HERMES,
+                symbol="Metal.XAU/USD",
+                feed_id="a" * 64,
+                price=Decimal("3388.1"),
+                source_timestamp=NOW,
+                received_timestamp=NOW + timedelta(milliseconds=10),
+                confidence=None,
+                provenance="official",
+                freshness=FreshnessState.FRESH,
+            )
+        )
+    before = source.read_bytes()
+    snapshot_database(source, destination)
+    assert source.read_bytes() == before
+    with sqlite3.connect(destination) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("SELECT COUNT(*) FROM underlying_observations").fetchone()[0] == 1
+
+
+def test_quality_reports_gaps_duplicates_order_and_clock_skew_without_repairing() -> None:
+    rows = [
+        (NOW, NOW + timedelta(milliseconds=10), "one"),
+        (NOW, NOW + timedelta(seconds=2), "one"),
+        (NOW - timedelta(seconds=1), NOW + timedelta(seconds=3), "two"),
+        (NOW + timedelta(seconds=10), NOW + timedelta(seconds=4), "three"),
+    ]
+    quality = _quality(rows)
+    assert quality.observations == 4
+    assert quality.duplicate_rate == 0.25
+    assert quality.out_of_order_observations == 1
+    assert quality.negative_latency_observations == 1
+    assert quality.severe_clock_skew_observations == 1
+    assert quality.gap_max_seconds == 1.99
+    assert quality.gaps_over_15_seconds == 0
+    assert quality.stale_duration_seconds == 0
+
+
+def test_readiness_distinguishes_live_source_from_historical_feature_coverage() -> None:
+    quality = _quality([(NOW, NOW + timedelta(milliseconds=10), "one")])
+    assert (
+        _readiness_status(
+            quality=quality,
+            live_ready=True,
+            finalized=3,
+            trainable=2,
+            training_rows=10,
+            historical_underlying_rows=4,
+        )
+        is ReadinessStatus.PARTIAL
+    )
+
+
+def test_live_readiness_requires_asof_fresh_source_and_receive_timestamps(tmp_path: Path) -> None:
+    path = tmp_path / "raw.sqlite3"
+    with RecorderStore(path) as store:
+        store.append_underlying(
+            UnderlyingObservation(
+                asset=Asset.GOLD,
+                provider=UnderlyingProvider.PYTH_HERMES,
+                symbol="Metal.XAU/USD",
+                feed_id="a" * 64,
+                price=Decimal("3388.1"),
+                source_timestamp=NOW - timedelta(seconds=4),
+                received_timestamp=NOW,
+                confidence=None,
+                provenance="official",
+                freshness=FreshnessState.FRESH,
+            )
+        )
+        store.append_underlying(
+            UnderlyingObservation(
+                asset=Asset.BNB,
+                provider=UnderlyingProvider.PYTH_HERMES,
+                symbol="Crypto.BNB/USD",
+                feed_id="b" * 64,
+                price=Decimal("800"),
+                source_timestamp=NOW - timedelta(seconds=30),
+                received_timestamp=NOW - timedelta(seconds=20),
+                confidence=None,
+                provenance="official",
+                freshness=FreshnessState.STALE,
+            )
+        )
+        ready = _live_source_ready_by_asset(
+            store._connection,
+            snapshot_at=NOW + timedelta(seconds=1),
+            max_age_seconds=15,
+        )
+
+    assert ready[Asset.GOLD] is True
+    assert ready[Asset.BNB] is False

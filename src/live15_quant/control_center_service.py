@@ -36,7 +36,12 @@ class ControlCenterService:
         controller: RecorderProcessController | None = None,
     ) -> None:
         self.settings = settings
-        self.store = DashboardReadStore(settings.recorder_data_path, settings.feature_store_path)
+        self.store = DashboardReadStore(
+            settings.recorder_data_path,
+            settings.feature_store_path,
+            coinbase_stale_seconds=settings.recorder_coinbase_stale_seconds,
+            pyth_stale_seconds=settings.recorder_pyth_stale_seconds,
+        )
         self._clock = clock
         self._monotonic = monotonic
         self._coverage_lock = threading.Lock()

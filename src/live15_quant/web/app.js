@@ -452,7 +452,7 @@ function renderDetail(route) {
   root.append(books, sectionHead("Underlying & leakage-safe features", "Existing FeatureEngine projection"));
   const featurePanel = node("div", "panel panel-body");
   const underlying = node("div", "metric-grid");
-  append(underlying, metric("Product", valueOrDash(market.underlying_product)), metric("Underlying price", marketPrice(market.underlying_price)), metric("Underlying age", age(market.underlying_age_seconds)), metric("Source status", market.underlying_status.toUpperCase()));
+  append(underlying, metric("Provider", valueOrDash(market.underlying_provider)), metric("Product", valueOrDash(market.underlying_product)), metric("Underlying price", marketPrice(market.underlying_price)), metric("Underlying age", age(market.underlying_age_seconds)), metric("Source status", market.underlying_status.toUpperCase()));
   featurePanel.append(underlying);
   const featureList = node("div", "feature-list");
   for (const [name, observation] of Object.entries(market.features || {})) {
@@ -504,7 +504,7 @@ function renderTraining() {
   if (insufficient) root.append(emptyState("Not enough training data yet", "The recorder can continue collecting raw truth; missing diagnostics remain N/A."));
   const metrics = node("div", "metric-grid");
   append(metrics, metric("Finalized events", number(coverage.finalized_events)), metric("Evaluated snapshot", number(coverage.snapshot_finalized_events)), metric("Unevaluated finalized", number(coverage.unevaluated_finalized_events)), metric("Trainable events", number(coverage.trainable_events)), metric("Training rows", number(coverage.training_rows)), metric("Coverage status", coverage.status));
-  root.append(sectionHead("Dataset coverage", "Refresh 60s"), metrics, sectionHead("Per-asset events and rows"));
+  root.append(sectionHead("Historical dataset coverage", "Immutable snapshot · refresh 60s · live source readiness is shown on Markets/System"), metrics, sectionHead("Per-asset events and rows"));
   const wrap = node("div", "table-wrap");
   const table = node("table");
   const head = node("tr");

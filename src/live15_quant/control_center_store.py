@@ -17,7 +17,8 @@ from live15_quant.features import (
     FeatureInputs,
     SamplingPolicy,
 )
-from live15_quant.models import Asset
+from live15_quant.models import Asset, UnderlyingProvider
+from live15_quant.providers.pyth import PYTH_FEEDS
 from live15_quant.storage import RecorderStorageError, RecorderStore
 
 
@@ -43,9 +44,18 @@ def _json(value: object, default: object) -> object:
 class DashboardReadStore:
     """Open SQLite in mode=ro and issue only indexed, bounded queries."""
 
-    def __init__(self, raw_path: Path, feature_path: Path) -> None:
+    def __init__(
+        self,
+        raw_path: Path,
+        feature_path: Path,
+        *,
+        coinbase_stale_seconds: float = 30.0,
+        pyth_stale_seconds: float = 15.0,
+    ) -> None:
         self.raw_path = raw_path
         self.feature_path = feature_path
+        self.coinbase_stale_seconds = coinbase_stale_seconds
+        self.pyth_stale_seconds = pyth_stale_seconds
 
     @staticmethod
     def _open(path: Path) -> sqlite3.Connection | None:
@@ -93,6 +103,13 @@ class DashboardReadStore:
                     ORDER BY received_timestamp DESC, id DESC LIMIT 1""",
                     (product,),
                 ).fetchone()
+            elif self._table_exists(connection, "underlying_observations"):
+                tick = connection.execute(
+                    """SELECT * FROM underlying_observations
+                    WHERE asset=? AND provider=?
+                    ORDER BY received_timestamp DESC,id DESC LIMIT 1""",
+                    (asset.value, UnderlyingProvider.PYTH_HERMES.value),
+                ).fetchone()
             end = datetime.fromisoformat(str(market["window_end"])).astimezone(UTC)
             quote_received = (
                 datetime.fromisoformat(str(quote["received_timestamp"])).astimezone(UTC)
@@ -115,6 +132,16 @@ class DashboardReadStore:
             spread = None
             if yes_bid is not None and yes_ask is not None:
                 spread = str(Decimal(yes_ask) - Decimal(yes_bid))
+            underlying_status = self._age_status(
+                tick_age,
+                self.coinbase_stale_seconds if product is not None else self.pyth_stale_seconds,
+            )
+            if product is None and tick is not None:
+                recorded_freshness = str(tick["freshness"])
+                if recorded_freshness == "stale":
+                    underlying_status = "stale"
+                elif recorded_freshness != "fresh":
+                    underlying_status = "unavailable"
             return {
                 "asset": asset.value,
                 "ticker": ticker,
@@ -142,12 +169,15 @@ class DashboardReadStore:
                 "orderbook_status": "available" if quote is not None else "missing",
                 "yes_bid_depth": _json(quote["yes_bid_depth"], []) if quote is not None else [],
                 "no_bid_depth": _json(quote["no_bid_depth"], []) if quote is not None else [],
-                "underlying_product": product,
+                "underlying_provider": (
+                    UnderlyingProvider.COINBASE.value
+                    if product is not None
+                    else UnderlyingProvider.PYTH_HERMES.value
+                ),
+                "underlying_product": product or PYTH_FEEDS[asset][0],
                 "underlying_price": _decimal(tick["price"]) if tick is not None else None,
                 "underlying_age_seconds": tick_age,
-                "underlying_status": (
-                    "unsupported" if product is None else self._age_status(tick_age, 30)
-                ),
+                "underlying_status": underlying_status,
                 "settlement_followup": "pending" if now >= end else "not_due",
                 "features": self._features(connection, market, now),
                 "availability": "available",
@@ -185,6 +215,15 @@ class DashboardReadStore:
         return "stale" if age > stale_after else "healthy"
 
     @staticmethod
+    def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+        return (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
     def _missing_asset(asset: Asset, reason: str) -> dict[str, Any]:
         return {
             "asset": asset.value,
@@ -193,9 +232,12 @@ class DashboardReadStore:
             "availability": reason,
             "quote_status": "missing",
             "orderbook_status": "missing",
-            "underlying_status": (
-                "missing" if asset in COINBASE_PRODUCT_BY_ASSET else "unsupported"
+            "underlying_provider": (
+                UnderlyingProvider.COINBASE.value
+                if asset in COINBASE_PRODUCT_BY_ASSET
+                else UnderlyingProvider.PYTH_HERMES.value
             ),
+            "underlying_status": "missing",
             "settlement_followup": "unavailable",
             "features": {},
         }
@@ -219,6 +261,7 @@ class DashboardReadStore:
             )
             product = COINBASE_PRODUCT_BY_ASSET.get(market.asset)
             tick_rows: tuple[sqlite3.Row, ...] = ()
+            underlying_rows: tuple[sqlite3.Row, ...] = ()
             if product is not None:
                 tick_rows = tuple(
                     connection.execute(
@@ -232,11 +275,27 @@ class DashboardReadStore:
                         ),
                     )
                 )
+            elif DashboardReadStore._table_exists(connection, "underlying_observations"):
+                underlying_rows = tuple(
+                    connection.execute(
+                        """SELECT * FROM underlying_observations
+                        WHERE asset=? AND provider=? AND received_timestamp<=?
+                          AND received_timestamp>=?
+                        ORDER BY received_timestamp ASC,id ASC LIMIT 5000""",
+                        (
+                            market.asset.value,
+                            UnderlyingProvider.PYTH_HERMES.value,
+                            _timestamp(decision),
+                            _timestamp(decision - timedelta(minutes=6)),
+                        ),
+                    )
+                )
             inputs = FeatureInputs(
                 market=market,
                 quotes=tuple(RecorderStore._kalshi_native_quote_record(row) for row in quote_rows),
                 ticks=tuple(RecorderStore._tick_record(row) for row in tick_rows),
                 decision_timestamp=decision,
+                underlying=tuple(RecorderStore._underlying_record(row) for row in underlying_rows),
             )
             policy = SamplingPolicy((timedelta(seconds=60),))
             vector = FeatureEngine(policy).compute(inputs)

@@ -11,11 +11,12 @@ from types import MappingProxyType
 
 from live15_quant.feature_registry import FEATURE_BY_NAME, MissingReason
 from live15_quant.kalshi_lifecycle import KalshiLifecycle
-from live15_quant.models import Asset, FreshnessState
+from live15_quant.models import Asset, FreshnessState, UnderlyingProvider
 from live15_quant.records import (
     CoinbaseTickRecord,
     KalshiFeatureMarketRecord,
     KalshiNativeQuoteRecord,
+    UnderlyingObservationRecord,
 )
 
 COINBASE_PRODUCT_BY_ASSET: Mapping[Asset, str] = MappingProxyType(
@@ -106,6 +107,16 @@ class FeatureInputs:
     quotes: tuple[KalshiNativeQuoteRecord, ...]
     ticks: tuple[CoinbaseTickRecord, ...]
     decision_timestamp: datetime
+    underlying: tuple[UnderlyingObservationRecord, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _UnderlyingPoint:
+    row_id: int
+    price: Decimal
+    source_timestamp: datetime | None
+    received_timestamp: datetime
+    freshness: FreshnessState
 
 
 class FeatureEngine:
@@ -125,10 +136,16 @@ class FeatureEngine:
             raise ValueError("terminal or future lifecycle cannot enter feature calculation")
 
         product = COINBASE_PRODUCT_BY_ASSET.get(market.asset)
-        ticks = tuple(
+        coinbase_points = tuple(
             sorted(
                 (
-                    tick
+                    _UnderlyingPoint(
+                        tick.row_id,
+                        tick.price,
+                        tick.exchange_timestamp,
+                        tick.received_timestamp,
+                        FreshnessState.FRESH,
+                    )
                     for tick in inputs.ticks
                     if product is not None
                     and tick.product == product
@@ -138,6 +155,26 @@ class FeatureEngine:
                 key=lambda tick: (tick.received_timestamp, tick.row_id),
             )
         )
+        pyth_points = tuple(
+            sorted(
+                (
+                    _UnderlyingPoint(
+                        item.row_id,
+                        item.price,
+                        item.source_timestamp,
+                        item.received_timestamp,
+                        item.freshness,
+                    )
+                    for item in inputs.underlying
+                    if item.asset is market.asset
+                    and item.provider is UnderlyingProvider.PYTH_HERMES
+                    and item.received_timestamp <= decision
+                    and item.source_timestamp <= decision
+                ),
+                key=lambda item: (item.received_timestamp, item.row_id),
+            )
+        )
+        ticks = coinbase_points if product is not None else pyth_points
         quotes = tuple(
             sorted(
                 (
@@ -171,14 +208,24 @@ class FeatureEngine:
 
         latest_tick = ticks[-1] if ticks else None
         tick_reason: MissingReason | None = None
-        if product is None:
+        if product is None and market.asset not in {
+            Asset.GOLD,
+            Asset.SILVER,
+            Asset.WTI_OIL,
+            Asset.HYPE,
+            Asset.BNB,
+        }:
             tick_reason = MissingReason.SOURCE_UNAVAILABLE
         elif latest_tick is None:
+            tick_reason = MissingReason.SOURCE_UNAVAILABLE
+        elif latest_tick.freshness is FreshnessState.STALE:
+            tick_reason = MissingReason.STALE
+        elif latest_tick.freshness is FreshnessState.UNKNOWN:
             tick_reason = MissingReason.SOURCE_UNAVAILABLE
         elif _too_old(
             decision,
             latest_tick.received_timestamp,
-            latest_tick.exchange_timestamp,
+            latest_tick.source_timestamp,
             self.policy.underlying_max_age,
         ):
             tick_reason = MissingReason.STALE
@@ -215,7 +262,7 @@ class FeatureEngine:
             if earlier is None or _too_old(
                 boundary,
                 earlier.received_timestamp,
-                earlier.exchange_timestamp,
+                earlier.source_timestamp,
                 self.policy.underlying_max_age,
             ):
                 missing(name, MissingReason.NOT_ENOUGH_LOOKBACK)
@@ -496,14 +543,14 @@ def decimal_seconds(value: timedelta) -> Decimal:
 
 
 def _latest_tick_at_or_before(
-    ticks: tuple[CoinbaseTickRecord, ...], boundary: datetime
-) -> CoinbaseTickRecord | None:
+    ticks: tuple[_UnderlyingPoint, ...], boundary: datetime
+) -> _UnderlyingPoint | None:
     return next(
         (
             tick
             for tick in reversed(ticks)
             if tick.received_timestamp <= boundary
-            and (tick.exchange_timestamp is None or tick.exchange_timestamp <= boundary)
+            and (tick.source_timestamp is None or tick.source_timestamp <= boundary)
         ),
         None,
     )
@@ -521,12 +568,12 @@ def _too_old(
 
 
 def _ticks_since(
-    ticks: tuple[CoinbaseTickRecord, ...], boundary: datetime
-) -> tuple[CoinbaseTickRecord, ...]:
+    ticks: tuple[_UnderlyingPoint, ...], boundary: datetime
+) -> tuple[_UnderlyingPoint, ...]:
     return tuple(tick for tick in ticks if tick.received_timestamp >= boundary)
 
 
-def _realized_volatility(ticks: tuple[CoinbaseTickRecord, ...]) -> Decimal | None:
+def _realized_volatility(ticks: tuple[_UnderlyingPoint, ...]) -> Decimal | None:
     if len(ticks) < 3:
         return None
     returns = tuple(

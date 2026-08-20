@@ -28,11 +28,11 @@ from live15_quant.features import (
     decimal_seconds,
 )
 from live15_quant.kalshi_lifecycle import KalshiResult
-from live15_quant.models import Asset
+from live15_quant.models import Asset, UnderlyingProvider
 from live15_quant.storage import RecorderStore, TrainingDataUnavailableError
 
-DATASET_SCHEMA_VERSION = 1
-DATASET_VERSION = "1.0.0"
+DATASET_SCHEMA_VERSION = 2
+DATASET_VERSION = "1.1.0"
 ASOF_QUERY_VERSION = "received-and-source-asof-v1"
 
 
@@ -86,6 +86,7 @@ class TrainingRow:
     source_market_row_id: int
     source_quote_row_ids: tuple[int, ...]
     source_tick_row_ids: tuple[int, ...]
+    source_underlying_row_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         for value in (self.window_start, self.window_end, self.decision_timestamp):
@@ -205,6 +206,13 @@ class FeatureStore:
             version = self._connection.execute(
                 "SELECT value FROM feature_store_metadata WHERE key='schema_version'"
             ).fetchone()
+            if version is not None and version["value"] == "1":
+                self._connection.execute(
+                    "UPDATE feature_store_metadata SET value='2' WHERE key='schema_version'"
+                )
+                version = self._connection.execute(
+                    "SELECT value FROM feature_store_metadata WHERE key='schema_version'"
+                ).fetchone()
             if version is None or version["value"] != str(DATASET_SCHEMA_VERSION):
                 raise FeatureStoreError("incompatible feature-store schema")
             self._register_features()
@@ -298,6 +306,7 @@ class FeatureStore:
             "market_row_id": row.source_market_row_id,
             "quote_row_ids": list(row.source_quote_row_ids),
             "coinbase_tick_row_ids": list(row.source_tick_row_ids),
+            "underlying_observation_row_ids": list(row.source_underlying_row_ids),
         }
         payload = (
             DATASET_SCHEMA_VERSION,
@@ -450,6 +459,9 @@ class FeatureStore:
                 source_tick_row_ids=tuple(
                     int(value) for value in provenance["coinbase_tick_row_ids"]
                 ),
+                source_underlying_row_ids=tuple(
+                    int(value) for value in provenance.get("underlying_observation_row_ids", [])
+                ),
             )
         except (KeyError, TypeError, ValueError, InvalidOperation) as error:
             raise FeatureStoreError("malformed training example") from error
@@ -508,12 +520,14 @@ class DatasetBuilder:
             "market": "latest non-terminal fetched_timestamp <= decision_timestamp",
             "quote": "received_timestamp and available source_timestamp <= decision_timestamp",
             "coinbase": "received_timestamp and available exchange_timestamp <= decision_timestamp",
+            "underlying": "provider-specific receive and source timestamps <= decision_timestamp",
             "label": "exact ticker/window Kalshi finalized result only",
         }
         table_limits = {
             name: int(snapshot[name]["max_id"])  # type: ignore[index]
             for name in (
                 "coinbase_ticks",
+                "underlying_observations",
                 "kalshi_prediction_quotes",
                 "kalshi_market_lifecycle",
                 "kalshi_settlements",
@@ -588,6 +602,26 @@ class DatasetBuilder:
                     if tick.received_timestamp <= decision
                     and (tick.exchange_timestamp is None or tick.exchange_timestamp <= decision)
                 )
+                underlying = (
+                    tuple(
+                        self._source.replay_underlying_range(
+                            settlement.asset,
+                            UnderlyingProvider.PYTH_HERMES,
+                            start=decision
+                            - timedelta(seconds=300)
+                            - config.sampling_policy.underlying_max_age,
+                            end=decision,
+                            max_row_id=table_limits["underlying_observations"],
+                        )
+                    )
+                    if product is None
+                    else ()
+                )
+                safe_underlying = tuple(
+                    item
+                    for item in underlying
+                    if item.received_timestamp <= decision and item.source_timestamp <= decision
+                )
                 safe_quotes = tuple(
                     quote
                     for quote in joined.observations
@@ -595,9 +629,16 @@ class DatasetBuilder:
                     and (quote.source_timestamp is None or quote.source_timestamp <= decision)
                 )
                 vector = engine.compute(
-                    FeatureInputs(joined.market, safe_quotes, safe_ticks, decision)
+                    FeatureInputs(
+                        joined.market,
+                        safe_quotes,
+                        safe_ticks,
+                        decision,
+                        safe_underlying,
+                    )
                 )
                 eligible_ticks = tuple(tick.row_id for tick in safe_ticks)
+                eligible_underlying = tuple(item.row_id for item in safe_underlying)
                 eligible_quotes = tuple(quote.row_id for quote in safe_quotes)
                 written = self._destination.append(
                     TrainingRow(
@@ -615,6 +656,7 @@ class DatasetBuilder:
                         source_market_row_id=joined.market.row_id,
                         source_quote_row_ids=eligible_quotes,
                         source_tick_row_ids=eligible_ticks,
+                        source_underlying_row_ids=eligible_underlying,
                     )
                 )
                 rows_written += int(written)
@@ -653,8 +695,12 @@ def dataset_diagnostics(rows: tuple[TrainingRow, ...]) -> dict[str, object]:
     by_asset = Counter(row.asset.value for row in rows)
     labels = Counter(row.label.value for row in rows)
     buckets = Counter(str(row.time_remaining_seconds) for row in rows)
+    labels_by_asset: dict[str, Counter[str]] = defaultdict(Counter)
+    buckets_by_asset: dict[str, Counter[str]] = defaultdict(Counter)
     missing = Counter()
     stale = Counter()
+    missing_reasons = Counter()
+    missing_reasons_by_asset: dict[str, Counter[str]] = defaultdict(Counter)
     distributions: dict[str, list[Decimal]] = defaultdict(list)
     dates = Counter()
     hours = Counter()
@@ -667,11 +713,15 @@ def dataset_diagnostics(rows: tuple[TrainingRow, ...]) -> dict[str, object]:
         "normalized_distance_to_target",
     )
     for row in rows:
+        labels_by_asset[row.asset.value][row.label.value] += 1
+        buckets_by_asset[row.asset.value][str(row.time_remaining_seconds)] += 1
         dates[row.decision_timestamp.date().isoformat()] += 1
         hours[f"{row.decision_timestamp.hour:02d}"] += 1
         for observation in row.features.observations:
             if observation.missing_reason is not None:
                 missing[observation.name] += 1
+                missing_reasons[observation.missing_reason.value] += 1
+                missing_reasons_by_asset[row.asset.value][observation.missing_reason.value] += 1
                 if observation.missing_reason is MissingReason.STALE:
                     stale[observation.name] += 1
             if observation.name in tracked and observation.value is not None:
@@ -682,7 +732,16 @@ def dataset_diagnostics(rows: tuple[TrainingRow, ...]) -> dict[str, object]:
         "rows_count": len(rows),
         "rows_per_asset": {asset.value: by_asset[asset.value] for asset in Asset},
         "label_balance": {result.value: labels[result.value] for result in KalshiResult},
+        "label_balance_by_asset": {
+            asset.value: {
+                result.value: labels_by_asset[asset.value][result.value] for result in KalshiResult
+            }
+            for asset in Asset
+        },
         "rows_per_decision_bucket_seconds": dict(sorted(buckets.items())),
+        "rows_per_decision_bucket_by_asset": {
+            asset.value: dict(sorted(buckets_by_asset[asset.value].items())) for asset in Asset
+        },
         "missing_feature_rates": {
             definition.name: (
                 str(Decimal(missing[definition.name]) / denominator)
@@ -698,6 +757,11 @@ def dataset_diagnostics(rows: tuple[TrainingRow, ...]) -> dict[str, object]:
                 else None
             )
             for definition in FEATURE_REGISTRY
+        },
+        "missing_reason_counts": dict(sorted(missing_reasons.items())),
+        "missing_reason_counts_by_asset": {
+            asset.value: dict(sorted(missing_reasons_by_asset[asset.value].items()))
+            for asset in Asset
         },
         "distributions": {
             name: _distribution(values) for name, values in sorted(distributions.items())

@@ -16,11 +16,13 @@ from live15_quant.models import (
     FreshnessState,
     OrderBookLevel,
     SourceTimestampKind,
+    UnderlyingProvider,
 )
 from live15_quant.records import (
     CoinbaseTickRecord,
     KalshiFeatureMarketRecord,
     KalshiNativeQuoteRecord,
+    UnderlyingObservationRecord,
 )
 
 START = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
@@ -139,6 +141,45 @@ def test_feature_calculation_is_deterministic_decimal_safe_and_live_compatible()
     assert values["yes_spread"].value == Decimal("0.020000000000000000")
     assert values["yes_cumulative_depth"].value == Decimal("5.000000000000000002")
     assert values["yes_top_depth_change"].value == Decimal(0)
+
+
+def test_pyth_asset_uses_provider_specific_underlying_without_future_leakage() -> None:
+    gold_market = market(
+        asset=Asset.GOLD,
+        series="KXGOLD15M",
+        event_ticker="KXGOLD15M-26AUG201200",
+        ticker="KXGOLD15M-26AUG201200-00",
+        target=Decimal("3388"),
+    )
+    observations = tuple(
+        UnderlyingObservationRecord(
+            row_id=index,
+            schema_version=6,
+            asset=Asset.GOLD,
+            provider=UnderlyingProvider.PYTH_HERMES,
+            symbol="Metal.XAU/USD",
+            feed_id="a" * 64,
+            price=Decimal("3388") + Decimal(index) / Decimal(100),
+            source_timestamp=DECISION - timedelta(seconds=seconds),
+            received_timestamp=DECISION - timedelta(seconds=seconds),
+            confidence=Decimal("0.01"),
+            provenance="https://official.example/hermes",
+            freshness=FreshnessState.FRESH,
+            role=DataRole.PREDICTIVE_MARKET_DATA,
+        )
+        for index, seconds in enumerate(range(300, -1, -15), 1)
+    )
+    future = replace(
+        observations[-1],
+        row_id=999,
+        price=Decimal("9999"),
+        source_timestamp=DECISION + timedelta(seconds=1),
+        received_timestamp=DECISION + timedelta(seconds=1),
+    )
+    vector = FeatureEngine(policy()).compute(
+        FeatureInputs(gold_market, (), (), DECISION, (*observations, future))
+    )
+    assert vector.by_name()["underlying_price"].value == observations[-1].price
 
 
 def test_future_quote_and_future_tick_are_excluded() -> None:

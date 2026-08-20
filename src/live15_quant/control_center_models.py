@@ -82,6 +82,7 @@ class MarketResponse(StrictResponse):
     orderbook_status: str
     yes_bid_depth: list[list[str]] = Field(default_factory=list)
     no_bid_depth: list[list[str]] = Field(default_factory=list)
+    underlying_provider: str | None = None
     underlying_product: str | None = None
     underlying_price: str | None = None
     underlying_age_seconds: float | None = None

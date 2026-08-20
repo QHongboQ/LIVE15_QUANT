@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import threading
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -37,6 +37,15 @@ from live15_quant.providers.kalshi import (
     KalshiPublicApiError,
     KalshiTargetUnavailableError,
 )
+from live15_quant.providers.pyth import (
+    PYTH_FEEDS,
+    PythFeedDemultiplexer,
+    PythHermesClient,
+    PythNetworkError,
+    PythPayloadError,
+    PythRateLimitError,
+    PythUpdateBatch,
+)
 from live15_quant.providers.robinhood_15min import Robinhood15MinuteProvider
 from live15_quant.records import KalshiMarketRecord
 from live15_quant.storage import (
@@ -47,6 +56,10 @@ from live15_quant.storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _next_pyth_batch(iterator: Iterator[PythUpdateBatch]) -> PythUpdateBatch | None:
+    return next(iterator, None)
 
 
 class NativeDiscovery(Protocol):
@@ -69,6 +82,14 @@ class RobinhoodReference(Protocol):
     def discover(self) -> Sequence[FifteenMinuteContract]: ...
 
 
+class UnderlyingSource(Protocol):
+    def stream_batches(self) -> Iterator[PythUpdateBatch]: ...
+
+    def latest_batch(self) -> PythUpdateBatch: ...
+
+    def close(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class KalshiNativeHealth:
     started_at: datetime
@@ -77,6 +98,7 @@ class KalshiNativeHealth:
     last_discovery: dict[Asset, datetime]
     last_quotes: dict[Asset, datetime]
     last_coinbase: dict[str, datetime]
+    last_additional_underlying: dict[Asset, datetime]
     active_settlement_followups: int
     settlement_count: int
     database_bytes: int
@@ -125,6 +147,8 @@ class KalshiNativeHealth:
             "last_quote_age_seconds": ages(self.last_quotes),
             "last_coinbase": timestamps(self.last_coinbase),
             "last_underlying_tick_age_seconds": ages(self.last_coinbase),
+            "last_additional_underlying": timestamps(self.last_additional_underlying),
+            "last_additional_underlying_age_seconds": ages(self.last_additional_underlying),
             "active_settlement_followups": self.active_settlement_followups,
             "settlement_count": self.settlement_count,
             "database_bytes": self.database_bytes,
@@ -152,6 +176,7 @@ class _MutableHealth:
     last_discovery: dict[Asset, datetime] = field(default_factory=dict)
     last_quotes: dict[Asset, datetime] = field(default_factory=dict)
     last_coinbase: dict[str, datetime] = field(default_factory=dict)
+    last_additional_underlying: dict[Asset, datetime] = field(default_factory=dict)
     retry_counts: dict[str, int] = field(default_factory=dict)
     consecutive_failures: dict[str, int] = field(default_factory=dict)
     source_failures: dict[str, str] = field(default_factory=dict)
@@ -196,6 +221,7 @@ class KalshiNativeRecorder:
         quotes: NativeQuoteSource | None = None,
         coinbase_factory: Callable[[], TickStream] | None = None,
         robinhood_reference: RobinhoodReference | None = None,
+        underlying_factory: Callable[[], UnderlyingSource] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._settings = settings
@@ -246,6 +272,7 @@ class KalshiNativeRecorder:
         self._coinbase_factory = coinbase_factory or (
             lambda: CoinbaseWebSocketClient(settings, products=settings.products)
         )
+        self._underlying_factory = underlying_factory or (lambda: PythHermesClient(settings))
         self._robinhood = robinhood_reference
         if settings.enable_robinhood_reference and self._robinhood is None:
             self._robinhood = Robinhood15MinuteProvider(settings)
@@ -315,6 +342,18 @@ class KalshiNativeRecorder:
                     or (observed - self._health.last_coinbase[product]).total_seconds()
                     > self._settings.recorder_coinbase_stale_seconds
                 ]
+                + [
+                    f"pyth:{asset.value}"
+                    for asset in PYTH_FEEDS
+                    if self._settings.enable_pyth_underlying
+                    and (
+                        asset not in self._health.last_additional_underlying
+                        or (
+                            observed - self._health.last_additional_underlying[asset]
+                        ).total_seconds()
+                        > self._settings.recorder_pyth_stale_seconds
+                    )
+                ]
             )
         )
         return KalshiNativeHealth(
@@ -329,6 +368,7 @@ class KalshiNativeRecorder:
             last_discovery=dict(self._health.last_discovery),
             last_quotes=dict(self._health.last_quotes),
             last_coinbase=dict(self._health.last_coinbase),
+            last_additional_underlying=dict(self._health.last_additional_underlying),
             active_settlement_followups=self._store.unsettled_kalshi_count(now=observed),
             settlement_count=self._health.row_counts["kalshi_settlements"],
             database_bytes=database_bytes,
@@ -352,6 +392,8 @@ class KalshiNativeRecorder:
             asyncio.create_task(self._report_health(), name="kalshi-native-health"),
             asyncio.create_task(self._checkpoint(), name="sqlite-checkpoint"),
         ]
+        if self._settings.enable_pyth_underlying:
+            tasks.append(asyncio.create_task(self._record_pyth(), name="pyth-predictive"))
         for asset in KALSHI_15MIN_SERIES:
             tasks.extend(
                 (
@@ -816,6 +858,80 @@ class KalshiNativeRecorder:
                 self._source_failed("coinbase", error)
             if await self._wait(self._settings.reconnect_delay_seconds):
                 return
+
+    async def _record_pyth(self) -> None:
+        """Consume one five-feed SSE stream, with one batch-REST request per outage cycle."""
+
+        demultiplexer = PythFeedDemultiplexer()
+        stream_key = "pyth:stream"
+        client = self._underlying_factory()
+        try:
+            while not self._stop_event.is_set():
+                retry_after = 0.0
+                rate_limited = False
+                try:
+                    iterator = client.stream_batches()
+                    while not self._stop_event.is_set():
+                        batch = await asyncio.to_thread(_next_pyth_batch, iterator)
+                        if batch is None:
+                            raise PythNetworkError("Pyth stream closed")
+                        self._accept_pyth_batch(demultiplexer.accept(batch))
+                        self._source_ok(stream_key)
+                except asyncio.CancelledError:
+                    raise
+                except (RecorderStorageError, ValueError) as error:
+                    if not isinstance(error, PythPayloadError):
+                        raise
+                    self._source_failed(stream_key, error)
+                except PythNetworkError as error:
+                    self._source_failed(stream_key, error)
+                    if isinstance(error, PythRateLimitError):
+                        retry_after = error.retry_after_seconds
+                        rate_limited = True
+
+                if self._stop_event.is_set():
+                    return
+                if not rate_limited:
+                    try:
+                        batch = await asyncio.to_thread(client.latest_batch)
+                        self._accept_pyth_batch(demultiplexer.accept(batch))
+                        self._source_ok("pyth:rest_fallback")
+                    except asyncio.CancelledError:
+                        raise
+                    except (RecorderStorageError, ValueError) as error:
+                        if not isinstance(error, PythPayloadError):
+                            raise
+                        self._source_failed("pyth:rest_fallback", error)
+                    except PythNetworkError as error:
+                        self._source_failed("pyth:rest_fallback", error)
+                        if isinstance(error, PythRateLimitError):
+                            retry_after = max(retry_after, error.retry_after_seconds)
+                delay = max(
+                    retry_after,
+                    self._retry_delay(
+                        stream_key, self._settings.pyth_rest_fallback_interval_seconds
+                    ),
+                )
+                if await self._wait(delay):
+                    return
+        finally:
+            # Must run even while this task is already cancelled; awaiting another
+            # to_thread here can re-raise cancellation before the SSE response closes.
+            client.close()
+
+    def _accept_pyth_batch(self, batch: PythUpdateBatch) -> None:
+        for issue in batch.issues:
+            if issue.code == "duplicate":
+                continue
+            key = f"pyth:{issue.asset.value}" if issue.asset is not None else "pyth:stream"
+            self._source_failed(key, PythPayloadError(issue.code))
+        for observation in batch.observations:
+            if self._store.append_underlying(observation):
+                self._wrote("underlying_observations")
+            self._health.last_additional_underlying[observation.asset] = (
+                observation.source_timestamp
+            )
+            self._source_ok(f"pyth:{observation.asset.value}")
 
     async def _record_robinhood_reference(self) -> None:
         assert self._robinhood is not None

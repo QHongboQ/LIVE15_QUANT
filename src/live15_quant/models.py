@@ -33,6 +33,13 @@ class DataRole(StrEnum):
     PAPER_EXECUTION = "paper_execution"
 
 
+class UnderlyingProvider(StrEnum):
+    """Predictive sources remain independently identifiable at rest."""
+
+    COINBASE = "coinbase"
+    PYTH_HERMES = "pyth_hermes"
+
+
 class Venue(StrEnum):
     """Regulated venues named by Robinhood for event contracts."""
 
@@ -320,6 +327,34 @@ class MarketTick:
     @property
     def spread(self) -> Decimal:
         return self.ask - self.bid
+
+
+@dataclass(frozen=True, slots=True)
+class UnderlyingObservation:
+    """Provider-neutral predictive input with explicit provenance and two clocks."""
+
+    asset: Asset
+    provider: UnderlyingProvider
+    symbol: str
+    feed_id: str
+    price: Decimal
+    source_timestamp: datetime
+    received_timestamp: datetime
+    confidence: Decimal | None
+    provenance: str
+    freshness: FreshnessState
+    role: DataRole = field(init=False, default=DataRole.PREDICTIVE_MARKET_DATA)
+
+    def __post_init__(self) -> None:
+        if not self.symbol or not self.feed_id or not self.provenance:
+            raise ValueError("underlying identifiers and provenance must not be empty")
+        for value in (self.source_timestamp, self.received_timestamp):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("underlying timestamps must be timezone-aware")
+        if not self.price.is_finite() or self.price <= 0:
+            raise ValueError("underlying price must be finite and positive")
+        if self.confidence is not None and (not self.confidence.is_finite() or self.confidence < 0):
+            raise ValueError("underlying confidence must be finite and non-negative")
 
 
 @dataclass(frozen=True, slots=True)

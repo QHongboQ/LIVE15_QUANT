@@ -15,6 +15,7 @@ KALSHI_PUBLIC_API_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 KALSHI_DEMO_API_BASE_URL = "https://external-api.demo.kalshi.co/trade-api/v2"
 KALSHI_PRODUCTION_WEBSOCKET_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 KALSHI_DEMO_WEBSOCKET_URL = "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
+PYTH_HERMES_BASE_URL = "https://hermes.pyth.network"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,13 @@ class Settings:
     recorder_data_path: Path = Path("data/live15.sqlite3")
     recorder_health_interval_seconds: float = 30.0
     recorder_coinbase_stale_seconds: float = 30.0
+    enable_pyth_underlying: bool = False
+    pyth_hermes_base_url: str = PYTH_HERMES_BASE_URL
+    pyth_api_key_path: Path | None = field(default=None, repr=False)
+    pyth_rest_fallback_interval_seconds: float = 2.0
+    pyth_stream_read_timeout_seconds: float = 20.0
+    pyth_request_budget_per_10_seconds: int = 8
+    recorder_pyth_stale_seconds: float = 15.0
     native_discovery_poll_interval_seconds: float = 15.0
     settlement_followup_interval_seconds: float = 15.0
     settlement_followup_batch_size: int = 25
@@ -55,6 +63,7 @@ class Settings:
     ui_heartbeat_stale_seconds: float = 90.0
     dataset_build_interval_seconds: float | None = None
     feature_store_path: Path = Path("data/features.sqlite3")
+    readiness_report_path: Path = Path("data/readiness.json")
     dataset_decision_offsets_seconds: tuple[int, ...] = DEFAULT_DATASET_DECISION_OFFSETS_SECONDS
     dataset_quote_max_age_seconds: float = 15.0
     dataset_underlying_max_age_seconds: float = 15.0
@@ -82,6 +91,13 @@ def _positive_int(source: Mapping[str, str], name: str, default: int) -> int:
     value = int(source.get(name, default))
     if value <= 0:
         raise ValueError(f"{name} must be positive")
+    return value
+
+
+def _bounded_positive_int(source: Mapping[str, str], name: str, default: int, maximum: int) -> int:
+    value = _positive_int(source, name, default)
+    if value > maximum:
+        raise ValueError(f"{name} must be at most {maximum}")
     return value
 
 
@@ -152,6 +168,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     feature_store_path = Path(
         source.get("LIVE15_FEATURE_STORE_PATH", str(defaults.feature_store_path))
     )
+    readiness_report_path = Path(
+        source.get("LIVE15_READINESS_REPORT_PATH", str(defaults.readiness_report_path))
+    )
     recorder_health_path = Path(
         source.get("LIVE15_RECORDER_HEALTH_PATH", str(defaults.recorder_health_path))
     )
@@ -161,6 +180,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     recorder_pid_path = Path(
         source.get("LIVE15_RECORDER_PID_PATH", str(defaults.recorder_pid_path))
     )
+    pyth_api_key_path = (
+        Path(source["LIVE15_PYTH_API_KEY_PATH"]) if source.get("LIVE15_PYTH_API_KEY_PATH") else None
+    )
     resolved_paths = {
         recorder_data_path.resolve(),
         paper_data_path.resolve(),
@@ -168,8 +190,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         recorder_health_path.resolve(),
         recorder_control_path.resolve(),
         recorder_pid_path.resolve(),
+        readiness_report_path.resolve(),
     }
-    if len(resolved_paths) != 6:
+    if len(resolved_paths) != 7:
         raise ValueError("database and recorder runtime paths must be different from each other")
     paper_account_id = source.get("LIVE15_PAPER_ACCOUNT_ID", defaults.paper_account_id).strip()
     if not paper_account_id:
@@ -249,6 +272,30 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             "LIVE15_RECORDER_COINBASE_STALE_SECONDS",
             defaults.recorder_coinbase_stale_seconds,
         ),
+        enable_pyth_underlying=_boolean(
+            source, "LIVE15_ENABLE_PYTH_UNDERLYING", defaults.enable_pyth_underlying
+        ),
+        pyth_hermes_base_url=PYTH_HERMES_BASE_URL,
+        pyth_api_key_path=pyth_api_key_path,
+        pyth_rest_fallback_interval_seconds=_positive_float(
+            source,
+            "LIVE15_PYTH_REST_FALLBACK_INTERVAL_SECONDS",
+            defaults.pyth_rest_fallback_interval_seconds,
+        ),
+        pyth_stream_read_timeout_seconds=_positive_float(
+            source,
+            "LIVE15_PYTH_STREAM_READ_TIMEOUT_SECONDS",
+            defaults.pyth_stream_read_timeout_seconds,
+        ),
+        pyth_request_budget_per_10_seconds=_bounded_positive_int(
+            source,
+            "LIVE15_PYTH_REQUEST_BUDGET_PER_10_SECONDS",
+            defaults.pyth_request_budget_per_10_seconds,
+            10,
+        ),
+        recorder_pyth_stale_seconds=_positive_float(
+            source, "LIVE15_RECORDER_PYTH_STALE_SECONDS", defaults.recorder_pyth_stale_seconds
+        ),
         native_discovery_poll_interval_seconds=_positive_float(
             source,
             "LIVE15_NATIVE_DISCOVERY_POLL_INTERVAL_SECONDS",
@@ -294,6 +341,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             defaults.dataset_build_interval_seconds,
         ),
         feature_store_path=feature_store_path,
+        readiness_report_path=readiness_report_path,
         dataset_decision_offsets_seconds=_decision_offsets(source),
         dataset_quote_max_age_seconds=_positive_float(
             source,

@@ -20,9 +20,12 @@ from live15_quant.control_center_service import ControlCenterService
 from live15_quant.dataset import FeatureStore
 from live15_quant.models import (
     Asset,
+    FreshnessState,
     MarketTick,
     RecorderEventSeverity,
     RecorderEventType,
+    UnderlyingObservation,
+    UnderlyingProvider,
 )
 from live15_quant.recorder_control import ManagedRecorderState, RecorderControlStatus
 from live15_quant.storage import RecorderStore
@@ -193,6 +196,68 @@ async def test_market_detail_reuses_native_storage_and_feature_engine(tmp_path: 
     assert payload["yes_ask"] == "0.5100"
     assert payload["underlying_price"] == str(market.target + 1)
     assert payload["features"]["signed_distance_to_target"]["value"] == "1.00000000"
+
+
+@pytest.mark.asyncio
+async def test_pyth_underlying_status_honors_provider_freshness(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    market = provider().parse_market(Asset.GOLD, raw_market(Asset.GOLD), NOW)
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_kalshi_market(market)
+        store.append_underlying(
+            UnderlyingObservation(
+                asset=Asset.GOLD,
+                provider=UnderlyingProvider.PYTH_HERMES,
+                symbol="Metal.XAU/USD",
+                feed_id="a" * 64,
+                price=market.target + Decimal("1"),
+                source_timestamp=NOW,
+                received_timestamp=NOW,
+                confidence=Decimal("0.01"),
+                provenance="official-test",
+                freshness=FreshnessState.STALE,
+            )
+        )
+    write_health(configured.recorder_health_path, current_markets={"Gold": market.ticker})
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        payload = (await client.get("/api/markets/Gold")).json()
+
+    assert payload["underlying_product"] == "Metal.XAU/USD"
+    assert payload["underlying_provider"] == "pyth_hermes"
+    assert payload["underlying_price"] == str(market.target + 1)
+    assert payload["underlying_status"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_pyth_underlying_uses_configured_stale_threshold(tmp_path: Path) -> None:
+    configured = settings(tmp_path, recorder_pyth_stale_seconds=15)
+    market = provider().parse_market(Asset.GOLD, raw_market(Asset.GOLD), NOW)
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_kalshi_market(market)
+        store.append_underlying(
+            UnderlyingObservation(
+                asset=Asset.GOLD,
+                provider=UnderlyingProvider.PYTH_HERMES,
+                symbol="Metal.XAU/USD",
+                feed_id="a" * 64,
+                price=market.target,
+                source_timestamp=NOW,
+                received_timestamp=NOW,
+                confidence=None,
+                provenance="official-test",
+                freshness=FreshnessState.FRESH,
+            )
+        )
+    write_health(configured.recorder_health_path, current_markets={"Gold": market.ticker})
+    service = ControlCenterService(configured, clock=lambda: NOW + timedelta(seconds=16))
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        payload = (await client.get("/api/markets/Gold")).json()
+
+    assert payload["underlying_provider"] == "pyth_hermes"
+    assert payload["underlying_status"] == "stale"
 
 
 def test_health_ticker_cannot_cross_asset_boundary(tmp_path: Path) -> None:

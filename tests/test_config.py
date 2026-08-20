@@ -8,6 +8,7 @@ from live15_quant.config import (
     DEFAULT_DATASET_DECISION_OFFSETS_SECONDS,
     DEFAULT_PRODUCTS,
     KALSHI_DEMO_API_BASE_URL,
+    PYTH_HERMES_BASE_URL,
     ROBINHOOD_15MIN_PUBLIC_URL,
     load_settings,
 )
@@ -34,6 +35,9 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.settlement_followup_batch_size == 25
     assert settings.dataset_build_interval_seconds is None
     assert settings.recorder_max_backoff_seconds == 60
+    assert settings.enable_pyth_underlying is False
+    assert settings.pyth_api_key_path is None
+    assert settings.pyth_hermes_base_url == PYTH_HERMES_BASE_URL
 
 
 def test_load_settings_normalizes_environment_values() -> None:
@@ -71,6 +75,12 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_ROBINHOOD_15MIN_URL": "https://private.example.test/hidden",
             "LIVE15_KALSHI_DEMO_API_KEY_ID": "demo-key-id",
             "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH": "C:/safe/kalshi-demo.key",
+            "LIVE15_ENABLE_PYTH_UNDERLYING": "true",
+            "LIVE15_PYTH_API_KEY_PATH": "C:/safe/pyth.key",
+            "LIVE15_PYTH_HERMES_URL": "https://untrusted.example",
+            "LIVE15_PYTH_REST_FALLBACK_INTERVAL_SECONDS": "2.5",
+            "LIVE15_PYTH_STREAM_READ_TIMEOUT_SECONDS": "22",
+            "LIVE15_PYTH_REQUEST_BUDGET_PER_10_SECONDS": "7",
         }
     )
 
@@ -109,11 +119,23 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.kalshi_public_api_base_url != KALSHI_DEMO_API_BASE_URL
     assert "demo-key-id" not in repr(settings)
     assert "kalshi-demo.key" not in repr(settings)
+    assert settings.enable_pyth_underlying is True
+    assert settings.pyth_api_key_path == Path("C:/safe/pyth.key")
+    assert settings.pyth_hermes_base_url == PYTH_HERMES_BASE_URL
+    assert settings.pyth_rest_fallback_interval_seconds == 2.5
+    assert settings.pyth_stream_read_timeout_seconds == 22
+    assert settings.pyth_request_budget_per_10_seconds == 7
+    assert "pyth.key" not in repr(settings)
 
 
 def test_load_settings_rejects_non_positive_timeout() -> None:
     with pytest.raises(ValueError, match="must be positive"):
         load_settings({"LIVE15_REQUEST_TIMEOUT_SECONDS": "0"})
+
+
+def test_load_settings_rejects_pyth_budget_above_official_limit() -> None:
+    with pytest.raises(ValueError, match="at most 10"):
+        load_settings({"LIVE15_PYTH_REQUEST_BUDGET_PER_10_SECONDS": "11"})
 
 
 def test_load_settings_rejects_non_positive_orderbook_depth() -> None:

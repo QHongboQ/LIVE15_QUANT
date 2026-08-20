@@ -21,12 +21,15 @@ from live15_quant.models import (
     Asset,
     DataRole,
     FifteenMinuteContract,
+    FreshnessState,
     KalshiNativeQuote,
     MarketTick,
     PredictionMarketQuote,
     RecorderDiagnosticKind,
     RecorderEventSeverity,
     RecorderEventType,
+    UnderlyingObservation,
+    UnderlyingProvider,
 )
 from live15_quant.records import (
     SCHEMA_VERSION,
@@ -40,6 +43,7 @@ from live15_quant.records import (
     RobinhoodDiagnosticRecord,
     RobinhoodSnapshotRecord,
     TrainingLabelExample,
+    UnderlyingObservationRecord,
 )
 
 
@@ -66,6 +70,12 @@ class TrainingDataUnavailableError(RecorderStorageError):
     def __init__(self, reason: TrainingDataUnavailableReason, message: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+def _compatible_record_version(value: object) -> bool:
+    """v6 only adds a table; immutable v5 rows remain byte-for-byte valid."""
+
+    return value in {5, SCHEMA_VERSION}
 
 
 def _timestamp(value: datetime) -> str:
@@ -362,6 +372,31 @@ CREATE INDEX IF NOT EXISTS idx_recorder_event_query
 ON recorder_events(observed_timestamp DESC, severity, asset, source, id DESC)
 """
 
+_UNDERLYING_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS underlying_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version INTEGER NOT NULL,
+    asset TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    feed_id TEXT NOT NULL,
+    price TEXT NOT NULL,
+    source_timestamp TEXT NOT NULL,
+    received_timestamp TEXT NOT NULL,
+    confidence TEXT,
+    provenance TEXT NOT NULL,
+    freshness TEXT NOT NULL,
+    data_role TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    UNIQUE(provider, feed_id, source_timestamp, content_hash)
+) STRICT
+"""
+
+_UNDERLYING_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_underlying_asset_provider_replay
+ON underlying_observations(asset, provider, received_timestamp, id)
+"""
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS recorder_metadata (
     key TEXT PRIMARY KEY,
@@ -447,6 +482,8 @@ ON coinbase_ticks(product, received_timestamp, id);
 {_KALSHI_BACKFILL_TABLE_SQL};
 {_RECORDER_EVENT_TABLE_SQL};
 {_RECORDER_EVENT_INDEX_SQL};
+{_UNDERLYING_TABLE_SQL};
+{_UNDERLYING_INDEX_SQL};
 """
 
 
@@ -512,8 +549,13 @@ class RecorderStore:
             row = self._connection.execute(
                 "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
             ).fetchone()
-        if row is not None and row["value"] == "4" and SCHEMA_VERSION == 5:
+        if row is not None and row["value"] == "4":
             self._migrate_v4_to_v5()
+            row = self._connection.execute(
+                "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        if row is not None and row["value"] == "5" and SCHEMA_VERSION == 6:
+            self._migrate_v5_to_v6()
             return
         raise RecorderStorageError(
             f"database schema {row['value']} is incompatible with {SCHEMA_VERSION}"
@@ -667,12 +709,45 @@ class RecorderStore:
             for table in versioned_tables:
                 self._connection.execute(
                     f"UPDATE {table} SET schema_version = ? WHERE schema_version = 4",
-                    (SCHEMA_VERSION,),
+                    (5,),
                 )
             self._connection.execute(_RECORDER_EVENT_TABLE_SQL)
             self._connection.execute(_RECORDER_EVENT_INDEX_SQL)
             self._connection.execute(
                 "UPDATE recorder_metadata SET value = ? WHERE key = 'schema_version'",
+                ("5",),
+            )
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+
+    def _migrate_v5_to_v6(self) -> None:
+        """Atomically add provider-neutral observations without rewriting raw truth."""
+
+        versioned_tables = (
+            "robinhood_snapshots",
+            "coinbase_ticks",
+            "robinhood_diagnostics",
+            "prediction_market_quotes",
+            "kalshi_market_lifecycle",
+            "kalshi_settlements",
+            "kalshi_prediction_quotes",
+            "kalshi_settlement_conflicts",
+            "recorder_events",
+        )
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            for table in versioned_tables:
+                invalid = self._connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE schema_version != 5"
+                ).fetchone()
+                if invalid is None or invalid[0] != 0:
+                    raise RecorderStorageError(f"mixed schema versions in {table}")
+            self._connection.execute(_UNDERLYING_TABLE_SQL)
+            self._connection.execute(_UNDERLYING_INDEX_SQL)
+            self._connection.execute(
+                "UPDATE recorder_metadata SET value=? WHERE key='schema_version'",
                 (str(SCHEMA_VERSION),),
             )
             self._connection.commit()
@@ -813,6 +888,64 @@ class RecorderStore:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (*values, content_hash),
+        )
+        self._connection.commit()
+        return cursor.rowcount == 1
+
+    def append_underlying(self, observation: UnderlyingObservation) -> bool:
+        """Append one provider-specific observation without Decimal quantization."""
+
+        values: tuple[object, ...] = (
+            SCHEMA_VERSION,
+            observation.asset.value,
+            observation.provider.value,
+            observation.symbol,
+            observation.feed_id,
+            _decimal(observation.price),
+            _timestamp(observation.source_timestamp),
+            _timestamp(observation.received_timestamp),
+            _decimal(observation.confidence),
+            observation.provenance,
+            observation.freshness.value,
+            observation.role.value,
+        )
+        # Receive time, derived freshness, and delivery endpoint are not a new provider
+        # fact. The same SSE update later seen through REST fallback remains idempotent,
+        # while a changed price/confidence in the same publish second is retained.
+        content_hash = _fingerprint(
+            (
+                observation.asset.value,
+                observation.provider.value,
+                observation.symbol,
+                observation.feed_id,
+                _decimal(observation.price),
+                _timestamp(observation.source_timestamp),
+                _decimal(observation.confidence),
+                observation.role.value,
+            )
+        )
+        cursor = self._connection.execute(
+            """
+            INSERT OR IGNORE INTO underlying_observations (
+                schema_version,asset,provider,symbol,feed_id,price,
+                source_timestamp,received_timestamp,confidence,provenance,
+                freshness,data_role,content_hash
+            ) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM underlying_observations
+                WHERE provider=? AND feed_id=? AND source_timestamp=? AND price=?
+                  AND confidence IS ?
+            )
+            """,
+            (
+                *values,
+                content_hash,
+                observation.provider.value,
+                observation.feed_id,
+                _timestamp(observation.source_timestamp),
+                _decimal(observation.price),
+                _decimal(observation.confidence),
+            ),
         )
         self._connection.commit()
         return cursor.rowcount == 1
@@ -1245,7 +1378,7 @@ class RecorderStore:
     @staticmethod
     def _recorder_event_record(row: sqlite3.Row) -> RecorderEventRecord:
         try:
-            if row["schema_version"] != SCHEMA_VERSION:
+            if not _compatible_record_version(row["schema_version"]):
                 raise RecorderStorageError("malformed recorder event record")
             return RecorderEventRecord(
                 row_id=int(row["id"]),
@@ -1675,6 +1808,65 @@ class RecorderStore:
         for row in rows:
             yield self._tick_record(row)
 
+    def replay_underlying_range(
+        self,
+        asset: Asset,
+        provider: UnderlyingProvider,
+        *,
+        start: datetime,
+        end: datetime,
+        max_row_id: int | None = None,
+    ) -> Iterator[UnderlyingObservationRecord]:
+        """Yield one source only; providers are never silently blended."""
+
+        if start.tzinfo is None or end.tzinfo is None or start > end:
+            raise ValueError("underlying range requires ordered aware timestamps")
+        rows = self._connection.execute(
+            """
+            SELECT * FROM underlying_observations
+            WHERE asset=? AND provider=? AND received_timestamp>=? AND received_timestamp<=?
+              AND (? IS NULL OR id<=?)
+            ORDER BY received_timestamp ASC,id ASC
+            """,
+            (
+                asset.value,
+                provider.value,
+                _timestamp(start),
+                _timestamp(end),
+                max_row_id,
+                max_row_id,
+            ),
+        )
+        for row in rows:
+            yield self._underlying_record(row)
+
+    @staticmethod
+    def _underlying_record(row: sqlite3.Row) -> UnderlyingObservationRecord:
+        try:
+            price = _parse_decimal(row["price"], "price")
+            confidence = _parse_decimal(row["confidence"], "confidence", optional=True)
+            if price is None or row["schema_version"] != SCHEMA_VERSION:
+                raise RecorderStorageError("malformed underlying observation record")
+            return UnderlyingObservationRecord(
+                row_id=int(row["id"]),
+                schema_version=int(row["schema_version"]),
+                asset=Asset(row["asset"]),
+                provider=UnderlyingProvider(row["provider"]),
+                symbol=str(row["symbol"]),
+                feed_id=str(row["feed_id"]),
+                price=price,
+                source_timestamp=_parse_timestamp(row["source_timestamp"], "source_timestamp"),
+                received_timestamp=_parse_timestamp(
+                    row["received_timestamp"], "received_timestamp"
+                ),
+                confidence=confidence,
+                provenance=str(row["provenance"]),
+                freshness=FreshnessState(row["freshness"]),
+                role=DataRole(row["data_role"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise RecorderStorageError("malformed underlying observation record") from error
+
     def replay_prediction_quotes(self, event_id: str) -> Iterator[PredictionQuoteRecord]:
         """Yield official quotes deterministically by receive time and insertion id."""
 
@@ -1700,7 +1892,7 @@ class RecorderStore:
 
         try:
             target = _parse_decimal(row["target_price"], "target_price")
-            if target is None or row["schema_version"] != SCHEMA_VERSION:
+            if target is None or not _compatible_record_version(row["schema_version"]):
                 raise RecorderStorageError("malformed Robinhood snapshot record")
             return RobinhoodSnapshotRecord(
                 row_id=row["id"],
@@ -1749,7 +1941,7 @@ class RecorderStore:
                 or bid is None
                 or ask is None
                 or spread is None
-                or row["schema_version"] != SCHEMA_VERSION
+                or not _compatible_record_version(row["schema_version"])
             ):
                 raise RecorderStorageError("malformed Coinbase tick record")
             return CoinbaseTickRecord(
@@ -1780,7 +1972,7 @@ class RecorderStore:
     @staticmethod
     def _diagnostic_record(row: sqlite3.Row) -> RobinhoodDiagnosticRecord:
         try:
-            if row["schema_version"] != SCHEMA_VERSION:
+            if not _compatible_record_version(row["schema_version"]):
                 raise RecorderStorageError("malformed Robinhood diagnostic record")
             return RobinhoodDiagnosticRecord(
                 row_id=row["id"],
@@ -1826,7 +2018,7 @@ class RecorderStore:
                 )
                 for price, quantity in _book_levels(row["no_bid_depth"], "no_bid_depth")
             )
-            if row["schema_version"] != SCHEMA_VERSION:
+            if not _compatible_record_version(row["schema_version"]):
                 raise RecorderStorageError("malformed prediction quote record")
             quote = PredictionMarketQuote(
                 asset=Asset(row["asset"]),
@@ -1909,7 +2101,7 @@ class RecorderStore:
                 OrderBookLevel(price=Decimal(price), quantity=Decimal(quantity))
                 for price, quantity in _book_levels(row["no_bid_depth"], "no_bid_depth")
             )
-            if row["schema_version"] != SCHEMA_VERSION:
+            if not _compatible_record_version(row["schema_version"]):
                 raise RecorderStorageError("malformed Kalshi-native quote record")
             quote = KalshiNativeQuote(
                 asset=Asset(row["asset"]),
@@ -1974,7 +2166,7 @@ class RecorderStore:
 
         try:
             target = _parse_decimal(row["target"], "target")
-            if target is None or row["schema_version"] != SCHEMA_VERSION:
+            if target is None or not _compatible_record_version(row["schema_version"]):
                 raise RecorderStorageError("malformed Kalshi market record")
             determination = row["determination_result"]
             market = KalshiMarket(
@@ -2049,7 +2241,7 @@ class RecorderStore:
     def _kalshi_settlement_record(row: sqlite3.Row) -> KalshiSettlementRecord:
         try:
             target = _parse_decimal(row["target"], "target")
-            if target is None or row["schema_version"] != SCHEMA_VERSION:
+            if target is None or not _compatible_record_version(row["schema_version"]):
                 raise RecorderStorageError("malformed Kalshi settlement record")
             truth = KalshiSettlementTruth(
                 asset=Asset(row["asset"]),
@@ -2106,6 +2298,7 @@ class RecorderStore:
             "kalshi_settlement_conflicts",
             "kalshi_backfill_state",
             "recorder_events",
+            "underlying_observations",
         }:
             raise ValueError("unknown recorder table")
         row = self._connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
@@ -2122,6 +2315,7 @@ class RecorderStore:
                 "kalshi_market_lifecycle",
                 "kalshi_prediction_quotes",
                 "coinbase_ticks",
+                "underlying_observations",
                 "kalshi_settlements",
                 "kalshi_settlement_conflicts",
             )
@@ -2145,6 +2339,7 @@ class RecorderStore:
 
         tables = (
             "coinbase_ticks",
+            "underlying_observations",
             "kalshi_prediction_quotes",
             "kalshi_market_lifecycle",
             "kalshi_settlements",

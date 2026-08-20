@@ -16,9 +16,21 @@ from live15_quant.kalshi_lifecycle import (
     KalshiDiscovery,
     KalshiLifecycle,
 )
-from live15_quant.models import Asset, MarketTick, RecorderEventType
+from live15_quant.models import (
+    Asset,
+    FreshnessState,
+    MarketTick,
+    RecorderEventType,
+    UnderlyingObservation,
+    UnderlyingProvider,
+)
 from live15_quant.native_recorder import KalshiNativeRecorder
 from live15_quant.providers.kalshi import KalshiPublicApiError, KalshiTargetUnavailableError
+from live15_quant.providers.pyth import (
+    PythFeedIssue,
+    PythRateLimitError,
+    PythUpdateBatch,
+)
 from live15_quant.storage import MarketIdentityConflictError, RecorderStore
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 from tests.test_storage import prediction_quote
@@ -72,6 +84,76 @@ class FailingRobinhood:
     def discover(self):
         self.calls += 1
         raise RuntimeError("optional reference unavailable")
+
+
+class AssetIsolatedUnderlying:
+    def __init__(self) -> None:
+        self.closed = False
+        self.stream_calls = 0
+
+    @staticmethod
+    def batch() -> PythUpdateBatch:
+        observations = tuple(
+            UnderlyingObservation(
+                asset=asset,
+                provider=UnderlyingProvider.PYTH_HERMES,
+                symbol=f"test:{asset.value}",
+                feed_id=asset.name.lower(),
+                price=Decimal("100"),
+                source_timestamp=NOW,
+                received_timestamp=NOW,
+                confidence=None,
+                provenance="official-test",
+                freshness=FreshnessState.FRESH,
+            )
+            for asset in (Asset.GOLD, Asset.WTI_OIL, Asset.HYPE, Asset.BNB)
+        )
+        return PythUpdateBatch(
+            observations,
+            (PythFeedIssue("malformed_price", Asset.SILVER, "silver"),),
+        )
+
+    def stream_batches(self):
+        self.stream_calls += 1
+        yield self.batch()
+        # Hermes intentionally closes long-lived SSE connections (documented at 24h).
+        return
+
+    def latest_batch(self):
+        return self.batch()
+
+    def close(self):
+        self.closed = True
+
+
+class RateLimitedUnderlying:
+    def __init__(self) -> None:
+        self.latest_calls = 0
+
+    def stream_batches(self):
+        if False:
+            yield None
+        raise PythRateLimitError(0.05)
+
+    def latest_batch(self):
+        self.latest_calls += 1
+        return PythUpdateBatch(())
+
+    def close(self):
+        return None
+
+
+class BuggyUnderlying:
+    def stream_batches(self):
+        if False:
+            yield None
+        raise RuntimeError("programming defect")
+
+    def latest_batch(self):
+        raise AssertionError("correctness failures must not reach REST fallback")
+
+    def close(self):
+        return None
 
 
 def discovery() -> KalshiDiscovery:
@@ -170,6 +252,90 @@ def test_robinhood_reference_failure_never_blocks_kalshi_core(tmp_path) -> None:
 
     asyncio.run(scenario())
     assert reference.calls >= 1
+
+
+def test_one_pyth_asset_outage_does_not_stop_other_underlying_assets(tmp_path) -> None:
+    source = AssetIsolatedUnderlying()
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    enable_pyth_underlying=True,
+                    pyth_rest_fallback_interval_seconds=0.01,
+                    recorder_health_interval_seconds=1,
+                    recorder_health_path=tmp_path / "health.json",
+                ),
+                store,
+                discovery=FakeDiscovery(()),
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                underlying_factory=lambda: source,
+                now=lambda: NOW,
+            )
+            task = asyncio.create_task(recorder.run())
+            await asyncio.sleep(0.05)
+            recorder.request_stop()
+            await asyncio.wait_for(task, 1)
+            assert store.count("underlying_observations") == 4
+            assert recorder.health().source_failures["pyth:Silver"] == "PythPayloadError"
+            assert recorder.health().fatal_task is None
+            assert source.stream_calls >= 2
+
+    asyncio.run(scenario())
+    assert source.closed is True
+
+
+def test_pyth_429_honors_retry_after_without_immediate_rest_fallback(tmp_path) -> None:
+    source = RateLimitedUnderlying()
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    enable_pyth_underlying=True,
+                    recorder_health_path=tmp_path / "health.json",
+                ),
+                store,
+                discovery=FakeDiscovery(()),
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                underlying_factory=lambda: source,
+                now=lambda: NOW,
+            )
+            task = asyncio.create_task(recorder.run())
+            await asyncio.sleep(0.01)
+            recorder.request_stop()
+            await asyncio.wait_for(task, 1)
+
+    asyncio.run(scenario())
+    assert source.latest_calls == 0
+
+
+def test_pyth_programming_error_fails_recorder_loudly(tmp_path) -> None:
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    enable_pyth_underlying=True,
+                    recorder_health_path=tmp_path / "health.json",
+                ),
+                store,
+                discovery=FakeDiscovery(()),
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                underlying_factory=BuggyUnderlying,
+                now=lambda: NOW,
+            )
+            with pytest.raises(RuntimeError, match="programming defect"):
+                await asyncio.wait_for(recorder.run(), 1)
+            assert recorder.health().fatal_task == "pyth-predictive"
+            assert recorder.health().fatal_error_type == "RuntimeError"
+
+    asyncio.run(scenario())
 
 
 def test_rollover_and_restart_recover_deterministic_lifecycle(tmp_path) -> None:

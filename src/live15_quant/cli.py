@@ -36,6 +36,7 @@ from live15_quant.providers.kalshi_demo import (
     KalshiDemoCredentials,
     KalshiDemoReadOnlyClient,
 )
+from live15_quant.readiness import build_readiness_report, write_report_atomic
 from live15_quant.recorder_control import (
     ManagedRecorderState,
     RecorderPidLease,
@@ -403,3 +404,14 @@ def status_main(argv: Sequence[str] | None = None) -> None:
             "Recorder health file does not exist; start live15-record first"
         ) from error
     print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def readiness_main(argv: Sequence[str] | None = None) -> None:
+    """Build a snapshot-consistent, machine-readable data readiness report."""
+
+    _parse_no_args("live15-readiness", readiness_main.__doc__ or "", argv)
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    report = build_readiness_report(settings)
+    write_report_atomic(report, settings.readiness_report_path)
+    print(json.dumps(report, indent=2, sort_keys=True))

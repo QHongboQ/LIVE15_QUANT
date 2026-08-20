@@ -20,10 +20,11 @@ from live15_quant.models import (
     RecorderEventType,
     SourceTimestampKind,
     SupportLevel,
+    UnderlyingProvider,
     Venue,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +78,25 @@ class CoinbaseTickRecord:
     ask_size: Decimal | None
     last_size: Decimal | None
     volume_24h: Decimal | None
+    role: DataRole
+
+
+@dataclass(frozen=True, slots=True)
+class UnderlyingObservationRecord:
+    """One deduplicated provider-specific predictive observation."""
+
+    row_id: int
+    schema_version: int
+    asset: Asset
+    provider: UnderlyingProvider
+    symbol: str
+    feed_id: str
+    price: Decimal
+    source_timestamp: datetime
+    received_timestamp: datetime
+    confidence: Decimal | None
+    provenance: str
+    freshness: FreshnessState
     role: DataRole
 
 
