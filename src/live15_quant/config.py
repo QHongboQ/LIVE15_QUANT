@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 DEFAULT_PRODUCTS = ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD")
+DEFAULT_DATASET_DECISION_OFFSETS_SECONDS = (840, 720, 600, 480, 300, 180, 120, 60, 30)
 ROBINHOOD_15MIN_PUBLIC_URL = "https://robinhood.com/us/en/prediction-markets/15-min/"
 KALSHI_PUBLIC_API_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 KALSHI_DEMO_API_BASE_URL = "https://external-api.demo.kalshi.co/trade-api/v2"
@@ -41,6 +42,10 @@ class Settings:
     recorder_data_path: Path = Path("data/live15.sqlite3")
     recorder_health_interval_seconds: float = 30.0
     recorder_coinbase_stale_seconds: float = 30.0
+    feature_store_path: Path = Path("data/features.sqlite3")
+    dataset_decision_offsets_seconds: tuple[int, ...] = DEFAULT_DATASET_DECISION_OFFSETS_SECONDS
+    dataset_quote_max_age_seconds: float = 15.0
+    dataset_underlying_max_age_seconds: float = 15.0
     paper_data_path: Path = Path("data/paper.sqlite3")
     paper_account_id: str = "local-paper"
     paper_starting_cash: Decimal = Decimal("1000")
@@ -78,6 +83,26 @@ def _positive_decimal(source: Mapping[str, str], name: str, default: Decimal) ->
     return value
 
 
+def _decision_offsets(source: Mapping[str, str]) -> tuple[int, ...]:
+    raw = source.get(
+        "LIVE15_DATASET_DECISION_OFFSETS_SECONDS",
+        ",".join(str(value) for value in DEFAULT_DATASET_DECISION_OFFSETS_SECONDS),
+    )
+    try:
+        values = tuple(int(part.strip()) for part in raw.split(",") if part.strip())
+    except ValueError as error:
+        raise ValueError("LIVE15_DATASET_DECISION_OFFSETS_SECONDS must contain integers") from error
+    if (
+        not values
+        or len(set(values)) != len(values)
+        or any(value <= 0 or value > 900 for value in values)
+    ):
+        raise ValueError(
+            "LIVE15_DATASET_DECISION_OFFSETS_SECONDS must contain unique values in 1..900"
+        )
+    return values
+
+
 def _boolean(source: Mapping[str, str], name: str, default: bool) -> bool:
     raw = source.get(name, str(default)).strip().lower()
     if raw not in {"true", "false", "1", "0"}:
@@ -100,8 +125,16 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         source.get("LIVE15_RECORDER_DATA_PATH", str(defaults.recorder_data_path))
     )
     paper_data_path = Path(source.get("LIVE15_PAPER_DATA_PATH", str(defaults.paper_data_path)))
-    if recorder_data_path.resolve() == paper_data_path.resolve():
-        raise ValueError("paper and raw recorder database paths must be different")
+    feature_store_path = Path(
+        source.get("LIVE15_FEATURE_STORE_PATH", str(defaults.feature_store_path))
+    )
+    resolved_paths = {
+        recorder_data_path.resolve(),
+        paper_data_path.resolve(),
+        feature_store_path.resolve(),
+    }
+    if len(resolved_paths) != 3:
+        raise ValueError("raw recorder, paper, and feature-store paths must be different")
     paper_account_id = source.get("LIVE15_PAPER_ACCOUNT_ID", defaults.paper_account_id).strip()
     if not paper_account_id:
         raise ValueError("LIVE15_PAPER_ACCOUNT_ID must not be empty")
@@ -179,6 +212,18 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             source,
             "LIVE15_RECORDER_COINBASE_STALE_SECONDS",
             defaults.recorder_coinbase_stale_seconds,
+        ),
+        feature_store_path=feature_store_path,
+        dataset_decision_offsets_seconds=_decision_offsets(source),
+        dataset_quote_max_age_seconds=_positive_float(
+            source,
+            "LIVE15_DATASET_QUOTE_MAX_AGE_SECONDS",
+            defaults.dataset_quote_max_age_seconds,
+        ),
+        dataset_underlying_max_age_seconds=_positive_float(
+            source,
+            "LIVE15_DATASET_UNDERLYING_MAX_AGE_SECONDS",
+            defaults.dataset_underlying_max_age_seconds,
         ),
         paper_data_path=paper_data_path,
         paper_account_id=paper_account_id,

@@ -121,6 +121,18 @@ paper 数据默认写入独立 `data/paper.sqlite3`，与 `data/live15.sqlite3` 
 
 paper schema version 1 使用独立的 `paper_metadata`、`paper_decisions`、`paper_orders`、`paper_order_events`、`paper_fills`、`paper_risk_decisions`、`paper_position_snapshots` 和 `paper_portfolio_snapshots` 表。所有货币、价格和数量均以 Decimal 原始字符串保存；decision/order/fill 唯一约束及 foreign keys 防止重复或孤立记录。paper/raw store 会检查对方的 metadata marker，并拒绝打开同一个数据库文件。
 
+## Training Dataset + Feature Store
+
+Milestone 7 以 `data/live15.sqlite3` 的 raw recorder 为只读 source of truth，并把可重建训练数据写入独立的 `data/features.sqlite3`。`live15-dataset` 会按 exact ticker/window 将 decision-time metadata、Kalshi quote/orderbook、Coinbase predictive ticks 与 Kalshi 官方 finalized YES/NO label 组合；它不会改写 raw 数据，也不会读取 paper ledger。
+
+默认 sampling grid 是距结束 14m、12m、10m、8m、5m、3m、2m、1m、30s，可通过 `LIVE15_DATASET_DECISION_OFFSETS_SECONDS` 配置。核心 `SamplingPolicy` 不含固定现实日期、固定 UTC 时刻或固定 grid。每个 event 可以产生多行，但 chronological/expanding/rolling split 都以完整 ticker event 为 group，同一 event 不会跨 train/validation/test。
+
+Feature schema `1.0.0` 当前有 42 个具名、Decimal-safe feature：contract geometry/target distance、15s/30s/1m/2m/5m returns、return acceleration/momentum、1m/2m/5m realized volatility、range/regime、Kalshi Yes/No bid/ask/spread/midpoint/last、quote age、top/cumulative depth、imbalance/depth ratio/book change，以及只作描述的 spread-aware market-implied quantities。midpoint 不是模拟成交价，也不被宣称为真实 probability。
+
+所有 as-of join 强制 local receive time 不晚于 `decision_timestamp`，若 source/exchange timestamp 存在也必须不晚于 decision；post-window quote、future tick、terminal lifecycle 和 settlement 字段不能进入 feature engine。label 只能来自 Kalshi `finalized + result + settlement_ts`，并与 feature 在类型层隔离。缺失值保持 SQL/JSON null，并记录 `truly_missing`、`stale`、`not_enough_lookback`、`source_unavailable` 或 `market_side_unavailable`，不填 0。
+
+Feature store 保存 dataset/feature schema version、path-free raw snapshot（count/max row ID/content digest）、可复现 build manifest、source provenance、per-feature timestamp/missing reason 和机器可读 diagnostics。构建查询受启动时 max row ID 限制，即使 recorder 同时追加也不会改变本轮输入；中断后相同 manifest 可幂等 resume，内容冲突会 fail loudly。完整契约见 [Training dataset architecture](docs/training_dataset.md)。
+
 ## 安装
 
 要求 Windows PowerShell 和 Python 3.13：
@@ -139,6 +151,9 @@ python -m pip install --no-deps -e .
 ```powershell
 # 持续记录全部 Kalshi-native 目标 series + 5 个 Coinbase predictive products
 live15-record
+
+# 从 raw recorder 构建或幂等恢复版本化训练数据集
+live15-dataset
 
 # 真实公开 Kalshi 行情驱动、只写本地 SQLite 的 deterministic paper runtime
 live15-paper
@@ -250,6 +265,10 @@ with RecorderStore(Path("data/live15.sqlite3")) as store:
 | `LIVE15_RECORDER_DATA_PATH` | `data/live15.sqlite3` |
 | `LIVE15_RECORDER_HEALTH_INTERVAL_SECONDS` | `30` |
 | `LIVE15_RECORDER_COINBASE_STALE_SECONDS` | `30` |
+| `LIVE15_FEATURE_STORE_PATH` | `data/features.sqlite3` |
+| `LIVE15_DATASET_DECISION_OFFSETS_SECONDS` | `840,720,600,480,300,180,120,60,30` |
+| `LIVE15_DATASET_QUOTE_MAX_AGE_SECONDS` | `15` |
+| `LIVE15_DATASET_UNDERLYING_MAX_AGE_SECONDS` | `15` |
 | `LIVE15_PAPER_DATA_PATH` | `data/paper.sqlite3` |
 | `LIVE15_PAPER_ACCOUNT_ID` | `local-paper` |
 | `LIVE15_PAPER_STARTING_CASH` | `1000` |
@@ -274,7 +293,7 @@ with RecorderStore(Path("data/live15.sqlite3")) as store:
 ```powershell
 ruff check .
 ruff format --check .
-python -c "import live15_quant.backfill; import live15_quant.kalshi_lifecycle; import live15_quant.native_acceptance; import live15_quant.native_recorder; import live15_quant.paper_execution; import live15_quant.paper_runtime; import live15_quant.paper_storage; import live15_quant.providers.coinbase; import live15_quant.providers.kalshi; import live15_quant.records; import live15_quant.replay; import live15_quant.storage"
+python -c "import live15_quant.dataset; import live15_quant.feature_registry; import live15_quant.features; import live15_quant.splits"
 pytest
 python -m pip check
 git diff --check
@@ -327,3 +346,4 @@ secrets 目录也已 Git ignored 作为第二道保护，但正式要求仍是�
 - Settlement truth 已独立落库，但 Milestone 6 不改变 paper settlement accounting；到期未平仓 paper positions 仍保持 `pending_settlement`，后续里程碑再以显式 settlement adapter 接入，当前不伪造 payout。
 - 当前已有 Kalshi Demo-only RSA-PSS signer 与 authenticated GET-only connectivity audit，但没有 Demo/Production execution client，也没有任何仓库内 credential。用户仍需本人创建 Demo account/key 并安全保管 RSA private key；Demo 与 Production credentials 不通用。
 - SQLite recorder 尚未实现 retention、压缩、Parquet export 或多进程同时写入；单 recorder 进程是当前支持的运行模式。
+- Feature store 当前使用 SQLite，而不是 Parquet；它支持确定性 replay 和后续 pandas/Polars/DuckDB 读取，但尚未提供批量 Parquet export。历史 backfill 若只有事后 finalized metadata、没有 decision-time quote/tick observation，会被诚实跳过，不能凭最终结果重建当时 feature。

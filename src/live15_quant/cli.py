@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from datetime import timedelta
 
 import requests
 
 from live15_quant.config import Settings, load_settings
+from live15_quant.dataset import DatasetBuildConfig, DatasetBuilder, FeatureStore
+from live15_quant.features import SamplingPolicy
 from live15_quant.kalshi_lifecycle import KalshiNativeMarketProvider
 from live15_quant.logging_config import configure_logging
 from live15_quant.models import MarketTick
@@ -196,4 +200,36 @@ def kalshi_demo_audit_main() -> None:
             "fills_readable": result.fills_readable,
             "write_operations_available_in_client": False,
         },
+    )
+
+
+def dataset_main() -> None:
+    """Build or resume a deterministic training dataset from the raw recorder store."""
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    policy = SamplingPolicy(
+        tuple(timedelta(seconds=value) for value in settings.dataset_decision_offsets_seconds),
+        quote_max_age=timedelta(seconds=settings.dataset_quote_max_age_seconds),
+        underlying_max_age=timedelta(seconds=settings.dataset_underlying_max_age_seconds),
+    )
+    with (
+        RecorderStore(settings.recorder_data_path) as source,
+        FeatureStore(settings.feature_store_path) as destination,
+    ):
+        summary = DatasetBuilder(source, destination).build(DatasetBuildConfig(policy))
+    print(
+        json.dumps(
+            {
+                "build_id": summary.build_id,
+                "complete": summary.complete,
+                "events": summary.events,
+                "rows": summary.rows,
+                "rows_written": summary.rows_written,
+                "skipped_decisions": summary.skipped_decisions,
+                "diagnostics": summary.diagnostics,
+            },
+            indent=2,
+            sort_keys=True,
+        )
     )

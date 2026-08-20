@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from live15_quant.config import (
+    DEFAULT_DATASET_DECISION_OFFSETS_SECONDS,
     DEFAULT_PRODUCTS,
     KALSHI_DEMO_API_BASE_URL,
     ROBINHOOD_15MIN_PUBLIC_URL,
@@ -23,6 +24,8 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.kalshi_demo_api_key_id is None
     assert settings.kalshi_demo_private_key_path is None
     assert settings.enable_robinhood_reference is False
+    assert settings.feature_store_path == Path("data/features.sqlite3")
+    assert settings.dataset_decision_offsets_seconds == DEFAULT_DATASET_DECISION_OFFSETS_SECONDS
 
 
 def test_load_settings_normalizes_environment_values() -> None:
@@ -41,6 +44,10 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_PAPER_DATA_PATH": "scratch/paper.sqlite3",
             "LIVE15_PAPER_MAX_ORDER_NOTIONAL": "1.25",
             "LIVE15_PAPER_KILL_SWITCH": "true",
+            "LIVE15_FEATURE_STORE_PATH": "scratch/features.sqlite3",
+            "LIVE15_DATASET_DECISION_OFFSETS_SECONDS": "600,60,30",
+            "LIVE15_DATASET_QUOTE_MAX_AGE_SECONDS": "9",
+            "LIVE15_DATASET_UNDERLYING_MAX_AGE_SECONDS": "8",
             "LIVE15_ROBINHOOD_15MIN_URL": "https://private.example.test/hidden",
             "LIVE15_KALSHI_DEMO_API_KEY_ID": "demo-key-id",
             "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH": "C:/safe/kalshi-demo.key",
@@ -60,6 +67,10 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.paper_data_path == Path("scratch/paper.sqlite3")
     assert str(settings.paper_max_order_notional) == "1.25"
     assert settings.paper_kill_switch is True
+    assert settings.feature_store_path == Path("scratch/features.sqlite3")
+    assert settings.dataset_decision_offsets_seconds == (600, 60, 30)
+    assert settings.dataset_quote_max_age_seconds == 9
+    assert settings.dataset_underlying_max_age_seconds == 8
     assert settings.robinhood_15min_url == ROBINHOOD_15MIN_PUBLIC_URL
     assert settings.kalshi_demo_api_key_id == "demo-key-id"
     assert settings.kalshi_demo_private_key_path == Path("C:/safe/kalshi-demo.key")
@@ -94,5 +105,21 @@ def test_load_settings_rejects_shared_raw_and_paper_database() -> None:
             {
                 "LIVE15_RECORDER_DATA_PATH": "data/shared.sqlite3",
                 "LIVE15_PAPER_DATA_PATH": "data/shared.sqlite3",
+            }
+        )
+
+
+@pytest.mark.parametrize("value", ("", "0", "901", "60,60", "sixty"))
+def test_load_settings_rejects_invalid_dataset_offsets(value: str) -> None:
+    with pytest.raises(ValueError, match="DECISION_OFFSETS"):
+        load_settings({"LIVE15_DATASET_DECISION_OFFSETS_SECONDS": value})
+
+
+def test_load_settings_rejects_feature_store_shared_with_raw_data() -> None:
+    with pytest.raises(ValueError, match="must be different"):
+        load_settings(
+            {
+                "LIVE15_RECORDER_DATA_PATH": "data/shared.sqlite3",
+                "LIVE15_FEATURE_STORE_PATH": "data/shared.sqlite3",
             }
         )

@@ -43,6 +43,10 @@ class RecorderStorageError(RuntimeError):
     """Raised when persisted recorder data is invalid or incompatible."""
 
 
+class TrainingDataUnavailableError(RecorderStorageError):
+    """Expected absence of a label or decision-time source observation."""
+
+
 def _timestamp(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("persisted timestamps must be timezone-aware")
@@ -413,11 +417,14 @@ class RecorderStore:
             """
         ).fetchone()
         if metadata_exists is None:
-            paper_store = self._connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_metadata'"
-            ).fetchone()
-            if paper_store is not None:
-                raise RecorderStorageError("raw recorder cannot share the paper ledger database")
+            for marker in ("paper_metadata", "feature_store_metadata"):
+                other_store = self._connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (marker,)
+                ).fetchone()
+                if other_store is not None:
+                    raise RecorderStorageError(
+                        "raw recorder cannot share the paper ledger or feature-store database"
+                    )
             self._create_schema()
             return
 
@@ -1082,35 +1089,52 @@ class RecorderStore:
         return None if row is None else self._kalshi_market_record(row)
 
     def replay_kalshi_settlements(
-        self, *, series: str | None = None
+        self, *, series: str | None = None, max_row_id: int | None = None
     ) -> Iterator[KalshiSettlementRecord]:
+        if max_row_id is not None and max_row_id < 0:
+            raise ValueError("max_row_id must be non-negative")
         if series is None:
             rows = self._connection.execute(
-                "SELECT * FROM kalshi_settlements ORDER BY window_start ASC, ticker ASC, id ASC"
+                """
+                SELECT * FROM kalshi_settlements WHERE (? IS NULL OR id <= ?)
+                ORDER BY window_start ASC, ticker ASC, id ASC
+                """,
+                (max_row_id, max_row_id),
             )
         else:
             rows = self._connection.execute(
                 """
-                SELECT * FROM kalshi_settlements WHERE series=?
+                SELECT * FROM kalshi_settlements
+                WHERE series=? AND (? IS NULL OR id <= ?)
                 ORDER BY window_start ASC, ticker ASC, id ASC
                 """,
-                (series,),
+                (series, max_row_id, max_row_id),
             )
         for row in rows:
             yield self._kalshi_settlement_record(row)
 
     def join_training_label(
-        self, ticker: str, decision_timestamp: datetime
+        self,
+        ticker: str,
+        decision_timestamp: datetime,
+        *,
+        market_max_row_id: int | None = None,
+        quote_max_row_id: int | None = None,
+        settlement_max_row_id: int | None = None,
     ) -> TrainingLabelExample:
         """Join only observations known at decision time; return truth solely as a label."""
 
         if decision_timestamp.tzinfo is None or decision_timestamp.utcoffset() is None:
             raise ValueError("decision timestamp must be timezone-aware")
         settlement_row = self._connection.execute(
-            "SELECT * FROM kalshi_settlements WHERE ticker=?", (ticker,)
+            """
+            SELECT * FROM kalshi_settlements
+            WHERE ticker=? AND (? IS NULL OR id <= ?)
+            """,
+            (ticker, settlement_max_row_id, settlement_max_row_id),
         ).fetchone()
         if settlement_row is None:
-            raise RecorderStorageError("official settlement label is unavailable")
+            raise TrainingDataUnavailableError("official settlement label is unavailable")
         label = self._kalshi_settlement_record(settlement_row)
         decision = decision_timestamp.astimezone(UTC)
         if (
@@ -1125,14 +1149,15 @@ class RecorderStore:
             """
             SELECT * FROM kalshi_market_lifecycle
             WHERE ticker=? AND fetched_timestamp <= ?
+              AND (? IS NULL OR id <= ?)
               AND determination_result IS NULL
               AND lifecycle NOT IN ('settled_yes', 'settled_no')
             ORDER BY fetched_timestamp DESC, id DESC LIMIT 1
             """,
-            (ticker, _timestamp(decision)),
+            (ticker, _timestamp(decision), market_max_row_id, market_max_row_id),
         ).fetchone()
         if market_row is None:
-            raise RecorderStorageError("no official metadata existed at decision time")
+            raise TrainingDataUnavailableError("no official metadata existed at decision time")
         market = self._kalshi_feature_market_record(market_row)
         if (
             market.asset is not label.asset
@@ -1148,6 +1173,7 @@ class RecorderStore:
             SELECT * FROM kalshi_prediction_quotes
             WHERE ticker=? AND received_timestamp >= ? AND received_timestamp <= ?
               AND received_timestamp < ?
+              AND (? IS NULL OR id <= ?)
             ORDER BY received_timestamp ASC, id ASC
             """,
             (
@@ -1155,6 +1181,8 @@ class RecorderStore:
                 _timestamp(label.window_start),
                 _timestamp(decision),
                 _timestamp(label.window_end),
+                quote_max_row_id,
+                quote_max_row_id,
             ),
         )
         observations = tuple(self._kalshi_native_quote_record(row) for row in quote_rows)
@@ -1229,15 +1257,52 @@ class RecorderStore:
             result[record.asset] = record
         return result
 
-    def replay_coinbase(self, product: str) -> Iterator[CoinbaseTickRecord]:
+    def replay_coinbase(
+        self, product: str, *, max_row_id: int | None = None
+    ) -> Iterator[CoinbaseTickRecord]:
         """Yield one Coinbase product deterministically by receive time and id."""
 
         rows = self._connection.execute(
             """
             SELECT * FROM coinbase_ticks
-            WHERE product = ? ORDER BY received_timestamp ASC, id ASC
+            WHERE product = ? AND (? IS NULL OR id <= ?)
+            ORDER BY received_timestamp ASC, id ASC
             """,
-            (product,),
+            (product, max_row_id, max_row_id),
+        )
+        for row in rows:
+            yield self._tick_record(row)
+
+    def replay_coinbase_range(
+        self,
+        product: str,
+        *,
+        start: datetime,
+        end: datetime,
+        max_row_id: int | None = None,
+    ) -> Iterator[CoinbaseTickRecord]:
+        """Yield a bounded receive-time range under an immutable source snapshot."""
+
+        if start.tzinfo is None or start.utcoffset() is None:
+            raise ValueError("Coinbase range start must be timezone-aware")
+        if end.tzinfo is None or end.utcoffset() is None:
+            raise ValueError("Coinbase range end must be timezone-aware")
+        if start > end:
+            raise ValueError("Coinbase range start must not follow end")
+        rows = self._connection.execute(
+            """
+            SELECT * FROM coinbase_ticks
+            WHERE product=? AND received_timestamp>=? AND received_timestamp<=?
+              AND (? IS NULL OR id<=?)
+            ORDER BY received_timestamp ASC,id ASC
+            """,
+            (
+                product,
+                _timestamp(start),
+                _timestamp(end),
+                max_row_id,
+                max_row_id,
+            ),
         )
         for row in rows:
             yield self._tick_record(row)
@@ -1678,6 +1743,35 @@ class RecorderStore:
         if row is None:
             raise RecorderStorageError(f"could not count {table}")
         return int(row["count"])
+
+    def training_source_snapshot(self) -> dict[str, object]:
+        """Return path-free immutable row boundaries for a reproducible dataset build."""
+
+        tables = (
+            "coinbase_ticks",
+            "kalshi_prediction_quotes",
+            "kalshi_market_lifecycle",
+            "kalshi_settlements",
+        )
+        snapshot: dict[str, object] = {"recorder_schema_version": SCHEMA_VERSION}
+        for table in tables:
+            row = self._connection.execute(
+                f"SELECT COUNT(*) AS count, COALESCE(MAX(id), 0) AS max_id FROM {table}"
+            ).fetchone()
+            if row is None:
+                raise RecorderStorageError(f"could not snapshot {table}")
+            digest = hashlib.sha256()
+            for content in self._connection.execute(
+                f"SELECT id, content_hash FROM {table} WHERE id <= ? ORDER BY id ASC",
+                (int(row["max_id"]),),
+            ):
+                digest.update(f"{content['id']}:{content['content_hash']}\n".encode())
+            snapshot[table] = {
+                "count": int(row["count"]),
+                "max_id": int(row["max_id"]),
+                "content_sha256": digest.hexdigest(),
+            }
+        return snapshot
 
     def integrity_check(self) -> str:
         row = self._connection.execute("PRAGMA integrity_check").fetchone()

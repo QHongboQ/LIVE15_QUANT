@@ -292,11 +292,14 @@ class PaperStore:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_metadata'"
         ).fetchone()
         if exists is None:
-            raw_store = self._connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recorder_metadata'"
-            ).fetchone()
-            if raw_store is not None:
-                raise PaperStorageError("paper ledger cannot share the raw recorder database")
+            for marker in ("recorder_metadata", "feature_store_metadata"):
+                other_store = self._connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (marker,)
+                ).fetchone()
+                if other_store is not None:
+                    raise PaperStorageError(
+                        "paper ledger cannot share the raw recorder or feature-store database"
+                    )
             try:
                 self._connection.executescript(_SCHEMA)
                 self._connection.executemany(
