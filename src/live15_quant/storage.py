@@ -25,6 +25,8 @@ from live15_quant.models import (
     MarketTick,
     PredictionMarketQuote,
     RecorderDiagnosticKind,
+    RecorderEventSeverity,
+    RecorderEventType,
 )
 from live15_quant.records import (
     SCHEMA_VERSION,
@@ -34,6 +36,7 @@ from live15_quant.records import (
     KalshiNativeQuoteRecord,
     KalshiSettlementRecord,
     PredictionQuoteRecord,
+    RecorderEventRecord,
     RobinhoodDiagnosticRecord,
     RobinhoodSnapshotRecord,
     TrainingLabelExample,
@@ -42,6 +45,14 @@ from live15_quant.records import (
 
 class RecorderStorageError(RuntimeError):
     """Raised when persisted recorder data is invalid or incompatible."""
+
+
+class SettlementConflictError(RecorderStorageError):
+    """Raised after preserving evidence of contradictory official settlement truth."""
+
+
+class MarketIdentityConflictError(RecorderStorageError):
+    """Raised when one official event/window is presented under conflicting identity."""
 
 
 class TrainingDataUnavailableReason(StrEnum):
@@ -331,6 +342,26 @@ CREATE TABLE IF NOT EXISTS kalshi_backfill_state (
 ) STRICT
 """
 
+_RECORDER_EVENT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS recorder_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version INTEGER NOT NULL,
+    observed_timestamp TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('info','warning','error','fatal')),
+    event_type TEXT NOT NULL,
+    asset TEXT,
+    source TEXT,
+    error_type TEXT,
+    message TEXT NOT NULL,
+    dedup_key TEXT UNIQUE
+) STRICT
+"""
+
+_RECORDER_EVENT_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_recorder_event_query
+ON recorder_events(observed_timestamp DESC, severity, asset, source, id DESC)
+"""
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS recorder_metadata (
     key TEXT PRIMARY KEY,
@@ -414,6 +445,8 @@ ON coinbase_ticks(product, received_timestamp, id);
 {_KALSHI_NATIVE_QUOTE_ASSET_INDEX_SQL};
 {_KALSHI_CONFLICT_TABLE_SQL};
 {_KALSHI_BACKFILL_TABLE_SQL};
+{_RECORDER_EVENT_TABLE_SQL};
+{_RECORDER_EVENT_INDEX_SQL};
 """
 
 
@@ -474,8 +507,13 @@ class RecorderStore:
             row = self._connection.execute(
                 "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
             ).fetchone()
-        if row is not None and row["value"] == "3" and SCHEMA_VERSION == 4:
+        if row is not None and row["value"] == "3":
             self._migrate_v3_to_v4()
+            row = self._connection.execute(
+                "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        if row is not None and row["value"] == "4" and SCHEMA_VERSION == 5:
+            self._migrate_v4_to_v5()
             return
         raise RecorderStorageError(
             f"database schema {row['value']} is incompatible with {SCHEMA_VERSION}"
@@ -580,7 +618,7 @@ class RecorderStore:
             for table in old_tables:
                 self._connection.execute(
                     f"UPDATE {table} SET schema_version = ? WHERE schema_version = 3",
-                    (SCHEMA_VERSION,),
+                    (4,),
                 )
             for statement in (
                 _KALSHI_MARKET_TABLE_SQL,
@@ -596,6 +634,43 @@ class RecorderStore:
                 _KALSHI_BACKFILL_TABLE_SQL,
             ):
                 self._connection.execute(statement)
+            self._connection.execute(
+                "UPDATE recorder_metadata SET value = ? WHERE key = 'schema_version'",
+                ("4",),
+            )
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+
+    def _migrate_v4_to_v5(self) -> None:
+        """Atomically add bounded operational diagnostics without changing raw truth."""
+
+        versioned_tables = (
+            "robinhood_snapshots",
+            "coinbase_ticks",
+            "robinhood_diagnostics",
+            "prediction_market_quotes",
+            "kalshi_market_lifecycle",
+            "kalshi_settlements",
+            "kalshi_prediction_quotes",
+            "kalshi_settlement_conflicts",
+        )
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            for table in versioned_tables:
+                invalid = self._connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE schema_version != 4"
+                ).fetchone()
+                if invalid is None or invalid[0] != 0:
+                    raise RecorderStorageError(f"mixed schema versions in {table}")
+            for table in versioned_tables:
+                self._connection.execute(
+                    f"UPDATE {table} SET schema_version = ? WHERE schema_version = 4",
+                    (SCHEMA_VERSION,),
+                )
+            self._connection.execute(_RECORDER_EVENT_TABLE_SQL)
+            self._connection.execute(_RECORDER_EVENT_INDEX_SQL)
             self._connection.execute(
                 "UPDATE recorder_metadata SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),
@@ -834,7 +909,31 @@ class RecorderStore:
             (market.ticker,),
         ).fetchone()
         if existing_identity is not None and tuple(existing_identity) != identity:
-            raise RecorderStorageError(f"conflicting official market metadata for {market.ticker}")
+            raise MarketIdentityConflictError(
+                f"conflicting official market metadata for {market.ticker}"
+            )
+        conflicting_ticker = self._connection.execute(
+            """
+            SELECT ticker FROM kalshi_market_lifecycle
+            WHERE ticker != ? AND (
+                event_ticker = ? OR
+                (asset = ? AND series = ? AND window_start = ? AND window_end = ?)
+            )
+            ORDER BY id ASC LIMIT 1
+            """,
+            (
+                market.ticker,
+                market.event_ticker,
+                market.asset.value,
+                market.series,
+                _timestamp(market.window_start),
+                _timestamp(market.window_end),
+            ),
+        ).fetchone()
+        if conflicting_ticker is not None:
+            raise MarketIdentityConflictError(
+                "conflicting official ticker for the same event/window"
+            )
         if market.settlement is not None:
             self.append_kalshi_settlement(market.settlement)
 
@@ -998,7 +1097,7 @@ class RecorderStore:
                 ),
             )
             self._connection.commit()
-            raise RecorderStorageError(f"conflicting official settlement for {truth.ticker}")
+            raise SettlementConflictError(f"conflicting official settlement for {truth.ticker}")
         self._connection.execute(
             """
             INSERT INTO kalshi_settlements (
@@ -1052,6 +1151,117 @@ class RecorderStore:
             ),
         )
         self._connection.commit()
+
+    def append_recorder_event(
+        self,
+        *,
+        observed_timestamp: datetime,
+        severity: RecorderEventSeverity,
+        event_type: RecorderEventType,
+        message: str,
+        asset: Asset | None = None,
+        source: str | None = None,
+        error_type: str | None = None,
+        dedup_key: str | None = None,
+        retain: int = 5000,
+    ) -> bool:
+        """Append one secret-free operational event and prune only the bounded event table."""
+
+        if not 100 <= retain <= 100_000:
+            raise ValueError("recorder event retention must be in 100..100000")
+        safe_message = " ".join(message.split())
+        if not safe_message or len(safe_message) > 240:
+            raise ValueError("recorder event message must contain 1..240 safe characters")
+        for value, field in ((source, "source"), (error_type, "error_type"), (dedup_key, "key")):
+            if value is not None and (not value or len(value) > 160 or "\n" in value):
+                raise ValueError(f"invalid recorder event {field}")
+        cursor = self._connection.execute(
+            """
+            INSERT OR IGNORE INTO recorder_events(
+                schema_version,observed_timestamp,severity,event_type,asset,source,
+                error_type,message,dedup_key
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                SCHEMA_VERSION,
+                _timestamp(observed_timestamp),
+                severity.value,
+                event_type.value,
+                asset.value if asset is not None else None,
+                source,
+                error_type,
+                safe_message,
+                dedup_key,
+            ),
+        )
+        if cursor.rowcount == 1:
+            self._connection.execute(
+                """
+                DELETE FROM recorder_events WHERE id <= COALESCE(
+                    (SELECT id FROM recorder_events ORDER BY id DESC LIMIT 1 OFFSET ?), 0
+                )
+                """,
+                (retain,),
+            )
+        self._connection.commit()
+        return cursor.rowcount == 1
+
+    def replay_recorder_events(
+        self,
+        *,
+        limit: int = 100,
+        severity: RecorderEventSeverity | None = None,
+        asset: Asset | None = None,
+        source: str | None = None,
+        since: datetime | None = None,
+    ) -> tuple[RecorderEventRecord, ...]:
+        """Return a bounded newest-first operational diagnostic projection."""
+
+        if not 1 <= limit <= 200:
+            raise ValueError("recorder event query limit must be in 1..200")
+        clauses: list[str] = []
+        parameters: list[object] = []
+        if severity is not None:
+            clauses.append("severity=?")
+            parameters.append(severity.value)
+        if asset is not None:
+            clauses.append("asset=?")
+            parameters.append(asset.value)
+        if source is not None:
+            clauses.append("source=?")
+            parameters.append(source)
+        if since is not None:
+            clauses.append("observed_timestamp>=?")
+            parameters.append(_timestamp(since))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(limit)
+        rows = self._connection.execute(
+            f"""SELECT * FROM recorder_events {where}
+            ORDER BY observed_timestamp DESC,id DESC LIMIT ?""",
+            parameters,
+        )
+        return tuple(self._recorder_event_record(row) for row in rows)
+
+    @staticmethod
+    def _recorder_event_record(row: sqlite3.Row) -> RecorderEventRecord:
+        try:
+            if row["schema_version"] != SCHEMA_VERSION:
+                raise RecorderStorageError("malformed recorder event record")
+            return RecorderEventRecord(
+                row_id=int(row["id"]),
+                schema_version=int(row["schema_version"]),
+                observed_timestamp=_parse_timestamp(
+                    row["observed_timestamp"], "observed_timestamp"
+                ),
+                severity=RecorderEventSeverity(row["severity"]),
+                event_type=RecorderEventType(row["event_type"]),
+                asset=Asset(row["asset"]) if row["asset"] is not None else None,
+                source=str(row["source"]) if row["source"] is not None else None,
+                error_type=str(row["error_type"]) if row["error_type"] is not None else None,
+                message=str(row["message"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise RecorderStorageError("malformed recorder event record") from error
 
     def load_backfill_cursor(
         self, *, series: str, source_path: str, start: datetime, end: datetime
@@ -1895,6 +2105,7 @@ class RecorderStore:
             "kalshi_settlements",
             "kalshi_settlement_conflicts",
             "kalshi_backfill_state",
+            "recorder_events",
         }:
             raise ValueError("unknown recorder table")
         row = self._connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()

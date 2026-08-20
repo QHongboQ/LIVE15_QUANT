@@ -7,8 +7,10 @@ const ASSET_LABELS = Object.freeze({
   BNB: ["BNB", "BNB"],
 });
 
-const INTERVALS = Object.freeze({ health: 5000, markets: 10000, detail: 10000, system: 30000, coverage: 60000 });
-const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, system: null };
+// Recorder collection cadence is configured server-side and is independent of these
+// read-only API refresh intervals. The one-second countdown below performs no request.
+const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, system: 30000, coverage: 60000 });
+const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, events: null, system: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
 const lastFetched = new Map();
 const inFlight = new Map();
 
@@ -62,6 +64,31 @@ function duration(value) {
   if (days) return `${days}d ${hours}h`;
   if (hours) return `${hours}h ${minutes}m`;
   return `${minutes}m ${seconds}s`;
+}
+
+function remainingAt(windowEnd, fallback = null) {
+  const end = windowEnd ? new Date(windowEnd) : null;
+  if (end && !Number.isNaN(end.valueOf())) return Math.max(0, (end.valueOf() - Date.now()) / 1000);
+  return fallback;
+}
+
+function countdown(windowEnd, fallback, tag = "span", className = "numeric") {
+  const element = node(tag, className, duration(remainingAt(windowEnd, fallback)));
+  if (windowEnd) element.dataset.windowEnd = windowEnd;
+  return element;
+}
+
+function countdownMetric(label, windowEnd, fallback) {
+  const item = node("div", "metric");
+  append(item, node("span", "label", label), countdown(windowEnd, fallback, "span", "value numeric"));
+  return item;
+}
+
+function updateCountdowns() {
+  if (document.hidden) return;
+  document.querySelectorAll("[data-window-end]").forEach((element) => {
+    element.textContent = duration(remainingAt(element.dataset.windowEnd));
+  });
 }
 
 function age(value) {
@@ -129,14 +156,14 @@ function emptyState(titleText, detail) {
 function currentRoute() {
   const parts = (location.hash.replace(/^#\/?/, "") || "dashboard").split("/").filter(Boolean);
   if (parts[0] === "markets" && parts[1]) return { name: "detail", asset: decodeURIComponent(parts.slice(1).join("/")) };
-  if (["markets", "training", "system"].includes(parts[0])) return { name: parts[0] };
+  if (["markets", "training", "events", "system"].includes(parts[0])) return { name: parts[0] };
   return { name: "dashboard" };
 }
 
 function setHeading(route) {
   const headings = {
     dashboard: ["OVERVIEW", "Dashboard"], markets: ["MARKET DATA", "15-Minute Markets"],
-    training: ["DATASET", "Training Data"], system: ["OPERATIONS", "System / Health"],
+    training: ["DATASET", "Training Data"], events: ["OPERATIONS", "Warnings / Errors"], system: ["OPERATIONS", "System / Health"],
     detail: ["MARKET DETAIL", `${ASSET_LABELS[route.asset]?.[0] || route.asset} Contract`],
   };
   [eyebrow.textContent, title.textContent] = headings[route.name];
@@ -144,6 +171,36 @@ function setHeading(route) {
     const target = route.name === "detail" ? "markets" : route.name;
     link.classList.toggle("active", link.dataset.route === target);
   });
+}
+
+async function recorderAction(action) {
+  if (state.controlBusy || !["start", "pause", "resume"].includes(action)) return;
+  state.controlBusy = true;
+  render();
+  try {
+    const response = await fetch(`/api/recorder/${action}`, {
+      method: "POST", cache: "no-store", credentials: "omit",
+      headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    showNotice(payload.message || `Recorder ${action} completed.`);
+    lastFetched.delete("health");
+    await refresh(true);
+  } catch (error) {
+    showNotice(`Recorder control failed: ${error instanceof Error ? error.message : "unknown error"}`);
+  } finally {
+    state.controlBusy = false;
+    render();
+  }
+}
+
+function controlButton(label, action, enabled) {
+  const button = node("button", "control-button", label);
+  button.type = "button";
+  button.disabled = !enabled || state.controlBusy;
+  button.addEventListener("click", () => recorderAction(action));
+  return button;
 }
 
 function showNotice(message) {
@@ -193,12 +250,12 @@ function marketCard(market) {
   append(name, node("div", "asset-code", labels[0]), node("div", "asset-name", labels[1]));
   append(head, name, badge(market.lifecycle));
   const target = node("div", "target-row");
-  append(target, append(node("div"), node("span", "label", "Target"), node("strong", "", marketPrice(market.target))), append(node("div"), node("span", "label", "Remaining"), node("strong", "", duration(market.seconds_remaining))));
+  append(target, append(node("div"), node("span", "label", "Target"), node("strong", "numeric", marketPrice(market.target))), append(node("div"), node("span", "label", "Remaining"), countdown(market.window_end, market.seconds_remaining, "strong")));
   const quotes = node("div", "quote-grid");
   const yes = node("div", "quote-side yes");
-  append(yes, node("b", "", "YES · BID / ASK"), node("div", "quote-prices", `${predictionPrice(market.yes_bid)}  ${predictionPrice(market.yes_ask)}`));
+  append(yes, node("b", "", "YES · BID / ASK"), node("div", "quote-prices numeric", `${predictionPrice(market.yes_bid)}  ${predictionPrice(market.yes_ask)}`));
   const no = node("div", "quote-side no");
-  append(no, node("b", "", "NO · BID / ASK"), node("div", "quote-prices", `${predictionPrice(market.no_bid)}  ${predictionPrice(market.no_ask)}`));
+  append(no, node("b", "", "NO · BID / ASK"), node("div", "quote-prices numeric", `${predictionPrice(market.no_bid)}  ${predictionPrice(market.no_ask)}`));
   quotes.append(yes, no);
   const foot = node("div", "card-foot");
   append(foot, node("span", "", `Spread ${predictionPrice(market.spread)}`), node("span", "", `Quote ${age(market.quote_age_seconds)}`));
@@ -230,7 +287,23 @@ function renderDashboard() {
     metric("Database", bytes(health.database_bytes)), metric("WAL", bytes(health.wal_bytes)), metric("Rows written", number(health.written_records)));
   root.append(hero);
 
-  root.append(sectionHead("Live 15-minute markets", `${markets.length}/10 assets · refresh 10s`));
+  const controls = node("div", "control-strip");
+  const recorderState = health.recorder_state;
+  append(controls,
+    append(node("div"), node("b", "", "Recorder Control"), node("span", "muted", "Graceful · fixed command · localhost only")),
+    append(node("div", "control-actions"),
+      controlButton("Start Collection", "start", ["stopped", "error"].includes(recorderState)),
+      controlButton("Pause Collection", "pause", ["running", "stale"].includes(recorderState)),
+      controlButton("Resume Collection", "resume", ["paused", "stopped", "error"].includes(recorderState))));
+  root.append(controls);
+
+  const coverage = state.coverage || {};
+  const eventCounts = (state.events || []).reduce((counts, item) => { counts[item.severity] = (counts[item.severity] || 0) + 1; return counts; }, {});
+  const summary = node("div", "metric-grid");
+  append(summary, metric("Finalized events", number(coverage.finalized_events)), metric("Trainable events", number(coverage.trainable_events)), metric("Warnings", number(eventCounts.warning || 0)), metric("Errors / fatal", number((eventCounts.error || 0) + (eventCounts.fatal || 0))));
+  root.append(sectionHead("Recorder summary", "Operational events are bounded"), summary);
+
+  root.append(sectionHead("Live 15-minute markets", `${markets.length}/10 assets · refresh 2.5s`));
   const grid = node("div", "market-grid");
   markets.forEach((market) => grid.append(marketCard(market)));
   root.append(markets.length ? grid : emptyState("Markets unavailable", "No market projections are available."));
@@ -263,6 +336,59 @@ function renderDashboard() {
   return root;
 }
 
+function renderEvents() {
+  const root = node("div");
+  root.append(sectionHead("Warnings / errors / fatal", "Newest 100 · refresh 15s · normal ticks are omitted"));
+  const filters = node("div", "event-filters");
+  const choices = [
+    ["Severity", "severity", [["", "All"], ["info", "Info"], ["warning", "Warning"], ["error", "Error"], ["fatal", "Fatal"]]],
+    ["Asset", "asset", [["", "All assets"], ...Object.keys(ASSET_LABELS).map((asset) => [asset, ASSET_LABELS[asset][0]])]],
+    ["Time", "hours", [["1", "Last hour"], ["24", "Last 24 hours"], ["168", "Last 7 days"], ["", "All retained"]]],
+  ];
+  choices.forEach(([label, key, options]) => {
+    const wrapper = node("label", "filter-control");
+    wrapper.append(node("span", "label", label));
+    const select = node("select");
+    options.forEach(([value, text]) => {
+      const option = node("option", "", text); option.value = value; option.selected = state.eventFilters[key] === value; select.append(option);
+    });
+    select.addEventListener("change", () => setEventFilter(key, select.value));
+    wrapper.append(select); filters.append(wrapper);
+  });
+  const source = node("label", "filter-control");
+  source.append(node("span", "label", "Exact source"));
+  const sourceInput = node("input"); sourceInput.type = "text"; sourceInput.maxLength = 160; sourceInput.placeholder = "e.g. kalshi_quote:BTC"; sourceInput.value = state.eventFilters.source;
+  sourceInput.addEventListener("change", () => setEventFilter("source", sourceInput.value.trim()));
+  source.append(sourceInput); filters.append(source); root.append(filters);
+  const events = state.events || [];
+  const wrap = node("div", "table-wrap");
+  const table = node("table");
+  const head = node("tr");
+  ["Timestamp", "Severity", "Asset / source", "Event", "Error type", "Message"].forEach((item) => head.append(node("th", "", item)));
+  const body = node("tbody");
+  events.forEach((item) => append(body, append(node("tr"), node("td", "", timestamp(item.timestamp)), append(node("td"), badge(item.severity)), node("td", "", valueOrDash(item.asset || item.source)), node("td", "", item.event_type.replaceAll("_", " ")), node("td", "", valueOrDash(item.error_type)), node("td", "", item.message))));
+  table.append(append(node("thead"), head), body); wrap.append(table);
+  root.append(events.length ? wrap : emptyState("No operational warnings", "No bounded diagnostic events match the current view."));
+  return root;
+}
+
+async function setEventFilter(key, value) {
+  state.eventFilters[key] = value;
+  const pending = inFlight.get("events");
+  if (pending) await pending.catch(() => null);
+  lastFetched.delete("events");
+  await refresh(true);
+}
+
+function eventsUrl() {
+  const parameters = new URLSearchParams({ limit: "100" });
+  if (state.eventFilters.severity) parameters.set("severity", state.eventFilters.severity);
+  if (state.eventFilters.asset) parameters.set("asset", state.eventFilters.asset);
+  if (state.eventFilters.source) parameters.set("source", state.eventFilters.source);
+  if (state.eventFilters.hours) parameters.set("since", new Date(Date.now() - Number(state.eventFilters.hours) * 3600000).toISOString());
+  return `/api/events?${parameters}`;
+}
+
 function renderMarkets() {
   const markets = state.markets || [];
   const root = node("div");
@@ -278,7 +404,7 @@ function renderMarkets() {
     const link = node("a", "", ASSET_LABELS[market.asset]?.[0] || market.asset);
     link.href = `#/markets/${encodeURIComponent(market.asset)}`;
     assetCell.append(link);
-    append(row, assetCell, append(node("td"), badge(market.lifecycle)), node("td", "", valueOrDash(market.ticker)), node("td", "num", marketPrice(market.target)), node("td", "num", duration(market.seconds_remaining)), node("td", "num", predictionPrice(market.yes_bid)), node("td", "num", predictionPrice(market.yes_ask)), node("td", "num", predictionPrice(market.no_bid)), node("td", "num", predictionPrice(market.no_ask)), node("td", "num", predictionPrice(market.spread)), node("td", "num", age(market.quote_age_seconds)), node("td", "num", valueOrDash(market.underlying_price, marketPrice)), append(node("td"), badge(market.settlement_followup)));
+    append(row, assetCell, append(node("td"), badge(market.lifecycle)), node("td", "ticker", valueOrDash(market.ticker)), node("td", "num", marketPrice(market.target)), countdown(market.window_end, market.seconds_remaining, "td", "num"), node("td", "num", predictionPrice(market.yes_bid)), node("td", "num", predictionPrice(market.yes_ask)), node("td", "num", predictionPrice(market.no_bid)), node("td", "num", predictionPrice(market.no_ask)), node("td", "num", predictionPrice(market.spread)), node("td", "num", age(market.quote_age_seconds)), node("td", "num", valueOrDash(market.underlying_price, marketPrice)), append(node("td"), badge(market.settlement_followup)));
     body.append(row);
   });
   table.append(append(node("thead"), header), body);
@@ -306,7 +432,7 @@ function renderDetail(route) {
   back.href = "#/markets";
   root.append(back);
   const metrics = node("div", "metric-grid");
-  append(metrics, metric("Lifecycle", market.lifecycle.toUpperCase(), market.official_status || "official status missing"), metric("Time remaining", duration(market.seconds_remaining)), metric("Target", marketPrice(market.target)), metric("Quote age", age(market.quote_age_seconds), market.quote_status));
+  append(metrics, metric("Lifecycle", market.lifecycle.toUpperCase(), market.official_status || "official status missing"), countdownMetric("Time remaining", market.window_end, market.seconds_remaining), metric("Target", marketPrice(market.target)), metric("Quote age", age(market.quote_age_seconds), market.quote_status));
   root.append(metrics, sectionHead("Contract & prices", valueOrDash(market.ticker)));
   const detail = node("div", "detail-grid");
   const contract = node("div", "panel");
@@ -456,18 +582,20 @@ function render() {
   const route = currentRoute();
   setHeading(route);
   updateSidebar();
-  const contents = { dashboard: renderDashboard, markets: renderMarkets, detail: () => renderDetail(route), training: renderTraining, system: renderSystem }[route.name]();
+  const contents = { dashboard: renderDashboard, markets: renderMarkets, detail: () => renderDetail(route), training: renderTraining, events: renderEvents, system: renderSystem }[route.name]();
   view.replaceChildren(contents);
   view.setAttribute("aria-busy", "false");
+  updateCountdowns();
 }
 
 async function refresh(force = false) {
   if (document.hidden) return;
   const route = currentRoute();
   const tasks = [fetchJson("health", "/api/health", INTERVALS.health, force)];
+  if (["dashboard", "events", "system"].includes(route.name)) tasks.push(fetchJson("events", eventsUrl(), INTERVALS.events, force));
+  if (["dashboard", "training"].includes(route.name)) tasks.push(fetchJson("coverage", "/api/coverage", INTERVALS.coverage, force));
   if (["dashboard", "markets", "system"].includes(route.name)) tasks.push(fetchJson("markets", "/api/markets", INTERVALS.markets, force));
   if (route.name === "system") tasks.push(fetchJson("system", "/api/system", INTERVALS.system, force));
-  if (route.name === "training") tasks.push(fetchJson("coverage", "/api/coverage", INTERVALS.coverage, force));
   if (route.name === "detail") {
     if (state.detailAsset !== route.asset) { state.detail = null; state.detailAsset = route.asset; }
     const detailKey = `detail:${route.asset}`;
@@ -484,5 +612,6 @@ async function refresh(force = false) {
 
 window.addEventListener("hashchange", () => refresh(true));
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(true); });
-setInterval(() => refresh(false), 5000);
+setInterval(updateCountdowns, 1000);
+setInterval(() => refresh(false), 500);
 refresh(true);

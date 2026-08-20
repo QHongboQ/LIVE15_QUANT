@@ -450,6 +450,56 @@ class DashboardReadStore:
             raw.close()
         return counts
 
+    def recorder_events(
+        self,
+        *,
+        limit: int,
+        severity: str | None,
+        asset: Asset | None,
+        source: str | None,
+        since: datetime | None,
+    ) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 200:
+            raise ValueError("event limit must be in 1..200")
+        if source is not None and (not source or len(source) > 160):
+            raise ValueError("invalid event source filter")
+        connection = self._open(self.raw_path)
+        if connection is None:
+            return []
+        try:
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recorder_events'"
+            ).fetchone()
+            if exists is None:
+                return []
+            clauses: list[str] = []
+            parameters: list[object] = []
+            if severity is not None:
+                clauses.append("severity=?")
+                parameters.append(severity)
+            if asset is not None:
+                clauses.append("asset=?")
+                parameters.append(asset.value)
+            if source is not None:
+                clauses.append("source=?")
+                parameters.append(source)
+            if since is not None:
+                clauses.append("observed_timestamp>=?")
+                parameters.append(_timestamp(since))
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            parameters.append(limit)
+            rows = connection.execute(
+                f"""SELECT observed_timestamp,severity,event_type,asset,source,error_type,message
+                FROM recorder_events {where}
+                ORDER BY observed_timestamp DESC,id DESC LIMIT ?""",
+                parameters,
+            )
+            return [dict(row) for row in rows]
+        except sqlite3.Error:
+            return []
+        finally:
+            connection.close()
+
 
 def _optional_nonnegative_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None

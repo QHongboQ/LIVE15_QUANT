@@ -14,11 +14,14 @@ from live15_quant.control_center_models import (
     CoverageResponse,
     HealthResponse,
     MarketResponse,
+    RecorderControlResponse,
+    RecorderEventResponse,
     RecorderState,
     SystemResponse,
 )
 from live15_quant.control_center_store import DashboardReadStore
-from live15_quant.models import Asset
+from live15_quant.models import Asset, RecorderEventSeverity
+from live15_quant.recorder_control import RecorderProcessController
 
 
 class ControlCenterService:
@@ -30,6 +33,7 @@ class ControlCenterService:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
+        controller: RecorderProcessController | None = None,
     ) -> None:
         self.settings = settings
         self.store = DashboardReadStore(settings.recorder_data_path, settings.feature_store_path)
@@ -38,6 +42,14 @@ class ControlCenterService:
         self._coverage_lock = threading.Lock()
         self._coverage_cached_at: float | None = None
         self._coverage_cache: CoverageResponse | None = None
+        self._control_lock = threading.Lock()
+        if controller is not None:
+            self.controller = controller
+        else:
+            try:
+                self.controller = RecorderProcessController(settings)
+            except ValueError:
+                self.controller = None
 
     def health(self) -> HealthResponse:
         path = self.settings.recorder_health_path
@@ -53,7 +65,7 @@ class ControlCenterService:
             observed = observed.astimezone(UTC)
             age = max(0.0, (self._clock() - observed).total_seconds())
             stale = age > self.settings.ui_heartbeat_stale_seconds
-            return HealthResponse(
+            response = HealthResponse(
                 status=str(raw.get("status", "unknown")),
                 recorder_state=RecorderState.STALE if stale else RecorderState.RUNNING,
                 heartbeat_status=Availability.STALE if stale else Availability.AVAILABLE,
@@ -74,11 +86,14 @@ class ControlCenterService:
                 fatal_task=self._optional_string(raw.get("fatal_task")),
                 fatal_error_type=self._optional_string(raw.get("fatal_error_type")),
             )
+            return self._apply_managed_state(response)
         except FileNotFoundError:
-            return HealthResponse(
-                status="unavailable",
-                recorder_state=RecorderState.STOPPED,
-                heartbeat_status=Availability.UNAVAILABLE,
+            return self._apply_managed_state(
+                HealthResponse(
+                    status="unavailable",
+                    recorder_state=RecorderState.STOPPED,
+                    heartbeat_status=Availability.UNAVAILABLE,
+                )
             )
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             return HealthResponse(
@@ -87,6 +102,20 @@ class ControlCenterService:
                 heartbeat_status=Availability.ERROR,
                 source_failures={"health": "malformed_heartbeat"},
             )
+
+    def _apply_managed_state(self, health: HealthResponse) -> HealthResponse:
+        if self.controller is None:
+            return health
+        managed = self.controller.status()
+        state = RecorderState(managed.state.value)
+        if state is RecorderState.RUNNING and health.heartbeat_status is Availability.STALE:
+            state = RecorderState.STALE
+        return health.model_copy(
+            update={
+                "recorder_state": state,
+                "status": managed.message if state is not RecorderState.RUNNING else health.status,
+            }
+        )
 
     def markets(self) -> list[MarketResponse]:
         health = self.health()
@@ -135,6 +164,52 @@ class ControlCenterService:
                 else Availability.UNAVAILABLE
             ),
         )
+
+    def recorder_action(self, action: str) -> RecorderControlResponse:
+        if self.controller is None:
+            raise RuntimeError("managed recorder control is unavailable for this configuration")
+        methods = {
+            "start": self.controller.start,
+            "pause": self.controller.pause,
+            "resume": self.controller.resume,
+        }
+        method = methods.get(action)
+        if method is None:
+            raise ValueError("unsupported recorder action")
+        with self._control_lock:
+            result = method()
+        return RecorderControlResponse(
+            state=RecorderState(result.state.value), message=result.message
+        )
+
+    def recorder_events(
+        self,
+        *,
+        limit: int = 100,
+        severity: RecorderEventSeverity | None = None,
+        asset: Asset | None = None,
+        source: str | None = None,
+        since: datetime | None = None,
+    ) -> list[RecorderEventResponse]:
+        rows = self.store.recorder_events(
+            limit=limit,
+            severity=severity.value if severity is not None else None,
+            asset=asset,
+            source=source,
+            since=since,
+        )
+        return [
+            RecorderEventResponse(
+                timestamp=datetime.fromisoformat(str(row["observed_timestamp"])),
+                severity=str(row["severity"]),
+                event_type=str(row["event_type"]),
+                asset=self._optional_string(row["asset"]),
+                source=self._optional_string(row["source"]),
+                error_type=self._optional_string(row["error_type"]),
+                message=str(row["message"]),
+            )
+            for row in rows
+        ]
 
     @staticmethod
     def _optional_int(value: object) -> int | None:

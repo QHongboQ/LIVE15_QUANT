@@ -23,6 +23,7 @@ from live15_quant.normalization import (
     NormalizationScope,
     fit_normalization,
 )
+from live15_quant.records import SCHEMA_VERSION
 from live15_quant.splits import (
     WalkForwardMode,
     WalkForwardPolicy,
@@ -202,7 +203,7 @@ def test_dataset_version_changes_are_part_of_reproducible_manifest(tmp_path) -> 
         second = DatasetBuilder(source, destination).build(DatasetBuildConfig(sampling()))
 
     assert DATASET_VERSION == "1.0.0"
-    assert first_snapshot["recorder_schema_version"] == 4
+    assert first_snapshot["recorder_schema_version"] == SCHEMA_VERSION
     assert first_snapshot != second_snapshot
     assert len(first.build_id) == 64
     assert second.build_id != first.build_id

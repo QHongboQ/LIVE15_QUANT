@@ -20,6 +20,8 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.request_timeout_seconds == 10.0
     assert settings.robinhood_max_source_age_seconds == 360.0
     assert settings.recorder_data_path == Path("data/live15.sqlite3")
+    assert settings.recorder_control_path == Path("data/recorder-control.json")
+    assert settings.recorder_pid_path == Path("data/recorder.pid")
     assert settings.log_level == "INFO"
     assert settings.kalshi_demo_api_key_id is None
     assert settings.kalshi_demo_private_key_path is None
@@ -63,6 +65,8 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_RECORDER_MAX_BACKOFF_SECONDS": "55",
             "LIVE15_RECORDER_CHECKPOINT_INTERVAL_SECONDS": "20",
             "LIVE15_RECORDER_HEALTH_PATH": "scratch/health.json",
+            "LIVE15_RECORDER_CONTROL_PATH": "scratch/control.json",
+            "LIVE15_RECORDER_PID_PATH": "scratch/recorder.pid",
             "LIVE15_DATASET_BUILD_INTERVAL_SECONDS": "3600",
             "LIVE15_ROBINHOOD_15MIN_URL": "https://private.example.test/hidden",
             "LIVE15_KALSHI_DEMO_API_KEY_ID": "demo-key-id",
@@ -96,6 +100,8 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.recorder_max_backoff_seconds == 55
     assert settings.recorder_checkpoint_interval_seconds == 20
     assert settings.recorder_health_path == Path("scratch/health.json")
+    assert settings.recorder_control_path == Path("scratch/control.json")
+    assert settings.recorder_pid_path == Path("scratch/recorder.pid")
     assert settings.dataset_build_interval_seconds == 3600
     assert settings.robinhood_15min_url == ROBINHOOD_15MIN_PUBLIC_URL
     assert settings.kalshi_demo_api_key_id == "demo-key-id"

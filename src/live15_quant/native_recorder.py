@@ -22,7 +22,14 @@ from live15_quant.kalshi_lifecycle import (
     KalshiMarket,
     KalshiNativeMarketProvider,
 )
-from live15_quant.models import Asset, FifteenMinuteContract, KalshiNativeQuote, MarketTick
+from live15_quant.models import (
+    Asset,
+    FifteenMinuteContract,
+    KalshiNativeQuote,
+    MarketTick,
+    RecorderEventSeverity,
+    RecorderEventType,
+)
 from live15_quant.providers.coinbase import CoinbaseWebSocketClient
 from live15_quant.providers.kalshi import (
     KALSHI_15MIN_SERIES,
@@ -32,7 +39,12 @@ from live15_quant.providers.kalshi import (
 )
 from live15_quant.providers.robinhood_15min import Robinhood15MinuteProvider
 from live15_quant.records import KalshiMarketRecord
-from live15_quant.storage import RecorderStorageError, RecorderStore
+from live15_quant.storage import (
+    MarketIdentityConflictError,
+    RecorderStorageError,
+    RecorderStore,
+    SettlementConflictError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +278,7 @@ class KalshiNativeRecorder:
         self._followup_cursors: dict[Asset, str | None] = {asset: None for asset in Asset}
         self._operation_condition = threading.Condition()
         self._active_operations = 0
+        self._reported_stale_sources: set[str] = set()
 
     def _utc_now(self) -> datetime:
         value = self._now()
@@ -435,12 +448,53 @@ class KalshiNativeRecorder:
     def _record_fatal_task(self, task: asyncio.Task[object], error: BaseException) -> None:
         self._health.fatal_task = task.get_name()
         self._health.fatal_error_type = type(error).__name__
+        if isinstance(error, SettlementConflictError):
+            event_type = RecorderEventType.SETTLEMENT_CONFLICT
+        elif isinstance(error, MarketIdentityConflictError):
+            event_type = RecorderEventType.MAPPING_CONFLICT
+        elif isinstance(error, RecorderStorageError):
+            event_type = RecorderEventType.SQLITE_FAILURE
+        else:
+            event_type = RecorderEventType.FATAL_TASK
+        try:
+            self._store.append_recorder_event(
+                observed_timestamp=self._utc_now(),
+                severity=RecorderEventSeverity.FATAL,
+                event_type=event_type,
+                source=task.get_name(),
+                error_type=type(error).__name__,
+                message="Recorder worker stopped on a correctness failure",
+            )
+        except (RecorderStorageError, ValueError):
+            logger.error(
+                "Could not persist fatal recorder diagnostic",
+                extra={"event": "fatal_diagnostic_unavailable"},
+            )
 
     def _accept_market(self, market: KalshiMarket) -> None:
         prior = self._health.states.get(market.ticker)
+        persisted = self._store.latest_kalshi_state(market.ticker)
+        if persisted is not None:
+            self._validate_market_identity(persisted, market)
+            self._validate_finalized_result(persisted, market)
         if prior is None:
-            persisted = self._store.latest_kalshi_state(market.ticker)
             prior = persisted.lifecycle if persisted is not None else None
+        if prior is not None and KalshiLifecycleStateMachine.is_stale_regression(
+            prior, market.lifecycle
+        ):
+            self._store.append_recorder_event(
+                observed_timestamp=market.fetched_timestamp,
+                severity=RecorderEventSeverity.WARNING,
+                event_type=RecorderEventType.LIFECYCLE_REGRESSION,
+                asset=market.asset,
+                source="kalshi_settlement",
+                error_type="StaleLifecycleRegression",
+                message=f"Ignored stale {market.lifecycle.value}; retained {prior.value}",
+                dedup_key=(
+                    f"lifecycle-regression:{market.ticker}:{prior.value}:{market.lifecycle.value}"
+                ),
+            )
+            return
         for observation in KalshiLifecycleStateMachine.observations(prior, market):
             if self._store.append_kalshi_market(observation):
                 self._wrote("kalshi_market_lifecycle")
@@ -455,6 +509,60 @@ class KalshiNativeRecorder:
             self._health.last_finalized[market.asset] = (
                 f"{market.ticker}:{market.settlement.result.value}"
             )
+
+    def _validate_market_identity(
+        self, persisted: KalshiMarketRecord, observed: KalshiMarket
+    ) -> None:
+        if (
+            persisted.asset is not observed.asset
+            or persisted.series != observed.series
+            or persisted.ticker != observed.ticker
+            or persisted.event_ticker != observed.event_ticker
+            or persisted.window_start != observed.window_start
+            or persisted.window_end != observed.window_end
+            or persisted.target != observed.target
+        ):
+            self._store.append_recorder_event(
+                observed_timestamp=observed.fetched_timestamp,
+                severity=RecorderEventSeverity.FATAL,
+                event_type=RecorderEventType.MAPPING_CONFLICT,
+                asset=observed.asset,
+                source="kalshi_market",
+                error_type="MarketIdentityConflict",
+                message="Conflicting official market identity rejected",
+                dedup_key=f"market-identity-conflict:{observed.ticker}",
+            )
+            raise KalshiPublicApiError("conflicting official market identity")
+
+    def _validate_finalized_result(
+        self, persisted: KalshiMarketRecord, observed: KalshiMarket
+    ) -> None:
+        expected = {
+            KalshiLifecycle.SETTLED_YES: "yes",
+            KalshiLifecycle.SETTLED_NO: "no",
+        }.get(persisted.lifecycle)
+        observed_result = (
+            observed.settlement.result.value
+            if observed.settlement is not None
+            else (
+                observed.determination_result.value
+                if observed.determination_result is not None
+                else None
+            )
+        )
+        if expected is None or observed_result is None or observed_result == expected:
+            return
+        self._store.append_recorder_event(
+            observed_timestamp=observed.fetched_timestamp,
+            severity=RecorderEventSeverity.FATAL,
+            event_type=RecorderEventType.SETTLEMENT_CONFLICT,
+            asset=observed.asset,
+            source="kalshi_settlement",
+            error_type="OfficialResultConflict",
+            message="Conflicting official result rejected; immutable settlement retained",
+            dedup_key=f"official-result-conflict:{observed.ticker}:{observed_result}",
+        )
+        raise KalshiPublicApiError("conflicting official result after settlement")
 
     def _wrote(self, table: str) -> None:
         self._health.written_records += 1
@@ -502,6 +610,20 @@ class KalshiNativeRecorder:
         self._health.consecutive_failures[key] = consecutive
         self._health.source_failures[key] = type(error).__name__
         if consecutive == 1 or consecutive & (consecutive - 1) == 0:
+            asset = next(
+                (item for item in Asset if key.endswith(f":{item.value}")),
+                None,
+            )
+            self._store.append_recorder_event(
+                observed_timestamp=self._utc_now(),
+                severity=RecorderEventSeverity.WARNING,
+                event_type=RecorderEventType.SOURCE_UNAVAILABLE,
+                asset=asset,
+                source=key,
+                error_type=type(error).__name__,
+                message="Source temporarily unavailable; bounded retry scheduled",
+                dedup_key=f"source-unavailable:{key}:{type(error).__name__}:{consecutive}",
+            )
             logger.warning(
                 "Recorder source temporarily unavailable",
                 extra={
@@ -729,6 +851,20 @@ class KalshiNativeRecorder:
         self._write_health_file(self.health())
         while not await self._wait(self._settings.recorder_health_interval_seconds):
             health = self.health()
+            stale = set(health.stale_sources)
+            for source in sorted(stale - self._reported_stale_sources):
+                asset = next((item for item in Asset if source.endswith(f":{item.value}")), None)
+                self._store.append_recorder_event(
+                    observed_timestamp=health.observed_at,
+                    severity=RecorderEventSeverity.WARNING,
+                    event_type=RecorderEventType.SOURCE_STALE,
+                    asset=asset,
+                    source=source,
+                    error_type="StaleSource",
+                    message="Source freshness threshold exceeded",
+                    dedup_key=f"source-stale:{source}:{health.started_at.isoformat()}",
+                )
+            self._reported_stale_sources = stale
             self._write_health_file(health)
             logger.info(
                 "Kalshi-native recorder health",

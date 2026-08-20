@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from importlib.resources import files
 
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -16,11 +17,13 @@ from live15_quant.control_center_models import (
     CoverageResponse,
     HealthResponse,
     MarketResponse,
+    RecorderControlResponse,
+    RecorderEventResponse,
     SystemResponse,
 )
 from live15_quant.control_center_service import ControlCenterService
 from live15_quant.logging_config import configure_logging
-from live15_quant.models import Asset
+from live15_quant.models import Asset, RecorderEventSeverity
 
 LOCAL_HOST = "127.0.0.1"
 
@@ -91,6 +94,49 @@ def create_app(
     @app.get("/api/system", response_model=SystemResponse)
     def system() -> SystemResponse:
         return boundary.system()
+
+    @app.get("/api/events", response_model=list[RecorderEventResponse])
+    def events(
+        limit: int = Query(default=100, ge=1, le=200),
+        severity: RecorderEventSeverity | None = None,
+        asset: Asset | None = None,
+        source: str | None = Query(default=None, min_length=1, max_length=160),
+        since: datetime | None = None,
+    ) -> list[RecorderEventResponse]:
+        if since is not None and (since.tzinfo is None or since.utcoffset() is None):
+            raise HTTPException(status_code=422, detail="event time filter must include timezone")
+        return boundary.recorder_events(
+            limit=limit, severity=severity, asset=asset, source=source, since=since
+        )
+
+    def control(action: str, request: Request) -> RecorderControlResponse:
+        client = request.client.host if request.client is not None else ""
+        if client not in {"127.0.0.1", "::1", "testclient"}:
+            raise HTTPException(status_code=403, detail="recorder control is localhost-only")
+        origin = request.headers.get("origin")
+        if origin is not None and origin not in {
+            f"http://127.0.0.1:{configured.ui_port}",
+            f"http://localhost:{configured.ui_port}",
+        }:
+            raise HTTPException(status_code=403, detail="cross-origin recorder control denied")
+        try:
+            return boundary.recorder_action(action)
+        except TimeoutError as error:
+            raise HTTPException(status_code=504, detail=str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.post("/api/recorder/start", response_model=RecorderControlResponse)
+    def recorder_start(request: Request) -> RecorderControlResponse:
+        return control("start", request)
+
+    @app.post("/api/recorder/pause", response_model=RecorderControlResponse)
+    def recorder_pause(request: Request) -> RecorderControlResponse:
+        return control("pause", request)
+
+    @app.post("/api/recorder/resume", response_model=RecorderControlResponse)
+    def recorder_resume(request: Request) -> RecorderControlResponse:
+        return control("resume", request)
 
     return app
 

@@ -235,6 +235,22 @@ class KalshiLifecycleStateMachine:
         ),
     }
 
+    _STALE_REGRESSIONS: Mapping[KalshiLifecycle, frozenset[KalshiLifecycle]] = {
+        KalshiLifecycle.SETTLEMENT_PENDING: frozenset({KalshiLifecycle.CLOSED}),
+        KalshiLifecycle.SETTLED_YES: frozenset(
+            {KalshiLifecycle.CLOSED, KalshiLifecycle.SETTLEMENT_PENDING}
+        ),
+        KalshiLifecycle.SETTLED_NO: frozenset(
+            {KalshiLifecycle.CLOSED, KalshiLifecycle.SETTLEMENT_PENDING}
+        ),
+    }
+
+    @classmethod
+    def is_stale_regression(cls, current: KalshiLifecycle, observed: KalshiLifecycle) -> bool:
+        """Recognize only known out-of-order non-terminal observations."""
+
+        return observed in cls._STALE_REGRESSIONS.get(current, frozenset())
+
     @classmethod
     def transition(
         cls, current: KalshiLifecycle, observed: KalshiLifecycle

@@ -16,10 +16,10 @@ from live15_quant.kalshi_lifecycle import (
     KalshiDiscovery,
     KalshiLifecycle,
 )
-from live15_quant.models import Asset, MarketTick
+from live15_quant.models import Asset, MarketTick, RecorderEventType
 from live15_quant.native_recorder import KalshiNativeRecorder
 from live15_quant.providers.kalshi import KalshiPublicApiError, KalshiTargetUnavailableError
-from live15_quant.storage import RecorderStore
+from live15_quant.storage import MarketIdentityConflictError, RecorderStore
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 from tests.test_storage import prediction_quote
 
@@ -397,6 +397,247 @@ def test_settlement_followup_survives_rollover_and_restart(tmp_path) -> None:
     with RecorderStore(path) as recovered:
         assert recovered.count("kalshi_settlements") == 1
         assert recovered.unsettled_kalshi_markets(now=NOW + timedelta(minutes=18)) == ()
+
+
+@pytest.mark.parametrize("result", ("yes", "no"))
+def test_pending_ignores_stale_closed_then_accepts_finalized(tmp_path, result) -> None:
+    path = tmp_path / "regression.sqlite3"
+    pending = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="determined", result=result),
+        NOW + timedelta(minutes=16),
+    )
+    stale = provider().parse_market(
+        Asset.BTC, raw_market(status="closed"), NOW + timedelta(minutes=16, seconds=1)
+    )
+    finalized = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="finalized", result=result),
+        NOW + timedelta(minutes=17),
+    )
+    with RecorderStore(path) as store:
+        recorder = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW + timedelta(minutes=17),
+        )
+        recorder._accept_market(pending)
+        recorder._accept_market(stale)
+        assert store.latest_kalshi_state(pending.ticker).lifecycle is (
+            KalshiLifecycle.SETTLEMENT_PENDING
+        )
+        events = store.replay_recorder_events()
+        assert [event.event_type.value for event in events] == ["lifecycle_regression"]
+        recorder._accept_market(finalized)
+        expected = KalshiLifecycle.SETTLED_YES if result == "yes" else KalshiLifecycle.SETTLED_NO
+        assert store.latest_kalshi_state(pending.ticker).lifecycle is expected
+        assert store.count("kalshi_settlements") == 1
+
+    with RecorderStore(path) as recovered:
+        assert recovered.latest_kalshi_state(pending.ticker).lifecycle is expected
+        assert len(recovered.replay_recorder_events()) == 1
+
+
+@pytest.mark.parametrize("stale_status", ("closed", "determined"))
+def test_settled_truth_ignores_stale_nonterminal_observation(tmp_path, stale_status) -> None:
+    finalized = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="finalized", result="yes"),
+        NOW + timedelta(minutes=17),
+    )
+    stale = provider().parse_market(
+        Asset.BTC,
+        raw_market(status=stale_status, result="yes" if stale_status == "determined" else None),
+        NOW + timedelta(minutes=17, seconds=1),
+    )
+    with RecorderStore(tmp_path / "settled.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW + timedelta(minutes=18),
+        )
+        recorder._accept_market(finalized)
+        recorder._accept_market(stale)
+        assert store.latest_kalshi_state(finalized.ticker).lifecycle is KalshiLifecycle.SETTLED_YES
+        assert next(iter(store.replay_kalshi_settlements())).result.value == "yes"
+        assert len(store.replay_recorder_events()) == 1
+
+
+def test_settled_truth_rejects_conflicting_stale_determination(tmp_path) -> None:
+    finalized = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="finalized", result="yes"),
+        NOW + timedelta(minutes=17),
+    )
+    conflicting = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="determined", result="no"),
+        NOW + timedelta(minutes=18),
+    )
+    with RecorderStore(tmp_path / "result-conflict.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW + timedelta(minutes=18),
+        )
+        recorder._accept_market(finalized)
+        with pytest.raises(KalshiPublicApiError, match="conflicting official result"):
+            recorder._accept_market(conflicting)
+        assert store.latest_kalshi_state(finalized.ticker).lifecycle is (
+            KalshiLifecycle.SETTLED_YES
+        )
+        event = store.replay_recorder_events()[0]
+        assert event.event_type is RecorderEventType.SETTLEMENT_CONFLICT
+
+
+def test_stale_regression_identity_conflict_remains_fatal(tmp_path) -> None:
+    pending = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="determined", result="yes"),
+        NOW + timedelta(minutes=16),
+    )
+    stale = provider().parse_market(
+        Asset.BTC, raw_market(status="closed"), NOW + timedelta(minutes=16, seconds=1)
+    )
+    with RecorderStore(tmp_path / "identity.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW + timedelta(minutes=17),
+        )
+        recorder._accept_market(pending)
+        with pytest.raises(KalshiPublicApiError, match="identity"):
+            recorder._accept_market(replace(stale, target=stale.target + Decimal("1")))
+
+
+def test_typed_market_rejects_series_or_event_ticker_mismatch() -> None:
+    stale = provider().parse_market(
+        Asset.BTC, raw_market(status="closed"), NOW + timedelta(minutes=17)
+    )
+    with pytest.raises(ValueError, match="exact series"):
+        replace(stale, series="KXOTHER15M")
+    with pytest.raises(ValueError, match="event ticker"):
+        replace(stale, event_ticker="KXBTC15M-CONFLICT")
+
+
+def test_stale_regression_window_conflict_remains_fatal(tmp_path) -> None:
+    pending = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="determined", result="yes"),
+        NOW + timedelta(minutes=16),
+    )
+    stale = provider().parse_market(
+        Asset.BTC, raw_market(status="closed"), NOW + timedelta(minutes=17)
+    )
+    conflicting = replace(
+        stale,
+        window_start=stale.window_start + timedelta(minutes=15),
+        window_end=stale.window_end + timedelta(minutes=15),
+    )
+    with RecorderStore(tmp_path / "identity-window.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW + timedelta(minutes=17),
+        )
+        recorder._accept_market(pending)
+        with pytest.raises(KalshiPublicApiError, match="identity"):
+            recorder._accept_market(conflicting)
+
+
+def test_same_window_under_conflicting_ticker_fails_loudly(tmp_path) -> None:
+    pending = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="determined", result="yes"),
+        NOW + timedelta(minutes=16),
+    )
+    conflicting = replace(pending, ticker=f"{pending.ticker}-CONFLICT")
+    with RecorderStore(tmp_path / "ticker-conflict.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW + timedelta(minutes=17),
+        )
+        recorder._accept_market(pending)
+        with pytest.raises(MarketIdentityConflictError, match="ticker"):
+            recorder._accept_market(conflicting)
+
+
+def test_stale_settlement_regression_isolated_while_other_asset_finalizes(tmp_path) -> None:
+    btc_pending = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="determined", result="yes"),
+        NOW + timedelta(minutes=16),
+    )
+    btc_stale = provider().parse_market(
+        Asset.BTC, raw_market(status="closed"), NOW + timedelta(minutes=17)
+    )
+    eth_closed = provider().parse_market(
+        Asset.ETH,
+        raw_market(Asset.ETH, status="closed"),
+        NOW + timedelta(minutes=16),
+    )
+    eth_final = provider().parse_market(
+        Asset.ETH,
+        raw_market(Asset.ETH, status="finalized", result="no"),
+        NOW + timedelta(minutes=17),
+    )
+    followup = FakeDiscovery(())
+    followup.followups = {btc_pending.ticker: btc_stale, eth_closed.ticker: eth_final}
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "isolation.sqlite3") as store:
+            store.append_kalshi_market(btc_pending)
+            store.append_kalshi_market(eth_closed)
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    settlement_followup_interval_seconds=60,
+                    recorder_health_path=tmp_path / "health.json",
+                ),
+                store,
+                discovery=followup,
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                now=lambda: NOW + timedelta(minutes=17),
+            )
+            tasks = [
+                asyncio.create_task(recorder._record_settlements_asset(asset))
+                for asset in (Asset.BTC, Asset.ETH)
+            ]
+            for _ in range(100):
+                if store.count("kalshi_settlements") == 1:
+                    break
+                await asyncio.sleep(0.001)
+            recorder.request_stop()
+            await asyncio.gather(*tasks)
+            assert store.latest_kalshi_state(btc_pending.ticker).lifecycle is (
+                KalshiLifecycle.SETTLEMENT_PENDING
+            )
+            assert store.latest_kalshi_state(eth_closed.ticker).lifecycle is (
+                KalshiLifecycle.SETTLED_NO
+            )
+            assert len(store.replay_recorder_events()) == 1
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("missing_side", ("terminal_lifecycle", "settlement_truth"))

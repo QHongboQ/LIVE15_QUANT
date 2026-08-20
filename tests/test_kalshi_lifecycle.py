@@ -256,6 +256,23 @@ def test_state_machine_emits_closed_before_pending_and_rejects_result_flip() -> 
         )
 
 
+def test_state_machine_classifies_only_safe_stale_regressions() -> None:
+    assert KalshiLifecycleStateMachine.is_stale_regression(
+        KalshiLifecycle.SETTLEMENT_PENDING, KalshiLifecycle.CLOSED
+    )
+    for settled in (KalshiLifecycle.SETTLED_YES, KalshiLifecycle.SETTLED_NO):
+        assert KalshiLifecycleStateMachine.is_stale_regression(settled, KalshiLifecycle.CLOSED)
+        assert KalshiLifecycleStateMachine.is_stale_regression(
+            settled, KalshiLifecycle.SETTLEMENT_PENDING
+        )
+    assert not KalshiLifecycleStateMachine.is_stale_regression(
+        KalshiLifecycle.SETTLED_YES, KalshiLifecycle.SETTLED_NO
+    )
+    assert not KalshiLifecycleStateMachine.is_stale_regression(
+        KalshiLifecycle.OPEN, KalshiLifecycle.UPCOMING
+    )
+
+
 def test_pause_reactivation_and_pause_to_settlement_are_explicit() -> None:
     assert KalshiLifecycleStateMachine.transition(KalshiLifecycle.OPEN, KalshiLifecycle.PAUSED) == (
         KalshiLifecycle.PAUSED,

@@ -10,6 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class RecorderState(StrEnum):
     RUNNING = "running"
+    STARTING = "starting"
+    PAUSED = "paused"
+    STOPPING = "stopping"
     STOPPED = "stopped"
     STALE = "stale"
     ERROR = "error"
@@ -120,7 +123,7 @@ class CoverageResponse(StrictResponse):
 
 class SystemResponse(StrictResponse):
     service: str = "LIVE15 Control Center"
-    api_mode: str = "read_only"
+    api_mode: str = "read_only_data_with_bounded_recorder_control"
     bind_host: str = "127.0.0.1"
     generated_at: datetime
     recorder_state: RecorderState
@@ -128,3 +131,19 @@ class SystemResponse(StrictResponse):
     feature_store: Availability
     trading_endpoints: bool = False
     credential_endpoints: bool = False
+    recorder_control_actions: tuple[str, ...] = ("start", "pause", "resume")
+
+
+class RecorderControlResponse(StrictResponse):
+    state: RecorderState
+    message: str
+
+
+class RecorderEventResponse(StrictResponse):
+    timestamp: datetime
+    severity: str
+    event_type: str
+    asset: str | None = None
+    source: str | None = None
+    error_type: str | None = None
+    message: str

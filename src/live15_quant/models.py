@@ -99,6 +99,27 @@ class RecorderDiagnosticKind(StrEnum):
     ROLLOVER_GAP_ENDED = "rollover_gap_ended"
 
 
+class RecorderEventSeverity(StrEnum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    FATAL = "fatal"
+
+
+class RecorderEventType(StrEnum):
+    RECORDER_STARTED = "recorder_started"
+    RECORDER_STOPPED = "recorder_stopped"
+    RECORDER_RECOVERED = "recorder_recovered"
+    SOURCE_UNAVAILABLE = "source_temporarily_unavailable"
+    RETRY_EXHAUSTED = "retry_exhausted"
+    SOURCE_STALE = "source_stale"
+    LIFECYCLE_REGRESSION = "lifecycle_regression"
+    SETTLEMENT_CONFLICT = "settlement_conflict"
+    MAPPING_CONFLICT = "mapping_ticker_conflict"
+    SQLITE_FAILURE = "sqlite_integrity_failure"
+    FATAL_TASK = "fatal_task"
+
+
 @dataclass(frozen=True, slots=True)
 class OrderBookLevel:
     """One explicit venue order-book bid level."""

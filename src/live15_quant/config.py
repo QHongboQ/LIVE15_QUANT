@@ -49,6 +49,8 @@ class Settings:
     recorder_operation_timeout_seconds: float = 45.0
     recorder_max_backoff_seconds: float = 60.0
     recorder_health_path: Path = Path("data/health.json")
+    recorder_control_path: Path = Path("data/recorder-control.json")
+    recorder_pid_path: Path = Path("data/recorder.pid")
     ui_port: int = 8765
     ui_heartbeat_stale_seconds: float = 90.0
     dataset_build_interval_seconds: float | None = None
@@ -153,14 +155,22 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     recorder_health_path = Path(
         source.get("LIVE15_RECORDER_HEALTH_PATH", str(defaults.recorder_health_path))
     )
+    recorder_control_path = Path(
+        source.get("LIVE15_RECORDER_CONTROL_PATH", str(defaults.recorder_control_path))
+    )
+    recorder_pid_path = Path(
+        source.get("LIVE15_RECORDER_PID_PATH", str(defaults.recorder_pid_path))
+    )
     resolved_paths = {
         recorder_data_path.resolve(),
         paper_data_path.resolve(),
         feature_store_path.resolve(),
         recorder_health_path.resolve(),
+        recorder_control_path.resolve(),
+        recorder_pid_path.resolve(),
     }
-    if len(resolved_paths) != 4:
-        raise ValueError("raw recorder, paper, feature-store, and health paths must be different")
+    if len(resolved_paths) != 6:
+        raise ValueError("database and recorder runtime paths must be different from each other")
     paper_account_id = source.get("LIVE15_PAPER_ACCOUNT_ID", defaults.paper_account_id).strip()
     if not paper_account_id:
         raise ValueError("LIVE15_PAPER_ACCOUNT_ID must not be empty")
@@ -270,6 +280,8 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             defaults.recorder_max_backoff_seconds,
         ),
         recorder_health_path=recorder_health_path,
+        recorder_control_path=recorder_control_path,
+        recorder_pid_path=recorder_pid_path,
         ui_port=_positive_int(source, "LIVE15_UI_PORT", defaults.ui_port),
         ui_heartbeat_stale_seconds=_positive_float(
             source,

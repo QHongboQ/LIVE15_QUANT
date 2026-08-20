@@ -36,6 +36,11 @@ from live15_quant.providers.kalshi_demo import (
     KalshiDemoCredentials,
     KalshiDemoReadOnlyClient,
 )
+from live15_quant.recorder_control import (
+    ManagedRecorderState,
+    RecorderPidLease,
+    RecorderProcessController,
+)
 from live15_quant.storage import RecorderStore
 
 logger = logging.getLogger(__name__)
@@ -145,19 +150,51 @@ def discover_main() -> None:
         )
 
 
-async def _run_recorder(settings: Settings) -> None:
+async def _watch_recorder_control(
+    recorder: KalshiNativeRecorder, controller: RecorderProcessController
+) -> None:
+    while True:
+        if controller.desired_state() == "paused":
+            recorder.request_stop()
+            return
+        await asyncio.sleep(0.25)
+
+
+async def _run_recorder(
+    settings: Settings, controller: RecorderProcessController | None = None
+) -> None:
     with RecorderStore(settings.recorder_data_path) as store:
         recorder = KalshiNativeRecorder(settings, store)
+        control_task = (
+            asyncio.create_task(_watch_recorder_control(recorder, controller))
+            if controller is not None
+            else None
+        )
+        if controller is not None:
+            controller.write_child_state(
+                "running", ManagedRecorderState.RUNNING, "recorder is running"
+            )
         if settings.dataset_build_interval_seconds is None:
-            await recorder.run()
+            try:
+                await recorder.run()
+            finally:
+                if control_task is not None:
+                    control_task.cancel()
+                    await asyncio.gather(control_task, return_exceptions=True)
             return
         recorder_task = asyncio.create_task(recorder.run())
         snapshot_task = asyncio.create_task(_periodic_dataset_build(settings))
         try:
             await recorder_task
         finally:
+            if control_task is not None:
+                control_task.cancel()
             snapshot_task.cancel()
-            await asyncio.gather(snapshot_task, return_exceptions=True)
+            await asyncio.gather(
+                snapshot_task,
+                *(item for item in (control_task,) if item is not None),
+                return_exceptions=True,
+            )
 
 
 async def _periodic_dataset_build(settings: Settings) -> None:
@@ -202,9 +239,25 @@ def recorder_main(argv: Sequence[str] | None = None) -> None:
     settings = load_settings()
     configure_logging(settings.log_level)
     try:
-        asyncio.run(_run_recorder(settings))
+        controller = RecorderProcessController(settings)
+    except ValueError:
+        controller = None
+    try:
+        with RecorderPidLease(settings.recorder_pid_path):
+            asyncio.run(_run_recorder(settings, controller))
     except KeyboardInterrupt:
         logger.info("Recorder interrupted safely", extra={"event": "recorder_interrupted"})
+    finally:
+        if controller is not None:
+            desired = controller.desired_state()
+            state = (
+                ManagedRecorderState.PAUSED if desired == "paused" else ManagedRecorderState.STOPPED
+            )
+            controller.write_child_state(
+                desired,
+                state,
+                "collection is paused" if desired == "paused" else "recorder stopped",
+            )
 
 
 def paper_main() -> None:

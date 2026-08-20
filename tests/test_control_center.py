@@ -18,7 +18,13 @@ from live15_quant.control_center import LOCAL_HOST, create_app
 from live15_quant.control_center_models import RecorderState
 from live15_quant.control_center_service import ControlCenterService
 from live15_quant.dataset import FeatureStore
-from live15_quant.models import Asset, MarketTick
+from live15_quant.models import (
+    Asset,
+    MarketTick,
+    RecorderEventSeverity,
+    RecorderEventType,
+)
+from live15_quant.recorder_control import ManagedRecorderState, RecorderControlStatus
 from live15_quant.storage import RecorderStore
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 
@@ -85,7 +91,7 @@ async def test_health_and_system_when_recorder_stopped(tmp_path: Path) -> None:
     assert health.status_code == 200
     assert health.json()["recorder_state"] == "stopped"
     assert health.json()["heartbeat_status"] == "unavailable"
-    assert system.json()["api_mode"] == "read_only"
+    assert system.json()["api_mode"] == "read_only_data_with_bounded_recorder_control"
     assert system.json()["bind_host"] == "127.0.0.1"
     assert page.status_code == 200
     assert "LIVE15 Control Center" in page.text
@@ -296,7 +302,12 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
     app = create_app(settings(tmp_path))
     routes = {(method, route.path) for route in app.routes for method in route.methods or set()}
 
-    assert all(method in {"GET", "HEAD"} for method, _path in routes)
+    assert {(method, path) for method, path in routes if method == "POST"} == {
+        ("POST", "/api/recorder/start"),
+        ("POST", "/api/recorder/pause"),
+        ("POST", "/api/recorder/resume"),
+    }
+    assert all(method in {"GET", "HEAD", "POST"} for method, _path in routes)
     assert {path for _method, path in routes} == {
         "/",
         "/assets/app.css",
@@ -305,12 +316,28 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
         "/api/markets",
         "/api/markets/{asset}",
         "/api/coverage",
+        "/api/events",
+        "/api/recorder/start",
+        "/api/recorder/pause",
+        "/api/recorder/resume",
         "/api/system",
     }
+    forbidden_segments = {
+        "order",
+        "orders",
+        "trade",
+        "trading",
+        "credential",
+        "credentials",
+        "key",
+        "keys",
+        "shell",
+        "file",
+        "files",
+    }
     assert not any(
-        word in path.lower()
+        forbidden_segments.intersection(segment.lower() for segment in path.split("/") if segment)
         for _method, path in routes
-        for word in ("order", "trade", "credential", "key", "shell", "file", "recorder/start")
     )
 
 
@@ -330,6 +357,44 @@ async def test_dashboard_static_assets_and_security_headers(tmp_path: Path) -> N
     assert page.headers["referrer-policy"] == "no-referrer"
     assert 'href="/assets/app.css"' in page.text
     assert 'src="/assets/app.js"' in page.text
+
+
+@pytest.mark.asyncio
+async def test_operational_events_api_is_bounded_typed_and_filterable(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_recorder_event(
+            observed_timestamp=NOW,
+            severity=RecorderEventSeverity.WARNING,
+            event_type=RecorderEventType.LIFECYCLE_REGRESSION,
+            asset=Asset.BTC,
+            source="kalshi_settlement:BTC",
+            error_type="StaleLifecycleRegression",
+            message="Ignored stale closed; retained settlement_pending",
+        )
+    transport = httpx.ASGITransport(app=create_app(configured))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.get(
+            "/api/events",
+            params={"severity": "warning", "asset": "BTC", "limit": 20},
+        )
+        invalid = await client.get("/api/events", params={"limit": 201})
+        naive_time = await client.get("/api/events", params={"since": "2026-08-20T12:00:00"})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "timestamp": NOW.isoformat().replace("+00:00", "Z"),
+            "severity": "warning",
+            "event_type": "lifecycle_regression",
+            "asset": "BTC",
+            "source": "kalshi_settlement:BTC",
+            "error_type": "StaleLifecycleRegression",
+            "message": "Ignored stale closed; retained settlement_pending",
+        }
+    ]
+    assert invalid.status_code == 422
+    assert naive_time.status_code == 422
 
 
 def test_dashboard_assets_are_declared_for_clean_install() -> None:
@@ -362,23 +427,43 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
     assert "recorder_state" in script
     assert "quote_status" in script
     assert "underlying_status" in script
+    assert "Exact source" in script
+    assert "eventFilters" in script
+    assert "await pending.catch" in script
 
 
 @pytest.mark.asyncio
-async def test_frontend_polling_is_bounded_and_exposes_no_write_controls(tmp_path: Path) -> None:
+async def test_frontend_polling_is_bounded_and_exposes_only_recorder_controls(
+    tmp_path: Path,
+) -> None:
     transport = httpx.ASGITransport(app=create_app(settings(tmp_path)))
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
         page = (await client.get("/")).text.lower()
         script = (await client.get("/assets/app.js")).text.lower()
+        stylesheet = (await client.get("/assets/app.css")).text
 
-    assert "health: 5000" in script
-    assert "markets: 10000" in script
+    assert "health: 2500" in script
+    assert "markets: 2500" in script
+    assert "detail: 2500" in script
+    assert "system: 30000" in script
     assert "coverage: 60000" in script
+    assert "setinterval(updatecountdowns, 1000)" in script
+    assert "setinterval(() => refresh(false), 500)" in script
+    assert 'queryselectorall("[data-window-end]")' in script
+    assert "windowend" in script
     assert "document.hidden" in script
     assert "inflight" in script
     assert 'credentials: "omit"' in script
-    assert "method:" not in script
-    assert "<button" not in page
+    assert 'method: "post"' in script
+    assert "start collection" in script
+    assert "pause collection" in script
+    assert "resume collection" in script
+    assert '--font-ui: "Segoe UI", "Microsoft YaHei", Arial, sans-serif' in stylesheet
+    assert '--font-cjk: "Microsoft YaHei", "SimSun", sans-serif' in stylesheet
+    assert "font-variant-numeric: tabular-nums" in stylesheet
+    quote_rule = stylesheet.split(".quote-prices", 1)[1].split("}", 1)[0]
+    assert "var(--font-ui)" in quote_rule
+    assert "monospace" not in quote_rule
     assert "<form" not in page
     assert not any(
         endpoint in script
@@ -386,11 +471,52 @@ async def test_frontend_polling_is_bounded_and_exposes_no_write_controls(tmp_pat
             "/api/trade",
             "/api/order",
             "/api/credential",
-            "/api/recorder/start",
-            "/api/recorder/stop",
             "/api/shell",
         )
     )
+
+
+class FakeRecorderController:
+    def __init__(self) -> None:
+        self.current = ManagedRecorderState.STOPPED
+        self.calls: list[str] = []
+
+    def status(self) -> RecorderControlStatus:
+        return RecorderControlStatus(self.current, None, self.current.value)
+
+    def start(self) -> RecorderControlStatus:
+        self.calls.append("start")
+        self.current = ManagedRecorderState.RUNNING
+        return self.status()
+
+    def resume(self) -> RecorderControlStatus:
+        self.calls.append("resume")
+        self.current = ManagedRecorderState.RUNNING
+        return self.status()
+
+    def pause(self) -> RecorderControlStatus:
+        self.calls.append("pause")
+        self.current = ManagedRecorderState.PAUSED
+        return self.status()
+
+
+@pytest.mark.asyncio
+async def test_recorder_control_routes_are_explicit_and_localhost_only(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    controller = FakeRecorderController()
+    service = ControlCenterService(configured, clock=lambda: NOW, controller=controller)  # type: ignore[arg-type]
+    app = create_app(configured, service)
+    local = httpx.ASGITransport(app=app, client=("127.0.0.1", 1234))
+    async with httpx.AsyncClient(transport=local, base_url="http://127.0.0.1") as client:
+        assert (await client.post("/api/recorder/start")).json()["state"] == "running"
+        assert (await client.post("/api/recorder/pause")).json()["state"] == "paused"
+        assert (await client.post("/api/recorder/resume")).json()["state"] == "running"
+    assert controller.calls == ["start", "pause", "resume"]
+
+    remote = httpx.ASGITransport(app=app, client=("192.0.2.10", 1234))
+    async with httpx.AsyncClient(transport=remote, base_url="http://127.0.0.1") as client:
+        assert (await client.post("/api/recorder/pause")).status_code == 403
+    assert controller.calls == ["start", "pause", "resume"]
 
 
 @pytest.mark.asyncio

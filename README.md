@@ -163,7 +163,7 @@ live15-coverage
 # 读取 recorder 的原子 health heartbeat
 live15-status
 
-# 启动 localhost-only、只读的 Control Center backend
+# 启动 localhost-only Control Center（market/training data 只读）
 live15-ui
 
 # 真实公开 Kalshi 行情驱动、只写本地 SQLite 的 deterministic paper runtime
@@ -192,16 +192,26 @@ python btc_stream.py
 python market_stream.py
 ```
 
-### LIVE15 Control Center backend（Milestone 7.6A）
+### LIVE15 Control Center
 
-`live15-ui` 默认且强制绑定 `http://127.0.0.1:8765`，提供简单占位首页和五个只读
+`live15-ui` 默认且强制绑定 `http://127.0.0.1:8765`，提供 Dashboard 和五个只读
 API：`/api/health`、`/api/markets`、`/api/markets/{asset}`、`/api/coverage`、
-`/api/system`。端口可用 `LIVE15_UI_PORT` 或 `--port` 调整，但 host 不可配置为
+`/api/system`，以及有界、可筛选的 `/api/events` operational diagnostics。端口可用
+`LIVE15_UI_PORT` 或 `--port` 调整，但 host 不可配置为
 `0.0.0.0`。服务使用只读 SQLite connection、typed response models、现有
 `FeatureEngine` 和 recorder heartbeat，不复制 settlement 或 feature 公式。
 
-本阶段没有 recorder start/stop、dataset build、shell、任意文件浏览、credential、Demo
-或 Production trading route。API 只返回白名单 health 字段，不返回 Kalshi key ID、private
+Windows 可直接双击 `scripts\start_control_center.cmd`。launcher 只使用项目固定 `.venv`、固定
+module 和 localhost URL；若 LIVE15 UI 已运行则只打开浏览器，若端口被其他程序占用则明确报错，
+不会重复启动 Uvicorn。Dashboard 只允许三个固定 recorder lifecycle action：Start、Pause、
+Resume。Start 必须观察到**本次启动后**的新 heartbeat 才返回 running；Pause 通过 cooperative
+shutdown 等待在途只读 HTTP/SQLite 操作收尾，不使用 taskkill；重复 Start/Pause 幂等，PID lease
+阻止多 recorder。Windows 上由 UI 启动的 recorder 使用无可见 console 的独立后台进程；手动运行
+`live15-record` 仍保留前台 console 日志。UI/Uvicorn 与 recorder 是独立进程，关闭浏览器或 UI
+不会停止采集，fatal diagnostics 仍写入 heartbeat 与有界 `recorder_events`。
+
+没有 dataset build、shell、任意文件浏览、credential、Demo 或 Production trading route；也没有
+kill/restart/任意命令参数。API 只返回白名单 health 字段，不返回 Kalshi key ID、private
 key path、signature 或账户信息。heartbeat 缺失表示 recorder `stopped`；超龄显示
 `stale`；市场字段缺失保持 JSON `null` 并带明确 availability/status，不填成零。
 若任一 recorder worker 因 correctness/storage 错误退出，最终 heartbeat 会保存
@@ -209,15 +219,21 @@ key path、signature 或账户信息。heartbeat 缺失表示 recorder `stopped`
 upstream unavailable 仍只记录在对应 asset/source failure 中并继续其他任务。
 
 Milestone 7.6B 在同一个 localhost backend 上提供无构建步骤的原生 HTML/CSS/JavaScript
-Dashboard。左侧导航包含 Dashboard、Markets、Training Data 与 System / Health；资产卡和
+Dashboard。左侧导航包含 Dashboard、Markets、Training Data、Warnings / Errors 与 System /
+Health；资产卡和
 detail 页面展示 Kalshi quote/orderbook、Coinbase predictive underlying、现有
 `FeatureEngine` 投影及官方 finalized history。前端只格式化 typed API 字段，不计算交易或
 settlement 业务事实；missing、stale、unsupported 均显示文字状态和 `—`，不会填零。
 
-轮询按成本分级并禁止重叠请求：health 5 秒、markets/detail 10 秒、system 30 秒、coverage
-60 秒；页面隐藏时暂停刷新。coverage backend 另有 30 秒线程安全缓存与只读 SQLite snapshot。
-浏览器关闭不会影响独立运行的 `live15-record`。Dashboard 不包含 recorder controls、交易
-按钮、credential 页面或任何写 API。
+三个时间尺度相互独立：recorder 的 source collection cadence 由 recorder 配置控制，不受 UI
+影响；API 轮询按成本分级并禁止重叠请求（health、markets/detail 2.5 秒，events 15 秒，system
+30 秒，coverage 60 秒）；`Remaining` 仅使用服务端返回的 `window_end` 在浏览器 DOM 中每秒倒计时，
+不发请求且不改变任何 lifecycle/settlement/training fact。页面隐藏时暂停全部刷新和倒计时。
+coverage backend 另有 30 秒线程安全缓存与只读 SQLite snapshot，绝不会因每秒展示更新触发
+全库 COUNT、integrity check 或 dataset rebuild。
+浏览器关闭不会影响独立 recorder。Dashboard 不包含交易按钮、credential 页面或任何其他写
+API。Warnings / Errors 页面按 severity、asset、exact source 和时间范围过滤最近的 bounded
+diagnostics；普通成功 tick 不写该表，默认最多保留 5,000 条，避免日志/数据库无限增长。
 
 Training Data 页面严格区分当前 raw store 的 finalized 总数与最新 immutable DatasetBuilder
 snapshot 已评估的 finalized 数。snapshot 之后到达的事件显示为 `unevaluated`，不会被误称为
@@ -245,7 +261,13 @@ snapshot 已评估的 finalized 数。snapshot 之后到达的事件显示为 `u
 - 所有 price、bid、ask、spread、size、volume 和 probability 均以 Decimal 原始字符串保存；绝不按 settlement rounding precision 截断。
 - SQLite 可直接被 pandas、Polars 或 DuckDB 查询，后续可批量导出 Parquet。JSONL 缺少可靠事务和索引；Parquet 更适合冷数据批量文件，不适合当前逐 tick append 和 crash recovery，因此两者均未用作热存储。
 
-数据库 metadata 和每一行都包含 `schema_version=4`。v1→v2→v3 的既有原子迁移保持不变；v3→v4 在单一事务中添加 Kalshi native quote、lifecycle、immutable settlement、conflict diagnostic 与 backfill cursor tables，并统一旧行版本。任何检查失败都会 rollback；未知或未来版本会在修改 recorder tables 前明确拒绝。
+数据库 metadata 和每一行都包含 `schema_version=5`。v1→v2→v3 的既有原子迁移保持不变；v3→v4 在单一事务中添加 Kalshi native quote、lifecycle、immutable settlement、conflict diagnostic 与 backfill cursor tables，并统一旧行版本。v4→v5 原子添加独立、bounded 的 `recorder_events` typed diagnostics table。任何检查失败都会 rollback；未知或未来版本会在修改 recorder tables 前明确拒绝。
+
+Kalshi settlement follow-up 偶尔会在已观察到 `settlement_pending` 或 finalized truth 后返回较旧的
+`closed`/`determined` representation。recorder 只对严格白名单的同 ticker、同 series、同 event、
+同 UTC window、同 target 退化状态记一条 `lifecycle_regression` warning，并保留更强状态和官方
+settlement truth；不会写退化 lifecycle。身份/target 冲突、官方 YES/NO 冲突、malformed payload
+和 SQLite correctness failure 仍 fail loudly，并写 typed fatal event（若 storage 仍可用）。
 
 ### Kalshi-native lifecycle / settlement schema
 
@@ -307,6 +329,8 @@ with RecorderStore(Path("data/live15.sqlite3")) as store:
 | `LIVE15_OFFICIAL_QUOTE_MAX_SOURCE_AGE_SECONDS` | `15` |
 | `LIVE15_OFFICIAL_QUOTE_ORDERBOOK_DEPTH` | `10` |
 | `LIVE15_RECORDER_DATA_PATH` | `data/live15.sqlite3` |
+| `LIVE15_RECORDER_CONTROL_PATH` | `data/recorder-control.json`（runtime；Git ignored） |
+| `LIVE15_RECORDER_PID_PATH` | `data/recorder.pid`（runtime；Git ignored） |
 | `LIVE15_RECORDER_HEALTH_INTERVAL_SECONDS` | `30` |
 | `LIVE15_RECORDER_COINBASE_STALE_SECONDS` | `30` |
 | `LIVE15_FEATURE_STORE_PATH` | `data/features.sqlite3` |

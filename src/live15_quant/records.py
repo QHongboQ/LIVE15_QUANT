@@ -16,12 +16,14 @@ from live15_quant.models import (
     MappingConfidence,
     OrderBookLevel,
     RecorderDiagnosticKind,
+    RecorderEventSeverity,
+    RecorderEventType,
     SourceTimestampKind,
     SupportLevel,
     Venue,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +94,21 @@ class RobinhoodDiagnosticRecord:
     event_end_time: datetime
     related_event_id: str | None
     source_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecorderEventRecord:
+    """Bounded operational diagnostic, isolated from all training tables."""
+
+    row_id: int
+    schema_version: int
+    observed_timestamp: datetime
+    severity: RecorderEventSeverity
+    event_type: RecorderEventType
+    asset: Asset | None
+    source: str | None
+    error_type: str | None
+    message: str
 
 
 @dataclass(frozen=True, slots=True)

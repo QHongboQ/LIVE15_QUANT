@@ -19,13 +19,18 @@ from live15_quant.models import (
     OrderBookLevel,
     PredictionMarketQuote,
     RecorderDiagnosticKind,
+    RecorderEventSeverity,
+    RecorderEventType,
     SourceTimestampKind,
     SupportLevel,
     Venue,
 )
+from live15_quant.records import SCHEMA_VERSION
 from live15_quant.replay import ReplayReader
 from live15_quant.settlement import SETTLEMENT_SPECS
 from live15_quant.storage import RecorderStorageError, RecorderStore
+
+NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 
 
 def contract(
@@ -174,9 +179,9 @@ def test_v1_database_is_atomically_migrated_without_losing_history(tmp_path) -> 
             "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
 
-    assert version == "4"
-    assert snapshot.schema_version == 4
-    assert saved_tick.schema_version == 4
+    assert version == str(SCHEMA_VERSION)
+    assert snapshot.schema_version == SCHEMA_VERSION
+    assert saved_tick.schema_version == SCHEMA_VERSION
     assert snapshot.target_price == Decimal("68159.82000001")
     assert saved_tick.price == Decimal("68159.1234567890123456789")
 
@@ -229,7 +234,7 @@ def test_v2_database_is_atomically_migrated_with_quote_stream(tmp_path) -> None:
             "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
 
-    assert version == "4"
+    assert version == str(SCHEMA_VERSION)
 
 
 def test_failed_v2_migration_rolls_back_version_and_quote_table(tmp_path) -> None:
@@ -374,6 +379,118 @@ def test_lifecycle_diagnostics_are_deduplicated_by_logical_event(tmp_path) -> No
         assert first is True
         assert repeated is False
         assert store.count("robinhood_diagnostics") == 1
+
+
+def test_operational_events_are_bounded_filterable_and_deduplicated(tmp_path) -> None:
+    with RecorderStore(tmp_path / "events.sqlite3") as store:
+        for index in range(105):
+            store.append_recorder_event(
+                observed_timestamp=NOW + timedelta(seconds=index),
+                severity=(
+                    RecorderEventSeverity.ERROR if index % 2 else RecorderEventSeverity.WARNING
+                ),
+                event_type=RecorderEventType.SOURCE_UNAVAILABLE,
+                asset=Asset.BTC if index % 3 else Asset.ETH,
+                source="kalshi_quote:BTC",
+                error_type="TimeoutError",
+                message="Source temporarily unavailable; bounded retry scheduled",
+                dedup_key=f"event-{index}",
+                retain=100,
+            )
+        assert not store.append_recorder_event(
+            observed_timestamp=NOW + timedelta(seconds=104),
+            severity=RecorderEventSeverity.WARNING,
+            event_type=RecorderEventType.SOURCE_UNAVAILABLE,
+            message="Duplicate is ignored",
+            dedup_key="event-104",
+            retain=100,
+        )
+        assert store.count("recorder_events") == 100
+        filtered = store.replay_recorder_events(
+            limit=25,
+            severity=RecorderEventSeverity.ERROR,
+            asset=Asset.BTC,
+            since=NOW + timedelta(seconds=50),
+        )
+
+    assert 0 < len(filtered) <= 25
+    assert all(event.severity is RecorderEventSeverity.ERROR for event in filtered)
+    assert all(event.asset is Asset.BTC for event in filtered)
+    assert list(filtered) == sorted(
+        filtered, key=lambda event: (event.observed_timestamp, event.row_id), reverse=True
+    )
+
+
+def test_v4_database_migrates_operational_events_atomically(tmp_path) -> None:
+    path = tmp_path / "v4.sqlite3"
+    with RecorderStore(path) as store:
+        store.append_coinbase(tick())
+
+    versioned_tables = (
+        "robinhood_snapshots",
+        "coinbase_ticks",
+        "robinhood_diagnostics",
+        "prediction_market_quotes",
+        "kalshi_market_lifecycle",
+        "kalshi_settlements",
+        "kalshi_prediction_quotes",
+        "kalshi_settlement_conflicts",
+    )
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE recorder_events")
+    connection.execute("UPDATE recorder_metadata SET value='4'")
+    for table in versioned_tables:
+        connection.execute(f"UPDATE {table} SET schema_version=4")
+    connection.commit()
+    connection.close()
+
+    with RecorderStore(path) as migrated:
+        assert migrated.count("coinbase_ticks") == 1
+        assert migrated.count("recorder_events") == 0
+        assert migrated.integrity_check() == "ok"
+        assert migrated._connection.execute(
+            "SELECT value FROM recorder_metadata WHERE key='schema_version'"
+        ).fetchone()[0] == str(SCHEMA_VERSION)
+
+
+def test_failed_v4_migration_rolls_back_version_and_event_table(tmp_path) -> None:
+    path = tmp_path / "bad-v4.sqlite3"
+    with RecorderStore(path) as store:
+        store.append_coinbase(tick())
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE recorder_events")
+    connection.execute("UPDATE recorder_metadata SET value='4'")
+    for table in (
+        "robinhood_snapshots",
+        "coinbase_ticks",
+        "robinhood_diagnostics",
+        "prediction_market_quotes",
+        "kalshi_market_lifecycle",
+        "kalshi_settlements",
+        "kalshi_prediction_quotes",
+        "kalshi_settlement_conflicts",
+    ):
+        connection.execute(f"UPDATE {table} SET schema_version=4")
+    connection.execute("UPDATE coinbase_ticks SET schema_version=3")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RecorderStorageError, match="mixed schema"):
+        RecorderStore(path)
+    connection = sqlite3.connect(path)
+    assert (
+        connection.execute(
+            "SELECT value FROM recorder_metadata WHERE key='schema_version'"
+        ).fetchone()[0]
+        == "4"
+    )
+    assert (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recorder_events'"
+        ).fetchone()
+        is None
+    )
+    connection.close()
 
 
 def test_storage_rejects_post_end_active_observation(tmp_path) -> None:
