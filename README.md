@@ -163,6 +163,9 @@ live15-coverage
 # 读取 recorder 的原子 health heartbeat
 live15-status
 
+# 启动 localhost-only、只读的 Control Center backend
+live15-ui
+
 # 真实公开 Kalshi 行情驱动、只写本地 SQLite 的 deterministic paper runtime
 live15-paper
 
@@ -188,6 +191,19 @@ python btc_price_test.py
 python btc_stream.py
 python market_stream.py
 ```
+
+### LIVE15 Control Center backend（Milestone 7.6A）
+
+`live15-ui` 默认且强制绑定 `http://127.0.0.1:8765`，提供简单占位首页和五个只读
+API：`/api/health`、`/api/markets`、`/api/markets/{asset}`、`/api/coverage`、
+`/api/system`。端口可用 `LIVE15_UI_PORT` 或 `--port` 调整，但 host 不可配置为
+`0.0.0.0`。服务使用只读 SQLite connection、typed response models、现有
+`FeatureEngine` 和 recorder heartbeat，不复制 settlement 或 feature 公式。
+
+本阶段没有 recorder start/stop、dataset build、shell、任意文件浏览、credential、Demo
+或 Production trading route。API 只返回白名单 health 字段，不返回 Kalshi key ID、private
+key path、signature 或账户信息。heartbeat 缺失表示 recorder `stopped`；超龄显示
+`stale`；市场字段缺失保持 JSON `null` 并带明确 availability/status，不填成零。
 
 ### Recorder 生命周期
 

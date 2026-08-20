@@ -25,6 +25,8 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.kalshi_demo_private_key_path is None
     assert settings.enable_robinhood_reference is False
     assert settings.feature_store_path == Path("data/features.sqlite3")
+    assert settings.ui_port == 8765
+    assert settings.ui_heartbeat_stale_seconds == 90.0
     assert settings.dataset_decision_offsets_seconds == DEFAULT_DATASET_DECISION_OFFSETS_SECONDS
     assert settings.native_discovery_poll_interval_seconds == 15
     assert settings.settlement_followup_batch_size == 25
@@ -49,6 +51,8 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_PAPER_MAX_ORDER_NOTIONAL": "1.25",
             "LIVE15_PAPER_KILL_SWITCH": "true",
             "LIVE15_FEATURE_STORE_PATH": "scratch/features.sqlite3",
+            "LIVE15_UI_PORT": "9123",
+            "LIVE15_UI_HEARTBEAT_STALE_SECONDS": "45",
             "LIVE15_DATASET_DECISION_OFFSETS_SECONDS": "600,60,30",
             "LIVE15_DATASET_QUOTE_MAX_AGE_SECONDS": "9",
             "LIVE15_DATASET_UNDERLYING_MAX_AGE_SECONDS": "8",
@@ -80,6 +84,8 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert str(settings.paper_max_order_notional) == "1.25"
     assert settings.paper_kill_switch is True
     assert settings.feature_store_path == Path("scratch/features.sqlite3")
+    assert settings.ui_port == 9123
+    assert settings.ui_heartbeat_stale_seconds == 45.0
     assert settings.dataset_decision_offsets_seconds == (600, 60, 30)
     assert settings.dataset_quote_max_age_seconds == 9
     assert settings.dataset_underlying_max_age_seconds == 8

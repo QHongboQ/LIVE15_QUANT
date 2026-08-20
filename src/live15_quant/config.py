@@ -49,6 +49,8 @@ class Settings:
     recorder_operation_timeout_seconds: float = 45.0
     recorder_max_backoff_seconds: float = 60.0
     recorder_health_path: Path = Path("data/health.json")
+    ui_port: int = 8765
+    ui_heartbeat_stale_seconds: float = 90.0
     dataset_build_interval_seconds: float | None = None
     feature_store_path: Path = Path("data/features.sqlite3")
     dataset_decision_offsets_seconds: tuple[int, ...] = DEFAULT_DATASET_DECISION_OFFSETS_SECONDS
@@ -268,6 +270,12 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             defaults.recorder_max_backoff_seconds,
         ),
         recorder_health_path=recorder_health_path,
+        ui_port=_positive_int(source, "LIVE15_UI_PORT", defaults.ui_port),
+        ui_heartbeat_stale_seconds=_positive_float(
+            source,
+            "LIVE15_UI_HEARTBEAT_STALE_SECONDS",
+            defaults.ui_heartbeat_stale_seconds,
+        ),
         dataset_build_interval_seconds=_optional_positive_float(
             source,
             "LIVE15_DATASET_BUILD_INTERVAL_SECONDS",
