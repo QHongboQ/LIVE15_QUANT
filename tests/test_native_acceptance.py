@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
 import pytest
@@ -12,18 +12,30 @@ from live15_quant.models import Asset
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 
 
-def test_acceptance_continues_after_exhausted_network_retry(monkeypatch) -> None:
-    now = 100.0
+@dataclass
+class DeterministicClock:
+    now: float = 100.0
+    sleeps: list[float] = field(default_factory=list)
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        assert seconds >= 0
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def clock() -> DeterministicClock:
+    return DeterministicClock()
+
+
+def test_acceptance_continues_after_exhausted_network_retry(
+    monkeypatch, clock: DeterministicClock
+) -> None:
     calls: list[float] = []
     client_options: dict[str, object] = {}
-
-    def monotonic() -> float:
-        return now
-
-    def sleeper(seconds: float) -> None:
-        nonlocal now
-        assert seconds >= 0
-        now += seconds
 
     class FakeClient:
         closed = False
@@ -40,7 +52,7 @@ def test_acceptance_continues_after_exhausted_network_retry(monkeypatch) -> None
             del client
 
         def discover_all(self):
-            calls.append(monotonic())
+            calls.append(clock.monotonic())
             raise requests.ConnectionError("public market data unavailable")
 
     client = FakeClient
@@ -49,27 +61,27 @@ def test_acceptance_continues_after_exhausted_network_retry(monkeypatch) -> None
     monkeypatch.setattr(acceptance, "KalshiNativeMarketProvider", provider)
 
     result = acceptance.run_acceptance(
-        max_seconds=0.02,
-        poll_seconds=0.001,
-        post_rollover_seconds=0.001,
-        monotonic=monotonic,
-        sleeper=sleeper,
+        max_seconds=5,
+        poll_seconds=1,
+        post_rollover_seconds=1,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
     )
 
-    assert len(calls) >= 2
-    assert calls == sorted(calls)
-    assert all(call < 100.02 for call in calls)
-    assert now == pytest.approx(100.02)
+    assert calls == [100.0, 101.0, 103.0]
+    assert clock.sleeps == [1, 2, 2]
+    assert clock.now == 105.0
     assert result["status"] == "expected_upstream_unavailable"
     assert result["reason"] == "no_current_market_with_published_target"
-    assert result["network_retry_exhaustions"] >= 2
+    assert result["network_retry_exhaustions"] == 3
     assert client_options["retry_total"] == 0
-    assert client_options["deadline_monotonic"] == pytest.approx(100.02)
-    assert client_options["monotonic"] is monotonic
+    assert client_options["deadline_monotonic"] == 105.0
+    assert client_options["monotonic"] == clock.monotonic
 
 
-def test_acceptance_fails_immediately_on_correctness_error(monkeypatch) -> None:
-    now = 100.0
+def test_acceptance_fails_immediately_on_correctness_error(
+    monkeypatch, clock: DeterministicClock
+) -> None:
     calls = 0
 
     class FakeClient:
@@ -88,12 +100,6 @@ def test_acceptance_fails_immediately_on_correctness_error(monkeypatch) -> None:
             calls += 1
             raise ValueError("invalid official market payload")
 
-    def monotonic() -> float:
-        return now
-
-    def sleeper(seconds: float) -> None:
-        raise AssertionError(f"correctness error must not sleep: {seconds}")
-
     monkeypatch.setattr(acceptance, "KalshiOfficialQuoteProvider", FakeClient)
     monkeypatch.setattr(acceptance, "KalshiNativeMarketProvider", InvalidProvider)
 
@@ -102,14 +108,18 @@ def test_acceptance_fails_immediately_on_correctness_error(monkeypatch) -> None:
             max_seconds=10,
             poll_seconds=1,
             post_rollover_seconds=1,
-            monotonic=monotonic,
-            sleeper=sleeper,
+            monotonic=clock.monotonic,
+            sleeper=clock.sleep,
         )
 
     assert calls == 1
+    assert clock.sleeps == []
+    assert clock.now == 100.0
 
 
-def test_acceptance_dynamically_observes_adjacent_rollover(monkeypatch) -> None:
+def test_acceptance_dynamically_observes_adjacent_rollover(
+    monkeypatch, clock: DeterministicClock
+) -> None:
     start = NOW.replace(minute=0, second=0, microsecond=0)
     first_observed = start + timedelta(minutes=5)
     rollover_observed = start + timedelta(minutes=15, seconds=25)
@@ -131,6 +141,8 @@ def test_acceptance_dynamically_observes_adjacent_rollover(monkeypatch) -> None:
     )
     initial = KalshiDiscovery(Asset.BTC, first_observed, None, first, announced, (), ())
     after = KalshiDiscovery(Asset.BTC, rollover_observed, finalized, successor, None, (), ())
+    successor_at = 102.0
+    discovery_times: list[float] = []
 
     class FakeClient:
         def __init__(self, settings, **kwargs) -> None:
@@ -152,25 +164,36 @@ def test_acceptance_dynamically_observes_adjacent_rollover(monkeypatch) -> None:
             del client
 
         def discover_all(self):
+            discovery_times.append(clock.monotonic())
             return (initial,)
 
         def discover(self, asset):
             assert asset is Asset.BTC
-            return after
+            discovery_times.append(clock.monotonic())
+            return after if clock.monotonic() >= successor_at else initial
 
     monkeypatch.setattr(acceptance, "KalshiOfficialQuoteProvider", FakeClient)
     monkeypatch.setattr(acceptance, "KalshiNativeMarketProvider", FakeProvider)
 
     result = acceptance.run_acceptance(
-        max_seconds=0.1,
-        poll_seconds=0.001,
-        post_rollover_seconds=0.001,
+        max_seconds=10,
+        poll_seconds=1,
+        post_rollover_seconds=2,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
     )
 
+    assert first.lifecycle is KalshiLifecycle.OPEN
+    assert successor.window_start == first.window_end
     assert result["status"] == "pass"
+    assert discovery_times == [100.0, 101.0, 102.0, 103.0, 104.0]
+    assert clock.sleeps == [1, 1, 1, 1]
+    assert clock.now == 104.0 < 110.0
+    assert result["discovery_polls"] == 5
     assert result["baseline_ticker"] == first.ticker
     assert result["announced_next_ticker"] == announced.ticker
     assert result["successor_ticker"] == successor.ticker
+    assert result["rollover_observed_at"] == rollover_observed.isoformat()
     assert result["official_settlement_result"] == "yes"
     assert result["lifecycle_replay"] == [
         KalshiLifecycle.OPEN.value,
@@ -179,6 +202,60 @@ def test_acceptance_dynamically_observes_adjacent_rollover(monkeypatch) -> None:
         KalshiLifecycle.SETTLED_YES.value,
     ]
     assert result["restart_counts_match"] is True
+
+
+def test_acceptance_without_successor_stops_at_absolute_deadline(
+    monkeypatch, clock: DeterministicClock
+) -> None:
+    start = NOW.replace(minute=0, second=0, microsecond=0)
+    observed = start + timedelta(minutes=5)
+    first = provider().parse_market(Asset.BTC, raw_market(start=start), observed)
+    initial = KalshiDiscovery(Asset.BTC, observed, None, first, None, (), ())
+    discovery_times: list[float] = []
+
+    class FakeClient:
+        def __init__(self, settings, **kwargs) -> None:
+            del settings, kwargs
+
+        def quote_native(self, market):
+            return replace(
+                quote(market.ticker, market.event_ticker, observed),
+                asset=market.asset,
+                series=market.series,
+            )
+
+        def close(self) -> None:
+            return None
+
+    class NoSuccessorProvider:
+        def __init__(self, client) -> None:
+            del client
+
+        def discover_all(self):
+            discovery_times.append(clock.monotonic())
+            return (initial,)
+
+        def discover(self, asset):
+            assert asset is Asset.BTC
+            discovery_times.append(clock.monotonic())
+            return initial
+
+    monkeypatch.setattr(acceptance, "KalshiOfficialQuoteProvider", FakeClient)
+    monkeypatch.setattr(acceptance, "KalshiNativeMarketProvider", NoSuccessorProvider)
+
+    result = acceptance.run_acceptance(
+        max_seconds=5,
+        poll_seconds=1,
+        post_rollover_seconds=1,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+    )
+
+    assert result["status"] == "expected_upstream_unavailable"
+    assert result["reason"] == "no_adjacent_rollover_observed"
+    assert discovery_times == [100.0, 101.0, 102.0, 103.0, 104.0]
+    assert clock.sleeps == [1, 1, 1, 1, 1]
+    assert clock.now == 105.0
 
 
 def test_acceptance_rejects_timeout_above_thirty_minutes() -> None:
