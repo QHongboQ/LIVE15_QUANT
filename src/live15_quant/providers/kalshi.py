@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
@@ -185,6 +185,7 @@ class KalshiOfficialQuoteProvider:
         *,
         retry_total: int = 4,
         deadline_monotonic: float | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if settings.kalshi_public_api_base_url != KALSHI_PUBLIC_API_BASE_URL:
             raise ValueError("Kalshi base URL must be the documented public production endpoint")
@@ -194,6 +195,7 @@ class KalshiOfficialQuoteProvider:
         self._owned_session = _retrying_session(retry_total) if session is None else None
         self._session = self._owned_session or session
         self._deadline_monotonic = deadline_monotonic
+        self._monotonic = monotonic
 
     def close(self) -> None:
         if self._owned_session is not None:
@@ -216,7 +218,7 @@ class KalshiOfficialQuoteProvider:
         url = f"{self._settings.kalshi_public_api_base_url}{path}"
         timeout = self._settings.request_timeout_seconds
         if self._deadline_monotonic is not None:
-            remaining = self._deadline_monotonic - time.monotonic()
+            remaining = self._deadline_monotonic - self._monotonic()
             if remaining <= 0:
                 raise requests.Timeout("Kalshi acceptance deadline elapsed")
             timeout = min(timeout, max(remaining, 0.001))

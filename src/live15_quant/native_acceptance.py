@@ -6,6 +6,7 @@ import argparse
 import json
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -98,6 +99,8 @@ def run_acceptance(
     poll_seconds: float = 5.0,
     post_rollover_seconds: float = 30.0,
     database_path: Path | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, object]:
     """Observe one adjacent official rollover without assuming a date or UTC opening time."""
 
@@ -114,12 +117,13 @@ def run_acceptance(
         path = database_path
     path.parent.mkdir(parents=True, exist_ok=True)
     started = datetime.now(UTC)
-    deadline = time.monotonic() + max_seconds
+    deadline = monotonic() + max_seconds
     settings = Settings(official_quote_orderbook_depth=10)
     client = KalshiOfficialQuoteProvider(
         settings,
         retry_total=0,
         deadline_monotonic=deadline,
+        monotonic=monotonic,
     )
     provider = KalshiNativeMarketProvider(client)
     minimum_observation = max(10.0, poll_seconds * 2)
@@ -146,7 +150,7 @@ def run_acceptance(
             states.update(
                 {record.ticker: record.lifecycle for record in store.latest_kalshi_states()}
             )
-            while deadline - time.monotonic() > 0:
+            while deadline - monotonic() > 0:
                 try:
                     discoveries = (
                         provider.discover_all()
@@ -157,13 +161,13 @@ def run_acceptance(
                 except requests.RequestException:
                     network_retry_exhaustions += 1
                     consecutive_network_failures += 1
-                    remaining_after_error = max(0.0, deadline - time.monotonic())
+                    remaining_after_error = max(0.0, deadline - monotonic())
                     delay = min(
                         30.0,
                         poll_seconds * 2 ** min(consecutive_network_failures - 1, 4),
                         remaining_after_error,
                     )
-                    time.sleep(delay)
+                    sleeper(delay)
                     continue
 
                 discovery_polls += 1
@@ -176,7 +180,7 @@ def run_acceptance(
                     )
                     if baseline is None:
                         upstream_unavailable_polls += 1
-                        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+                        sleeper(min(poll_seconds, max(0.0, deadline - monotonic())))
                         continue
                     baseline_quote_available = any(
                         True for _ in store.replay_kalshi_quotes(baseline.ticker)
@@ -218,12 +222,12 @@ def run_acceptance(
                         baseline_quote_writes = 0
                         successor_quote_writes = 0
                         post_rollover_complete = False
-                        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+                        sleeper(min(poll_seconds, max(0.0, deadline - monotonic())))
                         continue
                     successor = current
                     rollover_observed_at = discovery.fetched_timestamp
                     if rollover_complete_at is None:
-                        rollover_complete_at = time.monotonic()
+                        rollover_complete_at = monotonic()
                 elif discovery.fetched_timestamp >= baseline.window_end:
                     # No adjacent live market is visible yet; do not invent one.
                     upstream_unavailable_polls += 1
@@ -252,7 +256,7 @@ def run_acceptance(
 
                 if (
                     rollover_complete_at is not None
-                    and time.monotonic() - rollover_complete_at >= post_rollover_seconds
+                    and monotonic() - rollover_complete_at >= post_rollover_seconds
                 ):
                     post_rollover_complete = True
                 if (
@@ -261,7 +265,7 @@ def run_acceptance(
                     and post_rollover_complete
                 ):
                     break
-                time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+                sleeper(min(poll_seconds, max(0.0, deadline - monotonic())))
 
             lifecycle_replay = (
                 [record.lifecycle.value for record in store.replay_kalshi_markets(baseline.ticker)]

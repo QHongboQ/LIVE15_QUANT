@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from email.utils import format_datetime
@@ -310,7 +309,8 @@ def test_deadline_aware_transport_caps_request_timeout() -> None:
     source = KalshiOfficialQuoteProvider(
         Settings(request_timeout_seconds=10),
         session=session,
-        deadline_monotonic=time.monotonic() + 0.5,
+        deadline_monotonic=100.5,
+        monotonic=lambda: 100.0,
     )
 
     source.get_public("/markets")

@@ -13,8 +13,17 @@ from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 
 
 def test_acceptance_continues_after_exhausted_network_retry(monkeypatch) -> None:
-    calls: list[bool] = []
+    now = 100.0
+    calls: list[float] = []
     client_options: dict[str, object] = {}
+
+    def monotonic() -> float:
+        return now
+
+    def sleeper(seconds: float) -> None:
+        nonlocal now
+        assert seconds >= 0
+        now += seconds
 
     class FakeClient:
         closed = False
@@ -31,7 +40,7 @@ def test_acceptance_continues_after_exhausted_network_retry(monkeypatch) -> None
             del client
 
         def discover_all(self):
-            calls.append(True)
+            calls.append(monotonic())
             raise requests.ConnectionError("public market data unavailable")
 
     client = FakeClient
@@ -43,14 +52,61 @@ def test_acceptance_continues_after_exhausted_network_retry(monkeypatch) -> None
         max_seconds=0.02,
         poll_seconds=0.001,
         post_rollover_seconds=0.001,
+        monotonic=monotonic,
+        sleeper=sleeper,
     )
 
     assert len(calls) >= 2
+    assert calls == sorted(calls)
+    assert all(call < 100.02 for call in calls)
+    assert now == pytest.approx(100.02)
     assert result["status"] == "expected_upstream_unavailable"
     assert result["reason"] == "no_current_market_with_published_target"
     assert result["network_retry_exhaustions"] >= 2
     assert client_options["retry_total"] == 0
-    assert isinstance(client_options["deadline_monotonic"], float)
+    assert client_options["deadline_monotonic"] == pytest.approx(100.02)
+    assert client_options["monotonic"] is monotonic
+
+
+def test_acceptance_fails_immediately_on_correctness_error(monkeypatch) -> None:
+    now = 100.0
+    calls = 0
+
+    class FakeClient:
+        def __init__(self, settings, **kwargs) -> None:
+            del settings, kwargs
+
+        def close(self) -> None:
+            return None
+
+    class InvalidProvider:
+        def __init__(self, client) -> None:
+            del client
+
+        def discover_all(self):
+            nonlocal calls
+            calls += 1
+            raise ValueError("invalid official market payload")
+
+    def monotonic() -> float:
+        return now
+
+    def sleeper(seconds: float) -> None:
+        raise AssertionError(f"correctness error must not sleep: {seconds}")
+
+    monkeypatch.setattr(acceptance, "KalshiOfficialQuoteProvider", FakeClient)
+    monkeypatch.setattr(acceptance, "KalshiNativeMarketProvider", InvalidProvider)
+
+    with pytest.raises(ValueError, match="invalid official market payload"):
+        acceptance.run_acceptance(
+            max_seconds=10,
+            poll_seconds=1,
+            post_rollover_seconds=1,
+            monotonic=monotonic,
+            sleeper=sleeper,
+        )
+
+    assert calls == 1
 
 
 def test_acceptance_dynamically_observes_adjacent_rollover(monkeypatch) -> None:
