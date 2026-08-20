@@ -3,14 +3,49 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>LIVE15 Control Center</title>
-  <style>
-    :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#081019;color:#eef5fb}
-    body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at top,#12304a,#081019 55%)}
-    main{width:min(720px,calc(100% - 40px));border:1px solid #2b4052;border-radius:14px;padding:36px;background:#101b26}
-    p{color:#9fb0bf;line-height:1.6}.status{display:flex;align-items:center;gap:9px;color:#62d6a0;font-weight:700}.dot{width:10px;height:10px;border-radius:50%;background:#62d6a0}
-    code{color:#68d9c8}ul{line-height:1.8;color:#b8c5d0}
-  </style>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
 </head>
-<body><main><div class="status"><span class="dot"></span>LOCAL BACKEND ONLINE</div><h1>LIVE15 Control Center</h1><p>Milestone 7.6A read-only backend foundation is running on <code>127.0.0.1</code>.</p><ul><li>Health and recorder heartbeat</li><li>10 Kalshi-native market projections</li><li>Training-data coverage</li><li>System availability</li></ul><p>No recorder control, credentials, trading operations, shell access, or filesystem browsing are exposed.</p></main></body>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#/" aria-label="LIVE15 dashboard">
+        <span class="brand-mark">L15</span>
+        <span><strong>LIVE15</strong><small>CONTROL CENTER</small></span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#/" data-route="dashboard"><span aria-hidden="true">⌁</span>Dashboard</a>
+        <a href="#/markets" data-route="markets"><span aria-hidden="true">◇</span>Markets</a>
+        <a href="#/training" data-route="training"><span aria-hidden="true">▤</span>Training Data</a>
+        <a href="#/system" data-route="system"><span aria-hidden="true">◎</span>System / Health</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="status-line" id="sidebar-status"><span class="status-icon">○</span>Connecting</span>
+        <span>Read-only · localhost</span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="page-eyebrow">OVERVIEW</p>
+          <h1 id="page-title">Dashboard</h1>
+        </div>
+        <div class="topbar-meta">
+          <span id="last-refresh">Waiting for data</span>
+          <span class="read-only"><span aria-hidden="true">◉</span> READ ONLY</span>
+        </div>
+      </header>
+
+      <div id="global-notice" class="notice hidden" role="status"></div>
+      <section id="view" aria-live="polite" aria-busy="true">
+        <div class="loading-panel"><span class="spinner" aria-hidden="true"></span>Loading local data…</div>
+      </section>
+    </main>
+  </div>
+  <noscript><div class="noscript">LIVE15 Control Center requires JavaScript to render typed API data.</div></noscript>
+</body>
 </html>

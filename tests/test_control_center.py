@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
+import tomllib
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -15,6 +17,7 @@ from live15_quant.config import Settings
 from live15_quant.control_center import LOCAL_HOST, create_app
 from live15_quant.control_center_models import RecorderState
 from live15_quant.control_center_service import ControlCenterService
+from live15_quant.dataset import FeatureStore
 from live15_quant.models import Asset, MarketTick
 from live15_quant.storage import RecorderStore
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
@@ -85,7 +88,7 @@ async def test_health_and_system_when_recorder_stopped(tmp_path: Path) -> None:
     assert system.json()["api_mode"] == "read_only"
     assert system.json()["bind_host"] == "127.0.0.1"
     assert page.status_code == 200
-    assert "LOCAL BACKEND ONLINE" in page.text
+    assert "LIVE15 Control Center" in page.text
 
 
 @pytest.mark.asyncio
@@ -102,6 +105,8 @@ async def test_stale_health_is_explicit_and_secrets_are_whitelisted(tmp_path: Pa
         kalshi_demo_api_key_id="heartbeat-secret",
         private_key="heartbeat-private",
         signature="heartbeat-signature",
+        fatal_task="kalshi-quotes-Silver",
+        fatal_error_type="KalshiPublicApiError",
     )
     service = ControlCenterService(configured, clock=lambda: NOW)
 
@@ -112,6 +117,8 @@ async def test_stale_health_is_explicit_and_secrets_are_whitelisted(tmp_path: Pa
     assert response.json()["recorder_state"] == RecorderState.STALE
     assert response.json()["heartbeat_status"] == "stale"
     assert response.json()["heartbeat_age_seconds"] == 31
+    assert response.json()["fatal_task"] == "kalshi-quotes-Silver"
+    assert response.json()["fatal_error_type"] == "KalshiPublicApiError"
     serialized = response.text.lower()
     assert "never-return" not in serialized
     assert "heartbeat-secret" not in serialized
@@ -230,7 +237,38 @@ async def test_coverage_empty_state_is_typed_and_does_not_fabricate_rates(tmp_pa
     assert payload["training_rows"] == 0
     assert payload["label_balance"] is None
     assert payload["missing_feature_rates"] is None
+    assert payload["snapshot_status"] == "not_built"
+    assert payload["unevaluated_finalized_events"] == 0
     assert len(payload["per_asset"]) == 10
+
+
+def test_coverage_distinguishes_unevaluated_events_from_rejections(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    with RecorderStore(configured.recorder_data_path) as raw:
+        empty_snapshot = raw.training_source_snapshot()
+    with FeatureStore(configured.feature_store_path) as feature:
+        feature.begin_build("empty-build", {"mode": "pooled"}, empty_snapshot)
+        feature.complete_build("empty-build", {})
+
+    finalized = provider().parse_market(
+        Asset.BTC,
+        raw_market(Asset.BTC, status="finalized", result="yes"),
+        NOW + timedelta(minutes=16),
+    )
+    assert finalized.settlement is not None
+    with RecorderStore(configured.recorder_data_path) as raw:
+        raw.append_kalshi_settlement(finalized.settlement)
+
+    coverage = ControlCenterService(configured, clock=lambda: NOW).coverage()
+
+    assert coverage.status == "available"
+    assert coverage.snapshot_status == "outdated"
+    assert coverage.finalized_events == 1
+    assert coverage.snapshot_finalized_events == 0
+    assert coverage.unevaluated_finalized_events == 1
+    assert coverage.trainability_rejections is None
+    assert coverage.per_asset["BTC"].evaluated_finalized_events == 0
+    assert coverage.per_asset["BTC"].unevaluated_finalized_events == 1
 
 
 def test_coverage_is_bounded_by_short_thread_safe_cache(tmp_path: Path, monkeypatch) -> None:
@@ -261,6 +299,8 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
     assert all(method in {"GET", "HEAD"} for method, _path in routes)
     assert {path for _method, path in routes} == {
         "/",
+        "/assets/app.css",
+        "/assets/app.js",
         "/api/health",
         "/api/markets",
         "/api/markets/{asset}",
@@ -271,6 +311,85 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
         word in path.lower()
         for _method, path in routes
         for word in ("order", "trade", "credential", "key", "shell", "file", "recorder/start")
+    )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_static_assets_and_security_headers(tmp_path: Path) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings(tmp_path)))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        page, stylesheet, script = await asyncio.gather(
+            client.get("/"), client.get("/assets/app.css"), client.get("/assets/app.js")
+        )
+
+    assert page.status_code == stylesheet.status_code == script.status_code == 200
+    assert stylesheet.headers["content-type"].startswith("text/css")
+    assert script.headers["content-type"].startswith("text/javascript")
+    assert "default-src 'self'" in page.headers["content-security-policy"]
+    assert page.headers["x-frame-options"] == "DENY"
+    assert page.headers["referrer-policy"] == "no-referrer"
+    assert 'href="/assets/app.css"' in page.text
+    assert 'src="/assets/app.js"' in page.text
+
+
+def test_dashboard_assets_are_declared_for_clean_install() -> None:
+    project = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert set(project["tool"]["setuptools"]["package-data"]["live15_quant"]) == {
+        "web/*.html",
+        "web/*.css",
+        "web/*.js",
+    }
+
+
+@pytest.mark.asyncio
+async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
+    tmp_path: Path,
+) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings(tmp_path)))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        page = (await client.get("/")).text
+        script = (await client.get("/assets/app.js")).text
+
+    for route in ("#/", "#/markets", "#/training", "#/system"):
+        assert f'href="{route}"' in page
+    for asset in ("BTC", "ETH", "Gold", "Silver", "XRP", "WTI Oil", "SOL", "HYPE", "DOGE", "BNB"):
+        assert asset in script
+    assert "Not enough training data yet" in script
+    assert "Missing or insufficient source lookback is not filled with zero." in script
+    assert "recorder_state" in script
+    assert "quote_status" in script
+    assert "underlying_status" in script
+
+
+@pytest.mark.asyncio
+async def test_frontend_polling_is_bounded_and_exposes_no_write_controls(tmp_path: Path) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings(tmp_path)))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        page = (await client.get("/")).text.lower()
+        script = (await client.get("/assets/app.js")).text.lower()
+
+    assert "health: 5000" in script
+    assert "markets: 10000" in script
+    assert "coverage: 60000" in script
+    assert "document.hidden" in script
+    assert "inflight" in script
+    assert 'credentials: "omit"' in script
+    assert "method:" not in script
+    assert "<button" not in page
+    assert "<form" not in page
+    assert not any(
+        endpoint in script
+        for endpoint in (
+            "/api/trade",
+            "/api/order",
+            "/api/credential",
+            "/api/recorder/start",
+            "/api/recorder/stop",
+            "/api/shell",
+        )
     )
 
 

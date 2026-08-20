@@ -339,6 +339,17 @@ def test_builder_skips_only_expected_missing_decision_time_metadata(tmp_path) ->
     assert summary.complete
     assert summary.rows == 0
     assert summary.skipped_decisions == 2
+    assert summary.diagnostics["evaluated_finalized_events"] == 1
+    assert summary.diagnostics["events_without_training_rows"] == 1
+    assert summary.diagnostics["trainability_rejections"] == {"missing_decision_time_metadata": 2}
+
+    with (
+        RecorderStore(tmp_path / "raw.sqlite3") as source,
+        FeatureStore(tmp_path / "features.sqlite3") as destination,
+    ):
+        repeated = DatasetBuilder(source, destination).build(DatasetBuildConfig(sampling()))
+    assert repeated.skipped_decisions == 2
+    assert repeated.diagnostics == summary.diagnostics
 
 
 def test_builder_fails_loudly_on_training_metadata_corruption(tmp_path) -> None:

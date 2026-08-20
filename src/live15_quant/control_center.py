@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Awaitable, Callable
 from importlib.resources import files
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -41,10 +42,35 @@ def create_app(
         allowed_hosts=["127.0.0.1", "localhost", "testserver"],
     )
     page = files("live15_quant").joinpath("web", "index.html")
+    stylesheet = files("live15_quant").joinpath("web", "app.css")
+    script = files("live15_quant").joinpath("web", "app.js")
+
+    @app.middleware("http")
+    async def security_headers(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'"
+        )
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
         return FileResponse(str(page))
+
+    @app.get("/assets/app.css", include_in_schema=False)
+    def app_css() -> FileResponse:
+        return FileResponse(str(stylesheet), media_type="text/css")
+
+    @app.get("/assets/app.js", include_in_schema=False)
+    def app_js() -> FileResponse:
+        return FileResponse(str(script), media_type="text/javascript")
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:

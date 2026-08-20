@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from pathlib import Path
 
 from live15_quant.kalshi_lifecycle import (
@@ -43,8 +44,17 @@ class RecorderStorageError(RuntimeError):
     """Raised when persisted recorder data is invalid or incompatible."""
 
 
+class TrainingDataUnavailableReason(StrEnum):
+    OFFICIAL_SETTLEMENT_UNAVAILABLE = "official_settlement_unavailable"
+    MISSING_DECISION_TIME_METADATA = "missing_decision_time_metadata"
+
+
 class TrainingDataUnavailableError(RecorderStorageError):
-    """Expected absence of a label or decision-time source observation."""
+    """Expected, machine-classified absence of required training truth."""
+
+    def __init__(self, reason: TrainingDataUnavailableReason, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def _timestamp(value: datetime) -> str:
@@ -1276,7 +1286,10 @@ class RecorderStore:
             (ticker, settlement_max_row_id, settlement_max_row_id),
         ).fetchone()
         if settlement_row is None:
-            raise TrainingDataUnavailableError("official settlement label is unavailable")
+            raise TrainingDataUnavailableError(
+                TrainingDataUnavailableReason.OFFICIAL_SETTLEMENT_UNAVAILABLE,
+                "official settlement label is unavailable",
+            )
         label = self._kalshi_settlement_record(settlement_row)
         decision = decision_timestamp.astimezone(UTC)
         if (
@@ -1299,7 +1312,10 @@ class RecorderStore:
             (ticker, _timestamp(decision), market_max_row_id, market_max_row_id),
         ).fetchone()
         if market_row is None:
-            raise TrainingDataUnavailableError("no official metadata existed at decision time")
+            raise TrainingDataUnavailableError(
+                TrainingDataUnavailableReason.MISSING_DECISION_TIME_METADATA,
+                "no official metadata existed at decision time",
+            )
         market = self._kalshi_feature_market_record(market_row)
         if (
             market.asset is not label.asset

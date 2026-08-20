@@ -204,6 +204,26 @@ API：`/api/health`、`/api/markets`、`/api/markets/{asset}`、`/api/coverage`�
 或 Production trading route。API 只返回白名单 health 字段，不返回 Kalshi key ID、private
 key path、signature 或账户信息。heartbeat 缺失表示 recorder `stopped`；超龄显示
 `stale`；市场字段缺失保持 JSON `null` 并带明确 availability/status，不填成零。
+若任一 recorder worker 因 correctness/storage 错误退出，最终 heartbeat 会保存
+`fatal_task` 与 `fatal_error_type`（不保存 exception message、路径或 payload）；预期的 bounded
+upstream unavailable 仍只记录在对应 asset/source failure 中并继续其他任务。
+
+Milestone 7.6B 在同一个 localhost backend 上提供无构建步骤的原生 HTML/CSS/JavaScript
+Dashboard。左侧导航包含 Dashboard、Markets、Training Data 与 System / Health；资产卡和
+detail 页面展示 Kalshi quote/orderbook、Coinbase predictive underlying、现有
+`FeatureEngine` 投影及官方 finalized history。前端只格式化 typed API 字段，不计算交易或
+settlement 业务事实；missing、stale、unsupported 均显示文字状态和 `—`，不会填零。
+
+轮询按成本分级并禁止重叠请求：health 5 秒、markets/detail 10 秒、system 30 秒、coverage
+60 秒；页面隐藏时暂停刷新。coverage backend 另有 30 秒线程安全缓存与只读 SQLite snapshot。
+浏览器关闭不会影响独立运行的 `live15-record`。Dashboard 不包含 recorder controls、交易
+按钮、credential 页面或任何写 API。
+
+Training Data 页面严格区分当前 raw store 的 finalized 总数与最新 immutable DatasetBuilder
+snapshot 已评估的 finalized 数。snapshot 之后到达的事件显示为 `unevaluated`，不会被误称为
+不可训练；完成的新 build 会持久化 stable rejection reason/count（例如
+`missing_decision_time_metadata`）。missing/stale feature 仍由 feature diagnostics 表达，不会
+为了提高 trainable 数量而放宽 as-of/leakage 约束。
 
 ### Recorder 生命周期
 

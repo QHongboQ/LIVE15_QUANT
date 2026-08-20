@@ -24,6 +24,13 @@ class Availability(StrEnum):
     ERROR = "error"
 
 
+class DatasetSnapshotStatus(StrEnum):
+    NOT_BUILT = "not_built"
+    CURRENT = "current"
+    OUTDATED = "outdated"
+    UNKNOWN = "unknown"
+
+
 class StrictResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -44,6 +51,8 @@ class HealthResponse(StrictResponse):
     retry_counts: dict[str, int] = Field(default_factory=dict)
     source_failures: dict[str, str] = Field(default_factory=dict)
     stale_sources: list[str] = Field(default_factory=list)
+    fatal_task: str | None = None
+    fatal_error_type: str | None = None
 
 
 class MarketResponse(StrictResponse):
@@ -81,6 +90,8 @@ class MarketResponse(StrictResponse):
 
 class AssetCoverage(StrictResponse):
     finalized_events: int = 0
+    evaluated_finalized_events: int = 0
+    unevaluated_finalized_events: int = 0
     trainable_events: int = 0
     training_rows: int = 0
 
@@ -94,6 +105,12 @@ class CoverageResponse(StrictResponse):
     feature_schema_version: str
     build_id: str | None = None
     completed_timestamp: datetime | None = None
+    snapshot_status: DatasetSnapshotStatus
+    snapshot_finalized_events: int | None = None
+    unevaluated_finalized_events: int | None = None
+    skipped_decisions: int | None = None
+    events_without_training_rows: int | None = None
+    trainability_rejections: dict[str, int] | None = None
     label_balance: dict[str, int] | None = None
     decision_time_bucket_coverage: dict[str, int] | None = None
     missing_feature_rates: dict[str, float | None] | None = None

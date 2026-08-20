@@ -43,7 +43,7 @@ live15-ui = "live15_quant.control_center:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-live15_quant = ["web/*.html"]
+live15_quant = ["web/*.html", "web/*.css", "web/*.js"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"

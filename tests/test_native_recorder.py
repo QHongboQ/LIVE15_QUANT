@@ -18,6 +18,7 @@ from live15_quant.kalshi_lifecycle import (
 )
 from live15_quant.models import Asset, MarketTick
 from live15_quant.native_recorder import KalshiNativeRecorder
+from live15_quant.providers.kalshi import KalshiPublicApiError, KalshiTargetUnavailableError
 from live15_quant.storage import RecorderStore
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 from tests.test_storage import prediction_quote
@@ -76,6 +77,27 @@ class FailingRobinhood:
 def discovery() -> KalshiDiscovery:
     market = provider().parse_market(Asset.BTC, raw_market(), NOW)
     return KalshiDiscovery(Asset.BTC, NOW, None, market, None, (), ())
+
+
+def discovery_for(asset: Asset) -> KalshiDiscovery:
+    market = provider().parse_market(asset, raw_market(asset), NOW)
+    return KalshiDiscovery(asset, NOW, None, market, None, (), ())
+
+
+class AssetFailureQuotes:
+    def __init__(self, failure: type[Exception]) -> None:
+        self.failure = failure
+        self.calls: dict[Asset, int] = {}
+
+    def quote_native(self, market):
+        self.calls[market.asset] = self.calls.get(market.asset, 0) + 1
+        if market.asset is Asset.SILVER:
+            raise self.failure("bounded Silver source condition")
+        return replace(
+            quote(market.ticker, market.event_ticker, NOW),
+            asset=market.asset,
+            series=market.series,
+        )
 
 
 def test_robinhood_disabled_core_records_lifecycle_and_coinbase(tmp_path) -> None:
@@ -253,6 +275,80 @@ def test_multi_asset_network_failure_isolated_and_health_is_machine_readable(tmp
     payload = json.loads(health_path.read_text(encoding="utf-8"))
     assert payload["status"] == "degraded"
     assert payload["current_markets"]["BTC"].startswith("KXBTC15M-")
+
+
+def test_target_unavailable_quote_isolated_to_one_asset(tmp_path) -> None:
+    quotes = AssetFailureQuotes(KalshiTargetUnavailableError)
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    official_quote_poll_interval_seconds=0.005,
+                    native_discovery_poll_interval_seconds=60,
+                    recorder_health_interval_seconds=0.01,
+                    recorder_health_path=tmp_path / "health.json",
+                ),
+                store,
+                discovery=FakeDiscovery((discovery_for(Asset.BTC), discovery_for(Asset.SILVER))),
+                quotes=quotes,
+                coinbase_factory=OneTickStream,
+                now=lambda: NOW,
+            )
+            task = asyncio.create_task(recorder.run())
+            try:
+                for _ in range(100):
+                    health = recorder.health()
+                    if quotes.calls.get(Asset.BTC, 0) and health.source_failures.get(
+                        "kalshi_quote:Silver"
+                    ):
+                        break
+                    await asyncio.sleep(0.005)
+                assert not task.done()
+                assert quotes.calls.get(Asset.BTC, 0) >= 1
+                assert quotes.calls.get(Asset.SILVER, 0) >= 1
+                health = recorder.health()
+                assert health.source_failures["kalshi_quote:Silver"] == (
+                    "KalshiTargetUnavailableError"
+                )
+                assert health.fatal_task is None
+            finally:
+                recorder.request_stop()
+                await asyncio.wait_for(task, 1)
+
+    asyncio.run(scenario())
+
+
+def test_malformed_quote_remains_global_correctness_failure(tmp_path) -> None:
+    quotes = AssetFailureQuotes(KalshiPublicApiError)
+    health_path = tmp_path / "health.json"
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    official_quote_poll_interval_seconds=0.005,
+                    native_discovery_poll_interval_seconds=60,
+                    recorder_health_path=health_path,
+                ),
+                store,
+                discovery=FakeDiscovery((discovery_for(Asset.SILVER),)),
+                quotes=quotes,
+                coinbase_factory=OneTickStream,
+                now=lambda: NOW,
+            )
+            with pytest.raises(KalshiPublicApiError, match="bounded Silver"):
+                await asyncio.wait_for(recorder.run(), 1)
+            health = recorder.health()
+            assert health.fatal_task == "kalshi-quotes-Silver"
+            assert health.fatal_error_type == "KalshiPublicApiError"
+
+    asyncio.run(scenario())
+    payload = json.loads(health_path.read_text(encoding="utf-8"))
+    assert payload["fatal_task"] == "kalshi-quotes-Silver"
+    assert payload["fatal_error_type"] == "KalshiPublicApiError"
 
 
 def test_settlement_followup_survives_rollover_and_restart(tmp_path) -> None:

@@ -77,6 +77,8 @@ class KalshiNativeHealth:
     written_records: int
     integrity: str
     robinhood_reference_healthy: bool | None
+    fatal_task: str | None
+    fatal_error_type: str | None
 
     @property
     def uptime_seconds(self) -> float:
@@ -125,6 +127,8 @@ class KalshiNativeHealth:
             "written_records": self.written_records,
             "integrity": self.integrity,
             "robinhood_reference_healthy": self.robinhood_reference_healthy,
+            "fatal_task": self.fatal_task,
+            "fatal_error_type": self.fatal_error_type,
         }
 
 
@@ -144,6 +148,8 @@ class _MutableHealth:
     row_counts: dict[str, int] = field(default_factory=dict)
     integrity: str = "not_checked"
     robinhood_reference_healthy: bool | None = None
+    fatal_task: str | None = None
+    fatal_error_type: str | None = None
 
 
 def _market_from_record(record: KalshiMarketRecord) -> KalshiMarket:
@@ -322,6 +328,8 @@ class KalshiNativeRecorder:
             written_records=self._health.written_records,
             integrity=self._health.integrity,
             robinhood_reference_healthy=self._health.robinhood_reference_healthy,
+            fatal_task=self._health.fatal_task,
+            fatal_error_type=self._health.fatal_error_type,
         )
 
     async def run(self) -> None:
@@ -365,9 +373,42 @@ class KalshiNativeRecorder:
         )
         try:
             done, _ = await asyncio.wait([stop_task, *tasks], return_when=asyncio.FIRST_COMPLETED)
-            failed = next((task for task in done if task is not stop_task), None)
+            completed_workers = [task for task in done if task is not stop_task]
+            failed = next(
+                (
+                    task
+                    for task in completed_workers
+                    if not task.cancelled() and task.exception() is not None
+                ),
+                None,
+            )
             if failed is not None:
-                failed.result()
+                try:
+                    failed.result()
+                except Exception as error:
+                    self._record_fatal_task(failed, error)
+                    logger.exception(
+                        "Recorder worker failed; shutting down",
+                        extra={
+                            "event": "recorder_worker_failed",
+                            "task": failed.get_name(),
+                            "error_type": type(error).__name__,
+                        },
+                    )
+                    raise
+            if stop_task not in done and completed_workers:
+                exited = completed_workers[0]
+                error = RuntimeError("recorder worker exited unexpectedly")
+                self._record_fatal_task(exited, error)
+                logger.error(
+                    "Recorder worker exited unexpectedly; shutting down",
+                    extra={
+                        "event": "recorder_worker_exited",
+                        "task": exited.get_name(),
+                        "error_type": type(error).__name__,
+                    },
+                )
+                raise error
         finally:
             stop_task.cancel()
             for task in tasks:
@@ -390,6 +431,10 @@ class KalshiNativeRecorder:
                 "Kalshi-native recorder stopped",
                 extra={"event": "kalshi_native_recorder_stopped", **self._health_fields()},
             )
+
+    def _record_fatal_task(self, task: asyncio.Task[object], error: BaseException) -> None:
+        self._health.fatal_task = task.get_name()
+        self._health.fatal_error_type = type(error).__name__
 
     def _accept_market(self, market: KalshiMarket) -> None:
         prior = self._health.states.get(market.ticker)

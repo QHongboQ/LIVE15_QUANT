@@ -71,6 +71,8 @@ class ControlCenterService:
                 retry_counts=self._int_map(raw.get("retry_counts")),
                 source_failures=self._string_map(raw.get("source_failures")),
                 stale_sources=self._string_list(raw.get("stale_sources")),
+                fatal_task=self._optional_string(raw.get("fatal_task")),
+                fatal_error_type=self._optional_string(raw.get("fatal_error_type")),
             )
         except FileNotFoundError:
             return HealthResponse(
@@ -143,6 +145,10 @@ class ControlCenterService:
         if isinstance(value, int | float) and not isinstance(value, bool):
             return float(value)
         return None
+
+    @staticmethod
+    def _optional_string(value: object) -> str | None:
+        return value if isinstance(value, str) else None
 
     @staticmethod
     def _string_map(value: object, *, optional: bool = False) -> dict[str, str | None]:

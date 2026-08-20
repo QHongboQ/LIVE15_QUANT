@@ -282,19 +282,7 @@ class DashboardReadStore:
             connection.close()
 
     def coverage(self) -> dict[str, Any]:
-        finalized = {asset.value: 0 for asset in Asset}
-        raw = self._open(self.raw_path)
-        if raw is not None:
-            try:
-                raw.execute("BEGIN")
-                for item in raw.execute(
-                    "SELECT asset,COUNT(*) count FROM kalshi_settlements GROUP BY asset"
-                ):
-                    finalized[str(item["asset"])] = int(item["count"])
-            except sqlite3.Error:
-                pass
-            finally:
-                raw.close()
+        finalized = self._finalized_counts()
         connection = self._open(self.feature_path)
         if connection is None:
             return self._empty_coverage("not_enough_training_data", finalized)
@@ -308,9 +296,33 @@ class DashboardReadStore:
                 return self._empty_coverage("not_enough_training_data", finalized)
             diagnostics = _json(row["diagnostics_json"], {})
             diagnostic_map = diagnostics if isinstance(diagnostics, dict) else {}
+            source_snapshot = _json(row["source_snapshot_json"], {})
+            snapshot_settlements = (
+                source_snapshot.get("kalshi_settlements")
+                if isinstance(source_snapshot, dict)
+                else None
+            )
+            snapshot_max_id = (
+                snapshot_settlements.get("max_id")
+                if isinstance(snapshot_settlements, dict)
+                else None
+            )
+            snapshot_counts = (
+                self._finalized_counts(max_row_id=snapshot_max_id)
+                if isinstance(snapshot_max_id, int) and not isinstance(snapshot_max_id, bool)
+                else None
+            )
             counts = {
                 asset.value: {
                     "finalized_events": finalized[asset.value],
+                    "evaluated_finalized_events": (
+                        snapshot_counts[asset.value] if snapshot_counts is not None else 0
+                    ),
+                    "unevaluated_finalized_events": (
+                        finalized[asset.value] - snapshot_counts[asset.value]
+                        if snapshot_counts is not None
+                        else finalized[asset.value]
+                    ),
                     "trainable_events": 0,
                     "training_rows": 0,
                 }
@@ -323,11 +335,27 @@ class DashboardReadStore:
             ):
                 counts[str(item["asset"])] = {
                     "finalized_events": finalized[str(item["asset"])],
+                    "evaluated_finalized_events": (
+                        snapshot_counts[str(item["asset"])] if snapshot_counts is not None else 0
+                    ),
+                    "unevaluated_finalized_events": (
+                        finalized[str(item["asset"])] - snapshot_counts[str(item["asset"])]
+                        if snapshot_counts is not None
+                        else finalized[str(item["asset"])]
+                    ),
                     "trainable_events": int(item["events"]),
                     "training_rows": int(item["rows"]),
                 }
             trainable_events = sum(item["trainable_events"] for item in counts.values())
             training_rows = sum(item["training_rows"] for item in counts.values())
+            snapshot_finalized = (
+                sum(snapshot_counts.values()) if snapshot_counts is not None else None
+            )
+            unevaluated = (
+                sum(finalized.values()) - snapshot_finalized
+                if snapshot_finalized is not None
+                else None
+            )
             return {
                 "status": "available",
                 "finalized_events": sum(finalized.values()),
@@ -337,6 +365,22 @@ class DashboardReadStore:
                 "dataset_version": str(row["dataset_version"]),
                 "feature_schema_version": str(row["feature_schema_version"]),
                 "completed_timestamp": row["completed_timestamp"],
+                "snapshot_status": (
+                    "unknown"
+                    if snapshot_finalized is None
+                    else "current"
+                    if unevaluated == 0
+                    else "outdated"
+                ),
+                "snapshot_finalized_events": snapshot_finalized,
+                "unevaluated_finalized_events": unevaluated,
+                "skipped_decisions": _optional_nonnegative_int(
+                    diagnostic_map.get("skipped_decisions")
+                ),
+                "events_without_training_rows": _optional_nonnegative_int(
+                    diagnostic_map.get("events_without_training_rows")
+                ),
+                "trainability_rejections": _int_dict(diagnostic_map.get("trainability_rejections")),
                 "per_asset": counts,
                 "label_balance": diagnostic_map.get("label_balance"),
                 "decision_time_bucket_coverage": diagnostic_map.get(
@@ -361,6 +405,12 @@ class DashboardReadStore:
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "build_id": None,
             "completed_timestamp": None,
+            "snapshot_status": "not_built",
+            "snapshot_finalized_events": None,
+            "unevaluated_finalized_events": sum(finalized.values()),
+            "skipped_decisions": None,
+            "events_without_training_rows": None,
+            "trainability_rejections": None,
             "label_balance": None,
             "decision_time_bucket_coverage": None,
             "missing_feature_rates": None,
@@ -368,9 +418,52 @@ class DashboardReadStore:
             "per_asset": {
                 asset.value: {
                     "finalized_events": finalized[asset.value],
+                    "evaluated_finalized_events": 0,
+                    "unevaluated_finalized_events": finalized[asset.value],
                     "trainable_events": 0,
                     "training_rows": 0,
                 }
                 for asset in Asset
             },
         }
+
+    def _finalized_counts(self, *, max_row_id: int | None = None) -> dict[str, int]:
+        counts = {asset.value: 0 for asset in Asset}
+        raw = self._open(self.raw_path)
+        if raw is None:
+            return counts
+        try:
+            raw.execute("BEGIN")
+            query = "SELECT asset,COUNT(*) count FROM kalshi_settlements"
+            parameters: tuple[object, ...] = ()
+            if max_row_id is not None:
+                query += " WHERE id<=?"
+                parameters = (max_row_id,)
+            query += " GROUP BY asset"
+            for item in raw.execute(query, parameters):
+                asset = str(item["asset"])
+                if asset in counts:
+                    counts[asset] = int(item["count"])
+        except sqlite3.Error:
+            return {asset.value: 0 for asset in Asset}
+        finally:
+            raw.close()
+        return counts
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _int_dict(value: object) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    result = {
+        key: item
+        for key, item in value.items()
+        if isinstance(key, str)
+        and isinstance(item, int)
+        and not isinstance(item, bool)
+        and item >= 0
+    }
+    return result if len(result) == len(value) else None

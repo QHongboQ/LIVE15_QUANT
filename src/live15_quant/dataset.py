@@ -360,6 +360,16 @@ class FeatureStore:
         ).fetchone()
         return None if row is None else str(row["status"])
 
+    def build_diagnostics(self, build_id: str) -> dict[str, object] | None:
+        """Return the immutable diagnostics persisted with a completed build."""
+
+        row = self._connection.execute(
+            "SELECT status,diagnostics_json FROM dataset_builds WHERE build_id=?", (build_id,)
+        ).fetchone()
+        if row is None or row["status"] != "complete" or row["diagnostics_json"] is None:
+            return None
+        return _json_object(row["diagnostics_json"])
+
     def replay(self, build_id: str, *, asset: Asset | None = None) -> tuple[TrainingRow, ...]:
         if asset is None:
             rows = self._connection.execute(
@@ -519,9 +529,15 @@ class DatasetBuilder:
         self._destination.begin_build(build_id, config.payload(), snapshot)
         if self._destination.build_status(build_id) == "complete":
             rows = self._destination.replay(build_id)
-            diagnostics = dataset_diagnostics(rows)
+            diagnostics = self._destination.build_diagnostics(build_id) or dataset_diagnostics(rows)
             return DatasetBuildSummary(
-                build_id, True, len({row.ticker for row in rows}), len(rows), 0, 0, diagnostics
+                build_id,
+                True,
+                len({row.ticker for row in rows}),
+                len(rows),
+                0,
+                _diagnostic_int(diagnostics, "skipped_decisions"),
+                diagnostics,
             )
 
         settlements = tuple(
@@ -533,6 +549,7 @@ class DatasetBuilder:
         )
         engine = FeatureEngine(config.sampling_policy)
         rows_written = skipped = 0
+        rejection_reasons: Counter[str] = Counter()
         stopped_early = False
         for settlement in settlements:
             for decision in config.sampling_policy.decision_times(
@@ -546,8 +563,9 @@ class DatasetBuilder:
                         quote_max_row_id=table_limits["kalshi_prediction_quotes"],
                         settlement_max_row_id=table_limits["kalshi_settlements"],
                     )
-                except TrainingDataUnavailableError:
+                except TrainingDataUnavailableError as error:
                     skipped += 1
+                    rejection_reasons[_training_unavailable_reason(error)] += 1
                     continue
                 product = COINBASE_PRODUCT_BY_ASSET.get(settlement.asset)
                 ticks = (
@@ -607,6 +625,17 @@ class DatasetBuilder:
                 break
         rows = self._destination.replay(build_id)
         diagnostics = dataset_diagnostics(rows)
+        row_tickers = {row.ticker for row in rows}
+        diagnostics.update(
+            {
+                "evaluated_finalized_events": len(settlements),
+                "events_without_training_rows": len(
+                    {settlement.ticker for settlement in settlements} - row_tickers
+                ),
+                "skipped_decisions": skipped,
+                "trainability_rejections": dict(sorted(rejection_reasons.items())),
+            }
+        )
         if not stopped_early:
             self._destination.complete_build(build_id, diagnostics)
         return DatasetBuildSummary(
@@ -676,6 +705,15 @@ def dataset_diagnostics(rows: tuple[TrainingRow, ...]) -> dict[str, object]:
         "coverage_by_utc_date": dict(sorted(dates.items())),
         "coverage_by_utc_hour": dict(sorted(hours.items())),
     }
+
+
+def _training_unavailable_reason(error: TrainingDataUnavailableError) -> str:
+    return error.reason.value
+
+
+def _diagnostic_int(diagnostics: dict[str, object], key: str) -> int:
+    value = diagnostics.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _distribution(values: list[Decimal]) -> dict[str, str]:
