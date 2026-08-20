@@ -9,8 +9,10 @@ import time
 import requests
 
 from live15_quant.config import Settings, load_settings
+from live15_quant.kalshi_lifecycle import KalshiNativeMarketProvider
 from live15_quant.logging_config import configure_logging
 from live15_quant.models import MarketTick
+from live15_quant.native_recorder import KalshiNativeRecorder
 from live15_quant.paper_runtime import PaperRuntime
 from live15_quant.paper_storage import PaperStore
 from live15_quant.providers.coinbase import (
@@ -18,12 +20,11 @@ from live15_quant.providers.coinbase import (
     CoinbaseRestClient,
     CoinbaseWebSocketClient,
 )
+from live15_quant.providers.kalshi import KALSHI_15MIN_SERIES, KalshiOfficialQuoteProvider
 from live15_quant.providers.kalshi_demo import (
     KalshiDemoCredentials,
     KalshiDemoReadOnlyClient,
 )
-from live15_quant.providers.robinhood_15min import Robinhood15MinuteProvider
-from live15_quant.recorder import HistoricalRecorder
 from live15_quant.storage import RecorderStore
 
 logger = logging.getLogger(__name__)
@@ -103,50 +104,39 @@ def btc_stream_main() -> None:
 
 
 def discover_main() -> None:
-    """Discover one public snapshot of Robinhood Live 15-minute events."""
+    """Discover current official Kalshi 15-minute markets without Robinhood."""
 
     settings = load_settings()
     configure_logging(settings.log_level)
-    provider = Robinhood15MinuteProvider(settings)
+    client = KalshiOfficialQuoteProvider(settings)
+    provider = KalshiNativeMarketProvider(client)
     try:
-        contracts = provider.discover()
+        discoveries = provider.discover_all()
     finally:
-        provider.close()
-    for contract in contracts:
+        client.close()
+    for discovery in discoveries:
+        market = discovery.current
         logger.info(
-            "Robinhood 15-minute contract",
+            "Kalshi-native 15-minute discovery",
             extra={
-                "event": "robinhood_15min_contract",
-                "asset": contract.asset,
-                "event_id": contract.event_id,
-                "contract_id": contract.contract_id,
-                "start_time": contract.start_time,
-                "end_time": contract.end_time,
-                "target_price": contract.target_price,
-                "displayed_yes_probability": contract.quote.yes_probability,
-                "displayed_no_probability": contract.quote.no_probability,
-                "displayed_quote_availability": contract.quote.availability,
-                "quote_is_executable": contract.quote.is_executable,
-                "quote_data_role": contract.quote.role,
-                "venue": contract.venue,
-                "venue_candidates": contract.venue_candidates,
-                "settlement_benchmark": contract.settlement.benchmark,
-                "settlement_method": contract.settlement.method,
-                "settlement_decimal_places": contract.settlement.decimal_places,
-                "settlement_data_access": contract.settlement.data_access,
-                "settlement_data_role": contract.settlement.role,
-                "lifecycle_state": contract.lifecycle_state,
-                "source_url": contract.source_url,
-                "fetched_at": contract.fetched_at,
-                "freshness_state": contract.freshness_state,
-                "source_age_seconds": contract.source_age_seconds,
+                "event": "kalshi_native_discovery",
+                "asset": discovery.asset,
+                "series": KALSHI_15MIN_SERIES[discovery.asset],
+                "ticker": market.ticker if market is not None else None,
+                "event_ticker": market.event_ticker if market is not None else None,
+                "start_time": market.window_start if market is not None else None,
+                "end_time": market.window_end if market is not None else None,
+                "target": market.target if market is not None else None,
+                "lifecycle": market.lifecycle if market is not None else None,
+                "next_ticker": discovery.next.ticker if discovery.next is not None else None,
+                "rejected_tickers": discovery.rejected_tickers,
             },
         )
 
 
 async def _run_recorder(settings: Settings) -> None:
     with RecorderStore(settings.recorder_data_path) as store:
-        await HistoricalRecorder(settings, store).run()
+        await KalshiNativeRecorder(settings, store).run()
 
 
 def recorder_main() -> None:

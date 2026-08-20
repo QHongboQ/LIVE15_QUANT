@@ -56,13 +56,15 @@ def settings(path: Path) -> Settings:
 
 async def test_graceful_shutdown_flushes_records(tmp_path) -> None:
     path = tmp_path / "history.sqlite3"
+    active_contract = contract()
     with RecorderStore(path) as store:
         recorder = HistoricalRecorder(
             settings(path),
             store,
-            robinhood=FakeDiscovery((contract(),)),
+            robinhood=FakeDiscovery((active_contract,)),
             coinbase_factory=FakeTickStream,
             official_quotes=FakeOfficialQuotes((prediction_quote(),)),
+            now=lambda: active_contract.fetched_at,
         )
         task = asyncio.create_task(recorder.run())
         for _ in range(100):

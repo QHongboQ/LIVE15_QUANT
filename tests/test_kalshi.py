@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from email.utils import format_datetime
@@ -57,9 +58,11 @@ class FakeSession:
         )
         self.headers = {"Date": format_datetime(datetime.now(UTC))}
         self.calls: list[tuple[str, object]] = []
+        self.timeouts: list[float] = []
 
     def get(self, url, *, params, timeout, headers):
         self.calls.append((url, params))
+        self.timeouts.append(timeout)
         payload = self.orderbook_payload if url.endswith("/orderbook") else self.market_payload
         return FakeResponse(payload, url, headers=self.headers)
 
@@ -250,7 +253,7 @@ def test_exact_window_without_target_still_fails_safely() -> None:
     candidate.pop("floor_strike")
     candidate.pop("yes_sub_title")
 
-    with pytest.raises(KalshiPublicApiError, match="floor_strike"):
+    with pytest.raises(KalshiPublicApiError, match="target"):
         provider(FakeSession({"markets": [candidate]})).map_contract(contract())
 
 
@@ -300,3 +303,16 @@ def test_retry_policy_covers_disconnects_rate_limits_and_server_errors() -> None
     assert adapter.max_retries.connect == 4
     assert adapter.max_retries.read == 4
     assert {429, 500, 502, 503, 504} <= set(adapter.max_retries.status_forcelist)
+
+
+def test_deadline_aware_transport_caps_request_timeout() -> None:
+    session = FakeSession({"markets": []})
+    source = KalshiOfficialQuoteProvider(
+        Settings(request_timeout_seconds=10),
+        session=session,
+        deadline_monotonic=time.monotonic() + 0.5,
+    )
+
+    source.get_public("/markets")
+
+    assert 0 < session.timeouts[0] <= 0.5

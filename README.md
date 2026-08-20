@@ -1,54 +1,46 @@
 # LIVE15_QUANT
 
-LIVE15_QUANT 是一个**只针对 Robinhood Live 15-minute prediction-market contracts** 的本地量化研究项目。当前实现持续采集 Robinhood SSR 元数据、Kalshi 官方 venue quotes/orderbook 和 Coinbase predictive ticks，并用真实 Kalshi depth 驱动完全本地的 paper execution。范围不包括小时、日、周、体育、政治合约，也不包括模型、特征工程、回测或真钱交易。
+LIVE15_QUANT 是一个 **Kalshi-native、只针对十个 15-minute Prediction Market series** 的本地量化研究项目。核心运行链为 Kalshi 官方 market discovery → quote/orderbook → lifecycle → official settlement truth；Coinbase 只提供 predictive underlying input。Robinhood SSR 仅是默认关闭的可选参考，不再决定 market availability、ticker、target、rollover 或训练标签。范围不包括小时、日、周、体育、政治合约，也不包括真钱交易。
 
-长期 recorder 与 paper runtime 仅使用无需登录且允许公开访问的数据：Coinbase Exchange 公共市场数据、Robinhood 服务端渲染的公开网页，以及 Kalshi 官方免认证 REST market-data API。另有一个隔离的 Kalshi Demo authenticated GET-only connectivity audit，只读取 balance/markets/positions/orders/fills；paper adapter 不访问账户、不持有凭据、不调用任何下单 endpoint，所有 paper order/fill 都只存在本地 SQLite。
+长期 recorder 默认只使用 Coinbase Exchange 公共市场数据与 Kalshi 官方免认证 REST market-data API。另有一个隔离的 Kalshi Demo authenticated GET-only connectivity audit，只读取 balance/markets/positions/orders/fills；paper adapter 不访问账户、不持有凭据、不调用任何下单 endpoint，所有 paper order/fill 都只存在本地 SQLite。
 
-## 五类数据严格分离
+## 六类数据严格分离
 
 | 数据角色 | 当前来源 | 用途与限制 |
 | --- | --- | --- |
 | Predictive market-data source | Coinbase Exchange REST/WebSocket | BTC、ETH、XRP、SOL、DOGE 的预测输入；**不是结算真值** |
-| Robinhood contract market quote | Robinhood 公开 15-minute 网页 | 页面显示的 Yes probability；信息性、可能延迟或错误、不可执行；页面未公开 No 时保存为 `null` |
+| Optional reference | Robinhood 公开 15-minute 网页 | 默认关闭；只作兼容/交叉验证，故障或 rollover gap 不影响核心 runtime |
 | Official venue contract quote | Kalshi public REST market/orderbook | 经 exact series + UTC window + target 唯一映射后的 Yes/No bid/ask、last、volume、depth；与 SSR 独立保存 |
-| Actual settlement benchmark | CF Benchmarks RTI 或 Pyth | 合约条款指定的结算源；当前记录官方映射和规则，但不冒用 Coinbase 代替 |
+| Official settlement truth | Kalshi public market `finalized` + `result` + `settlement_ts` | 唯一训练 ground-truth label；保存 settlement value/expiration value（若官方返回） |
+| Settlement benchmark metadata | Kalshi series/rules | 保存官方 settlement sources 与 determination rules；Coinbase 永远不是 settlement truth |
 | Paper execution ledger | 本地 Kalshi paper adapter | 只记录模拟 decision/order/fill/position/PnL；独立 SQLite，绝不表示真实成交 |
 
-## 当前支持矩阵
+## 当前 Kalshi-native 支持矩阵
 
-“Full” 表示该维度已通过公开来源发现并标准化；“Partial” 表示元数据已验证，但公开访问或字段完整性有限；“Unsupported” 表示当前没有合适的数据源。
+十个资产均由固定 series、UTC quarter-hour window 与 contract 自身 target 确定；不做标题模糊匹配，也不需要 Robinhood event 才能发现或记录。
 
-| Asset | 15-min discovery + normalization | Coinbase predictive input | Robinhood displayed quote | Settlement metadata | Automated settlement truth |
+| Asset | Kalshi series | Native lifecycle | Bid/ask + orderbook | Final YES/NO label | Coinbase input |
 | --- | --- | --- | --- | --- | --- |
-| BTC | Full | Full (`BTC-USD`) | Partial | Full: CF Benchmarks BRTI | Partial: licensed API required |
-| ETH | Full | Full (`ETH-USD`) | Partial | Partial: CF Benchmarks ETHUSDRTI（rounding precision 未公开） | Partial: licensed API required |
-| Gold | Full | Unsupported | Partial | Full: Pyth - Gold | Partial: hosted API access/exact series validation required |
-| Silver | Full | Unsupported | Partial | Full: Pyth - Silver | Partial: hosted API access/exact series validation required |
-| XRP | Full | Full (`XRP-USD`) | Partial | Full: CF Benchmarks XRPUSDRTI | Partial: licensed API required |
-| WTI Oil | Full | Unsupported | Partial | Full: Pyth - WTI | Partial: hosted API access/exact series validation required |
-| SOL | Full | Full (`SOL-USD`) | Partial | Full: CF Benchmarks SOLUSDRTI | Partial: licensed API required |
-| HYPE | Full | Unsupported | Partial | Full: CF Benchmarks HYPEUSDRTI | Partial: licensed API required |
-| DOGE | Full | Full (`DOGE-USD`) | Partial | Full: CF Benchmarks DOGEUSDRTI | Partial: licensed API required |
-| BNB | Full | Unsupported | Partial | Full: CF Benchmarks BNBUSDRTI | Partial: licensed API required |
+| BTC | `KXBTC15M` | Full | Full | Full | `BTC-USD` |
+| ETH | `KXETH15M` | Full | Full | Full | `ETH-USD` |
+| Gold | `KXGOLD15M` | Full | Full | Full | Unsupported |
+| Silver | `KXSILVER15M` | Full | Full | Full | Unsupported |
+| XRP | `KXXRP15M` | Full | Full | Full | `XRP-USD` |
+| WTI Oil | `KXWTI15M` | Full | Full | Full | Unsupported |
+| SOL | `KXSOL15M` | Full | Full | Full | `SOL-USD` |
+| HYPE | `KXHYPE15M` | Full | Full | Full | Unsupported |
+| DOGE | `KXDOGE15M` | Full | Full | Full | `DOGE-USD` |
+| BNB | `KXBNB15M` | Full | Full | Full | Unsupported |
 
-因此，Milestone 2 的**事件发现和标准化覆盖 10/10 资产**，但若按“公开 contract quote + 可自动取得的实际 settlement truth”端到端口径衡量，10 个资产目前都只能标记为 Partial，没有资产可诚实标为 Full。未支持项是 Gold、Silver、WTI、HYPE、BNB 的 Coinbase predictive input；它们不影响 Robinhood 合约发现。
+这里的 final label 来自 Kalshi 官方 finalized market result，不表示底层 benchmark feed 已获许可，也不表示任何真实下单能力。
 
-Milestone 4 的 quote-specific 覆盖如下；这里的 `Full` 只表示当前事件已完成 verified venue mapping 且官方 quote/orderbook 可读，不代表 settlement truth 或 Robinhood execution 已完成：
+## Kalshi-native discovery 与标准化
 
-| Asset | Kalshi series | Venue mapping | Official bid/ask + last | Orderbook | Production quote suitability |
-| --- | --- | --- | --- | --- | --- |
-| BTC | `KXBTC15M` | Verified | Full | Full | Partial（官方 venue 只读；非 Robinhood execution） |
-| ETH | `KXETH15M` | Verified | Full | Full | Partial（官方 venue 只读；非 Robinhood execution） |
-| Gold | `KXGOLD15M` | Verified | Full | Full | Partial（官方 venue 只读；非 Robinhood execution） |
-| Silver | `KXSILVER15M` | Verified | Full | Full | Partial（官方 venue 只读；非 Robinhood execution） |
-| XRP | `KXXRP15M` | Verified | Full | Full | Partial（官方 venue 只读；非 Robinhood execution） |
-| WTI Oil | `KXWTI15M` | Verified | Full | Full | Partial（官方 venue 只读；非 Robinhood execution） |
-| SOL | `KXSOL15M` | Verified | Full | Full | Partial（官方 venue 只读；非 Robinhood execution） |
-| HYPE | `KXHYPE15M` | Verified | Full | Full | Partial（官方 venue 只读；非 Robinhood execution） |
-| DOGE | `KXDOGE15M` | Verified | Full | Full | Partial（官方 venue 只读；非 Robinhood execution） |
-| BNB | `KXBNB15M` | Verified | Full | Full | Partial（官方 venue 只读；非 Robinhood execution） |
+`KalshiNativeMarketProvider` 对十个固定 series 调用 Kalshi 官方公共 `GET /markets`，按 UTC 时间范围取得 previous/current/next/future candidates。每个 candidate 必须具有正确的 series/event/ticker prefix、整刻 15 分钟 UTC window、contract 自身的正数有限 Decimal target，且 ticker/window 唯一；target 为 `TBD`、缺失、malformed、duplicate 或 conflicting 时 fail closed。未来 contract 的 target 不会被拿来填当前窗口，当前 target 也不会复制给 future contract。
 
-## Discovery 与标准化
+`initialized` 映射为 `UPCOMING`，`active` 为 `OPEN`，`inactive` 明确映射为可恢复的 `PAUSED`，`closed` 为 `CLOSED`，`determined/disputed/amended` 为 `SETTLEMENT_PENDING`；只有官方 `finalized` 且 `result=yes|no`、`settlement_ts` 有效时才进入 `SETTLED_YES/SETTLED_NO`。本地时间、Coinbase 与 Robinhood 都不能推断最终结果。尚未发布的 `Target Price: TBD` 是可重试的 upstream-unavailable；malformed timestamp、未知 status、错误 ticker hierarchy 或矛盾 result/status 会作为 correctness error 失败，不会被降级成 target unavailable。
+
+### Optional Robinhood reference
 
 `Robinhood15MinuteProvider` 读取公开的 [Robinhood 15-minute category page](https://robinhood.com/us/en/prediction-markets/15-min/)，解析页面 HTML 和公开嵌入的 `__NEXT_DATA__`。provider 不调用浏览器后台接口，也不依赖认证。
 
@@ -82,18 +74,18 @@ Gold、Silver、WTI 使用对应 Pyth 1-minute candlestick 在窗口结束点的
 - [Silver / Pyth - Silver](https://robinhood.com/us/en/prediction-markets/metals/events/silver-15-min-58140-target-aug-03-2026/)
 - [WTI / Pyth - WTI](https://robinhood.com/us/en/prediction-markets/commodities/events/wti-oil-15-min-7964-target-aug-03-2026/)
 
-[CF Benchmarks API](https://docs.cfbenchmarks.com/api/) 明确要求 licensed API key；因此本项目没有伪造或替代 RTI observations。[Pyth](https://docs.pyth.network/price-feeds/core/getting-started) 的价格流在链上 permissionless，但其 hosted Hermes API 自 2026-08-18 起要求 API key，而且仍需确认 Robinhood 所指的精确 benchmark series。因此目前只记录结算规格，不声称已经取得最终结算真值。
+[CF Benchmarks API](https://docs.cfbenchmarks.com/api/) 明确要求 licensed API key；因此本项目没有伪造或替代 RTI observations。[Pyth](https://docs.pyth.network/price-feeds/core/getting-started) 的价格流在链上 permissionless，但其 hosted access 与具体 benchmark 仍需独立许可核查。这些 feed 只用于理解 determination rule；自动训练 label 直接采用 Kalshi 官方 finalized result，不自行重算 benchmark。
 
 ## Official venue mapping 与实时 quote
 
-当前十个资产均存在 Kalshi 官方 15-minute series：`KXBTC15M`、`KXETH15M`、`KXGOLD15M`、`KXSILVER15M`、`KXXRP15M`、`KXWTI15M`、`KXSOL15M`、`KXHYPE15M`、`KXDOGE15M`、`KXBNB15M`。`KalshiOfficialQuoteProvider` 不按标题或近似价格匹配；每次只接受同时满足以下条件的唯一 instrument：
+当前十个资产均存在上述 Kalshi 官方 15-minute series。核心路径直接接收 `KalshiNativeMarketProvider` 已验证的 native market；不再需要 Robinhood → Kalshi join。`KalshiOfficialQuoteProvider` 每次只接受同时满足以下条件的 instrument：
 
 - asset 对应固定官方 series；
-- Kalshi `open_time` / `close_time` 与 Robinhood UTC start/end 完全相等；
-- Kalshi 显式 `yes_sub_title` Target Price 与 Robinhood target 的 Decimal 原值完全相等；该字段缺失时才检查 `floor_strike`，不做容差匹配（DOGE 的 numeric strike 位数少于显式 target）；
-- ticker 和 event ticker 必须具有正确的 series prefix，候选必须恰好一个。
+- Kalshi `open_time` / `close_time` 与已验证的 native UTC window 完全相等；
+- detail response 的 contract target 与 discovery target 的 Decimal 原值完全相等；
+- ticker、event ticker 与固定 series 必须完全一致。
 
-满足全部条件时 mapping 为 `Verified`，并保存 Robinhood event/contract ID、Kalshi series/ticker、匹配字段和官方 evidence URLs；零个或多个候选均为 `Partial` 且不产生正式 quote。该 exact join 已在十个当前资产上验证，且 Kalshi `rules_primary`/`rules_secondary` 与 Robinhood 公布的 15-minute settlement 规则一致。
+任一 metadata 改变或 instrument mismatch 都抑制本轮 quote。native quote 只保存 Kalshi series/ticker/event ticker 和官方 evidence，不以 Robinhood 字段作别名。旧 `PredictionMarketQuote` 路径保留用于 Milestone 4/paper compatibility，不属于 native recorder 核心。
 
 [Kalshi public market-data API](https://docs.kalshi.com/getting_started/quick_start_market_data) 明确允许免认证读取实时 markets 和 orderbook。REST 提供显式 `yes_bid_dollars`、`yes_ask_dollars`、`no_bid_dollars`、`no_ask_dollars`、`last_price_dollars`、`volume_fp`，orderbook 提供 Yes/No bid depth；缺失字段保持 SQL `NULL`，不通过 `1 - price` 推导。REST payload 的 market `updated_time` 在实测中不会随每次 quote 变化，不能冒充 quote event timestamp；因此保存低精度 HTTP `Date` 并明确标注 `http_response_date` 语义，另存本地 receive timestamp。官方 [WebSocket](https://docs.kalshi.com/getting_started/quick_start_websockets) 即使订阅 public ticker/trade channel 也要求 API key 握手，因此当前 production recorder 使用免认证 REST polling，不请求或保存 Kalshi credentials。
 
@@ -145,7 +137,7 @@ python -m pip install --no-deps -e .
 ## 运行
 
 ```powershell
-# 持续记录全部 Robinhood 目标资产 + 5 个 Coinbase predictive products
+# 持续记录全部 Kalshi-native 目标 series + 5 个 Coinbase predictive products
 live15-record
 
 # 真实公开 Kalshi 行情驱动、只写本地 SQLite 的 deterministic paper runtime
@@ -154,7 +146,10 @@ live15-paper
 # 显式 30 分钟隔离 acceptance；数据库写入系统临时目录
 python -m live15_quant.paper_acceptance --duration-seconds 1800
 
-# 一次性发现并输出当前公开 Robinhood 15-minute snapshot（JSON logs）
+# Kalshi-native event-driven live acceptance；动态选择最近真实 rollover，默认最长 30 分钟
+python -m live15_quant.native_acceptance --max-seconds 1800
+
+# 一次性发现并输出当前官方 Kalshi 15-minute markets（JSON logs）
 live15-discover
 
 # Coinbase predictive sources
@@ -173,7 +168,7 @@ python market_stream.py
 
 ### Recorder 生命周期
 
-`live15-record` 启动四个协作任务：Robinhood category page 默认每 15 秒轮询一次；Kalshi 官方 REST quote loop 在每个完整 batch 后默认等待 2 秒（10 资产 quotes + orderbook 的 2026-08-20 实测有效 cadence median 约 3.35 秒）；Coinbase 对 `BTC-USD`、`ETH-USD`、`SOL-USD`、`XRP-USD`、`DOGE-USD` 使用一个公共 WebSocket ticker subscription；health 默认每 30 秒写一条结构化日志。每次 discovery 会记录当前 10 个目标资产中实际公开的事件，从首次出现持续观察到 category page 将其标为 closed/settled、窗口结束或事件被新窗口替换。
+`live15-record` 启动 Kalshi-native lifecycle discovery、Kalshi quote/orderbook、Coinbase predictive stream 与 health 四个独立任务。lifecycle 默认每 15 秒按十个固定 series 和 UTC close-time range 发现 previous/current/next；quote loop 每个 batch 后默认等待 2 秒；Coinbase 对 `BTC-USD`、`ETH-USD`、`SOL-USD`、`XRP-USD`、`DOGE-USD` 使用公共 WebSocket ticker subscription。只有 `LIVE15_ENABLE_ROBINHOOD_REFERENCE=true` 才额外启动 Robinhood 参考任务；其失败只改变参考 health，不会移除 Kalshi current market 或停止 quotes。
 
 明确的 `end_time` 是训练 snapshot 的硬边界：`fetched_timestamp >= end_time` 的旧事件永不写入 `robinhood_snapshots`。如果旧事件结束而新事件尚未公开，recorder 进入可持久恢复的 `rollover_gap`，在 health/log 中报告 gap 开始时间和持续时间；它不会延长旧窗口、猜测下一事件或伪造 quote。上游页面继续返回旧事件的事实只写入隔离的 diagnostics 表。真正的新 event ID/contract ID 出现后才关闭 gap 并恢复正常记录。
 
@@ -191,7 +186,17 @@ python market_stream.py
 - 所有 price、bid、ask、spread、size、volume 和 probability 均以 Decimal 原始字符串保存；绝不按 settlement rounding precision 截断。
 - SQLite 可直接被 pandas、Polars 或 DuckDB 查询，后续可批量导出 Parquet。JSONL 缺少可靠事务和索引；Parquet 更适合冷数据批量文件，不适合当前逐 tick append 和 crash recovery，因此两者均未用作热存储。
 
-数据库 metadata 和每一行都包含 `schema_version=3`。已有 v1 数据库会先原子升级 diagnostics schema 至 v2，已有 v2 数据库再用独立事务添加 official quote stream 并升级兼容行至 v3；任何检查失败都会 rollback。未知或未来版本会在修改 recorder tables 前明确拒绝，避免静默误读。
+数据库 metadata 和每一行都包含 `schema_version=4`。v1→v2→v3 的既有原子迁移保持不变；v3→v4 在单一事务中添加 Kalshi native quote、lifecycle、immutable settlement、conflict diagnostic 与 backfill cursor tables，并统一旧行版本。任何检查失败都会 rollback；未知或未来版本会在修改 recorder tables 前明确拒绝。
+
+### Kalshi-native lifecycle / settlement schema
+
+`kalshi_market_lifecycle` 是 append-only 官方状态 observation，保存 asset、series、ticker、event ticker、UTC window、原始 Decimal target、normalized lifecycle、官方 status、rules、settlement timer、determination result（若已发布）、fetch timestamp 与 source。`kalshi_settlements` 每 ticker 只能有一条 finalized truth；相同 truth 幂等，冲突写入 `kalshi_settlement_conflicts` 并抛错，绝不覆盖。`kalshi_backfill_state` 在每页提交 cursor，使 `/markets` 与 `/historical/markets` 回填可恢复。完整设计见 [Kalshi-native architecture](docs/kalshi_native_architecture.md)。
+
+`KalshiBackfillService.run(asset, start=..., end=..., historical=True)` 可按 UTC range 回填 archive。每页逐条幂等保存 typed markets/final labels，完成该页后再提交 cursor；中断后同参数自动续跑并安全重放未完成页。API 顺序不参与 replay，重复 ticker/result 幂等。Production historical endpoint 对 `series_ticker + mve_filter=exclude` 的实际响应与文档组合存在 400 差异，因此实现只使用足以精确限定这十个非-MVE series 的 `series_ticker`，并对 `Target price: TBD` 等无效 archive placeholder fail closed。
+
+`live15_quant.native_acceptance` 不依赖固定日期或固定 UTC 开盘时刻。它每次启动先按十个精确 series 动态发现 previous/current/next，选择仍有可观察时间且最接近结束的真实 OPEN market，然后只跟踪该 asset。只有新 market 的 `window_start` 严格等于旧 market 的 `window_end` 才算 rollover；排期或维护 gap 不会被伪造成相邻窗口。验收要求旧 ticker 的 OPEN→CLOSED→SETTLEMENT_PENDING→官方 SETTLED_YES/NO、successor quote、SQLite restart/integrity 全部成立。默认且绝对 wall-clock 上限为 1,800 秒；acceptance 禁用 transport 内部的多轮 retry，每个 GET timeout 都被剩余总预算截断，并由外层执行 bounded capped backoff，避免一次晚到请求越过总 deadline。期限内上游未提供有效窗口、相邻 successor 或 settlement 时返回结构化 `expected_upstream_unavailable`，而 instrument、timestamp、Decimal、storage 或 lifecycle correctness 错误仍直接失败。可选 `--database-path` 使中断后在同一隔离数据库幂等继续；未指定时使用并自动清理系统临时数据库。
+
+2026-08-20 的 event-driven acceptance 实测 `rollover_latency_seconds=22.14`。该值严格定义为**新窗口官方 metadata 首次被本轮 discovery 收到的本地时间减去新窗口 `window_start`**，包含 polling phase、REST 请求耗时以及 target/market 发布延迟；它不是 Kalshi settlement latency、quote latency、订单延迟或交易执行延迟。该次官方 settlement timestamp 是独立字段，二者不得混用。
 
 ### Robinhood snapshot schema
 
@@ -201,19 +206,19 @@ python market_stream.py
 
 ### Coinbase tick schema
 
-表 `coinbase_ticks` 保存 Coinbase payload 提供的 exchange timestamp，以及 WebSocket message/REST response 到达后、解析前立即记录的本地 receive timestamp；另存 product、完整精度 price/bid/ask/spread、公开 ticker 提供时的 bid size、ask size、last size 与 24-hour volume、predictive data role、schema version 和 content hash。Coinbase 仅是 BTC/ETH/XRP/SOL/DOGE 的 predictive source，绝不被标记或使用为 Robinhood settlement truth。
+表 `coinbase_ticks` 保存 Coinbase payload 提供的 exchange timestamp，以及 WebSocket message/REST response 到达后、解析前立即记录的本地 receive timestamp；另存 product、完整精度 price/bid/ask/spread、公开 ticker 提供时的 bid size、ask size、last size 与 24-hour volume、predictive data role、schema version 和 content hash。Coinbase 仅是 BTC/ETH/XRP/SOL/DOGE 的 predictive source，绝不被标记或使用为 Kalshi settlement truth。
 
 ### Official prediction quote schema
 
-表 `prediction_market_quotes` 独立保存 Robinhood event/contract ID、Kalshi venue/series/ticker、mapping confidence/evidence、HTTP source timestamp 及其语义、本地 receive timestamp、Yes/No bid/ask、last trade、volume、Yes/No bid depth、freshness、executability classification、data role、schema version 和 content hash。所有 Decimal 按 source 字符串精度写入；source 缺失的字段为 SQL `NULL`，不会互补或插值。SSR displayed probability、Kalshi official quote、Coinbase predictive tick 分属不同记录流。
+核心表 `kalshi_prediction_quotes` 只使用 native series/ticker/event ticker，另存 HTTP source timestamp 及其语义、本地 receive timestamp、Yes/No bid/ask、last trade、volume、Yes/No bid depth、freshness、executability classification、evidence、data role、schema version 和 content hash。所有 Decimal 按 source 字符串精度写入；source 缺失字段为 SQL `NULL`，不会互补或插值。旧 `prediction_market_quotes` 表保留 Robinhood-to-venue compatibility records，但 native recorder 不写它。
 
 ### Deterministic replay
 
-`ReplayReader(path).event(event_id)` 按 `fetched_timestamp, insertion id` 稳定重放单个 Robinhood event，并防御性排除 `fetched_timestamp >= end_time` 的遗留 active observations；`ReplayReader(path).quotes(event_id)` 和 `.coinbase(product)` 分别按各自本地 receive timestamp 与 insertion id 稳定重放。reader 只恢复 typed records，不包含策略、回测或 time-alignment 假设。损坏的时间、Decimal 或 enum 会显式抛出 `RecorderStorageError`，不会静默跳过。
+`ReplayReader(path).kalshi_market(ticker)`、`.kalshi_quotes(ticker)` 和 `.kalshi_settlements(series=...)` 分别按官方 fetch time、quote receive time 与 window/ticker 的固定 tie-break 稳定重放。`training_label(ticker, decision_timestamp)` 只返回 decision time 当时已经 fetched/received 的 metadata 与 quote；settlement 被隔离在 `label` 字段，decision 在 settlement 时刻或之后会被拒绝。旧 `.event()`/`.quotes()` 继续提供 Robinhood compatibility replay。损坏的时间、Decimal 或 enum 会显式抛出 `RecorderStorageError`。
 
 ### Health
 
-结构化 `recorder_health` 日志包含：当前 tracking event 数、最后 Robinhood snapshot 时间、各 Kalshi asset 与 Coinbase product 的最后 receive 时间、stale/missing source 数、本进程成功写入记录数，以及每个 active rollover gap 的资产、前一 event ID、开始时间和持续秒数。数据库行数也可用只读 SQL 核查：
+结构化 `kalshi_native_health` 日志包含当前十个 native market、最后 discovery、各 Kalshi asset 与 Coinbase product 的最后 receive time、已观察 settlement 数及本进程写入数；可选 Robinhood reference 只有独立 health flag。数据库行数也可用只读 SQL 核查：
 
 ```powershell
 @'
@@ -223,7 +228,9 @@ with RecorderStore(Path("data/live15.sqlite3")) as store:
     print("Robinhood:", store.count("robinhood_snapshots"))
     print("Diagnostics:", store.count("robinhood_diagnostics"))
     print("Coinbase:", store.count("coinbase_ticks"))
-    print("Official quotes:", store.count("prediction_market_quotes"))
+    print("Kalshi native quotes:", store.count("kalshi_prediction_quotes"))
+    print("Kalshi lifecycle:", store.count("kalshi_market_lifecycle"))
+    print("Kalshi settlements:", store.count("kalshi_settlements"))
 '@ | python
 ```
 
@@ -236,6 +243,7 @@ with RecorderStore(Path("data/live15.sqlite3")) as store:
 | `LIVE15_COINBASE_WS_URL` | `wss://ws-feed.exchange.coinbase.com` |
 | `LIVE15_ROBINHOOD_MAX_SOURCE_AGE_SECONDS` | `360` |
 | `LIVE15_ROBINHOOD_POLL_INTERVAL_SECONDS` | `15` |
+| `LIVE15_ENABLE_ROBINHOOD_REFERENCE` | `false`（可选参考；不属于核心 runtime） |
 | `LIVE15_OFFICIAL_QUOTE_POLL_INTERVAL_SECONDS` | `2` |
 | `LIVE15_OFFICIAL_QUOTE_MAX_SOURCE_AGE_SECONDS` | `15` |
 | `LIVE15_OFFICIAL_QUOTE_ORDERBOOK_DEPTH` | `10` |
@@ -266,7 +274,7 @@ with RecorderStore(Path("data/live15.sqlite3")) as store:
 ```powershell
 ruff check .
 ruff format --check .
-python -c "import live15_quant.paper_execution; import live15_quant.paper_runtime; import live15_quant.paper_storage; import live15_quant.providers.coinbase; import live15_quant.providers.kalshi; import live15_quant.providers.robinhood_15min; import live15_quant.recorder; import live15_quant.records; import live15_quant.replay; import live15_quant.storage"
+python -c "import live15_quant.backfill; import live15_quant.kalshi_lifecycle; import live15_quant.native_acceptance; import live15_quant.native_recorder; import live15_quant.paper_execution; import live15_quant.paper_runtime; import live15_quant.paper_storage; import live15_quant.providers.coinbase; import live15_quant.providers.kalshi; import live15_quant.records; import live15_quant.replay; import live15_quant.storage"
 pytest
 python -m pip check
 git diff --check
@@ -306,16 +314,16 @@ secrets 目录也已 Git ignored 作为第二道保护，但正式要求仍是�
 - Robinhood 网页明确声明 live data 仅供参考，可能延迟或错误；公开页面的缓存和结构可能变化。
 - 页面当前通常显示 Yes probability，不提供可独立验证的 displayed No probability。
 - 部分公开页面快照只在 `__NEXT_DATA__` 中提供 event/contract metadata、不渲染 quote card；这类 quote 的 `availability=unsupported`，Yes/No 均为 `null`。
-- Robinhood SSR 不直接披露 venue ticker；mapping 依赖 Kalshi official series、exact UTC window、exact target 和唯一候选同时成立。任一字段缺失或歧义都会降级并抑制 quote。
-- CF Benchmarks/Pyth 实际 settlement truth 尚未自动采集；不得用 Coinbase spot 替代。
-- Coinbase 不覆盖 Gold、Silver、WTI Oil、HYPE、BNB；这些资产已有 Robinhood snapshots 与 Kalshi official quotes，但没有同步 Coinbase predictive ticks。
+- Kalshi-native discovery 不依赖 Robinhood；contract 自身 target 未发布、malformed 或 candidate 冲突时会暂时无 current/next，而不会借用其他窗口 target。
+- Kalshi `finalized/result/settlement_ts` 已作为唯一自动化 settlement truth；CF Benchmarks/Pyth 是 determination benchmark metadata，Coinbase spot 永远不得替代最终标签。
+- Coinbase 不覆盖 Gold、Silver、WTI Oil、HYPE、BNB；这些资产已有 Kalshi native lifecycle/quotes/settlement labels，但没有同步 Coinbase predictive ticks。
 - Robinhood public category page 只暴露当前 snapshot，若页面缓存、暂时缺少 card 或事件在两次轮询之间出现并消失，recorder 无法补回从未公开观察到的数据。
 - 页面偶尔先发布 upcoming event state、稍后才发布 contract ID/target；这类 placeholder 会产生结构化 warning 并暂不写入，待公开 metadata 完整后才开始记录，绝不猜测 ID 或 target。
-- 当前已有 Kalshi official venue orderbook，但没有实际 CF Benchmarks/Pyth settlement series 或最终 payout；venue book 也不等同 Robinhood 可执行报价。
-- Kalshi 免认证 REST 的 market `updated_time` 不是逐次 order-book event timestamp；当前只能保存 HTTP `Date`（秒级 response-time 语义）与本地 receive timestamp。需要 API key 的官方 WebSocket 尚未启用。
+- Kalshi official venue orderbook 与 finalized settlement truth 均已采集；venue book 仍不等同 Robinhood executable quote。
+- Kalshi 免认证 REST 的 market `updated_time` 不是逐次 order-book event timestamp；当前保存 HTTP `Date`（秒级 response-time 语义）与本地 receive timestamp。Production WebSocket 所有握手均需 Production API key；Demo credential 不会用于 Production，因此当前只提供无网络/无凭据/无订单方法的 typed read-only Protocol 与 snapshot-first sequence-gap guard，不连接 Production。
 - REST market top-of-book 与 orderbook depth 来自相邻的两次请求，不是交易所原子快照；高速变动时两者可能存在小幅时间偏差。
 - 30 分钟 acceptance 中大量 `price_moved` 主要来自 REST market 与 orderbook 两次非原子读取之间的变化。这是正确性保护而非放宽条件的理由；后续应使用官方 authenticated WebSocket orderbook snapshot/delta 构造单一原子 market state，在完成前不得取消 top-of-book/depth 一致性检查。
 - Paper fills 是基于轮询时观察到的 venue depth 的保守本地模拟，不代表真实 queue position、网络延迟、成交保证或 Robinhood executable quote；fill uncertainty 会被 hard-risk layer 阻断。
-- Settlement truth 尚未自动采集，故到期未平仓 paper positions 保持 `pending_settlement`，PnL 不伪造最终 payout。
+- Settlement truth 已独立落库，但 Milestone 6 不改变 paper settlement accounting；到期未平仓 paper positions 仍保持 `pending_settlement`，后续里程碑再以显式 settlement adapter 接入，当前不伪造 payout。
 - 当前已有 Kalshi Demo-only RSA-PSS signer 与 authenticated GET-only connectivity audit，但没有 Demo/Production execution client，也没有任何仓库内 credential。用户仍需本人创建 Demo account/key 并安全保管 RSA private key；Demo 与 Production credentials 不通用。
 - SQLite recorder 尚未实现 retention、压缩、Parquet export 或多进程同时写入；单 recorder 进程是当前支持的运行模式。

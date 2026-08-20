@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
+from live15_quant.kalshi_lifecycle import KalshiLifecycle, KalshiResult
 from live15_quant.models import (
     Asset,
     DataRole,
@@ -20,7 +21,7 @@ from live15_quant.models import (
     Venue,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,3 +123,103 @@ class PredictionQuoteRecord:
     executability: ExecutabilityClassification
     evidence_urls: tuple[str, ...]
     role: DataRole
+
+
+@dataclass(frozen=True, slots=True)
+class KalshiMarketRecord:
+    row_id: int
+    schema_version: int
+    asset: Asset
+    series: str
+    ticker: str
+    event_ticker: str
+    window_start: datetime
+    window_end: datetime
+    target: Decimal
+    lifecycle: KalshiLifecycle
+    official_status: str
+    fetched_timestamp: datetime
+    source_url: str
+    rules_primary: str
+    rules_secondary: str
+    settlement_timer_seconds: int
+    determination_result: KalshiResult | None
+
+
+@dataclass(frozen=True, slots=True)
+class KalshiSettlementRecord:
+    row_id: int
+    schema_version: int
+    asset: Asset
+    series: str
+    ticker: str
+    event_ticker: str
+    window_start: datetime
+    window_end: datetime
+    target: Decimal
+    result: KalshiResult
+    settlement_timestamp: datetime
+    settlement_value: Decimal | None
+    expiration_value: str | None
+    official_source: str
+    fetched_timestamp: datetime
+    role: DataRole
+
+
+@dataclass(frozen=True, slots=True)
+class KalshiFeatureMarketRecord:
+    """Official metadata safe for pre-settlement feature construction."""
+
+    row_id: int
+    schema_version: int
+    asset: Asset
+    series: str
+    ticker: str
+    event_ticker: str
+    window_start: datetime
+    window_end: datetime
+    target: Decimal
+    lifecycle: KalshiLifecycle
+    official_status: str
+    fetched_timestamp: datetime
+    source_url: str
+    rules_primary: str
+    rules_secondary: str
+    settlement_timer_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
+class KalshiNativeQuoteRecord:
+    row_id: int
+    schema_version: int
+    asset: Asset
+    series: str
+    ticker: str
+    event_ticker: str
+    source_timestamp: datetime | None
+    source_timestamp_kind: SourceTimestampKind
+    received_timestamp: datetime
+    yes_bid: Decimal | None
+    yes_ask: Decimal | None
+    no_bid: Decimal | None
+    no_ask: Decimal | None
+    last_trade: Decimal | None
+    volume: Decimal | None
+    yes_bid_depth: tuple[OrderBookLevel, ...]
+    no_bid_depth: tuple[OrderBookLevel, ...]
+    source: str
+    freshness: FreshnessState
+    executability: ExecutabilityClassification
+    evidence_urls: tuple[str, ...]
+    role: DataRole
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingLabelExample:
+    """Feature observations and final label are structurally separated."""
+
+    ticker: str
+    decision_timestamp: datetime
+    market: KalshiFeatureMarketRecord
+    observations: tuple[KalshiNativeQuoteRecord, ...]
+    label: KalshiSettlementRecord

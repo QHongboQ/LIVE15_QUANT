@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import quote as url_quote
 
 import requests
@@ -22,6 +23,7 @@ from live15_quant.models import (
     ExecutabilityClassification,
     FifteenMinuteContract,
     FreshnessState,
+    KalshiNativeQuote,
     MappingConfidence,
     OrderBookLevel,
     PredictionMarketQuote,
@@ -29,6 +31,9 @@ from live15_quant.models import (
     Venue,
     VenueMapping,
 )
+
+if TYPE_CHECKING:
+    from live15_quant.kalshi_lifecycle import KalshiMarket
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +55,15 @@ KALSHI_15MIN_SERIES: Mapping[Asset, str] = {
     Asset.BNB: "KXBNB15M",
 }
 
-_TARGET_SUBTITLE = re.compile(r"Target Price:\s*\$([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+_TARGET_SUBTITLE = re.compile(r"Target Price:\s*\$([0-9][0-9,]*(?:\.[0-9]+)?)", re.IGNORECASE)
 
 
 class KalshiPublicApiError(RuntimeError):
     """Raised for malformed or inconsistent official Kalshi market data."""
+
+
+class KalshiTargetUnavailableError(KalshiPublicApiError):
+    """Raised only when an otherwise valid official market has no published target yet."""
 
 
 class HttpResponse(Protocol):
@@ -76,13 +85,13 @@ class HttpSession(Protocol):
     ) -> HttpResponse: ...
 
 
-def _retrying_session() -> requests.Session:
+def _retrying_session(retry_total: int = 4) -> requests.Session:
     session = requests.Session()
     retry = Retry(
-        total=4,
-        connect=4,
-        read=4,
-        status=4,
+        total=retry_total,
+        connect=retry_total,
+        read=retry_total,
+        status=retry_total,
         backoff_factor=0.5,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET"}),
@@ -148,9 +157,18 @@ def _market_target(market: Mapping[str, Any]) -> Decimal:
     """Read the explicit target string before a potentially lower-precision numeric strike."""
 
     subtitle = market.get("yes_sub_title")
-    if isinstance(subtitle, str) and (match := _TARGET_SUBTITLE.fullmatch(subtitle)):
-        target = _decimal(match.group(1), "yes_sub_title target")
+    if isinstance(subtitle, str) and subtitle.strip():
+        if re.fullmatch(r"Target Price:\s*TBD", subtitle.strip(), re.IGNORECASE):
+            raise KalshiTargetUnavailableError("official market target is not published")
+        match = _TARGET_SUBTITLE.fullmatch(subtitle)
+        if match is None:
+            raise KalshiPublicApiError("malformed official market target")
+        target = _decimal(match.group(1).replace(",", ""), "yes_sub_title target")
     else:
+        if subtitle is not None and not isinstance(subtitle, str):
+            raise KalshiPublicApiError("malformed official market target")
+        if market.get("floor_strike") is None:
+            raise KalshiTargetUnavailableError("official market target is not published")
         target = _decimal(market.get("floor_strike"), "floor_strike")
     if target is None or target <= 0:
         raise KalshiPublicApiError("malformed official market target")
@@ -160,25 +178,52 @@ def _market_target(market: Mapping[str, Any]) -> Decimal:
 class KalshiOfficialQuoteProvider:
     """Read official Kalshi REST quotes without account or API credentials."""
 
-    def __init__(self, settings: Settings, session: HttpSession | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        session: HttpSession | None = None,
+        *,
+        retry_total: int = 4,
+        deadline_monotonic: float | None = None,
+    ) -> None:
         if settings.kalshi_public_api_base_url != KALSHI_PUBLIC_API_BASE_URL:
             raise ValueError("Kalshi base URL must be the documented public production endpoint")
+        if retry_total < 0:
+            raise ValueError("retry_total must be non-negative")
         self._settings = settings
-        self._owned_session = _retrying_session() if session is None else None
+        self._owned_session = _retrying_session(retry_total) if session is None else None
         self._session = self._owned_session or session
+        self._deadline_monotonic = deadline_monotonic
 
     def close(self) -> None:
         if self._owned_session is not None:
             self._owned_session.close()
 
+    @property
+    def base_url(self) -> str:
+        return self._settings.kalshi_public_api_base_url
+
+    def get_public(
+        self, path: str, params: Mapping[str, object] | None = None
+    ) -> tuple[Mapping[str, Any], Mapping[str, str], str]:
+        """Expose this provider's validated GET-only transport to native metadata readers."""
+
+        return self._get(path, params)
+
     def _get(
         self, path: str, params: Mapping[str, object] | None = None
     ) -> tuple[Mapping[str, Any], Mapping[str, str], str]:
         url = f"{self._settings.kalshi_public_api_base_url}{path}"
+        timeout = self._settings.request_timeout_seconds
+        if self._deadline_monotonic is not None:
+            remaining = self._deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                raise requests.Timeout("Kalshi acceptance deadline elapsed")
+            timeout = min(timeout, max(remaining, 0.001))
         response = self._session.get(
             url,
             params=params,
-            timeout=self._settings.request_timeout_seconds,
+            timeout=timeout,
             headers={
                 "Accept": "application/json",
                 "User-Agent": "LIVE15_QUANT/0.3 authorized-market-data",
@@ -317,6 +362,92 @@ class KalshiOfficialQuoteProvider:
             return tuple(sorted(result, key=lambda level: level.price, reverse=True))
 
         return levels("yes_dollars"), levels("no_dollars")
+
+    def quote_native(self, contract: KalshiMarket) -> KalshiNativeQuote:
+        """Quote one exact Kalshi-native market without any Robinhood dependency."""
+
+        expected_series = self.series_for(contract.asset)
+        if contract.series != expected_series:
+            raise KalshiPublicApiError("native market series does not match asset")
+        payload, headers, _ = self._get(f"/markets/{url_quote(contract.ticker, safe='')}", None)
+        market = payload.get("market")
+        if not isinstance(market, Mapping):
+            raise KalshiPublicApiError("Kalshi market detail must be an object")
+        if (
+            market.get("ticker") != contract.ticker
+            or market.get("event_ticker") != contract.event_ticker
+        ):
+            raise KalshiPublicApiError("native market detail instrument mismatch")
+        if (
+            _timestamp(market.get("open_time"), "open_time") != contract.window_start
+            or _timestamp(market.get("close_time"), "close_time") != contract.window_end
+            or _market_target(market) != contract.target
+        ):
+            raise KalshiPublicApiError("native market detail metadata changed unexpectedly")
+        yes_depth, no_depth = self._orderbook(contract.ticker)
+        received = datetime.now(UTC)
+        source_timestamp = _http_date(headers)
+        source_age = (
+            None
+            if source_timestamp is None
+            else max((received - source_timestamp).total_seconds(), 0.0)
+        )
+        freshness = (
+            FreshnessState.UNKNOWN
+            if source_age is None
+            else FreshnessState.STALE
+            if source_age > self._settings.official_quote_max_source_age_seconds
+            else FreshnessState.FRESH
+        )
+        source = f"{KALSHI_PUBLIC_API_BASE_URL}/markets/{contract.ticker}"
+        return KalshiNativeQuote(
+            asset=contract.asset,
+            series=contract.series,
+            ticker=contract.ticker,
+            event_ticker=contract.event_ticker,
+            source_timestamp=source_timestamp,
+            source_timestamp_kind=(
+                SourceTimestampKind.HTTP_RESPONSE_DATE
+                if source_timestamp is not None
+                else SourceTimestampKind.UNAVAILABLE
+            ),
+            received_timestamp=received,
+            yes_bid=_decimal(market.get("yes_bid_dollars"), "yes_bid_dollars", optional=True),
+            yes_ask=_decimal(market.get("yes_ask_dollars"), "yes_ask_dollars", optional=True),
+            no_bid=_decimal(market.get("no_bid_dollars"), "no_bid_dollars", optional=True),
+            no_ask=_decimal(market.get("no_ask_dollars"), "no_ask_dollars", optional=True),
+            last_trade=_decimal(
+                market.get("last_price_dollars"), "last_price_dollars", optional=True
+            ),
+            volume=_decimal(market.get("volume_fp"), "volume_fp", optional=True),
+            yes_bid_depth=yes_depth,
+            no_bid_depth=no_depth,
+            source=source,
+            freshness=freshness,
+            executability=ExecutabilityClassification.OFFICIAL_VENUE_ORDER_BOOK,
+            evidence_urls=(
+                KALSHI_MARKET_DATA_DOCS,
+                f"{KALSHI_PUBLIC_API_BASE_URL}/series/{contract.series}",
+                source,
+                _terms_for(contract.asset),
+            ),
+        )
+
+    def quotes_native(self, contracts: Sequence[KalshiMarket]) -> tuple[KalshiNativeQuote, ...]:
+        result: list[KalshiNativeQuote] = []
+        for contract in contracts:
+            try:
+                result.append(self.quote_native(contract))
+            except Exception:
+                logger.exception(
+                    "Kalshi-native quote acquisition failed",
+                    extra={
+                        "event": "kalshi_native_quote_error",
+                        "asset": contract.asset,
+                        "venue_ticker": contract.ticker,
+                    },
+                )
+        return tuple(result)
 
     def quote(self, contract: FifteenMinuteContract) -> PredictionMarketQuote | None:
         mapping, market, headers = self.map_contract(contract)

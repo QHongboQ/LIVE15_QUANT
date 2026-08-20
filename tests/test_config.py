@@ -22,6 +22,7 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.log_level == "INFO"
     assert settings.kalshi_demo_api_key_id is None
     assert settings.kalshi_demo_private_key_path is None
+    assert settings.enable_robinhood_reference is False
 
 
 def test_load_settings_normalizes_environment_values() -> None:
@@ -33,6 +34,7 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_REQUEST_TIMEOUT_SECONDS": "2.5",
             "LIVE15_RECORDER_DATA_PATH": "scratch/test.sqlite3",
             "LIVE15_ROBINHOOD_POLL_INTERVAL_SECONDS": "7.5",
+            "LIVE15_ENABLE_ROBINHOOD_REFERENCE": "true",
             "LIVE15_OFFICIAL_QUOTE_POLL_INTERVAL_SECONDS": "1.5",
             "LIVE15_OFFICIAL_QUOTE_MAX_SOURCE_AGE_SECONDS": "12",
             "LIVE15_OFFICIAL_QUOTE_ORDERBOOK_DEPTH": "20",
@@ -51,6 +53,7 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.request_timeout_seconds == 2.5
     assert settings.recorder_data_path == Path("scratch/test.sqlite3")
     assert settings.robinhood_poll_interval_seconds == 7.5
+    assert settings.enable_robinhood_reference is True
     assert settings.official_quote_poll_interval_seconds == 1.5
     assert settings.official_quote_max_source_age_seconds == 12
     assert settings.official_quote_orderbook_depth == 20

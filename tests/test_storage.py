@@ -114,6 +114,7 @@ def test_first_create_append_and_full_decimal_precision(tmp_path) -> None:
         assert store.count("coinbase_ticks") == 1
         assert store.count("prediction_market_quotes") == 1
         assert store._connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert store._connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert store._connection.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
         assert store._connection.execute("PRAGMA journal_size_limit").fetchone()[0] == 67108864
         snapshot = next(store.replay_robinhood("event-1"))
@@ -162,9 +163,9 @@ def test_v1_database_is_atomically_migrated_without_losing_history(tmp_path) -> 
             "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
 
-    assert version == "3"
-    assert snapshot.schema_version == 3
-    assert saved_tick.schema_version == 3
+    assert version == "4"
+    assert snapshot.schema_version == 4
+    assert saved_tick.schema_version == 4
     assert snapshot.target_price == Decimal("68159.82000001")
     assert saved_tick.price == Decimal("68159.1234567890123456789")
 
@@ -217,7 +218,7 @@ def test_v2_database_is_atomically_migrated_with_quote_stream(tmp_path) -> None:
             "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
 
-    assert version == "3"
+    assert version == "4"
 
 
 def test_failed_v2_migration_rolls_back_version_and_quote_table(tmp_path) -> None:

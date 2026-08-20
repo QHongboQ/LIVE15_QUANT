@@ -31,6 +31,7 @@ class Settings:
     rest_poll_interval_seconds: float = 5.0
     robinhood_max_source_age_seconds: float = 360.0
     robinhood_poll_interval_seconds: float = 15.0
+    enable_robinhood_reference: bool = False
     kalshi_public_api_base_url: str = KALSHI_PUBLIC_API_BASE_URL
     kalshi_demo_api_key_id: str | None = field(default=None, repr=False)
     kalshi_demo_private_key_path: Path | None = field(default=None, repr=False)
@@ -140,6 +141,11 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             source,
             "LIVE15_ROBINHOOD_POLL_INTERVAL_SECONDS",
             defaults.robinhood_poll_interval_seconds,
+        ),
+        enable_robinhood_reference=_boolean(
+            source,
+            "LIVE15_ENABLE_ROBINHOOD_REFERENCE",
+            defaults.enable_robinhood_reference,
         ),
         kalshi_public_api_base_url=KALSHI_PUBLIC_API_BASE_URL,
         kalshi_demo_api_key_id=source.get("LIVE15_KALSHI_DEMO_API_KEY_ID") or None,

@@ -9,7 +9,7 @@ from enum import StrEnum
 
 
 class Asset(StrEnum):
-    """Assets offered in Robinhood's Live 15-minute category."""
+    """The ten approved Kalshi-native 15-minute research assets."""
 
     BTC = "BTC"
     ETH = "ETH"
@@ -29,6 +29,7 @@ class DataRole(StrEnum):
     PREDICTIVE_MARKET_DATA = "predictive_market_data"
     CONTRACT_MARKET_QUOTE = "contract_market_quote"
     SETTLEMENT_BENCHMARK = "settlement_benchmark"
+    SETTLEMENT_TRUTH = "official_settlement_truth"
     PAPER_EXECUTION = "paper_execution"
 
 
@@ -192,6 +193,68 @@ class PredictionMarketQuote:
             raise ValueError("No ask must not be below No bid")
         if self.volume is not None and self.volume < 0:
             raise ValueError("prediction quote volume must be non-negative")
+        if (
+            self.source_timestamp is None
+            and self.source_timestamp_kind is not SourceTimestampKind.UNAVAILABLE
+        ):
+            raise ValueError("missing source timestamp must be classified unavailable")
+        if (
+            self.source_timestamp is not None
+            and self.source_timestamp_kind is SourceTimestampKind.UNAVAILABLE
+        ):
+            raise ValueError("available source timestamp requires explicit semantics")
+
+
+@dataclass(frozen=True, slots=True)
+class KalshiNativeQuote:
+    """Official Kalshi quote identified only by native event/market tickers."""
+
+    asset: Asset
+    series: str
+    ticker: str
+    event_ticker: str
+    source_timestamp: datetime | None
+    source_timestamp_kind: SourceTimestampKind
+    received_timestamp: datetime
+    yes_bid: Decimal | None
+    yes_ask: Decimal | None
+    no_bid: Decimal | None
+    no_ask: Decimal | None
+    last_trade: Decimal | None
+    volume: Decimal | None
+    yes_bid_depth: tuple[OrderBookLevel, ...]
+    no_bid_depth: tuple[OrderBookLevel, ...]
+    source: str
+    freshness: FreshnessState
+    executability: ExecutabilityClassification
+    evidence_urls: tuple[str, ...]
+    role: DataRole = field(init=False, default=DataRole.CONTRACT_MARKET_QUOTE)
+
+    def __post_init__(self) -> None:
+        if not all((self.series, self.ticker, self.event_ticker, self.source)):
+            raise ValueError("Kalshi-native quote identifiers must not be empty")
+        if not self.event_ticker.startswith(f"{self.series}-") or not self.ticker.startswith(
+            f"{self.event_ticker}-"
+        ):
+            raise ValueError("Kalshi-native quote ticker hierarchy is inconsistent")
+        timestamps = (self.source_timestamp, self.received_timestamp)
+        if any(
+            value is not None and (value.tzinfo is None or value.utcoffset() is None)
+            for value in timestamps
+        ):
+            raise ValueError("Kalshi-native quote timestamps must be timezone-aware")
+        prices = (self.yes_bid, self.yes_ask, self.no_bid, self.no_ask, self.last_trade)
+        if any(
+            value is not None and (not value.is_finite() or not Decimal(0) <= value <= Decimal(1))
+            for value in prices
+        ):
+            raise ValueError("Kalshi-native quote prices must be finite and within [0, 1]")
+        if self.yes_bid is not None and self.yes_ask is not None and self.yes_ask < self.yes_bid:
+            raise ValueError("Yes ask must not be below Yes bid")
+        if self.no_bid is not None and self.no_ask is not None and self.no_ask < self.no_bid:
+            raise ValueError("No ask must not be below No bid")
+        if self.volume is not None and (not self.volume.is_finite() or self.volume < 0):
+            raise ValueError("Kalshi-native quote volume must be finite and non-negative")
         if (
             self.source_timestamp is None
             and self.source_timestamp_kind is not SourceTimestampKind.UNAVAILABLE
