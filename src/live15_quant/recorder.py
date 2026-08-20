@@ -92,10 +92,12 @@ class HistoricalRecorder:
         self._settings = settings
         self._store = store
         self._robinhood = robinhood or Robinhood15MinuteProvider(settings)
+        self._owns_robinhood = robinhood is None
         self._coinbase_factory = coinbase_factory or (
             lambda: CoinbaseWebSocketClient(settings, products=settings.products)
         )
         self._official_quotes = official_quotes or KalshiOfficialQuoteProvider(settings)
+        self._owns_official_quotes = official_quotes is None
         self._now = now or (lambda: datetime.now(UTC))
         self._health = _MutableHealth()
         for asset, diagnostic in self._store.open_rollover_gaps().items():
@@ -203,6 +205,12 @@ class HistoricalRecorder:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if self._owns_robinhood:
+                assert isinstance(self._robinhood, Robinhood15MinuteProvider)
+                self._robinhood.close()
+            if self._owns_official_quotes:
+                assert isinstance(self._official_quotes, KalshiOfficialQuoteProvider)
+                self._official_quotes.close()
             logger.info(
                 "Historical recorder stopped",
                 extra={"event": "recorder_stopped", **self._health_fields()},

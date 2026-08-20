@@ -84,7 +84,12 @@ class CoinbaseRestClient:
 
     def __init__(self, settings: Settings, session: HttpSession | None = None) -> None:
         self._settings = settings
-        self._session = session or requests.Session()
+        self._owned_session = requests.Session() if session is None else None
+        self._session = self._owned_session or session
+
+    def close(self) -> None:
+        if self._owned_session is not None:
+            self._owned_session.close()
 
     def get_ticker(self, product_id: str) -> MarketTick:
         url = f"{self._settings.coinbase_rest_base_url}/products/{product_id}/ticker"

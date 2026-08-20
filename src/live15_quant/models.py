@@ -29,6 +29,7 @@ class DataRole(StrEnum):
     PREDICTIVE_MARKET_DATA = "predictive_market_data"
     CONTRACT_MARKET_QUOTE = "contract_market_quote"
     SETTLEMENT_BENCHMARK = "settlement_benchmark"
+    PAPER_EXECUTION = "paper_execution"
 
 
 class Venue(StrEnum):

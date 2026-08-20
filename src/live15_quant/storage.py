@@ -271,6 +271,11 @@ class RecorderStore:
             """
         ).fetchone()
         if metadata_exists is None:
+            paper_store = self._connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_metadata'"
+            ).fetchone()
+            if paper_store is not None:
+                raise RecorderStorageError("raw recorder cannot share the paper ledger database")
             self._create_schema()
             return
 

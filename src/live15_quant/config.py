@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 DEFAULT_PRODUCTS = ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD")
 ROBINHOOD_15MIN_PUBLIC_URL = "https://robinhood.com/us/en/prediction-markets/15-min/"
 KALSHI_PUBLIC_API_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
+KALSHI_DEMO_API_BASE_URL = "https://external-api.demo.kalshi.co/trade-api/v2"
+KALSHI_PRODUCTION_WEBSOCKET_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
+KALSHI_DEMO_WEBSOCKET_URL = "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,12 +32,24 @@ class Settings:
     robinhood_max_source_age_seconds: float = 360.0
     robinhood_poll_interval_seconds: float = 15.0
     kalshi_public_api_base_url: str = KALSHI_PUBLIC_API_BASE_URL
+    kalshi_demo_api_key_id: str | None = field(default=None, repr=False)
+    kalshi_demo_private_key_path: Path | None = field(default=None, repr=False)
     official_quote_poll_interval_seconds: float = 2.0
     official_quote_max_source_age_seconds: float = 15.0
     official_quote_orderbook_depth: int = 10
     recorder_data_path: Path = Path("data/live15.sqlite3")
     recorder_health_interval_seconds: float = 30.0
     recorder_coinbase_stale_seconds: float = 30.0
+    paper_data_path: Path = Path("data/paper.sqlite3")
+    paper_account_id: str = "local-paper"
+    paper_starting_cash: Decimal = Decimal("1000")
+    paper_signal_interval_seconds: float = 90.0
+    paper_max_order_notional: Decimal = Decimal("10")
+    paper_max_event_exposure: Decimal = Decimal("25")
+    paper_max_daily_loss: Decimal = Decimal("20")
+    paper_max_total_exposure: Decimal = Decimal("100")
+    paper_max_consecutive_losses: int = 3
+    paper_kill_switch: bool = False
     log_level: str = "INFO"
 
 
@@ -51,6 +67,23 @@ def _positive_int(source: Mapping[str, str], name: str, default: int) -> int:
     return value
 
 
+def _positive_decimal(source: Mapping[str, str], name: str, default: Decimal) -> Decimal:
+    try:
+        value = Decimal(source.get(name, str(default)))
+    except InvalidOperation as error:
+        raise ValueError(f"{name} must be a decimal") from error
+    if not value.is_finite() or value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+def _boolean(source: Mapping[str, str], name: str, default: bool) -> bool:
+    raw = source.get(name, str(default)).strip().lower()
+    if raw not in {"true", "false", "1", "0"}:
+        raise ValueError(f"{name} must be true/false or 1/0")
+    return raw in {"true", "1"}
+
+
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     """Load settings from LIVE15_* environment variables."""
 
@@ -62,6 +95,15 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     )
     if not products:
         raise ValueError("LIVE15_PRODUCTS must contain at least one product")
+    recorder_data_path = Path(
+        source.get("LIVE15_RECORDER_DATA_PATH", str(defaults.recorder_data_path))
+    )
+    paper_data_path = Path(source.get("LIVE15_PAPER_DATA_PATH", str(defaults.paper_data_path)))
+    if recorder_data_path.resolve() == paper_data_path.resolve():
+        raise ValueError("paper and raw recorder database paths must be different")
+    paper_account_id = source.get("LIVE15_PAPER_ACCOUNT_ID", defaults.paper_account_id).strip()
+    if not paper_account_id:
+        raise ValueError("LIVE15_PAPER_ACCOUNT_ID must not be empty")
 
     return Settings(
         coinbase_rest_base_url=source.get(
@@ -100,6 +142,12 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             defaults.robinhood_poll_interval_seconds,
         ),
         kalshi_public_api_base_url=KALSHI_PUBLIC_API_BASE_URL,
+        kalshi_demo_api_key_id=source.get("LIVE15_KALSHI_DEMO_API_KEY_ID") or None,
+        kalshi_demo_private_key_path=(
+            Path(source["LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH"])
+            if source.get("LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH")
+            else None
+        ),
         official_quote_poll_interval_seconds=_positive_float(
             source,
             "LIVE15_OFFICIAL_QUOTE_POLL_INTERVAL_SECONDS",
@@ -115,9 +163,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             "LIVE15_OFFICIAL_QUOTE_ORDERBOOK_DEPTH",
             defaults.official_quote_orderbook_depth,
         ),
-        recorder_data_path=Path(
-            source.get("LIVE15_RECORDER_DATA_PATH", str(defaults.recorder_data_path))
-        ),
+        recorder_data_path=recorder_data_path,
         recorder_health_interval_seconds=_positive_float(
             source,
             "LIVE15_RECORDER_HEALTH_INTERVAL_SECONDS",
@@ -128,5 +174,33 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             "LIVE15_RECORDER_COINBASE_STALE_SECONDS",
             defaults.recorder_coinbase_stale_seconds,
         ),
+        paper_data_path=paper_data_path,
+        paper_account_id=paper_account_id,
+        paper_starting_cash=_positive_decimal(
+            source, "LIVE15_PAPER_STARTING_CASH", defaults.paper_starting_cash
+        ),
+        paper_signal_interval_seconds=_positive_float(
+            source,
+            "LIVE15_PAPER_SIGNAL_INTERVAL_SECONDS",
+            defaults.paper_signal_interval_seconds,
+        ),
+        paper_max_order_notional=_positive_decimal(
+            source, "LIVE15_PAPER_MAX_ORDER_NOTIONAL", defaults.paper_max_order_notional
+        ),
+        paper_max_event_exposure=_positive_decimal(
+            source, "LIVE15_PAPER_MAX_EVENT_EXPOSURE", defaults.paper_max_event_exposure
+        ),
+        paper_max_daily_loss=_positive_decimal(
+            source, "LIVE15_PAPER_MAX_DAILY_LOSS", defaults.paper_max_daily_loss
+        ),
+        paper_max_total_exposure=_positive_decimal(
+            source, "LIVE15_PAPER_MAX_TOTAL_EXPOSURE", defaults.paper_max_total_exposure
+        ),
+        paper_max_consecutive_losses=_positive_int(
+            source,
+            "LIVE15_PAPER_MAX_CONSECUTIVE_LOSSES",
+            defaults.paper_max_consecutive_losses,
+        ),
+        paper_kill_switch=_boolean(source, "LIVE15_PAPER_KILL_SWITCH", defaults.paper_kill_switch),
         log_level=source.get("LIVE15_LOG_LEVEL", defaults.log_level).upper(),
     )

@@ -227,6 +227,33 @@ def test_nonmatching_target_is_partial_and_produces_no_quote() -> None:
     assert source.quote(contract()) is None
 
 
+def test_unrelated_window_without_target_does_not_break_exact_candidate() -> None:
+    unrelated = market(
+        ticker="KXBTC15M-26AUG201230-00",
+        event_ticker="KXBTC15M-26AUG201230",
+        open_time="2026-08-20T12:15:00Z",
+        close_time="2026-08-20T12:30:00Z",
+    )
+    unrelated.pop("floor_strike")
+    unrelated.pop("yes_sub_title")
+    expected = market()
+    source = provider(FakeSession({"markets": [unrelated, expected]}))
+
+    mapping, raw_market, _ = source.map_contract(contract())
+
+    assert mapping.confidence is MappingConfidence.VERIFIED
+    assert raw_market == expected
+
+
+def test_exact_window_without_target_still_fails_safely() -> None:
+    candidate = market()
+    candidate.pop("floor_strike")
+    candidate.pop("yes_sub_title")
+
+    with pytest.raises(KalshiPublicApiError, match="floor_strike"):
+        provider(FakeSession({"markets": [candidate]})).map_contract(contract())
+
+
 def test_explicit_target_preserves_precision_beyond_numeric_floor_strike() -> None:
     source = provider(
         FakeSession(

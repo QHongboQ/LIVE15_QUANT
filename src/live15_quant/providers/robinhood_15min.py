@@ -519,7 +519,12 @@ class Robinhood15MinuteProvider:
         if settings.robinhood_15min_url != ROBINHOOD_15MIN_PUBLIC_URL:
             raise ValueError("Robinhood discovery URL must be the verified public 15-minute page")
         self._settings = settings
-        self._session = session or _retrying_session()
+        self._owned_session = _retrying_session() if session is None else None
+        self._session = self._owned_session or session
+
+    def close(self) -> None:
+        if self._owned_session is not None:
+            self._owned_session.close()
 
     def discover(self) -> tuple[FifteenMinuteContract, ...]:
         try:

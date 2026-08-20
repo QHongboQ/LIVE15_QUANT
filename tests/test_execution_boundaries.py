@@ -15,7 +15,13 @@ from live15_quant.execution import (
     ExecutionProvider,
 )
 from live15_quant.models import Asset, FreshnessState
-from live15_quant.risk import HardRiskLimits, RiskBlockReason, RiskDecision, RiskSnapshot
+from live15_quant.risk import (
+    HardRiskLimits,
+    ImmutableHardRiskLayer,
+    RiskBlockReason,
+    RiskDecision,
+    RiskSnapshot,
+)
 
 
 def order_request() -> ExecutionOrderRequest:
@@ -78,6 +84,9 @@ def test_hard_risk_limits_are_required_and_immutable() -> None:
     with pytest.raises(FrozenInstanceError):
         limits.max_order_notional = Decimal("99")  # type: ignore[misc]
 
+    with pytest.raises(ValueError, match="positive"):
+        replace(limits, max_order_notional=Decimal("Infinity"))
+
 
 def test_risk_state_has_explicit_staleness_source_and_fill_guards() -> None:
     snapshot = RiskSnapshot(
@@ -106,3 +115,34 @@ def test_risk_decision_cannot_be_ambiguous() -> None:
 
     with pytest.raises(ValueError, match="allowed decisions"):
         RiskDecision(allowed=True, reasons=(RiskBlockReason.STALE_QUOTE,))
+
+
+def test_immutable_risk_layer_blocks_all_independent_safety_signals() -> None:
+    layer = ImmutableHardRiskLayer(
+        HardRiskLimits(Decimal("1"), Decimal("2"), Decimal("3"), Decimal("4"), 2)
+    )
+    account = ExecutionAccountState(
+        "opaque-account",
+        Decimal("0.1"),
+        Decimal("4"),
+        Decimal("-3"),
+        "USD",
+        datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    snapshot = RiskSnapshot(
+        quote_freshness=FreshnessState.STALE,
+        data_sources_healthy=False,
+        fill_state_certain=False,
+        event_exposure=Decimal("2"),
+        consecutive_losses=2,
+        total_exposure=Decimal("4"),
+        daily_pnl=Decimal("-3"),
+        quote_fields_present=False,
+        mapping_verified=False,
+        kill_switch_active=True,
+    )
+
+    result = layer.evaluate(order_request(), account, None, snapshot)
+
+    assert result.allowed is False
+    assert set(result.reasons) == set(RiskBlockReason)

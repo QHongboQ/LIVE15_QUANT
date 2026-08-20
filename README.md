@@ -1,10 +1,10 @@
 # LIVE15_QUANT
 
-LIVE15_QUANT 是一个**只针对 Robinhood Live 15-minute prediction-market contracts** 的数据研究项目。当前实现持续采集并持久化 Robinhood SSR 事件快照、Kalshi 官方 venue quotes/orderbook 和对应的 Coinbase predictive ticks；范围不包括小时、日、周、体育、政治合约，也暂不包括模型、特征工程、回测、Paper Trading 或真钱交易。
+LIVE15_QUANT 是一个**只针对 Robinhood Live 15-minute prediction-market contracts** 的本地量化研究项目。当前实现持续采集 Robinhood SSR 元数据、Kalshi 官方 venue quotes/orderbook 和 Coinbase predictive ticks，并用真实 Kalshi depth 驱动完全本地的 paper execution。范围不包括小时、日、周、体育、政治合约，也不包括模型、特征工程、回测或真钱交易。
 
-项目仅使用无需登录且允许公开访问的数据：Coinbase Exchange 公共市场数据、Robinhood 服务端渲染的公开网页，以及 Kalshi 官方免认证 REST market-data API。代码不调用 Robinhood 私有/未公开 API，不访问账户，不包含订单或交易能力。
+长期 recorder 与 paper runtime 仅使用无需登录且允许公开访问的数据：Coinbase Exchange 公共市场数据、Robinhood 服务端渲染的公开网页，以及 Kalshi 官方免认证 REST market-data API。另有一个隔离的 Kalshi Demo authenticated GET-only connectivity audit，只读取 balance/markets/positions/orders/fills；paper adapter 不访问账户、不持有凭据、不调用任何下单 endpoint，所有 paper order/fill 都只存在本地 SQLite。
 
-## 四类数据严格分离
+## 五类数据严格分离
 
 | 数据角色 | 当前来源 | 用途与限制 |
 | --- | --- | --- |
@@ -12,6 +12,7 @@ LIVE15_QUANT 是一个**只针对 Robinhood Live 15-minute prediction-market con
 | Robinhood contract market quote | Robinhood 公开 15-minute 网页 | 页面显示的 Yes probability；信息性、可能延迟或错误、不可执行；页面未公开 No 时保存为 `null` |
 | Official venue contract quote | Kalshi public REST market/orderbook | 经 exact series + UTC window + target 唯一映射后的 Yes/No bid/ask、last、volume、depth；与 SSR 独立保存 |
 | Actual settlement benchmark | CF Benchmarks RTI 或 Pyth | 合约条款指定的结算源；当前记录官方映射和规则，但不冒用 Coinbase 代替 |
+| Paper execution ledger | 本地 Kalshi paper adapter | 只记录模拟 decision/order/fill/position/PnL；独立 SQLite，绝不表示真实成交 |
 
 ## 当前支持矩阵
 
@@ -114,7 +115,19 @@ Gold、Silver、WTI 使用对应 Pyth 1-minute candlestick 在窗口结束点的
 
 MCP 保留为未来官方 execution adapter，但项目目前不实现 `RobinhoodMCPProvider`，也不以未发布 XHR 代替它。完整证据与当前非 Event Contract 能力清单见 [Robinhood MCP capability audit](docs/robinhood_mcp_capability_audit.md)。此次审计没有读取账户、购买力、持仓或订单，也没有调用任何 review/place/cancel/exercise 或其他写工具。
 
-`ExecutionProvider` 目前只是未来边界：账户状态、持仓、提交、取消、减仓/平仓与 fill status；没有 concrete provider、网络调用或 credentials。不可由 provider 或模型修改的 `HardRiskLayer` 与之独立，未来必须显式提供单笔投入、单 event exposure、每日亏损、总 exposure、连续亏损熔断等限制，并在 quote stale、数据源异常或 fill 不确定时阻止执行。当前代码没有选择任何风险数值，也不具备真钱交易能力。
+`ExecutionProvider` 现在有一个 `ExecutionMode.PAPER` 的 concrete adapter。它实现本地账户状态、持仓、submit/cancel、reduce/close 与 fill status；没有 authenticated network write 或 credentials。不可由 strategy 修改的 `ImmutableHardRiskLayer` 与 provider 独立，在成交模拟前硬性检查单 event/总 exposure、每日亏损、连续亏损、stale/missing quote、mapping、source/fill uncertainty 与 kill switch。默认数值只适用于 deterministic dummy paper runtime，不会成为未来真钱限额。
+
+## Kalshi paper execution
+
+`KalshiOrderBookFillSimulator` 只消耗官方 orderbook 的真实可执行 depth，不使用 mid：Buy Yes 使用由 No bid depth 对应的 Yes ask，Close/Reduce Yes 使用 Yes bid depth；Buy No 使用由 Yes bid depth 对应的 No ask，Close/Reduce No 使用 No bid depth。转换后的最佳 depth 必须与 API 显式 top-of-book 完全一致，否则结果是 `price_moved`，不会成交。IOC、FOK、resting GTC、full/partial/no fill 均有显式状态；每个 fill 保存 signal/submit/quote/fill timestamp、原始 Decimal price/quantity、spread、slippage 和 fee 分解。
+
+IOC 若只吃到部分 depth，会保存实际 fills 并以 `cancelled + partial_fill` 表示剩余数量已立即取消；只有 GTC partial 才保持 `partially_filled` 并允许本地 CANCEL。连续亏损熔断按每个已实现退出订单的净 realized increment（价差减该退出 fees）计数，多层 depth 仍只算一次退出。
+
+费用模型按 [Kalshi 官方 fee schedule](https://kalshi.com/docs/kalshi-fee-schedule.pdf) 的通用 taker 公式 `0.07 × C × P × (1-P)`，并实现官方 fixed-point 文档的 `$0.0001` trade-fee ceiling、cent-alignment rounding fee 和同一 order 的 accumulator rebate。2026-08-20 官方 `fee_changes` 对十个目标 series 均无 override，因此当前明确标记为 assumption；未来接入 demo/production 前必须重新核验，详见 [Kalshi execution API audit](docs/kalshi_execution_api_audit.md)。
+
+paper 数据默认写入独立 `data/paper.sqlite3`，与 `data/live15.sqlite3` 的 raw market data 严格分离。SQLite WAL ledger 使用唯一 decision/order/fill ID 防重复，restart 时按 `fill_timestamp,id` 重建 portfolio；`PaperReplayReader` 以固定 tie-break 顺序读取 order/fill。positions 支持 open、反复 add、partial reduce 和 early close；事件到期但没有官方 settlement truth 时状态变为 `pending_settlement`，不会使用 Coinbase 代结算。
+
+paper schema version 1 使用独立的 `paper_metadata`、`paper_decisions`、`paper_orders`、`paper_order_events`、`paper_fills`、`paper_risk_decisions`、`paper_position_snapshots` 和 `paper_portfolio_snapshots` 表。所有货币、价格和数量均以 Decimal 原始字符串保存；decision/order/fill 唯一约束及 foreign keys 防止重复或孤立记录。paper/raw store 会检查对方的 metadata marker，并拒绝打开同一个数据库文件。
 
 ## 安装
 
@@ -134,6 +147,12 @@ python -m pip install --no-deps -e .
 ```powershell
 # 持续记录全部 Robinhood 目标资产 + 5 个 Coinbase predictive products
 live15-record
+
+# 真实公开 Kalshi 行情驱动、只写本地 SQLite 的 deterministic paper runtime
+live15-paper
+
+# 显式 30 分钟隔离 acceptance；数据库写入系统临时目录
+python -m live15_quant.paper_acceptance --duration-seconds 1800
 
 # 一次性发现并输出当前公开 Robinhood 15-minute snapshot（JSON logs）
 live15-discover
@@ -223,6 +242,18 @@ with RecorderStore(Path("data/live15.sqlite3")) as store:
 | `LIVE15_RECORDER_DATA_PATH` | `data/live15.sqlite3` |
 | `LIVE15_RECORDER_HEALTH_INTERVAL_SECONDS` | `30` |
 | `LIVE15_RECORDER_COINBASE_STALE_SECONDS` | `30` |
+| `LIVE15_PAPER_DATA_PATH` | `data/paper.sqlite3` |
+| `LIVE15_PAPER_ACCOUNT_ID` | `local-paper` |
+| `LIVE15_PAPER_STARTING_CASH` | `1000` |
+| `LIVE15_PAPER_SIGNAL_INTERVAL_SECONDS` | `90` |
+| `LIVE15_PAPER_MAX_ORDER_NOTIONAL` | `10` |
+| `LIVE15_PAPER_MAX_EVENT_EXPOSURE` | `25` |
+| `LIVE15_PAPER_MAX_DAILY_LOSS` | `20` |
+| `LIVE15_PAPER_MAX_TOTAL_EXPOSURE` | `100` |
+| `LIVE15_PAPER_MAX_CONSECUTIVE_LOSSES` | `3` |
+| `LIVE15_PAPER_KILL_SWITCH` | `false`（设为 `true` 会在 hard-risk gate 阻断所有新 paper orders） |
+| `LIVE15_KALSHI_DEMO_API_KEY_ID` | 未设置；仅接受 Kalshi Demo key ID，且不会写入日志 |
+| `LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH` | 未设置；必须是仓库外 `.key`/`.pem` 的绝对路径 |
 | `LIVE15_REQUEST_TIMEOUT_SECONDS` | `10` |
 | `LIVE15_RECONNECT_DELAY_SECONDS` | `3` |
 | `LIVE15_WS_PING_INTERVAL_SECONDS` | `20` |
@@ -235,7 +266,7 @@ with RecorderStore(Path("data/live15.sqlite3")) as store:
 ```powershell
 ruff check .
 ruff format --check .
-python -c "import live15_quant.providers.coinbase; import live15_quant.providers.kalshi; import live15_quant.providers.robinhood_15min; import live15_quant.recorder; import live15_quant.records; import live15_quant.replay; import live15_quant.storage"
+python -c "import live15_quant.paper_execution; import live15_quant.paper_runtime; import live15_quant.paper_storage; import live15_quant.providers.coinbase; import live15_quant.providers.kalshi; import live15_quant.providers.robinhood_15min; import live15_quant.recorder; import live15_quant.records; import live15_quant.replay; import live15_quant.storage"
 pytest
 python -m pip check
 git diff --check
@@ -247,6 +278,28 @@ git diff --check
 $env:LIVE15_RUN_SMOKE = "1"
 pytest -m smoke
 ```
+
+### Kalshi Demo 只读连接审计
+
+项目提供 `live15-kalshi-demo-audit`，但它不是 execution adapter。其主机固定为官方 Demo
+REST endpoint，只能依次读取 balance、open markets、positions、orders 和 fills；client 没有
+POST、DELETE、create-order 或 cancel-order 方法，也不会连接 Production。Demo WebSocket endpoint
+已记录，但当前审计不订阅它。
+
+本人在 Kalshi Demo 的 **Account & security → API Keys** 创建环境专属 key 后，把下载的
+`.key` 放到仓库外受当前 Windows 用户保护的目录，再仅在当前 shell 设置两个环境变量：
+
+```powershell
+$env:LIVE15_KALSHI_DEMO_API_KEY_ID = "<Demo API Key ID>"
+$env:LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH = "C:\absolute\private\path\kalshi-demo.key"
+live15-kalshi-demo-audit
+```
+
+不要把 key 内容粘贴进命令、`.env`、代码、测试或 issue。`.key`、`.pem`、`.env*` 和常见
+secrets 目录也已 Git ignored 作为第二道保护，但正式要求仍是私钥必须在仓库外。需要显式
+运行 authenticated smoke 时，额外设置 `LIVE15_RUN_KALSHI_DEMO_AUDIT=1`；普通 `pytest`
+不会访问账户。完整官方能力与安全边界见
+[`docs/kalshi_execution_api_audit.md`](docs/kalshi_execution_api_audit.md)。
 
 ## 已知限制
 
@@ -261,4 +314,8 @@ pytest -m smoke
 - 当前已有 Kalshi official venue orderbook，但没有实际 CF Benchmarks/Pyth settlement series 或最终 payout；venue book 也不等同 Robinhood 可执行报价。
 - Kalshi 免认证 REST 的 market `updated_time` 不是逐次 order-book event timestamp；当前只能保存 HTTP `Date`（秒级 response-time 语义）与本地 receive timestamp。需要 API key 的官方 WebSocket 尚未启用。
 - REST market top-of-book 与 orderbook depth 来自相邻的两次请求，不是交易所原子快照；高速变动时两者可能存在小幅时间偏差。
+- 30 分钟 acceptance 中大量 `price_moved` 主要来自 REST market 与 orderbook 两次非原子读取之间的变化。这是正确性保护而非放宽条件的理由；后续应使用官方 authenticated WebSocket orderbook snapshot/delta 构造单一原子 market state，在完成前不得取消 top-of-book/depth 一致性检查。
+- Paper fills 是基于轮询时观察到的 venue depth 的保守本地模拟，不代表真实 queue position、网络延迟、成交保证或 Robinhood executable quote；fill uncertainty 会被 hard-risk layer 阻断。
+- Settlement truth 尚未自动采集，故到期未平仓 paper positions 保持 `pending_settlement`，PnL 不伪造最终 payout。
+- 当前已有 Kalshi Demo-only RSA-PSS signer 与 authenticated GET-only connectivity audit，但没有 Demo/Production execution client，也没有任何仓库内 credential。用户仍需本人创建 Demo account/key 并安全保管 RSA private key；Demo 与 Production credentials 不通用。
 - SQLite recorder 尚未实现 retention、压缩、Parquet export 或多进程同时写入；单 recorder 进程是当前支持的运行模式。

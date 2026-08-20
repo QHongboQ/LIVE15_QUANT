@@ -164,7 +164,12 @@ class KalshiOfficialQuoteProvider:
         if settings.kalshi_public_api_base_url != KALSHI_PUBLIC_API_BASE_URL:
             raise ValueError("Kalshi base URL must be the documented public production endpoint")
         self._settings = settings
-        self._session = session or _retrying_session()
+        self._owned_session = _retrying_session() if session is None else None
+        self._session = self._owned_session or session
+
+    def close(self) -> None:
+        if self._owned_session is not None:
+            self._owned_session.close()
 
     def _get(
         self, path: str, params: Mapping[str, object] | None = None
@@ -227,12 +232,12 @@ class KalshiOfficialQuoteProvider:
         for market in markets:
             start = _timestamp(market.get("open_time"), "open_time")
             end = _timestamp(market.get("close_time"), "close_time")
-            target = _market_target(market)
-            if (
-                start == contract.start_time.astimezone(UTC)
-                and end == contract.end_time.astimezone(UTC)
-                and target == contract.target_price
+            if start != contract.start_time.astimezone(UTC) or end != contract.end_time.astimezone(
+                UTC
             ):
+                continue
+            target = _market_target(market)
+            if target == contract.target_price:
                 exact.append(market)
 
         evidence = (

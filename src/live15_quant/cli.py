@@ -11,10 +11,16 @@ import requests
 from live15_quant.config import Settings, load_settings
 from live15_quant.logging_config import configure_logging
 from live15_quant.models import MarketTick
+from live15_quant.paper_runtime import PaperRuntime
+from live15_quant.paper_storage import PaperStore
 from live15_quant.providers.coinbase import (
     CoinbasePayloadError,
     CoinbaseRestClient,
     CoinbaseWebSocketClient,
+)
+from live15_quant.providers.kalshi_demo import (
+    KalshiDemoCredentials,
+    KalshiDemoReadOnlyClient,
 )
 from live15_quant.providers.robinhood_15min import Robinhood15MinuteProvider
 from live15_quant.recorder import HistoricalRecorder
@@ -60,6 +66,8 @@ def rest_main() -> None:
             time.sleep(settings.rest_poll_interval_seconds)
     except KeyboardInterrupt:
         logger.info("REST collector stopped", extra={"event": "collector_stopped"})
+    finally:
+        client.close()
 
 
 async def _stream(settings: Settings, products: tuple[str, ...]) -> None:
@@ -99,7 +107,11 @@ def discover_main() -> None:
 
     settings = load_settings()
     configure_logging(settings.log_level)
-    contracts = Robinhood15MinuteProvider(settings).discover()
+    provider = Robinhood15MinuteProvider(settings)
+    try:
+        contracts = provider.discover()
+    finally:
+        provider.close()
     for contract in contracts:
         logger.info(
             "Robinhood 15-minute contract",
@@ -146,3 +158,52 @@ def recorder_main() -> None:
         asyncio.run(_run_recorder(settings))
     except KeyboardInterrupt:
         logger.info("Recorder interrupted safely", extra={"event": "recorder_interrupted"})
+
+
+def paper_main() -> None:
+    """Run local-only paper execution; this entry point cannot place real orders."""
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    try:
+        with PaperStore(
+            settings.paper_data_path,
+            account_id=settings.paper_account_id,
+            starting_cash=settings.paper_starting_cash,
+        ) as store:
+            PaperRuntime(settings, store).run()
+    except KeyboardInterrupt:
+        logger.info("Paper runtime interrupted safely", extra={"event": "paper_interrupted"})
+
+
+def kalshi_demo_audit_main() -> None:
+    """Run the credentialed, GET-only Kalshi Demo connectivity audit."""
+
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    if settings.kalshi_demo_api_key_id is None or settings.kalshi_demo_private_key_path is None:
+        raise SystemExit(
+            "Kalshi Demo credentials are not configured. Create a Demo API key, keep its "
+            "private key outside the repository, then set LIVE15_KALSHI_DEMO_API_KEY_ID and "
+            "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH."
+        )
+    credentials = KalshiDemoCredentials(
+        api_key_id=settings.kalshi_demo_api_key_id,
+        private_key_path=settings.kalshi_demo_private_key_path,
+    )
+    with KalshiDemoReadOnlyClient(settings, credentials) as client:
+        result = client.audit()
+    logger.info(
+        "Kalshi Demo read-only connectivity audit completed",
+        extra={
+            "event": "kalshi_demo_audit_complete",
+            "environment": result.environment,
+            "authenticated": result.authenticated,
+            "balance_read": result.balance_dollars is not None,
+            "market_count": result.market_count,
+            "positions_readable": result.positions_readable,
+            "orders_readable": result.orders_readable,
+            "fills_readable": result.fills_readable,
+            "write_operations_available_in_client": False,
+        },
+    )

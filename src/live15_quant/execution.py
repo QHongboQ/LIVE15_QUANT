@@ -29,9 +29,18 @@ class ExecutionAction(StrEnum):
     SELL = "sell"
 
 
+class ExecutionMode(StrEnum):
+    """Whether an adapter can affect money; Milestone 5 implements PAPER only."""
+
+    PAPER = "paper"
+    DEMO = "demo"
+    PRODUCTION = "production"
+
+
 class ExecutionOrderState(StrEnum):
     """Provider-neutral lifecycle for a submitted order."""
 
+    NOT_SUBMITTED = "not_submitted"
     PENDING = "pending"
     OPEN = "open"
     PARTIALLY_FILLED = "partially_filled"
@@ -51,6 +60,7 @@ class ExecutionCapabilities:
     event_contract_positions: bool
     event_contract_orders: bool
     event_contract_cancellation: bool
+    mode: ExecutionMode = ExecutionMode.PAPER
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +77,9 @@ class ExecutionAccountState:
     def __post_init__(self) -> None:
         if not self.account_id or not self.currency:
             raise ValueError("execution account identifiers must not be empty")
+        monetary = (self.buying_power, self.total_exposure, self.daily_realized_pnl)
+        if any(not value.is_finite() for value in monetary):
+            raise ValueError("execution account monetary values must be finite")
         if self.total_exposure < 0:
             raise ValueError("total exposure must be non-negative")
         if self.received_timestamp.tzinfo is None or self.received_timestamp.utcoffset() is None:
@@ -88,9 +101,11 @@ class ExecutionPosition:
     def __post_init__(self) -> None:
         if not self.event_id or not self.contract_id:
             raise ValueError("position event and contract identifiers must not be empty")
-        if self.quantity < 0:
+        if not self.quantity.is_finite() or self.quantity < 0:
             raise ValueError("position quantity must be non-negative")
-        if self.average_price is not None and not Decimal(0) <= self.average_price <= Decimal(1):
+        if self.average_price is not None and (
+            not self.average_price.is_finite() or not Decimal(0) <= self.average_price <= Decimal(1)
+        ):
             raise ValueError("position average price must be within [0, 1]")
         if self.received_timestamp.tzinfo is None or self.received_timestamp.utcoffset() is None:
             raise ValueError("position timestamp must be timezone-aware")
@@ -113,9 +128,11 @@ class ExecutionOrderRequest:
     def __post_init__(self) -> None:
         if not all((self.account_id, self.event_id, self.contract_id, self.client_order_id)):
             raise ValueError("order identifiers must not be empty")
-        if self.quantity <= 0:
+        if not self.quantity.is_finite() or self.quantity <= 0:
             raise ValueError("order quantity must be positive")
-        if self.limit_price is not None and not Decimal(0) <= self.limit_price <= Decimal(1):
+        if self.limit_price is not None and (
+            not self.limit_price.is_finite() or not Decimal(0) <= self.limit_price <= Decimal(1)
+        ):
             raise ValueError("order limit price must be within [0, 1]")
 
 
@@ -134,27 +151,36 @@ class ExecutionOrderStatus:
     def __post_init__(self) -> None:
         if not self.provider_order_id or not self.client_order_id:
             raise ValueError("order status identifiers must not be empty")
-        if self.requested_quantity <= 0:
+        if not self.requested_quantity.is_finite() or self.requested_quantity <= 0:
             raise ValueError("requested quantity must be positive")
-        if not Decimal(0) <= self.filled_quantity <= self.requested_quantity:
+        if (
+            not self.filled_quantity.is_finite()
+            or not Decimal(0) <= self.filled_quantity <= self.requested_quantity
+        ):
             raise ValueError("filled quantity must be within the requested quantity")
-        if self.average_fill_price is not None and not Decimal(
-            0
-        ) <= self.average_fill_price <= Decimal(1):
+        if self.average_fill_price is not None and (
+            not self.average_fill_price.is_finite()
+            or not Decimal(0) <= self.average_fill_price <= Decimal(1)
+        ):
             raise ValueError("average fill price must be within [0, 1]")
         if self.received_timestamp.tzinfo is None or self.received_timestamp.utcoffset() is None:
             raise ValueError("order status timestamp must be timezone-aware")
 
 
 class ExecutionProvider(Protocol):
-    """Future official adapter boundary; no concrete provider currently exists."""
+    """Provider boundary implemented locally by paper; no Demo/Production adapter exists."""
 
     @property
     def capabilities(self) -> ExecutionCapabilities: ...
 
     def get_account_state(self, account_id: str) -> ExecutionAccountState: ...
 
-    def get_position(self, event_id: str, contract_id: str) -> ExecutionPosition | None: ...
+    def get_position(
+        self,
+        event_id: str,
+        contract_id: str,
+        outcome: ContractOutcome | None = None,
+    ) -> ExecutionPosition | None: ...
 
     def submit_order(self, request: ExecutionOrderRequest) -> ExecutionOrderStatus: ...
 
