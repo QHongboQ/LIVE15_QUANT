@@ -43,10 +43,12 @@ class FakeDiscovery:
             market.ticker: market for item in discoveries for market in item.valid_markets
         }
         self.calls = 0
+        self.discover_called = threading.Event()
 
     def discover(self, asset, now=None):
         del now
         self.calls += 1
+        self.discover_called.set()
         return self.discoveries.get(asset, KalshiDiscovery(asset, NOW, None, None, None, (), ()))
 
     def get_market(self, asset, ticker, *, historical=False):
@@ -57,14 +59,19 @@ class FakeDiscovery:
 class FakeQuotes:
     def __init__(self) -> None:
         self.calls = 0
+        self.quote_called = threading.Event()
 
     def quote_native(self, market):
         self.calls += 1
+        self.quote_called.set()
         assert market.lifecycle is KalshiLifecycle.OPEN
         return quote(market.ticker, market.event_ticker, NOW)
 
 
 class OneTickStream:
+    def __init__(self, emitted: threading.Event | None = None) -> None:
+        self.emitted = emitted
+
     async def ticks(self):
         yield MarketTick(
             symbol="BTC-USD",
@@ -74,15 +81,19 @@ class OneTickStream:
             received_at=NOW,
             exchange_time=NOW - timedelta(milliseconds=1),
         )
+        if self.emitted is not None:
+            self.emitted.set()
         await asyncio.sleep(60)
 
 
 class FailingRobinhood:
     def __init__(self) -> None:
         self.calls = 0
+        self.discover_called = threading.Event()
 
     def discover(self):
         self.calls += 1
+        self.discover_called.set()
         raise RuntimeError("optional reference unavailable")
 
 
@@ -90,6 +101,8 @@ class AssetIsolatedUnderlying:
     def __init__(self) -> None:
         self.closed = False
         self.stream_calls = 0
+        self.first_stream_closed = threading.Event()
+        self.second_stream_attempted = threading.Event()
 
     @staticmethod
     def batch() -> PythUpdateBatch:
@@ -115,8 +128,11 @@ class AssetIsolatedUnderlying:
 
     def stream_batches(self):
         self.stream_calls += 1
+        if self.stream_calls >= 2:
+            self.second_stream_attempted.set()
         yield self.batch()
         # Hermes intentionally closes long-lived SSE connections (documented at 24h).
+        self.first_stream_closed.set()
         return
 
     def latest_batch(self):
@@ -129,10 +145,12 @@ class AssetIsolatedUnderlying:
 class RateLimitedUnderlying:
     def __init__(self) -> None:
         self.latest_calls = 0
+        self.rate_limited = threading.Event()
 
     def stream_batches(self):
         if False:
             yield None
+        self.rate_limited.set()
         raise PythRateLimitError(0.05)
 
     def latest_batch(self):
@@ -182,10 +200,17 @@ class AssetFailureQuotes:
         )
 
 
+async def wait_for_thread_event(event: threading.Event, description: str) -> None:
+    """Wait for an explicit cross-thread state transition, never elapsed-time luck."""
+
+    assert await asyncio.to_thread(event.wait, 1), f"timed out waiting for {description}"
+
+
 def test_robinhood_disabled_core_records_lifecycle_and_coinbase(tmp_path) -> None:
     reference = FailingRobinhood()
     fake_discovery = FakeDiscovery((discovery(),))
     quotes = FakeQuotes()
+    tick_emitted = threading.Event()
 
     async def scenario() -> None:
         with RecorderStore(tmp_path / "native.sqlite3") as store:
@@ -202,12 +227,13 @@ def test_robinhood_disabled_core_records_lifecycle_and_coinbase(tmp_path) -> Non
                 store,
                 discovery=fake_discovery,
                 quotes=quotes,
-                coinbase_factory=OneTickStream,
+                coinbase_factory=lambda: OneTickStream(tick_emitted),
                 robinhood_reference=reference,
                 now=lambda: NOW,
             )
             task = asyncio.create_task(recorder.run())
-            await asyncio.sleep(0.05)
+            await wait_for_thread_event(quotes.quote_called, "Kalshi quote")
+            await wait_for_thread_event(tick_emitted, "Coinbase tick")
             recorder.request_stop()
             await asyncio.wait_for(task, 1)
             assert store.count("kalshi_market_lifecycle") >= 1
@@ -223,6 +249,10 @@ def test_robinhood_disabled_core_records_lifecycle_and_coinbase(tmp_path) -> Non
 
 def test_robinhood_reference_failure_never_blocks_kalshi_core(tmp_path) -> None:
     reference = FailingRobinhood()
+    fake_discovery = FakeDiscovery((discovery(),))
+    quotes = FakeQuotes()
+    tick_emitted = threading.Event()
+    reference_failure_recorded = threading.Event()
 
     async def scenario() -> None:
         with RecorderStore(tmp_path / "native.sqlite3") as store:
@@ -237,14 +267,27 @@ def test_robinhood_reference_failure_never_blocks_kalshi_core(tmp_path) -> None:
                     recorder_health_path=tmp_path / "health.json",
                 ),
                 store,
-                discovery=FakeDiscovery((discovery(),)),
-                quotes=FakeQuotes(),
-                coinbase_factory=OneTickStream,
+                discovery=fake_discovery,
+                quotes=quotes,
+                coinbase_factory=lambda: OneTickStream(tick_emitted),
                 robinhood_reference=reference,
                 now=lambda: NOW,
             )
+            record_source_failure = recorder._source_failed
+
+            def observe_source_failure(key: str, error: BaseException) -> None:
+                record_source_failure(key, error)
+                if key == "robinhood_reference":
+                    reference_failure_recorded.set()
+
+            recorder._source_failed = observe_source_failure  # type: ignore[method-assign]
             task = asyncio.create_task(recorder.run())
-            await asyncio.sleep(0.05)
+            await wait_for_thread_event(reference.discover_called, "Robinhood reference call")
+            await wait_for_thread_event(
+                reference_failure_recorded, "Robinhood reference failure recording"
+            )
+            await wait_for_thread_event(quotes.quote_called, "Kalshi quote after reference failure")
+            await wait_for_thread_event(tick_emitted, "Coinbase tick after reference failure")
             recorder.request_stop()
             await asyncio.wait_for(task, 1)
             assert store.count("kalshi_market_lifecycle") >= 1
@@ -275,7 +318,10 @@ def test_one_pyth_asset_outage_does_not_stop_other_underlying_assets(tmp_path) -
                 now=lambda: NOW,
             )
             task = asyncio.create_task(recorder.run())
-            await asyncio.sleep(0.05)
+            await wait_for_thread_event(source.first_stream_closed, "first Pyth stream closure")
+            await wait_for_thread_event(
+                source.second_stream_attempted, "second Pyth stream attempt"
+            )
             recorder.request_stop()
             await asyncio.wait_for(task, 1)
             assert store.count("underlying_observations") == 4
@@ -306,7 +352,7 @@ def test_pyth_429_honors_retry_after_without_immediate_rest_fallback(tmp_path) -
                 now=lambda: NOW,
             )
             task = asyncio.create_task(recorder.run())
-            await asyncio.sleep(0.01)
+            await wait_for_thread_event(source.rate_limited, "Pyth rate-limit response")
             recorder.request_stop()
             await asyncio.wait_for(task, 1)
 
