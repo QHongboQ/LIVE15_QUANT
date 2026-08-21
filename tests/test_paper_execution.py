@@ -325,7 +325,7 @@ def test_complex_position_accounting_reconciles_cash_pnl_fees_and_exposure(tmp_p
         + (Decimal("0.50") - Decimal("0.53")) * Decimal("1.5")
         - fees
     )
-    state = adapter.portfolio.state({}, NOW)
+    state = adapter.portfolio.state({}, close_result.fills[-1].fill_timestamp)
 
     assert adapter.portfolio.position("event-1", ContractOutcome.YES) is None
     assert state.realized_pnl == expected_realized

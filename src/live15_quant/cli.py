@@ -21,6 +21,7 @@ from live15_quant.dataset import (
 )
 from live15_quant.features import SamplingPolicy
 from live15_quant.kalshi_lifecycle import KalshiNativeMarketProvider
+from live15_quant.latency_benchmark import LowLatencyBenchmarkRunner
 from live15_quant.logging_config import configure_logging
 from live15_quant.models import Asset, MarketTick
 from live15_quant.native_recorder import KalshiNativeRecorder
@@ -36,6 +37,14 @@ from live15_quant.providers.kalshi_demo import (
     KalshiDemoCredentials,
     KalshiDemoReadOnlyClient,
 )
+from live15_quant.providers.low_latency import (
+    BenchmarkSource,
+    BinanceBnbBenchmarkSource,
+    HyperliquidHypeBenchmarkSource,
+    PythCoreBenchmarkSource,
+    PythProBenchmarkSource,
+)
+from live15_quant.providers.pyth import PythHermesClient
 from live15_quant.readiness import build_readiness_report, write_report_atomic
 from live15_quant.recorder_control import (
     ManagedRecorderState,
@@ -414,4 +423,35 @@ def readiness_main(argv: Sequence[str] | None = None) -> None:
     configure_logging(settings.log_level)
     report = build_readiness_report(settings)
     write_report_atomic(report, settings.readiness_report_path)
+    print(json.dumps(report, indent=2, sort_keys=True))
+
+
+def latency_benchmark_main(argv: Sequence[str] | None = None) -> None:
+    """Benchmark official read-only underlying streams without touching the recorder."""
+
+    parser = argparse.ArgumentParser(prog="live15-latency-benchmark", description=__doc__)
+    parser.add_argument("--seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--venue-only",
+        action="store_true",
+        help="omit authenticated Pyth Core/Pro comparisons",
+    )
+    arguments = parser.parse_args(argv)
+    settings = load_settings()
+    sources: list[BenchmarkSource] = [
+        BinanceBnbBenchmarkSource(),
+        HyperliquidHypeBenchmarkSource(),
+    ]
+    if not arguments.venue_only:
+        if settings.pyth_api_key_path is None:
+            raise SystemExit(
+                "Pyth comparison requires LIVE15_PYTH_API_KEY_PATH; use --venue-only otherwise"
+            )
+        sources.extend(
+            (
+                PythCoreBenchmarkSource(PythHermesClient(settings)),
+                PythProBenchmarkSource(settings.pyth_api_key_path),
+            )
+        )
+    report = asyncio.run(LowLatencyBenchmarkRunner(sources).run(arguments.seconds))
     print(json.dumps(report, indent=2, sort_keys=True))

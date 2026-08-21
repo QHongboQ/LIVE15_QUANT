@@ -254,6 +254,10 @@ def test_one_sse_connection_demuxes_multiple_events_and_closes(tmp_path) -> None
     try:
         batches = tuple(hermes.stream_batches())
         assert [len(batch.observations) for batch in batches] == [2, 3]
+        for batch in batches:
+            assert batch.socket_received_monotonic_ns is not None
+            assert batch.parse_completed_monotonic_ns is not None
+            assert batch.parse_completed_monotonic_ns >= batch.socket_received_monotonic_ns
         assert len(session.calls) == 1
         assert session.calls[0]["stream"] is True
     finally:

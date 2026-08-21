@@ -77,6 +77,8 @@ class PythFeedIssue:
 class PythUpdateBatch:
     observations: tuple[UnderlyingObservation, ...]
     issues: tuple[PythFeedIssue, ...] = ()
+    socket_received_monotonic_ns: int | None = None
+    parse_completed_monotonic_ns: int | None = None
 
 
 class PythFeedDemultiplexer:
@@ -106,7 +108,12 @@ class PythFeedDemultiplexer:
                 continue
             self._last[observation.asset] = observation
             accepted.append(observation)
-        return PythUpdateBatch(tuple(accepted), tuple(issues))
+        return PythUpdateBatch(
+            tuple(accepted),
+            tuple(issues),
+            batch.socket_received_monotonic_ns,
+            batch.parse_completed_monotonic_ns,
+        )
 
 
 class _RequestBudget:
@@ -130,7 +137,9 @@ class _RequestBudget:
             self._requests.append(now)
 
 
-def _read_key(path: Path | None) -> str:
+def read_pyth_api_key(path: Path | None) -> str:
+    """Read a server-side Pyth key without permitting repository-local credentials."""
+
     if path is None:
         raise PythCredentialError("Pyth API key path is not configured")
     resolved = path.expanduser().resolve()
@@ -165,7 +174,7 @@ class PythHermesClient:
         self._timeout = settings.request_timeout_seconds
         self._stream_timeout = settings.pyth_stream_read_timeout_seconds
         self._max_source_age = settings.recorder_pyth_stale_seconds
-        self._key = _read_key(settings.pyth_api_key_path)
+        self._key = read_pyth_api_key(settings.pyth_api_key_path)
         self._session = session or requests.Session()
         self._budget = _RequestBudget(settings.pyth_request_budget_per_10_seconds, monotonic)
         self._active_response: requests.Response | None = None
@@ -280,20 +289,38 @@ class PythHermesClient:
 
 
 def _parse_sse_data(data: str, *, source: str, max_source_age_seconds: float) -> PythUpdateBatch:
+    received_monotonic_ns = time.perf_counter_ns()
+    received = datetime.now(UTC)
     try:
         payload = json.loads(data)
     except (TypeError, ValueError):
-        return PythUpdateBatch((), (PythFeedIssue("malformed_sse_json"),))
+        return PythUpdateBatch(
+            (),
+            (PythFeedIssue("malformed_sse_json"),),
+            received_monotonic_ns,
+            time.perf_counter_ns(),
+        )
     try:
-        return parse_update_payload(
+        parsed = parse_update_payload(
             payload,
-            received=datetime.now(UTC),
+            received=received,
             source=source,
             max_source_age_seconds=max_source_age_seconds,
             require_all=False,
         )
+        return PythUpdateBatch(
+            parsed.observations,
+            parsed.issues,
+            received_monotonic_ns,
+            time.perf_counter_ns(),
+        )
     except PythPayloadError:
-        return PythUpdateBatch((), (PythFeedIssue("malformed_sse_envelope"),))
+        return PythUpdateBatch(
+            (),
+            (PythFeedIssue("malformed_sse_envelope"),),
+            received_monotonic_ns,
+            time.perf_counter_ns(),
+        )
 
 
 def parse_update_payload(
