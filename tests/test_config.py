@@ -26,6 +26,9 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.log_level == "INFO"
     assert settings.kalshi_demo_api_key_id is None
     assert settings.kalshi_demo_private_key_path is None
+    assert settings.enable_kalshi_production_websocket is False
+    assert settings.kalshi_production_api_key_id_path is None
+    assert settings.kalshi_production_private_key_path is None
     assert settings.enable_robinhood_reference is False
     assert settings.feature_store_path == Path("data/features.sqlite3")
     assert settings.ui_port == 8765
@@ -76,6 +79,10 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_ROBINHOOD_15MIN_URL": "https://private.example.test/hidden",
             "LIVE15_KALSHI_DEMO_API_KEY_ID": "demo-key-id",
             "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH": "C:/safe/kalshi-demo.key",
+            "LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET": "true",
+            "LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH": "C:/safe/kalshi-prod-id.txt",
+            "LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH": "C:/safe/kalshi-prod.pem",
+            "LIVE15_KALSHI_WEBSOCKET_READ_TIMEOUT_SECONDS": "40",
             "LIVE15_ENABLE_PYTH_UNDERLYING": "true",
             "LIVE15_PYTH_API_KEY_PATH": "C:/safe/pyth.key",
             "LIVE15_PYTH_HERMES_URL": "https://untrusted.example",
@@ -119,9 +126,14 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.robinhood_15min_url == ROBINHOOD_15MIN_PUBLIC_URL
     assert settings.kalshi_demo_api_key_id == "demo-key-id"
     assert settings.kalshi_demo_private_key_path == Path("C:/safe/kalshi-demo.key")
+    assert settings.enable_kalshi_production_websocket is True
+    assert settings.kalshi_production_api_key_id_path == Path("C:/safe/kalshi-prod-id.txt")
+    assert settings.kalshi_production_private_key_path == Path("C:/safe/kalshi-prod.pem")
+    assert settings.kalshi_websocket_read_timeout_seconds == 40
     assert settings.kalshi_public_api_base_url != KALSHI_DEMO_API_BASE_URL
     assert "demo-key-id" not in repr(settings)
     assert "kalshi-demo.key" not in repr(settings)
+    assert "kalshi-prod" not in repr(settings)
     assert settings.enable_pyth_underlying is True
     assert settings.pyth_api_key_path == Path("C:/safe/pyth.key")
     assert settings.pyth_hermes_base_url == PYTH_HERMES_BASE_URL

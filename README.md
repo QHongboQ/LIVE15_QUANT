@@ -464,7 +464,7 @@ secrets 目录也已 Git ignored 作为第二道保护，但正式要求仍是�
 - Robinhood public category page 只暴露当前 snapshot，若页面缓存、暂时缺少 card 或事件在两次轮询之间出现并消失，recorder 无法补回从未公开观察到的数据。
 - 页面偶尔先发布 upcoming event state、稍后才发布 contract ID/target；这类 placeholder 会产生结构化 warning 并暂不写入，待公开 metadata 完整后才开始记录，绝不猜测 ID 或 target。
 - Kalshi official venue orderbook 与 finalized settlement truth 均已采集；venue book 仍不等同 Robinhood executable quote。
-- Kalshi 免认证 REST 的 market `updated_time` 不是逐次 order-book event timestamp；当前保存 HTTP `Date`（秒级 response-time 语义）与本地 receive timestamp。Production WebSocket 所有握手均需 Production API key；Demo credential 不会用于 Production，因此当前只提供无网络/无凭据/无订单方法的 typed read-only Protocol 与 snapshot-first sequence-gap guard，不连接 Production。
+- Kalshi 免认证 REST 的 market `updated_time` 不是逐次 order-book event timestamp；当前保存 HTTP `Date`（秒级 response-time 语义）与本地 receive timestamp。Production WebSocket 所有握手均需 Production API key；Demo credential 不会用于 Production。当前已实现固定官方 host、RSA-PSS handshake、bounded receive pump、snapshot/delta parser、subscription-level seq guard、`get_snapshot` resync、event-driven add-successor/remove-predecessor、schema v8 raw event/checkpoint 与 deterministic replay；使用仓库外 read-only credential 的 10-market Production smoke 已通过，但 continuous recorder 仍使用 REST，尚未切换 primary。完整审计见 [`docs/kalshi_websocket_readonly_audit.md`](docs/kalshi_websocket_readonly_audit.md)。
 - REST market top-of-book 与 orderbook depth 来自相邻的两次请求，不是交易所原子快照；高速变动时两者可能存在小幅时间偏差。
 - 30 分钟 acceptance 中大量 `price_moved` 主要来自 REST market 与 orderbook 两次非原子读取之间的变化。这是正确性保护而非放宽条件的理由；后续应使用官方 authenticated WebSocket orderbook snapshot/delta 构造单一原子 market state，在完成前不得取消 top-of-book/depth 一致性检查。
 - Paper fills 是基于轮询时观察到的 venue depth 的保守本地模拟，不代表真实 queue position、网络延迟、成交保证或 Robinhood executable quote；fill uncertainty 会被 hard-risk layer 阻断。

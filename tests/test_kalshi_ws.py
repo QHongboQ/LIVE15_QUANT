@@ -1,75 +1,629 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import sqlite3
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
+from typing import Any
 
 import pytest
 
+import live15_quant.storage as storage_module
+from live15_quant.config import Settings
 from live15_quant.kalshi_ws import (
+    KALSHI_WS_PROVENANCE,
+    KalshiAtomicOrderBookCoordinator,
+    KalshiAtomicSessionProcessor,
+    KalshiBookInvariantError,
     KalshiBookSide,
+    KalshiBookSyncStatus,
+    KalshiCommandAcknowledged,
     KalshiOrderBookDelta,
-    KalshiOrderBookSequenceGuard,
     KalshiOrderBookSnapshot,
     KalshiSequenceGapError,
+    KalshiSubscriptionRollover,
+    KalshiTickerUpdate,
+    KalshiUnsynchronizedBookError,
+    KalshiWsPayloadError,
+    parse_kalshi_server_message,
+    replay_orderbook_events,
+    subscribe_command,
+    update_subscription_command,
 )
 from live15_quant.models import OrderBookLevel
+from live15_quant.providers.kalshi_ws import (
+    KalshiProductionCredentialFiles,
+    KalshiProductionReadOnlyWebSocket,
+    KalshiReadOnlyWsError,
+    websocket_signature_message,
+)
+from live15_quant.storage import RecorderStorageError, RecorderStore
 
-NOW = datetime(2026, 8, 20, 12, tzinfo=UTC)
+NOW = datetime(2026, 8, 21, 12, tzinfo=UTC)
+BTC = "KXBTC15M-26AUG211215-15"
+BTC_NEXT = "KXBTC15M-26AUG211230-30"
+MARKET_ID = "9b0f6b43-5b68-4f9f-9f02-9a2d1b8ac1a1"
 
 
-def snapshot(sequence: int = 10) -> KalshiOrderBookSnapshot:
+def snapshot(
+    sequence: int = 10,
+    *,
+    ticker: str = BTC,
+    market_id: str = MARKET_ID,
+    connection_id: str = "connection-1",
+) -> KalshiOrderBookSnapshot:
     return KalshiOrderBookSnapshot(
+        connection_id=connection_id,
         subscription_id=2,
         sequence=sequence,
-        ticker="KXBTC15M-26AUG201215-15",
-        market_id="official-market-id",
+        ticker=ticker,
+        market_id=market_id,
         yes_bids=(OrderBookLevel(Decimal("0.5000"), Decimal("12.00")),),
-        no_bids=(),
-        received_timestamp=NOW,
+        no_bids=(OrderBookLevel(Decimal("0.4800"), Decimal("8.00")),),
+        source_timestamp=None,
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW + timedelta(microseconds=20),
     )
 
 
-def delta(sequence: int = 11) -> KalshiOrderBookDelta:
+def delta(
+    sequence: int = 11,
+    *,
+    side: KalshiBookSide = KalshiBookSide.YES,
+    price: Decimal = Decimal("0.5000"),
+    quantity: Decimal = Decimal("-2.00"),
+    ticker: str = BTC,
+    market_id: str = MARKET_ID,
+) -> KalshiOrderBookDelta:
     return KalshiOrderBookDelta(
+        connection_id="connection-1",
         subscription_id=2,
         sequence=sequence,
-        ticker="KXBTC15M-26AUG201215-15",
-        market_id="official-market-id",
-        side=KalshiBookSide.YES,
-        price=Decimal("0.5000"),
-        quantity_delta=Decimal("-2.00"),
+        ticker=ticker,
+        market_id=market_id,
+        side=side,
+        price=price,
+        quantity_delta=quantity,
         source_timestamp=NOW,
-        received_timestamp=NOW,
+        socket_received_timestamp=NOW + timedelta(milliseconds=5),
+        parse_timestamp=NOW + timedelta(milliseconds=5, microseconds=20),
     )
 
 
-def test_sequence_guard_requires_snapshot_and_contiguous_deltas() -> None:
-    guard = KalshiOrderBookSequenceGuard()
-    with pytest.raises(KalshiSequenceGapError, match="before a snapshot"):
-        guard.accept(delta())
-    guard.accept(snapshot())
-    guard.accept(delta())
-    with pytest.raises(KalshiSequenceGapError, match="expected 12, got 13"):
-        guard.accept(delta(13))
+def acknowledgement(sequence: int, *tickers: str) -> KalshiCommandAcknowledged:
+    return KalshiCommandAcknowledged(
+        connection_id="connection-1",
+        request_id=99,
+        subscription_id=2,
+        sequence=sequence,
+        market_tickers=tickers,
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
 
 
-def test_reconnect_reset_requires_a_new_snapshot() -> None:
-    guard = KalshiOrderBookSequenceGuard()
-    guard.accept(snapshot())
-    guard.reset()
-    with pytest.raises(KalshiSequenceGapError, match="before a snapshot"):
-        guard.accept(delta())
+def snapshot_payload(sequence: int = 10) -> str:
+    return json.dumps(
+        {
+            "type": "orderbook_snapshot",
+            "sid": 2,
+            "seq": sequence,
+            "msg": {
+                "market_ticker": BTC,
+                "market_id": MARKET_ID,
+                "yes_dollars_fp": [["0.5000", "12.00"]],
+                "no_dollars_fp": [["0.4800", "8.00"]],
+            },
+        }
+    )
 
 
-def test_delta_instrument_must_match_subscription_snapshot() -> None:
-    guard = KalshiOrderBookSequenceGuard()
-    guard.accept(snapshot())
-    with pytest.raises(KalshiSequenceGapError, match="instrument"):
-        guard.accept(replace(delta(), ticker="KXETH15M-OTHER"))
+def test_official_payload_parser_preserves_decimal_and_timestamp_semantics() -> None:
+    parsed = parse_kalshi_server_message(
+        snapshot_payload(),
+        connection_id="connection-1",
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW + timedelta(microseconds=20),
+    )
+    assert isinstance(parsed, KalshiOrderBookSnapshot)
+    assert parsed.yes_bids[0] == OrderBookLevel(Decimal("0.5000"), Decimal("12.00"))
+    delta_message = parse_kalshi_server_message(
+        {
+            "type": "orderbook_delta",
+            "sid": 2,
+            "seq": 11,
+            "msg": {
+                "market_ticker": BTC,
+                "market_id": MARKET_ID,
+                "price_dollars": "0.5000",
+                "delta_fp": "-2.00",
+                "side": "yes",
+                "ts": "2026-08-21T12:00:00Z",
+                "ts_ms": 1787313600000,
+            },
+        },
+        connection_id="connection-1",
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+    assert isinstance(delta_message, KalshiOrderBookDelta)
+    assert delta_message.quantity_delta == Decimal("-2.00")
+    assert delta_message.source_timestamp == NOW
 
 
-def test_websocket_models_preserve_decimal_and_reject_naive_time() -> None:
-    assert delta().quantity_delta == Decimal("-2.00")
-    with pytest.raises(ValueError, match="timezone-aware"):
-        replace(delta(), source_timestamp=NOW.replace(tzinfo=None))
+def test_ticker_is_typed_but_not_claimed_as_sequenced_orderbook() -> None:
+    parsed = parse_kalshi_server_message(
+        {
+            "type": "ticker",
+            "sid": 11,
+            "msg": {
+                "market_ticker": BTC,
+                "market_id": MARKET_ID,
+                "price_dollars": "0.510",
+                "yes_bid_dollars": "0.500",
+                "yes_ask_dollars": "0.520",
+                "volume_fp": "33896.00",
+                "ts": 1787313600,
+                "ts_ms": 1787313600000,
+            },
+        },
+        connection_id="connection-1",
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+    assert isinstance(parsed, KalshiTickerUpdate)
+    assert parsed.yes_bid == Decimal("0.500")
+    assert not hasattr(parsed, "sequence")
+
+
+def test_update_ack_preserves_subscription_sequence_for_replay() -> None:
+    parsed = parse_kalshi_server_message(
+        {
+            "id": 99,
+            "sid": 2,
+            "seq": 11,
+            "type": "ok",
+            "msg": {"market_tickers": [BTC, BTC_NEXT]},
+        },
+        connection_id="connection-1",
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+    assert isinstance(parsed, KalshiCommandAcknowledged)
+    assert parsed.sequence == 11
+    assert parsed.market_tickers == (BTC, BTC_NEXT)
+
+
+def test_initial_snapshot_and_sequential_delta_reconstruct_exact_depth() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    coordinator.accept(snapshot())
+    book = coordinator.accept(delta())
+    assert book.sequence == 11
+    assert book.status is KalshiBookSyncStatus.SYNCHRONIZED
+    assert book.yes_bids == (OrderBookLevel(Decimal("0.5000"), Decimal("10.00")),)
+    assert book.no_bids == (OrderBookLevel(Decimal("0.4800"), Decimal("8.00")),)
+
+
+@pytest.mark.parametrize("sequence,relation", [(10, "duplicate"), (9, "backward"), (12, "gap")])
+def test_non_contiguous_sequence_invalidates_and_blocks_book(sequence: int, relation: str) -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    coordinator.accept(snapshot())
+    with pytest.raises(KalshiSequenceGapError, match=relation) as caught:
+        coordinator.accept(delta(sequence))
+    assert caught.value.tickers == (BTC,)
+    with pytest.raises(KalshiUnsynchronizedBookError):
+        coordinator.book(BTC)
+
+
+def test_get_snapshot_resynchronizes_after_gap() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    coordinator.accept(snapshot())
+    with pytest.raises(KalshiSequenceGapError):
+        coordinator.accept(delta(13))
+    command = update_subscription_command(9, 2, "get_snapshot", (BTC,)).as_object()
+    assert command["params"] == {
+        "sid": 2,
+        "market_tickers": [BTC],
+        "action": "get_snapshot",
+    }
+    recovered = coordinator.accept(snapshot(20))
+    assert recovered.status is KalshiBookSyncStatus.SYNCHRONIZED
+    assert recovered.sequence == 20
+
+
+def test_sequenced_subscription_ack_is_part_of_deterministic_sequence() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    coordinator.accept(snapshot())
+    coordinator.accept_ack(acknowledgement(11, BTC, BTC_NEXT))
+    book = coordinator.accept(delta(12))
+    assert book is not None and book.sequence == 12
+
+
+def test_multi_market_resync_blocks_every_book_until_all_snapshots_arrive() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC, BTC_NEXT))
+    coordinator.accept(snapshot(10))
+    coordinator.accept(snapshot(11, ticker=BTC_NEXT, market_id="successor-market"))
+    with pytest.raises(KalshiSequenceGapError):
+        coordinator.accept(delta(13))
+    assert coordinator.accept(snapshot(20)) is None
+    with pytest.raises(KalshiUnsynchronizedBookError):
+        coordinator.book(BTC)
+    recovered = coordinator.accept(snapshot(21, ticker=BTC_NEXT, market_id="successor-market"))
+    assert recovered is not None
+    assert coordinator.book(BTC).status is KalshiBookSyncStatus.SYNCHRONIZED
+
+
+@pytest.mark.asyncio
+async def test_session_processor_requests_one_snapshot_and_measures_resync() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    sent: list[str] = []
+
+    async def sender(payload: str) -> None:
+        sent.append(payload)
+
+    clock = iter((10.0, 10.25)).__next__
+    processor = KalshiAtomicSessionProcessor(coordinator, sender, monotonic=clock)
+    assert await processor.process(snapshot()) is not None
+    assert await processor.process(delta(13)) is None
+    assert await processor.process(delta(14)) is None
+    assert len(sent) == 1
+    assert json.loads(sent[0])["params"]["action"] == "get_snapshot"
+    recovered = await processor.process(snapshot(20))
+    assert recovered is not None
+    assert processor.diagnostics.requests == 1
+    assert processor.diagnostics.completed == 1
+    assert processor.diagnostics.last_duration_seconds == 0.25
+
+
+def test_ticker_or_market_identity_conflict_fails_loudly() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    coordinator.accept(snapshot())
+    with pytest.raises(KalshiBookInvariantError, match="identity conflict"):
+        coordinator.accept(delta(market_id="different-market"))
+    with pytest.raises(KalshiBookInvariantError, match="not subscribed"):
+        coordinator.accept(delta(ticker="KXETH15M-OTHER"))
+
+
+def test_negative_depth_is_impossible_and_zero_depth_removes_level() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    coordinator.accept(snapshot())
+    book = coordinator.accept(delta(quantity=Decimal("-12.00")))
+    assert book.yes_bids == ()
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    coordinator.accept(snapshot())
+    with pytest.raises(KalshiBookInvariantError, match="negative depth"):
+        coordinator.accept(delta(quantity=Decimal("-12.01")))
+    with pytest.raises(KalshiUnsynchronizedBookError):
+        coordinator.book(BTC)
+
+
+def test_rollover_adds_successor_before_removing_predecessor() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    coordinator.accept(snapshot())
+    rollover = KalshiSubscriptionRollover(coordinator)
+    add = rollover.add_successor(
+        request_id=20,
+        subscription_id=2,
+        predecessor=BTC,
+        successor=BTC_NEXT,
+    ).as_object()
+    assert add["params"]["action"] == "add_markets"
+    with pytest.raises(KalshiUnsynchronizedBookError):
+        rollover.successor_synchronized(request_id=21, subscription_id=2, successor=BTC_NEXT)
+    coordinator.accept(snapshot(11, ticker=BTC_NEXT, market_id="successor-market"))
+    remove = rollover.successor_synchronized(
+        request_id=21, subscription_id=2, successor=BTC_NEXT
+    ).as_object()
+    assert remove["params"] == {
+        "sid": 2,
+        "market_tickers": [BTC],
+        "action": "delete_markets",
+    }
+    rollover.predecessor_removed(BTC_NEXT)
+    assert coordinator.subscribed_tickers == (BTC_NEXT,)
+
+
+def test_subscribe_command_is_market_data_only() -> None:
+    command = subscribe_command(1, (BTC,)).as_object()
+    assert command == {
+        "id": 1,
+        "cmd": "subscribe",
+        "params": {
+            "channels": ["orderbook_delta", "ticker"],
+            "market_tickers": [BTC],
+            "use_yes_price": False,
+        },
+    }
+    serialized = json.dumps(command).lower()
+    assert all(
+        word not in serialized
+        for word in ("submit_order", "create_order", "cancel_order", "account", "portfolio")
+    )
+
+
+def test_schema_v7_to_v8_storage_is_append_only_and_replay_deterministic(tmp_path: Path) -> None:
+    path = tmp_path / "raw.sqlite3"
+    with RecorderStore(path):
+        pass
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE kalshi_ws_orderbook_events")
+    connection.execute("DROP TABLE kalshi_ws_book_checkpoints")
+    connection.execute("UPDATE recorder_metadata SET value='7'")
+    connection.commit()
+    connection.close()
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    first = snapshot()
+    second = delta()
+    with RecorderStore(path) as store:
+        first_book = coordinator.accept(first)
+        assert store.append_kalshi_ws_orderbook_event(
+            first, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+        )
+        assert store.append_kalshi_ws_checkpoint(first_book)
+        coordinator.accept(second)
+        assert store.append_kalshi_ws_orderbook_event(
+            second, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+        )
+        ack = acknowledgement(12, BTC)
+        coordinator.accept_ack(ack)
+        assert store.append_kalshi_ws_orderbook_event(
+            ack, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+        )
+        assert not store.append_kalshi_ws_orderbook_event(
+            second, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+        )
+        records = tuple(store.replay_kalshi_ws_orderbook_events("connection-1", 2))
+        replayed = replay_orderbook_events(records, (BTC,))
+        assert replayed[BTC] == coordinator.book(BTC)
+        assert len(tuple(store.replay_kalshi_ws_checkpoints(BTC))) == 1
+        assert store.integrity_check() == "ok"
+        assert store._connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_schema_v7_to_v8_migration_rolls_back_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "rollback.sqlite3"
+    with RecorderStore(path):
+        pass
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE kalshi_ws_book_checkpoints")
+    connection.execute("DROP TABLE kalshi_ws_orderbook_events")
+    connection.execute("UPDATE recorder_metadata SET value='7'")
+    connection.commit()
+    connection.close()
+
+    monkeypatch.setattr(storage_module, "_KALSHI_WS_CHECKPOINT_TABLE_SQL", "INVALID SQL")
+    with pytest.raises(sqlite3.Error):
+        RecorderStore(path)
+
+    connection = sqlite3.connect(path)
+    try:
+        version = connection.execute("SELECT value FROM recorder_metadata").fetchone()[0]
+        ws_tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'kalshi_ws_%'"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert version == "7"
+    assert ws_tables == []
+
+
+def test_persisted_gap_and_official_snapshot_resync_replay_deterministically(
+    tmp_path: Path,
+) -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    first = snapshot(10)
+    missed = delta(13)
+    ack = acknowledgement(14, BTC)
+    recovered = snapshot(15)
+    with RecorderStore(tmp_path / "resync.sqlite3") as store:
+        coordinator.accept(first)
+        store.append_kalshi_ws_orderbook_event(
+            first, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+        )
+        with pytest.raises(KalshiSequenceGapError):
+            coordinator.accept(missed)
+        store.append_kalshi_ws_orderbook_event(
+            missed, sync_status_after=KalshiBookSyncStatus.UNSYNCHRONIZED
+        )
+        with pytest.raises(KalshiSequenceGapError):
+            coordinator.accept_ack(ack)
+        store.append_kalshi_ws_orderbook_event(
+            ack, sync_status_after=KalshiBookSyncStatus.UNSYNCHRONIZED
+        )
+        coordinator.accept(recovered)
+        store.append_kalshi_ws_orderbook_event(
+            recovered, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+        )
+        records = tuple(store.replay_kalshi_ws_orderbook_events("connection-1", 2))
+    replayed = replay_orderbook_events(records, (BTC,))
+    assert replayed[BTC] == coordinator.book(BTC)
+
+
+def test_receive_to_persist_latency_uses_socket_monotonic_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    message = replace(snapshot(), socket_received_monotonic_ns=1_000_000)
+    monkeypatch.setattr(storage_module.time, "perf_counter_ns", lambda: 2_500_000)
+    with RecorderStore(tmp_path / "latency.sqlite3") as store:
+        store.append_kalshi_ws_orderbook_event(
+            message, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+        )
+        record = next(store.replay_kalshi_ws_orderbook_events("connection-1", 2))
+    assert record.receive_persist_latency_ms == Decimal("1.5")
+
+
+def test_conflicting_same_connection_sequence_fails_loudly(tmp_path: Path) -> None:
+    with RecorderStore(tmp_path / "raw.sqlite3") as store:
+        message = snapshot()
+        assert store.append_kalshi_ws_orderbook_event(
+            message, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+        )
+        with pytest.raises(RecorderStorageError, match="conflicting Kalshi WS fact"):
+            store.append_kalshi_ws_orderbook_event(
+                replace(message, market_id="conflict"),
+                sync_status_after=KalshiBookSyncStatus.UNSYNCHRONIZED,
+            )
+
+
+def test_rest_and_ws_provenance_are_not_interchangeable() -> None:
+    assert snapshot().provenance == KALSHI_WS_PROVENANCE
+    assert snapshot().provenance != "kalshi_rest"
+
+
+class _FakeSigner:
+    def sign(self, message: bytes) -> str:
+        assert message == b"1700000000000GET/trade-api/ws/v2"
+        return "secret-signature"
+
+
+class _FakeWebSocket:
+    def __init__(self, messages: list[str | BaseException]) -> None:
+        self.messages = messages
+        self.sent: list[str] = []
+        self.closed = False
+
+    async def send(self, message: str) -> None:
+        self.sent.append(message)
+
+    async def recv(self) -> str:
+        if not self.messages:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+        value = self.messages.pop(0)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeConnection:
+    def __init__(self, websocket: _FakeWebSocket | None = None, error: Exception | None = None):
+        self.websocket = websocket
+        self.error = error
+
+    async def __aenter__(self) -> _FakeWebSocket:
+        if self.error is not None:
+            raise self.error
+        assert self.websocket is not None
+        return self.websocket
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+def credentials(tmp_path: Path) -> KalshiProductionCredentialFiles:
+    key_id = tmp_path / "production-key-id.txt"
+    private = tmp_path / "production-private.pem"
+    key_id.write_text("key-id", encoding="utf-8")
+    private.write_text("not-loaded-with-fake-signer", encoding="utf-8")
+    return KalshiProductionCredentialFiles(key_id, private)
+
+
+@pytest.mark.asyncio
+async def test_read_only_adapter_authenticates_reconnects_and_resubscribes(tmp_path: Path) -> None:
+    first = _FakeConnection(error=OSError("offline"))
+    websocket = _FakeWebSocket([snapshot_payload()])
+    second = _FakeConnection(websocket)
+    attempts = 0
+    captured_headers: list[dict[str, str]] = []
+
+    def connector(_url: str, **kwargs: Any) -> _FakeConnection:
+        nonlocal attempts
+        attempts += 1
+        captured_headers.append(dict(kwargs["additional_headers"]))
+        return first if attempts == 1 else second
+
+    sleeps: list[float] = []
+
+    async def sleeper(delay: float) -> None:
+        sleeps.append(delay)
+
+    times = iter(NOW + timedelta(microseconds=offset) for offset in (0, 10, 20, 30, 40, 50, 60, 70))
+    adapter = KalshiProductionReadOnlyWebSocket(
+        credentials(tmp_path),
+        connector=connector,
+        signer=_FakeSigner(),
+        clock=lambda: next(times),
+        clock_ms=lambda: 1700000000000,
+        monotonic=iter((0.0, 0.1, 1.0, 1.1)).__next__,
+        sleeper=sleeper,
+        connection_id_factory=lambda: "connection-1",
+        repository_root=Path.cwd(),
+    )
+    message = await anext(adapter.messages((BTC,)))
+    await adapter.close()
+    assert isinstance(message, KalshiOrderBookSnapshot)
+    assert attempts == 2 and sleeps == [0.5]
+    assert adapter.diagnostics.reconnects == 1
+    assert adapter.diagnostics.receive_queue_high_watermark >= 1
+    assert json.loads(websocket.sent[0])["cmd"] == "subscribe"
+    assert set(captured_headers[0]) == {
+        "KALSHI-ACCESS-KEY",
+        "KALSHI-ACCESS-SIGNATURE",
+        "KALSHI-ACCESS-TIMESTAMP",
+    }
+
+
+def test_credential_repr_errors_and_interface_do_not_expose_secrets(tmp_path: Path) -> None:
+    files = credentials(tmp_path)
+    assert "key-id" not in repr(files)
+    assert str(files.private_key_path) not in repr(files)
+    assert websocket_signature_message("1700000000000") == (b"1700000000000GET/trade-api/ws/v2")
+    outside = KalshiProductionCredentialFiles(
+        tmp_path / "missing-id.txt", tmp_path / "missing-private.pem"
+    )
+    with pytest.raises(KalshiReadOnlyWsError) as caught:
+        outside.validate(Path.cwd())
+    assert str(tmp_path) not in str(caught.value)
+    forbidden = {
+        "submit_order",
+        "create_order",
+        "cancel_order",
+        "get_balance",
+        "get_positions",
+        "get_account",
+    }
+    assert forbidden.isdisjoint(KalshiProductionReadOnlyWebSocket.__dict__)
+
+
+def test_settings_factory_stops_at_disabled_or_missing_production_credentials() -> None:
+    with pytest.raises(KalshiReadOnlyWsError, match="not enabled"):
+        KalshiProductionReadOnlyWebSocket.from_settings(Settings())
+    with pytest.raises(KalshiReadOnlyWsError, match="not configured"):
+        KalshiProductionReadOnlyWebSocket.from_settings(
+            Settings(enable_kalshi_production_websocket=True)
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not-json",
+        {"type": "orderbook_snapshot", "sid": 2, "seq": 1, "msg": {}},
+        {
+            "type": "orderbook_snapshot",
+            "sid": 2,
+            "seq": 1,
+            "msg": {
+                "market_ticker": BTC,
+                "market_id": MARKET_ID,
+                "yes_dollars_fp": [["0.5", "-1"]],
+            },
+        },
+    ],
+)
+def test_malformed_payload_fails_closed(payload: object) -> None:
+    with pytest.raises(KalshiWsPayloadError):
+        parse_kalshi_server_message(
+            payload,  # type: ignore[arg-type]
+            connection_id="connection-1",
+            socket_received_timestamp=NOW,
+            parse_timestamp=NOW,
+        )

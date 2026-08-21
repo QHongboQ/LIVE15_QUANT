@@ -18,6 +18,16 @@ from live15_quant.kalshi_lifecycle import (
     KalshiResult,
     KalshiSettlementTruth,
 )
+from live15_quant.kalshi_ws import (
+    KalshiBookSide,
+    KalshiBookSyncStatus,
+    KalshiCommandAcknowledged,
+    KalshiOrderBookDelta,
+    KalshiOrderBookMessage,
+    KalshiOrderBookSnapshot,
+    KalshiWsEventKind,
+    SynchronizedKalshiOrderBook,
+)
 from live15_quant.models import (
     Asset,
     DataRole,
@@ -25,6 +35,7 @@ from live15_quant.models import (
     FreshnessState,
     KalshiNativeQuote,
     MarketTick,
+    OrderBookLevel,
     PredictionMarketQuote,
     RecorderDiagnosticKind,
     RecorderEventSeverity,
@@ -41,6 +52,8 @@ from live15_quant.records import (
     KalshiMarketRecord,
     KalshiNativeQuoteRecord,
     KalshiSettlementRecord,
+    KalshiWsBookCheckpointRecord,
+    KalshiWsOrderBookEventRecord,
     PredictionQuoteRecord,
     RecorderEventRecord,
     RobinhoodDiagnosticRecord,
@@ -77,9 +90,9 @@ class TrainingDataUnavailableError(RecorderStorageError):
 
 
 def _compatible_record_version(value: object) -> bool:
-    """v6/v7 only add tables; immutable v5 rows remain byte-for-byte valid."""
+    """v6-v8 only add tables; immutable v5 rows remain byte-for-byte valid."""
 
-    return value in {5, 6, SCHEMA_VERSION}
+    return value in {5, 6, 7, SCHEMA_VERSION}
 
 
 class SecondaryAppendStatus(StrEnum):
@@ -443,6 +456,71 @@ CREATE INDEX IF NOT EXISTS idx_secondary_underlying_replay
 ON secondary_underlying_observations(asset, provider, received_timestamp, id)
 """
 
+_KALSHI_WS_EVENT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS kalshi_ws_orderbook_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version INTEGER NOT NULL,
+    connection_id TEXT NOT NULL,
+    subscription_id INTEGER NOT NULL CHECK (subscription_id > 0),
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    event_kind TEXT NOT NULL,
+    ticker TEXT,
+    market_id TEXT,
+    market_tickers TEXT NOT NULL,
+    side TEXT,
+    price TEXT,
+    quantity_delta TEXT,
+    yes_bids TEXT NOT NULL,
+    no_bids TEXT NOT NULL,
+    source_timestamp TEXT,
+    socket_received_timestamp TEXT NOT NULL,
+    parse_timestamp TEXT NOT NULL,
+    persisted_timestamp TEXT,
+    receive_persist_latency_ms TEXT,
+    sync_status_after TEXT NOT NULL,
+    provenance TEXT NOT NULL,
+    data_role TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    UNIQUE(connection_id, subscription_id, sequence)
+) STRICT
+"""
+
+_KALSHI_WS_EVENT_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_kalshi_ws_event_replay
+ON kalshi_ws_orderbook_events(connection_id, subscription_id, id)
+"""
+
+_KALSHI_WS_EVENT_TICKER_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_kalshi_ws_event_ticker
+ON kalshi_ws_orderbook_events(ticker, socket_received_timestamp, id)
+"""
+
+_KALSHI_WS_CHECKPOINT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS kalshi_ws_book_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version INTEGER NOT NULL,
+    connection_id TEXT NOT NULL,
+    subscription_id INTEGER NOT NULL CHECK (subscription_id > 0),
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    ticker TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    yes_bids TEXT NOT NULL,
+    no_bids TEXT NOT NULL,
+    source_timestamp TEXT,
+    received_timestamp TEXT NOT NULL,
+    persisted_timestamp TEXT NOT NULL,
+    provenance TEXT NOT NULL,
+    data_role TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    UNIQUE(connection_id, subscription_id, sequence, ticker)
+) STRICT
+"""
+
+_KALSHI_WS_CHECKPOINT_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_kalshi_ws_checkpoint_replay
+ON kalshi_ws_book_checkpoints(ticker, received_timestamp, id)
+"""
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS recorder_metadata (
     key TEXT PRIMARY KEY,
@@ -532,6 +610,11 @@ ON coinbase_ticks(product, received_timestamp, id);
 {_UNDERLYING_INDEX_SQL};
 {_SECONDARY_UNDERLYING_TABLE_SQL};
 {_SECONDARY_UNDERLYING_INDEX_SQL};
+{_KALSHI_WS_EVENT_TABLE_SQL};
+{_KALSHI_WS_EVENT_INDEX_SQL};
+{_KALSHI_WS_EVENT_TICKER_INDEX_SQL};
+{_KALSHI_WS_CHECKPOINT_TABLE_SQL};
+{_KALSHI_WS_CHECKPOINT_INDEX_SQL};
 """
 
 
@@ -607,8 +690,14 @@ class RecorderStore:
             row = self._connection.execute(
                 "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
             ).fetchone()
-        if row is not None and row["value"] == "6" and SCHEMA_VERSION == 7:
+        if row is not None and row["value"] == "6":
             self._migrate_v6_to_v7()
+            row = self._connection.execute(
+                "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        if row is not None and row["value"] == "7" and SCHEMA_VERSION == 8:
+            self._migrate_v7_to_v8()
+            self._ensure_schema_objects()
             return
         raise RecorderStorageError(
             f"database schema {row['value']} is incompatible with {SCHEMA_VERSION}"
@@ -818,6 +907,28 @@ class RecorderStore:
             self._connection.execute(
                 "UPDATE recorder_metadata SET value=? WHERE key='schema_version'",
                 ("7",),
+            )
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+
+    def _migrate_v7_to_v8(self) -> None:
+        """Atomically add raw WS events and sparse synchronized checkpoints."""
+
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            for statement in (
+                _KALSHI_WS_EVENT_TABLE_SQL,
+                _KALSHI_WS_EVENT_INDEX_SQL,
+                _KALSHI_WS_EVENT_TICKER_INDEX_SQL,
+                _KALSHI_WS_CHECKPOINT_TABLE_SQL,
+                _KALSHI_WS_CHECKPOINT_INDEX_SQL,
+            ):
+                self._connection.execute(statement)
+            self._connection.execute(
+                "UPDATE recorder_metadata SET value=? WHERE key='schema_version'",
+                ("8",),
             )
             self._connection.commit()
         except Exception:
@@ -1105,6 +1216,166 @@ class RecorderStore:
         )
         self._connection.commit()
         return SecondaryAppendStatus.INSERTED
+
+    def append_kalshi_ws_orderbook_event(
+        self,
+        message: KalshiOrderBookMessage | KalshiCommandAcknowledged,
+        *,
+        sync_status_after: KalshiBookSyncStatus,
+    ) -> bool:
+        """Persist one raw WS message; conflicting sequence facts fail loudly."""
+
+        acknowledgement = message if isinstance(message, KalshiCommandAcknowledged) else None
+        if acknowledgement is not None and (
+            acknowledgement.subscription_id is None or acknowledgement.sequence is None
+        ):
+            raise RecorderStorageError("unsequenced Kalshi WS acknowledgement is not replay state")
+        snapshot = message if isinstance(message, KalshiOrderBookSnapshot) else None
+        delta = message if isinstance(message, KalshiOrderBookDelta) else None
+        event_kind = (
+            KalshiWsEventKind.SUBSCRIPTION_ACK
+            if acknowledgement is not None
+            else KalshiWsEventKind.SNAPSHOT
+            if snapshot is not None
+            else KalshiWsEventKind.DELTA
+        )
+        yes_bids = json.dumps(
+            [[str(level.price), str(level.quantity)] for level in snapshot.yes_bids]
+            if snapshot is not None
+            else [],
+            separators=(",", ":"),
+        )
+        no_bids = json.dumps(
+            [[str(level.price), str(level.quantity)] for level in snapshot.no_bids]
+            if snapshot is not None
+            else [],
+            separators=(",", ":"),
+        )
+        immutable: tuple[object, ...] = (
+            message.connection_id,
+            message.subscription_id,
+            message.sequence,
+            event_kind.value,
+            message.ticker if acknowledgement is None else None,
+            message.market_id if acknowledgement is None else None,
+            json.dumps(
+                acknowledgement.market_tickers if acknowledgement is not None else (),
+                separators=(",", ":"),
+            ),
+            delta.side.value if delta is not None else None,
+            _decimal(delta.price) if delta is not None else None,
+            _decimal(delta.quantity_delta) if delta is not None else None,
+            yes_bids,
+            no_bids,
+            (
+                _timestamp(message.source_timestamp)
+                if acknowledgement is None and message.source_timestamp is not None
+                else None
+            ),
+            message.provenance,
+            message.role.value,
+        )
+        content_hash = _fingerprint(immutable)
+        existing = self._connection.execute(
+            """SELECT content_hash FROM kalshi_ws_orderbook_events
+            WHERE connection_id=? AND subscription_id=? AND sequence=?""",
+            (message.connection_id, message.subscription_id, message.sequence),
+        ).fetchone()
+        if existing is not None:
+            if existing["content_hash"] != content_hash:
+                raise RecorderStorageError("conflicting Kalshi WS fact for subscription sequence")
+            return False
+        with self._connection:
+            cursor = self._connection.execute(
+                """INSERT INTO kalshi_ws_orderbook_events(
+                    schema_version,connection_id,subscription_id,sequence,event_kind,ticker,
+                    market_id,market_tickers,side,price,quantity_delta,yes_bids,no_bids,
+                    source_timestamp,socket_received_timestamp,parse_timestamp,
+                    persisted_timestamp,receive_persist_latency_ms,sync_status_after,provenance,
+                    data_role,content_hash
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    SCHEMA_VERSION,
+                    *immutable[:13],
+                    _timestamp(message.socket_received_timestamp),
+                    _timestamp(message.parse_timestamp),
+                    None,
+                    None,
+                    sync_status_after.value,
+                    *immutable[13:],
+                    content_hash,
+                ),
+            )
+            persisted = datetime.now(UTC)
+            persist_latency = (
+                Decimal(time.perf_counter_ns() - message.socket_received_monotonic_ns)
+                / Decimal(1_000_000)
+                if message.socket_received_monotonic_ns is not None
+                else None
+            )
+            self._connection.execute(
+                """UPDATE kalshi_ws_orderbook_events
+                SET persisted_timestamp=?,receive_persist_latency_ms=? WHERE id=?""",
+                (
+                    _timestamp(persisted),
+                    str(persist_latency) if persist_latency is not None else None,
+                    cursor.lastrowid,
+                ),
+            )
+        return True
+
+    def append_kalshi_ws_checkpoint(self, book: SynchronizedKalshiOrderBook) -> bool:
+        """Store a sparse synchronized book, normally only after snapshot/resync."""
+
+        if book.status is not KalshiBookSyncStatus.SYNCHRONIZED:
+            raise RecorderStorageError("unsynchronized Kalshi WS book cannot be checkpointed")
+        yes_bids = json.dumps(
+            [[str(level.price), str(level.quantity)] for level in book.yes_bids],
+            separators=(",", ":"),
+        )
+        no_bids = json.dumps(
+            [[str(level.price), str(level.quantity)] for level in book.no_bids],
+            separators=(",", ":"),
+        )
+        immutable: tuple[object, ...] = (
+            book.connection_id,
+            book.subscription_id,
+            book.sequence,
+            book.ticker,
+            book.market_id,
+            yes_bids,
+            no_bids,
+            _timestamp(book.source_timestamp) if book.source_timestamp is not None else None,
+            _timestamp(book.received_timestamp),
+            book.provenance,
+            DataRole.CONTRACT_MARKET_QUOTE.value,
+        )
+        content_hash = _fingerprint(immutable)
+        existing = self._connection.execute(
+            """SELECT content_hash FROM kalshi_ws_book_checkpoints
+            WHERE connection_id=? AND subscription_id=? AND sequence=? AND ticker=?""",
+            (book.connection_id, book.subscription_id, book.sequence, book.ticker),
+        ).fetchone()
+        if existing is not None:
+            if existing["content_hash"] != content_hash:
+                raise RecorderStorageError("conflicting Kalshi WS book checkpoint")
+            return False
+        self._connection.execute(
+            """INSERT INTO kalshi_ws_book_checkpoints(
+                schema_version,connection_id,subscription_id,sequence,ticker,market_id,
+                yes_bids,no_bids,source_timestamp,received_timestamp,persisted_timestamp,
+                provenance,data_role,content_hash
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                SCHEMA_VERSION,
+                *immutable[:9],
+                _timestamp(datetime.now(UTC)),
+                *immutable[9:],
+                content_hash,
+            ),
+        )
+        self._connection.commit()
+        return True
 
     def append_prediction_quote(self, quote: PredictionMarketQuote) -> bool:
         """Append a changed official quote; suppress only consecutive identical states."""
@@ -2025,6 +2296,146 @@ class RecorderStore:
         for row in rows:
             yield self._secondary_underlying_record(row)
 
+    def replay_kalshi_ws_orderbook_events(
+        self, connection_id: str, subscription_id: int
+    ) -> Iterator[KalshiWsOrderBookEventRecord]:
+        """Replay raw WS arrival order; sequence faults remain observable."""
+
+        rows = self._connection.execute(
+            """SELECT * FROM kalshi_ws_orderbook_events
+            WHERE connection_id=? AND subscription_id=? ORDER BY id ASC""",
+            (connection_id, subscription_id),
+        )
+        for row in rows:
+            yield self._kalshi_ws_event_record(row)
+
+    def replay_kalshi_ws_checkpoints(self, ticker: str) -> Iterator[KalshiWsBookCheckpointRecord]:
+        rows = self._connection.execute(
+            """SELECT * FROM kalshi_ws_book_checkpoints
+            WHERE ticker=? ORDER BY received_timestamp ASC,id ASC""",
+            (ticker,),
+        )
+        for row in rows:
+            yield self._kalshi_ws_checkpoint_record(row)
+
+    @staticmethod
+    def _kalshi_ws_event_record(row: sqlite3.Row) -> KalshiWsOrderBookEventRecord:
+        try:
+            event_kind = KalshiWsEventKind(row["event_kind"])
+            side = KalshiBookSide(row["side"]) if row["side"] is not None else None
+            price = _parse_decimal(row["price"], "price", optional=True)
+            quantity_delta = _parse_decimal(row["quantity_delta"], "quantity_delta", optional=True)
+            yes_bids = tuple(
+                OrderBookLevel(Decimal(price_value), Decimal(quantity))
+                for price_value, quantity in _book_levels(row["yes_bids"], "yes_bids")
+            )
+            no_bids = tuple(
+                OrderBookLevel(Decimal(price_value), Decimal(quantity))
+                for price_value, quantity in _book_levels(row["no_bids"], "no_bids")
+            )
+            market_tickers = tuple(json.loads(row["market_tickers"]))
+            if any(not isinstance(ticker, str) or not ticker for ticker in market_tickers):
+                raise RecorderStorageError("malformed Kalshi WS acknowledgement tickers")
+            if event_kind is KalshiWsEventKind.SNAPSHOT:
+                if side is not None or price is not None or quantity_delta is not None:
+                    raise RecorderStorageError("malformed Kalshi WS snapshot record")
+            elif event_kind is KalshiWsEventKind.DELTA and (
+                side is None or price is None or quantity_delta is None or yes_bids or no_bids
+            ):
+                raise RecorderStorageError("malformed Kalshi WS delta record")
+            elif event_kind is KalshiWsEventKind.SUBSCRIPTION_ACK and (
+                row["ticker"] is not None
+                or row["market_id"] is not None
+                or side is not None
+                or price is not None
+                or quantity_delta is not None
+                or yes_bids
+                or no_bids
+            ):
+                raise RecorderStorageError("malformed Kalshi WS acknowledgement record")
+            if not _compatible_record_version(row["schema_version"]):
+                raise RecorderStorageError("malformed Kalshi WS event record")
+            return KalshiWsOrderBookEventRecord(
+                row_id=int(row["id"]),
+                schema_version=int(row["schema_version"]),
+                connection_id=str(row["connection_id"]),
+                subscription_id=int(row["subscription_id"]),
+                sequence=int(row["sequence"]),
+                event_kind=event_kind,
+                ticker=str(row["ticker"]) if row["ticker"] is not None else None,
+                market_id=str(row["market_id"]) if row["market_id"] is not None else None,
+                market_tickers=market_tickers,
+                side=side,
+                price=price,
+                quantity_delta=quantity_delta,
+                yes_bids=yes_bids,
+                no_bids=no_bids,
+                source_timestamp=(
+                    _parse_timestamp(row["source_timestamp"], "source_timestamp")
+                    if row["source_timestamp"] is not None
+                    else None
+                ),
+                socket_received_timestamp=_parse_timestamp(
+                    row["socket_received_timestamp"], "socket_received_timestamp"
+                ),
+                parse_timestamp=_parse_timestamp(row["parse_timestamp"], "parse_timestamp"),
+                persisted_timestamp=(
+                    _parse_timestamp(row["persisted_timestamp"], "persisted_timestamp")
+                    if row["persisted_timestamp"] is not None
+                    else None
+                ),
+                receive_persist_latency_ms=_parse_decimal(
+                    row["receive_persist_latency_ms"],
+                    "receive_persist_latency_ms",
+                    optional=True,
+                ),
+                sync_status_after=KalshiBookSyncStatus(row["sync_status_after"]),
+                provenance=str(row["provenance"]),
+                role=DataRole(row["data_role"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise RecorderStorageError("malformed Kalshi WS event record") from error
+
+    @staticmethod
+    def _kalshi_ws_checkpoint_record(row: sqlite3.Row) -> KalshiWsBookCheckpointRecord:
+        try:
+            yes_bids = tuple(
+                OrderBookLevel(Decimal(price), Decimal(quantity))
+                for price, quantity in _book_levels(row["yes_bids"], "yes_bids")
+            )
+            no_bids = tuple(
+                OrderBookLevel(Decimal(price), Decimal(quantity))
+                for price, quantity in _book_levels(row["no_bids"], "no_bids")
+            )
+            if not _compatible_record_version(row["schema_version"]):
+                raise RecorderStorageError("malformed Kalshi WS checkpoint record")
+            return KalshiWsBookCheckpointRecord(
+                row_id=int(row["id"]),
+                schema_version=int(row["schema_version"]),
+                connection_id=str(row["connection_id"]),
+                subscription_id=int(row["subscription_id"]),
+                sequence=int(row["sequence"]),
+                ticker=str(row["ticker"]),
+                market_id=str(row["market_id"]),
+                yes_bids=yes_bids,
+                no_bids=no_bids,
+                source_timestamp=(
+                    _parse_timestamp(row["source_timestamp"], "source_timestamp")
+                    if row["source_timestamp"] is not None
+                    else None
+                ),
+                received_timestamp=_parse_timestamp(
+                    row["received_timestamp"], "received_timestamp"
+                ),
+                persisted_timestamp=_parse_timestamp(
+                    row["persisted_timestamp"], "persisted_timestamp"
+                ),
+                provenance=str(row["provenance"]),
+                role=DataRole(row["data_role"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise RecorderStorageError("malformed Kalshi WS checkpoint record") from error
+
     @staticmethod
     def _secondary_underlying_record(
         row: sqlite3.Row,
@@ -2537,6 +2948,8 @@ class RecorderStore:
             "recorder_events",
             "underlying_observations",
             "secondary_underlying_observations",
+            "kalshi_ws_orderbook_events",
+            "kalshi_ws_book_checkpoints",
         }:
             raise ValueError("unknown recorder table")
         row = self._connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
@@ -2555,6 +2968,8 @@ class RecorderStore:
                 "coinbase_ticks",
                 "underlying_observations",
                 "secondary_underlying_observations",
+                "kalshi_ws_orderbook_events",
+                "kalshi_ws_book_checkpoints",
                 "kalshi_settlements",
                 "kalshi_settlement_conflicts",
             )

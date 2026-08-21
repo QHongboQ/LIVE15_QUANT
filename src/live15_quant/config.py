@@ -37,6 +37,10 @@ class Settings:
     kalshi_public_api_base_url: str = KALSHI_PUBLIC_API_BASE_URL
     kalshi_demo_api_key_id: str | None = field(default=None, repr=False)
     kalshi_demo_private_key_path: Path | None = field(default=None, repr=False)
+    enable_kalshi_production_websocket: bool = False
+    kalshi_production_api_key_id_path: Path | None = field(default=None, repr=False)
+    kalshi_production_private_key_path: Path | None = field(default=None, repr=False)
+    kalshi_websocket_read_timeout_seconds: float = 45.0
     official_quote_poll_interval_seconds: float = 2.0
     official_quote_max_source_age_seconds: float = 15.0
     official_quote_orderbook_depth: int = 10
@@ -247,6 +251,26 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             Path(source["LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH"])
             if source.get("LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH")
             else None
+        ),
+        enable_kalshi_production_websocket=_boolean(
+            source,
+            "LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET",
+            defaults.enable_kalshi_production_websocket,
+        ),
+        kalshi_production_api_key_id_path=(
+            Path(source["LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH"])
+            if source.get("LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH")
+            else None
+        ),
+        kalshi_production_private_key_path=(
+            Path(source["LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH"])
+            if source.get("LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH")
+            else None
+        ),
+        kalshi_websocket_read_timeout_seconds=_positive_float(
+            source,
+            "LIVE15_KALSHI_WEBSOCKET_READ_TIMEOUT_SECONDS",
+            defaults.kalshi_websocket_read_timeout_seconds,
         ),
         official_quote_poll_interval_seconds=_positive_float(
             source,

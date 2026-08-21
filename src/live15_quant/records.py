@@ -7,6 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from live15_quant.kalshi_lifecycle import KalshiLifecycle, KalshiResult
+from live15_quant.kalshi_ws import KalshiBookSide, KalshiBookSyncStatus, KalshiWsEventKind
 from live15_quant.models import (
     Asset,
     DataRole,
@@ -25,7 +26,7 @@ from live15_quant.models import (
     Venue,
 )
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +123,54 @@ class SecondaryUnderlyingObservationRecord:
     provenance: str
     freshness: FreshnessState
     source_event_id: str
+    role: DataRole
+
+
+@dataclass(frozen=True, slots=True)
+class KalshiWsOrderBookEventRecord:
+    """One raw, arrival-ordered official WS book or sequenced control event."""
+
+    row_id: int
+    schema_version: int
+    connection_id: str
+    subscription_id: int
+    sequence: int
+    event_kind: KalshiWsEventKind
+    ticker: str | None
+    market_id: str | None
+    market_tickers: tuple[str, ...]
+    side: KalshiBookSide | None
+    price: Decimal | None
+    quantity_delta: Decimal | None
+    yes_bids: tuple[OrderBookLevel, ...]
+    no_bids: tuple[OrderBookLevel, ...]
+    source_timestamp: datetime | None
+    socket_received_timestamp: datetime
+    parse_timestamp: datetime
+    persisted_timestamp: datetime | None
+    receive_persist_latency_ms: Decimal | None
+    sync_status_after: KalshiBookSyncStatus
+    provenance: str
+    role: DataRole
+
+
+@dataclass(frozen=True, slots=True)
+class KalshiWsBookCheckpointRecord:
+    """Sparse synchronized checkpoint; raw deltas remain the replay truth."""
+
+    row_id: int
+    schema_version: int
+    connection_id: str
+    subscription_id: int
+    sequence: int
+    ticker: str
+    market_id: str
+    yes_bids: tuple[OrderBookLevel, ...]
+    no_bids: tuple[OrderBookLevel, ...]
+    source_timestamp: datetime | None
+    received_timestamp: datetime
+    persisted_timestamp: datetime
+    provenance: str
     role: DataRole
 
 
