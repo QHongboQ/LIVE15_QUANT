@@ -194,6 +194,9 @@ class RecorderProcessController:
             environment = os.environ.copy()
             environment.pop("LIVE15_KALSHI_DEMO_API_KEY_ID", None)
             environment.pop("LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH", None)
+            # Public, market-data-only secondary streams are part of the single
+            # UI-managed recorder. Manual foreground runs remain opt-in via env.
+            environment.setdefault("LIVE15_ENABLE_SECONDARY_UNDERLYING", "true")
             flags = 0
             if os.name == "nt":
                 # DETACHED_PROCESS is deliberately absent: combined with CREATE_NO_WINDOW

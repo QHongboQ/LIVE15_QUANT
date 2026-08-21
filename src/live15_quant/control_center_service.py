@@ -41,6 +41,7 @@ class ControlCenterService:
             settings.feature_store_path,
             coinbase_stale_seconds=settings.recorder_coinbase_stale_seconds,
             pyth_stale_seconds=settings.recorder_pyth_stale_seconds,
+            secondary_stale_seconds=settings.recorder_secondary_stale_seconds,
         )
         self._clock = clock
         self._monotonic = monotonic

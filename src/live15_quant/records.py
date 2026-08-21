@@ -18,13 +18,14 @@ from live15_quant.models import (
     RecorderDiagnosticKind,
     RecorderEventSeverity,
     RecorderEventType,
+    SecondaryPriceSemantics,
     SourceTimestampKind,
     SupportLevel,
     UnderlyingProvider,
     Venue,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,30 @@ class UnderlyingObservationRecord:
     confidence: Decimal | None
     provenance: str
     freshness: FreshnessState
+    role: DataRole
+
+
+@dataclass(frozen=True, slots=True)
+class SecondaryUnderlyingObservationRecord:
+    """One immutable venue-native secondary predictive observation."""
+
+    row_id: int
+    schema_version: int
+    asset: Asset
+    provider: UnderlyingProvider
+    instrument: str
+    price: Decimal
+    price_semantics: SecondaryPriceSemantics
+    bid: Decimal | None
+    ask: Decimal | None
+    source_timestamp: datetime
+    received_timestamp: datetime
+    persisted_timestamp: datetime | None
+    source_receive_latency_ms: Decimal
+    receive_persist_latency_ms: Decimal | None
+    provenance: str
+    freshness: FreshnessState
+    source_event_id: str
     role: DataRole
 
 

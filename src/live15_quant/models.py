@@ -38,6 +38,15 @@ class UnderlyingProvider(StrEnum):
 
     COINBASE = "coinbase"
     PYTH_HERMES = "pyth_hermes"
+    BINANCE_SPOT = "binance_spot"
+    HYPERLIQUID_PERP = "hyperliquid_perp"
+
+
+class SecondaryPriceSemantics(StrEnum):
+    """Provider-native meaning of a secondary predictive price."""
+
+    AGGREGATE_TRADE = "aggregate_trade"
+    BBO_MIDPOINT = "bbo_midpoint"
 
 
 class Venue(StrEnum):
@@ -355,6 +364,58 @@ class UnderlyingObservation:
             raise ValueError("underlying price must be finite and positive")
         if self.confidence is not None and (not self.confidence.is_finite() or self.confidence < 0):
             raise ValueError("underlying confidence must be finite and non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class SecondaryUnderlyingObservation:
+    """A secondary predictive input that can never replace primary data implicitly."""
+
+    asset: Asset
+    provider: UnderlyingProvider
+    instrument: str
+    price: Decimal
+    price_semantics: SecondaryPriceSemantics
+    source_timestamp: datetime
+    received_timestamp: datetime
+    provenance: str
+    freshness: FreshnessState
+    source_event_id: str
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+    role: DataRole = field(init=False, default=DataRole.PREDICTIVE_MARKET_DATA)
+
+    def __post_init__(self) -> None:
+        if not self.instrument or not self.provenance or not self.source_event_id:
+            raise ValueError("secondary underlying identity and provenance must not be empty")
+        for timestamp in (self.source_timestamp, self.received_timestamp):
+            if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                raise ValueError("secondary underlying timestamps must be timezone-aware")
+        if not self.price.is_finite() or self.price <= 0:
+            raise ValueError("secondary underlying price must be finite and positive")
+        if (self.bid is None) != (self.ask is None):
+            raise ValueError("secondary bid and ask must be present together")
+        if self.provider is UnderlyingProvider.BINANCE_SPOT:
+            if (
+                self.asset is not Asset.BNB
+                or self.instrument != "BNBUSDT"
+                or self.price_semantics is not SecondaryPriceSemantics.AGGREGATE_TRADE
+                or self.bid is not None
+            ):
+                raise ValueError("Binance secondary must be exact BNBUSDT aggregate trades")
+        elif self.provider is UnderlyingProvider.HYPERLIQUID_PERP:
+            if (
+                self.asset is not Asset.HYPE
+                or self.instrument != "HYPE"
+                or self.price_semantics is not SecondaryPriceSemantics.BBO_MIDPOINT
+                or self.bid is None
+                or self.ask is None
+                or self.bid <= 0
+                or self.ask < self.bid
+                or self.price != (self.bid + self.ask) / 2
+            ):
+                raise ValueError("Hyperliquid secondary must be exact HYPE BBO midpoint")
+        else:
+            raise ValueError("provider is not approved for secondary underlying data")
 
 
 @dataclass(frozen=True, slots=True)

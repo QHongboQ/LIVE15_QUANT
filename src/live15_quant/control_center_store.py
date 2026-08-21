@@ -51,11 +51,13 @@ class DashboardReadStore:
         *,
         coinbase_stale_seconds: float = 30.0,
         pyth_stale_seconds: float = 15.0,
+        secondary_stale_seconds: float = 10.0,
     ) -> None:
         self.raw_path = raw_path
         self.feature_path = feature_path
         self.coinbase_stale_seconds = coinbase_stale_seconds
         self.pyth_stale_seconds = pyth_stale_seconds
+        self.secondary_stale_seconds = secondary_stale_seconds
 
     @staticmethod
     def _open(path: Path) -> sqlite3.Connection | None:
@@ -110,6 +112,20 @@ class DashboardReadStore:
                     ORDER BY received_timestamp DESC,id DESC LIMIT 1""",
                     (asset.value, UnderlyingProvider.PYTH_HERMES.value),
                 ).fetchone()
+            secondary_provider = {
+                Asset.BNB: UnderlyingProvider.BINANCE_SPOT,
+                Asset.HYPE: UnderlyingProvider.HYPERLIQUID_PERP,
+            }.get(asset)
+            secondary = None
+            if secondary_provider is not None and self._table_exists(
+                connection, "secondary_underlying_observations"
+            ):
+                secondary = connection.execute(
+                    """SELECT * FROM secondary_underlying_observations
+                    WHERE asset=? AND provider=?
+                    ORDER BY received_timestamp DESC,id DESC LIMIT 1""",
+                    (asset.value, secondary_provider.value),
+                ).fetchone()
             end = datetime.fromisoformat(str(market["window_end"])).astimezone(UTC)
             quote_received = (
                 datetime.fromisoformat(str(quote["received_timestamp"])).astimezone(UTC)
@@ -127,6 +143,16 @@ class DashboardReadStore:
             tick_age = (
                 None if tick_received is None else max(0, (now - tick_received).total_seconds())
             )
+            secondary_received = (
+                datetime.fromisoformat(str(secondary["received_timestamp"])).astimezone(UTC)
+                if secondary is not None
+                else None
+            )
+            secondary_age = (
+                None
+                if secondary_received is None
+                else max(0, (now - secondary_received).total_seconds())
+            )
             yes_bid = _decimal(quote["yes_bid"]) if quote is not None else None
             yes_ask = _decimal(quote["yes_ask"]) if quote is not None else None
             spread = None
@@ -142,6 +168,19 @@ class DashboardReadStore:
                     underlying_status = "stale"
                 elif recorded_freshness != "fresh":
                     underlying_status = "unavailable"
+            secondary_status = self._age_status(secondary_age, self.secondary_stale_seconds)
+            secondary_clock_skew = bool(
+                secondary is not None and Decimal(str(secondary["source_receive_latency_ms"])) < 0
+            )
+            if secondary is not None and str(secondary["freshness"]) == "stale":
+                secondary_status = "stale"
+            primary_price = _decimal(tick["price"]) if tick is not None else None
+            secondary_price = _decimal(secondary["price"]) if secondary is not None else None
+            price_diff = (
+                str(Decimal(secondary_price) - Decimal(primary_price))
+                if secondary_price is not None and primary_price is not None
+                else None
+            )
             return {
                 "asset": asset.value,
                 "ticker": ticker,
@@ -175,9 +214,57 @@ class DashboardReadStore:
                     else UnderlyingProvider.PYTH_HERMES.value
                 ),
                 "underlying_product": product or PYTH_FEEDS[asset][0],
-                "underlying_price": _decimal(tick["price"]) if tick is not None else None,
+                "underlying_price": primary_price,
                 "underlying_age_seconds": tick_age,
                 "underlying_status": underlying_status,
+                "primary_provider": (
+                    UnderlyingProvider.COINBASE.value
+                    if product is not None
+                    else UnderlyingProvider.PYTH_HERMES.value
+                ),
+                "primary_age_seconds": tick_age,
+                "secondary_provider": (
+                    secondary_provider.value if secondary_provider is not None else None
+                ),
+                "secondary_instrument": (
+                    str(secondary["instrument"]) if secondary is not None else None
+                ),
+                "secondary_price": secondary_price,
+                "secondary_bid": _decimal(secondary["bid"]) if secondary is not None else None,
+                "secondary_ask": _decimal(secondary["ask"]) if secondary is not None else None,
+                "secondary_price_semantics": (
+                    str(secondary["price_semantics"]) if secondary is not None else None
+                ),
+                "secondary_age_seconds": secondary_age,
+                "secondary_status": secondary_status,
+                "secondary_clock_skew": secondary_clock_skew,
+                "secondary_source_timestamp": (
+                    str(secondary["source_timestamp"]) if secondary is not None else None
+                ),
+                "secondary_received_timestamp": (
+                    str(secondary["received_timestamp"]) if secondary is not None else None
+                ),
+                "secondary_persisted_timestamp": (
+                    str(secondary["persisted_timestamp"])
+                    if secondary is not None and secondary["persisted_timestamp"] is not None
+                    else None
+                ),
+                "secondary_source_receive_latency_ms": (
+                    _decimal(secondary["source_receive_latency_ms"])
+                    if secondary is not None
+                    else None
+                ),
+                "secondary_receive_persist_latency_ms": (
+                    _decimal(secondary["receive_persist_latency_ms"])
+                    if secondary is not None
+                    else None
+                ),
+                "primary_secondary_price_diff": price_diff,
+                "primary_secondary_age_diff": (
+                    secondary_age - tick_age
+                    if secondary_age is not None and tick_age is not None
+                    else None
+                ),
                 "settlement_followup": "pending" if now >= end else "not_due",
                 "features": self._features(connection, market, now),
                 "availability": "available",
@@ -238,6 +325,20 @@ class DashboardReadStore:
                 else UnderlyingProvider.PYTH_HERMES.value
             ),
             "underlying_status": "missing",
+            "primary_provider": (
+                UnderlyingProvider.COINBASE.value
+                if asset in COINBASE_PRODUCT_BY_ASSET
+                else UnderlyingProvider.PYTH_HERMES.value
+            ),
+            "secondary_provider": (
+                UnderlyingProvider.BINANCE_SPOT.value
+                if asset is Asset.BNB
+                else UnderlyingProvider.HYPERLIQUID_PERP.value
+                if asset is Asset.HYPE
+                else None
+            ),
+            "secondary_status": "missing",
+            "secondary_clock_skew": False,
             "settlement_followup": "unavailable",
             "features": {},
         }

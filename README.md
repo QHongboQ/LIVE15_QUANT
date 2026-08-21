@@ -133,18 +133,18 @@ BTC、ETH、XRP、SOL、DOGE 继续使用 Coinbase Exchange 公共 WebSocket。G
 | HYPE | `Crypto.HYPE/USD` | `4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b` |
 | BNB | `Crypto.BNB/USD` | `2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f` |
 
-[Pyth Hermes API](https://hermes.pyth.network/docs/) 的 latest-price REST 与 SSE 都提供 publish time、raw integer price、exponent 和 confidence。正式 client 使用本次 authenticated acceptance 返回 200 的官方 `https://hermes.pyth.network` endpoint，只从仓库外 key 文件读取 Bearer credential，不提供 write/trading 方法；文档列出的 upgraded `https://pyth.dourolabs.app/hermes` 在本次两个 v2 route 验证中均返回 404，因此不作为静默 fallback。[Pyth market hours](https://docs.pyth.network/price-feeds/core/market-hours) 说明金属和 USOILSPOT 的交易/maintenance windows，闭市期间 stale 是明确 source state，不能用旧值伪装 fresh。统一选用 Pyth 而不是为 HYPE/BNB 再建 venue-specific recorder，是因为同一正式接口覆盖五个缺口、提供一致的 publish time/confidence/provenance，并保持一个 Continuous Recorder；它仍只是 predictive input，不代表 Kalshi settlement benchmark。
+[Pyth Hermes API](https://hermes.pyth.network/docs/) 的 latest-price REST 与 SSE 都提供 publish time、raw integer price、exponent 和 confidence。正式 client 使用本次 authenticated acceptance 返回 200 的官方 `https://hermes.pyth.network` endpoint，只从仓库外 key 文件读取 Bearer credential，不提供 write/trading 方法；文档列出的 upgraded `https://pyth.dourolabs.app/hermes` 在本次两个 v2 route 验证中均返回 404，因此不作为静默 fallback。[Pyth market hours](https://docs.pyth.network/price-feeds/core/market-hours) 说明金属和 USOILSPOT 的交易/maintenance windows，闭市期间 stale 是明确 source state，不能用旧值伪装 fresh。Pyth 仍是 HYPE/BNB 的 primary predictive source；venue-native 数据由同一个 Continuous Recorder 追加为独立 secondary observations，不覆盖、平均或自动替换 Pyth，也不代表 Kalshi settlement benchmark。
 
 运行时只建立一条 authenticated `/v2/updates/price/stream` SSE connection，并在同一网络层按 exact feed ID demux 五个 feed。服务端按官方说明会在 24 小时关闭 SSE，recorder 会 bounded reconnect；单个 feed malformed/stale/out-of-order 只产生该 feed 的诊断。SSE 断开时最多以一个 `/v2/updates/price/latest` batch request 同时获取全部五个 feed，不会退化成五次独立 polling。Pyth 官方限额为所有 endpoints 合计 10 requests / 10 seconds / IP，超限后可持续 60 秒返回 429；client 使用共享 sliding-window budget，默认只允许 8 requests / 10 seconds 并尊重 bounded `Retry-After`，为其他调用保留余量。
 
-`live15-readiness` 使用 SQLite online backup 从正在增长的 raw DB 创建 transaction-consistent 临时副本，仅在临时副本上迁移 schema、重建 Dataset，并原子写入 Git-ignored 的 `data/readiness.json`。报告包含 10 资产 source 状态、source→receive latency、gap、duplicate、out-of-order/clock-skew、Kalshi quote quality、42 个 feature 定义与 live/leakage readiness、dataset balance/buckets/missing/stale/rejection reasons。它不会打开正式 raw DB writer，也不会修改 raw truth。
+`live15-readiness` 使用 SQLite online backup 从正在增长的 raw DB 创建 transaction-consistent 临时副本，仅在临时副本上迁移 schema、重建 Dataset，并原子写入 Git-ignored 的 `data/readiness.json`。报告包含 10 资产 source 状态、source→receive latency、gap、duplicate、out-of-order/clock-skew、Kalshi quote quality、42 个 feature 定义与 live/leakage readiness、dataset balance/buckets/missing/stale/rejection reasons。它不会打开正式 raw DB writer，也不会修改 raw truth。跨机器时钟的负 source→receive 值只标记 `clock skew`，不作为负网络延迟，也不会把按本机 receive age 仍然新鲜的 source 降级为 stale。
 
 ### Low-latency underlying benchmark
 
 `live15-latency-benchmark --seconds 30` 是独立、只读、绝对有界的网络基准，不启动/停止 recorder，也不写正式 raw DB。它在系统临时目录创建并删除专用 SQLite，逐条保存 provider source timestamp、socket receive、JSON parse completion、bounded queue admission 和 SQLite commit completion 的 UTC 时间；本地阶段耗时与 receive gap 使用同一进程的 monotonic 纳秒钟计算，避免 Windows/NTP wall-clock 调整污染亚毫秒结果。`--venue-only` 可在没有 Pyth credential 时只测公开 venue streams。所有 source 保持独立 provenance；benchmark 结果不会自动切换 primary source。若 bounded queue 过载或任一 source 失败，报告会显式给出 `queue_drops`/`source_errors` 并把 `measurement_complete` 标为 false，不会静默宣称完整样本。
 
 - BNB 使用 [Binance 官方 market-data-only WebSocket](https://github.com/binance/binance-spot-api-docs/blob/master/faqs/market_data_only.md) `wss://data-stream.binance.vision` 的 `BNBUSDT@aggTrade`。它无需账户/API key，提供毫秒 trade timestamp，但语义是 Binance Spot BNB/USDT last trade，不是 Pyth BNB/USD aggregate，也不是 Kalshi settlement truth。官方说明连接约 24 小时会断开并要求 ping/pong；adapter 使用 bounded reconnect。历史 REST/下载可用，但生产留存/再分发仍须遵守 Binance Terms 和所在地限制。
-- HYPE 使用 [Hyperliquid 官方 mainnet public WebSocket](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions) 的 HYPE perpetual `bbo`。保存原始 bid/ask，并明确以两者 midpoint 作为**仅供 benchmark 的**预测价格；source time 是官方 BBO block timestamp。无需钱包/账户，30 秒 application ping 和 bounded reconnect 遵循官方协议。[官方 S3 历史数据](https://hyperliquid.gitbook.io/hyperliquid-docs/historical-data)约月度上传、requester-pays、可能缺失，因此不能视为完整训练历史。
+- HYPE 使用 [Hyperliquid 官方 mainnet public WebSocket](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions) 的 HYPE perpetual `bbo`。保存原始 bid/ask，并明确以两者 midpoint 作为 secondary predictive price；source time 是官方 BBO block timestamp。无需钱包/账户，30 秒 application ping 和 bounded reconnect 遵循官方协议。[官方 S3 历史数据](https://hyperliquid.gitbook.io/hyperliquid-docs/historical-data)约月度上传、requester-pays、可能缺失，因此不能视为完整训练历史。
 - Pyth Pro exact IDs 由 authenticated `/v1/symbols` 严格解析：Gold `346`、Silver `345`、HYPE `110`、BNB `15`。现有 key 已能订阅这四项；Gold/Silver 最快支持 `fixed_rate@200ms`，HYPE/BNB 支持 `real_time`。`Commodities.USOILSPOT` 的 Pro ID `657` 当前官方 metadata 状态为 `inactive`，因此没有把 WTI 强行加入 Pro stream。正式 Pyth Pro 高可用要求同时连接三个官方 endpoint；当前单连接/轮换实现只用于 benchmark，不是 recorder production adapter。
 - [Pyth Pro rate limits](https://docs.pyth.network/price-feeds/pro/rate-limits) 的连接数、feed entitlement 和 channel 由具体 service agreement 决定；[Pyth 官方 upgrade 公告](https://www.pyth.network/blog/the-pyth-core-upgrade)称数据计划起价约 USD 500/月。现有 key 的当前 entitlement 已真实验证，但不能据此假设 trial/plan 永久有效。本项目没有购买、升级或绕过任何 plan；正式切换前必须由用户确认长期许可与费用。
 - Gold/Silver/WTI 的 venue-native source 是 CME/COMEX/NYMEX。[CME 官方 Real-Time Futures & Options WebSocket](https://www.cmegroup.com/market-data/real-time-futures-and-options-data-api.html) top-of-book 约 500ms conflation，但需要 Data Services Portal onboarding、API ID、产品订阅和市场数据许可；本阶段未购买或绕过。因此 Gold/Silver 可把 Pyth Pro 列为低延迟 secondary 候选，WTI 仍以 Pyth Core 为可用 primary，CME 仅列为待授权候选。
@@ -152,6 +152,12 @@ BTC、ETH、XRP、SOL、DOGE 继续使用 Coinbase Exchange 公共 WebSocket。G
 2026-08-21 的同进程 20 秒短基准中：Binance BNB 81 observations、Hyperliquid HYPE 158、Pyth Core 每资产 46、Pyth Pro 每资产 99。source→socket median 分别约 `-60ms`（本机相对 Binance source clock 的偏差，不能解释为负延迟）、`160ms`、`3.93s`、`-44ms`（同样受 clock offset 影响）；本地 socket→parse→queue→commit median 分别约 `0.23ms`、`0.24ms`、`0.66–0.93ms`、`0.29–0.50ms`。所以当前 Pyth Core 3–6 秒主要来自 feed aggregation/proof availability 与 publish-time 语义，本地 Python/SQLite 热路径占比远低于 0.1%；绝不通过改写 timestamp 消除该差异。
 
 报告把 `live_underlying_source_ready` 与 `historical_underlying_feature_coverage` 分开：前者表示当前实时推理路径可计算，后者表示已生成训练行中实际存在 underlying feature 的比例。新 source 刚启用时会标为 `PARTIAL`，不能仅因收到实时数据便宣称历史训练集完整。2026-08-21 短验收中 Pyth 五 feed 的 source→receive median 约 3.6 秒、p95 约 5.8 秒；官方 payload 的 `publish_time` 是整秒，proof availability 比 publish time 晚约 4 秒，本地与 HTTP `Date` 的中位偏差约 0.12 秒。因此该值主要反映 feed aggregation/proof availability、整秒量化和 transport，而不是本机 clock skew。它低于当前 15 秒 as-of/stale budget，仍须在 readiness report 中持续监控，绝不回写或修正历史 timestamp。
+
+### Low-latency secondary recorder
+
+schema v7 新增独立的 `secondary_underlying_observations` append-only table。BNB 保存 Binance `BNBUSDT@aggTrade` aggregate trade；HYPE 保存 Hyperliquid HYPE perpetual `bbo` 原始 bid/ask 与明确标注的 midpoint。两者均为无需账户/credential 的官方 public market-data WebSocket，并使用 bounded reconnect/backoff。任一 secondary outage 只降低对应 source health；storage conflict/corruption 仍 fail loudly。
+
+Pyth primary 继续只存在 `underlying_observations`，DatasetBuilder 和 `training_source_snapshot()` 不读取 secondary table，因此当前 42-feature registry 不会隐式切源。`SecondaryFeatureBoundary` 仅定义未来可选 feature 的 typed receive-time as-of boundary。UI 管理的 Start/Resume 默认在同一个 recorder 中启用两路 secondary；手动前台运行需设置 `LIVE15_ENABLE_SECONDARY_UNDERLYING=true`。`live15-secondary-diagnostics --minutes 5` 执行 bounded/query-only Pyth-vs-venue cadence、age、gap 与 divergence 比较，并保留 BNB/USDT trade、HYPE perpetual BBO midpoint 与 Pyth aggregate USD feed 的语义差异。
 
 ## Training Dataset + Feature Store
 
@@ -194,6 +200,9 @@ live15-coverage
 
 # 对 raw DB 做只读一致快照并生成完整 readiness.json
 live15-readiness
+
+# bounded/query-only Pyth primary vs venue secondary diagnostics
+live15-secondary-diagnostics --minutes 5
 
 # 读取 recorder 的原子 health heartbeat
 live15-status
@@ -278,7 +287,7 @@ snapshot 已评估的 finalized 数。snapshot 之后到达的事件显示为 `u
 
 ### Recorder 生命周期
 
-`live15-record` 启动 Kalshi-native lifecycle discovery、Kalshi quote/orderbook、Coinbase predictive stream 与 health 独立任务。配置 Pyth key 并显式启用后，同一个 recorder 追加一个五-feed Hermes SSE ingestion task；feed identity/错误状态独立，但共享一条网络连接和一个 REST fallback budget。lifecycle 默认每 15 秒按十个固定 series 和 UTC close-time range 发现 previous/current/next；quote loop 每个 batch 后默认等待 2 秒；Coinbase 对 `BTC-USD`、`ETH-USD`、`SOL-USD`、`XRP-USD`、`DOGE-USD` 使用公共 WebSocket ticker subscription。只有 `LIVE15_ENABLE_ROBINHOOD_REFERENCE=true` 才额外启动 Robinhood 参考任务。
+`live15-record` 启动 Kalshi-native lifecycle discovery、Kalshi quote/orderbook、Coinbase predictive stream 与 health 独立任务。配置 Pyth key并显式启用后，同一个 recorder 追加一个五-feed Hermes SSE ingestion task；启用 secondary 后再追加 Binance BNB 与 Hyperliquid HYPE 两个 public WebSocket tasks，仍然只有一个 recorder/process/SQLite writer。source identity/错误状态独立。lifecycle 默认每 15 秒按十个固定 series 和 UTC close-time range 发现 previous/current/next；quote loop 每个 batch 后默认等待 2 秒。只有 `LIVE15_ENABLE_ROBINHOOD_REFERENCE=true` 才额外启动 Robinhood 参考任务。
 
 明确的 `end_time` 是训练 snapshot 的硬边界：`fetched_timestamp >= end_time` 的旧事件永不写入 `robinhood_snapshots`。如果旧事件结束而新事件尚未公开，recorder 进入可持久恢复的 `rollover_gap`，在 health/log 中报告 gap 开始时间和持续时间；它不会延长旧窗口、猜测下一事件或伪造 quote。上游页面继续返回旧事件的事实只写入隔离的 diagnostics 表。真正的新 event ID/contract ID 出现后才关闭 gap 并恢复正常记录。
 
@@ -296,7 +305,7 @@ snapshot 已评估的 finalized 数。snapshot 之后到达的事件显示为 `u
 - 所有 price、bid、ask、spread、size、volume 和 probability 均以 Decimal 原始字符串保存；绝不按 settlement rounding precision 截断。
 - SQLite 可直接被 pandas、Polars 或 DuckDB 查询，后续可批量导出 Parquet。JSONL 缺少可靠事务和索引；Parquet 更适合冷数据批量文件，不适合当前逐 tick append 和 crash recovery，因此两者均未用作热存储。
 
-数据库 metadata 和每一行都包含 `schema_version=5`。v1→v2→v3 的既有原子迁移保持不变；v3→v4 在单一事务中添加 Kalshi native quote、lifecycle、immutable settlement、conflict diagnostic 与 backfill cursor tables，并统一旧行版本。v4→v5 原子添加独立、bounded 的 `recorder_events` typed diagnostics table。任何检查失败都会 rollback；未知或未来版本会在修改 recorder tables 前明确拒绝。
+当前数据库 metadata 为 `schema_version=7`；历史 immutable rows 保留其原 schema version。v1→v5 迁移保持不变，v5→v6 原子新增 primary provider-neutral underlying table，v6→v7 原子新增独立 secondary table。任何检查失败都会 rollback；未知或未来版本会在修改 recorder tables 前明确拒绝。
 
 Kalshi settlement follow-up 偶尔会在已观察到 `settlement_pending` 或 finalized truth 后返回较旧的
 `closed`/`determined` representation。recorder 只对严格白名单的同 ticker、同 series、同 event、
@@ -326,7 +335,7 @@ settlement truth；不会写退化 lifecycle。身份/target 冲突、官方 YES
 
 ### Provider-neutral underlying schema
 
-表 `underlying_observations` 保存 asset、provider、symbol、exact feed ID、未量化 Decimal price、provider source timestamp、本地 receive timestamp、可选 confidence、freshness、provenance、predictive data role 与 schema version。唯一键按 provider/feed/publish-time/content 只抑制完全相同的更新；Pyth `publish_time` 为秒级，同一秒内不同 price/confidence 状态全部保留。不同 provider 永不混合。schema v5→v6 只新增表并保留旧 v5 raw row bytes，reader 明确兼容 v5/v6，避免长期库迁移时重写全部历史。
+表 `underlying_observations` 保存 primary asset/provider/symbol/exact feed ID/未量化 Decimal price/source timestamp/receive timestamp/confidence/freshness/provenance。schema v7 的 `secondary_underlying_observations` 另存 venue instrument、price semantics、可选 bid/ask、source/receive/persist timestamp、两段 latency、provenance 与 source event ID。不同 role/provider 永不混合；v5→v6 与 v6→v7 都只新增表，不重写旧 raw rows，reader 兼容 v5/v6/v7。
 
 ### Official prediction quote schema
 
@@ -378,6 +387,8 @@ with RecorderStore(Path("data/live15.sqlite3")) as store:
 | `LIVE15_PYTH_STREAM_READ_TIMEOUT_SECONDS` | `20`；idle connection bounded recovery |
 | `LIVE15_PYTH_REQUEST_BUDGET_PER_10_SECONDS` | `8`；必须在 `1..10` |
 | `LIVE15_RECORDER_PYTH_STALE_SECONDS` | `15` |
+| `LIVE15_ENABLE_SECONDARY_UNDERLYING` | `false` for manual CLI；Control Center managed recorder defaults `true` |
+| `LIVE15_RECORDER_SECONDARY_STALE_SECONDS` | `10` |
 | `LIVE15_FEATURE_STORE_PATH` | `data/features.sqlite3` |
 | `LIVE15_DATASET_DECISION_OFFSETS_SECONDS` | `840,720,600,480,300,180,120,60,30` |
 | `LIVE15_DATASET_QUOTE_MAX_AGE_SECONDS` | `15` |

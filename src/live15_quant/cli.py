@@ -51,6 +51,7 @@ from live15_quant.recorder_control import (
     RecorderPidLease,
     RecorderProcessController,
 )
+from live15_quant.secondary_diagnostics import build_secondary_diagnostics
 from live15_quant.storage import RecorderStore
 
 logger = logging.getLogger(__name__)
@@ -455,3 +456,19 @@ def latency_benchmark_main(argv: Sequence[str] | None = None) -> None:
         )
     report = asyncio.run(LowLatencyBenchmarkRunner(sources).run(arguments.seconds))
     print(json.dumps(report, indent=2, sort_keys=True))
+
+
+def secondary_diagnostics_main(argv: Sequence[str] | None = None) -> None:
+    """Print bounded primary/secondary divergence diagnostics without writing raw data."""
+
+    parser = argparse.ArgumentParser(prog="live15-secondary-diagnostics")
+    parser.add_argument("--minutes", type=float, default=5.0)
+    arguments = parser.parse_args(argv)
+    if not 0 < arguments.minutes <= 1440:
+        raise SystemExit("--minutes must be in (0, 1440]")
+    settings = load_settings()
+    report = build_secondary_diagnostics(
+        settings.recorder_data_path,
+        lookback=timedelta(minutes=arguments.minutes),
+    )
+    print(json.dumps([item.as_dict() for item in report], indent=2, sort_keys=True))

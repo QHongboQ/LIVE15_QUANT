@@ -87,6 +87,24 @@ class MarketResponse(StrictResponse):
     underlying_price: str | None = None
     underlying_age_seconds: float | None = None
     underlying_status: str
+    primary_provider: str | None = None
+    primary_age_seconds: float | None = None
+    secondary_provider: str | None = None
+    secondary_instrument: str | None = None
+    secondary_price: str | None = None
+    secondary_bid: str | None = None
+    secondary_ask: str | None = None
+    secondary_price_semantics: str | None = None
+    secondary_age_seconds: float | None = None
+    secondary_status: str = "not_applicable"
+    secondary_clock_skew: bool = False
+    secondary_source_timestamp: datetime | None = None
+    secondary_received_timestamp: datetime | None = None
+    secondary_persisted_timestamp: datetime | None = None
+    secondary_source_receive_latency_ms: str | None = None
+    secondary_receive_persist_latency_ms: str | None = None
+    primary_secondary_price_diff: str | None = None
+    primary_secondary_age_diff: float | None = None
     settlement_followup: str
     features: dict[str, dict[str, str | None]] = Field(default_factory=dict)
     previous_events: list[dict[str, str | None]] = Field(default_factory=list)

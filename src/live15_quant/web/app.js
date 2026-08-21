@@ -452,7 +452,10 @@ function renderDetail(route) {
   root.append(books, sectionHead("Underlying & leakage-safe features", "Existing FeatureEngine projection"));
   const featurePanel = node("div", "panel panel-body");
   const underlying = node("div", "metric-grid");
-  append(underlying, metric("Provider", valueOrDash(market.underlying_provider)), metric("Product", valueOrDash(market.underlying_product)), metric("Underlying price", marketPrice(market.underlying_price)), metric("Underlying age", age(market.underlying_age_seconds)), metric("Source status", market.underlying_status.toUpperCase()));
+  append(underlying, metric("Primary", valueOrDash(market.primary_provider || market.underlying_provider)), metric("Primary product", valueOrDash(market.underlying_product)), metric("Primary price", marketPrice(market.underlying_price)), metric("Primary age", age(market.primary_age_seconds ?? market.underlying_age_seconds)), metric("Primary status", market.underlying_status.toUpperCase()));
+  if (market.secondary_provider) {
+    append(underlying, metric("Secondary", valueOrDash(market.secondary_provider)), metric("Secondary instrument", valueOrDash(market.secondary_instrument)), metric("Secondary price", marketPrice(market.secondary_price)), metric("Secondary bid / ask", `${marketPrice(market.secondary_bid)} / ${marketPrice(market.secondary_ask)}`), metric("Secondary age", age(market.secondary_age_seconds)), metric("Secondary status", market.secondary_status.toUpperCase()), metric("Source clock", market.secondary_clock_skew ? "CLOCK SKEW · cross-clock latency invalid" : "ALIGNED"), metric("Secondary − primary", marketPrice(market.primary_secondary_price_diff)), metric("Age difference", age(market.primary_secondary_age_diff)), metric("Source → receive", market.secondary_source_receive_latency_ms === null ? "N/A" : `${market.secondary_source_receive_latency_ms} ms`), metric("Receive → persist", market.secondary_receive_persist_latency_ms === null ? "N/A" : `${market.secondary_receive_persist_latency_ms} ms`));
+  }
   featurePanel.append(underlying);
   const featureList = node("div", "feature-list");
   for (const [name, observation] of Object.entries(market.features || {})) {

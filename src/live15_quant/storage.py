@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -28,6 +29,8 @@ from live15_quant.models import (
     RecorderDiagnosticKind,
     RecorderEventSeverity,
     RecorderEventType,
+    SecondaryPriceSemantics,
+    SecondaryUnderlyingObservation,
     UnderlyingObservation,
     UnderlyingProvider,
 )
@@ -42,6 +45,7 @@ from live15_quant.records import (
     RecorderEventRecord,
     RobinhoodDiagnosticRecord,
     RobinhoodSnapshotRecord,
+    SecondaryUnderlyingObservationRecord,
     TrainingLabelExample,
     UnderlyingObservationRecord,
 )
@@ -73,9 +77,15 @@ class TrainingDataUnavailableError(RecorderStorageError):
 
 
 def _compatible_record_version(value: object) -> bool:
-    """v6 only adds a table; immutable v5 rows remain byte-for-byte valid."""
+    """v6/v7 only add tables; immutable v5 rows remain byte-for-byte valid."""
 
-    return value in {5, SCHEMA_VERSION}
+    return value in {5, 6, SCHEMA_VERSION}
+
+
+class SecondaryAppendStatus(StrEnum):
+    INSERTED = "inserted"
+    DUPLICATE = "duplicate"
+    OUT_OF_ORDER = "out_of_order"
 
 
 def _timestamp(value: datetime) -> str:
@@ -98,6 +108,12 @@ def _parse_timestamp(value: object, field: str) -> datetime:
 
 def _decimal(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
+
+
+def _duration_milliseconds(start: datetime, end: datetime) -> Decimal:
+    delta = end - start
+    microseconds = delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
+    return Decimal(microseconds) / Decimal(1000)
 
 
 def _parse_decimal(value: object, field: str, *, optional: bool = False) -> Decimal | None:
@@ -397,6 +413,36 @@ CREATE INDEX IF NOT EXISTS idx_underlying_asset_provider_replay
 ON underlying_observations(asset, provider, received_timestamp, id)
 """
 
+_SECONDARY_UNDERLYING_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS secondary_underlying_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version INTEGER NOT NULL,
+    asset TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    instrument TEXT NOT NULL,
+    price TEXT NOT NULL,
+    price_semantics TEXT NOT NULL,
+    bid TEXT,
+    ask TEXT,
+    source_timestamp TEXT NOT NULL,
+    received_timestamp TEXT NOT NULL,
+    persisted_timestamp TEXT,
+    source_receive_latency_ms TEXT NOT NULL,
+    receive_persist_latency_ms TEXT,
+    provenance TEXT NOT NULL,
+    freshness TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    data_role TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    UNIQUE(provider, instrument, source_event_id)
+) STRICT
+"""
+
+_SECONDARY_UNDERLYING_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_secondary_underlying_replay
+ON secondary_underlying_observations(asset, provider, received_timestamp, id)
+"""
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS recorder_metadata (
     key TEXT PRIMARY KEY,
@@ -484,6 +530,8 @@ ON coinbase_ticks(product, received_timestamp, id);
 {_RECORDER_EVENT_INDEX_SQL};
 {_UNDERLYING_TABLE_SQL};
 {_UNDERLYING_INDEX_SQL};
+{_SECONDARY_UNDERLYING_TABLE_SQL};
+{_SECONDARY_UNDERLYING_INDEX_SQL};
 """
 
 
@@ -554,8 +602,13 @@ class RecorderStore:
             row = self._connection.execute(
                 "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
             ).fetchone()
-        if row is not None and row["value"] == "5" and SCHEMA_VERSION == 6:
+        if row is not None and row["value"] == "5":
             self._migrate_v5_to_v6()
+            row = self._connection.execute(
+                "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        if row is not None and row["value"] == "6" and SCHEMA_VERSION == 7:
+            self._migrate_v6_to_v7()
             return
         raise RecorderStorageError(
             f"database schema {row['value']} is incompatible with {SCHEMA_VERSION}"
@@ -748,7 +801,23 @@ class RecorderStore:
             self._connection.execute(_UNDERLYING_INDEX_SQL)
             self._connection.execute(
                 "UPDATE recorder_metadata SET value=? WHERE key='schema_version'",
-                (str(SCHEMA_VERSION),),
+                ("6",),
+            )
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+
+    def _migrate_v6_to_v7(self) -> None:
+        """Atomically add secondary predictive observations without rewriting truth."""
+
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            self._connection.execute(_SECONDARY_UNDERLYING_TABLE_SQL)
+            self._connection.execute(_SECONDARY_UNDERLYING_INDEX_SQL)
+            self._connection.execute(
+                "UPDATE recorder_metadata SET value=? WHERE key='schema_version'",
+                ("7",),
             )
             self._connection.commit()
         except Exception:
@@ -949,6 +1018,93 @@ class RecorderStore:
         )
         self._connection.commit()
         return cursor.rowcount == 1
+
+    def append_secondary_underlying(
+        self, observation: SecondaryUnderlyingObservation
+    ) -> SecondaryAppendStatus:
+        """Append one venue-native secondary observation without blending primaries."""
+
+        source_timestamp = _timestamp(observation.source_timestamp)
+        received_timestamp = _timestamp(observation.received_timestamp)
+        immutable = (
+            observation.asset.value,
+            observation.provider.value,
+            observation.instrument,
+            _decimal(observation.price),
+            observation.price_semantics.value,
+            _decimal(observation.bid),
+            _decimal(observation.ask),
+            source_timestamp,
+            observation.source_event_id,
+            observation.role.value,
+        )
+        content_hash = _fingerprint(immutable)
+        existing = self._connection.execute(
+            """SELECT content_hash FROM secondary_underlying_observations
+            WHERE provider=? AND instrument=? AND source_event_id=?""",
+            (
+                observation.provider.value,
+                observation.instrument,
+                observation.source_event_id,
+            ),
+        ).fetchone()
+        if existing is not None:
+            if existing["content_hash"] != content_hash:
+                raise RecorderStorageError(
+                    "conflicting secondary observation for provider event identity"
+                )
+            return SecondaryAppendStatus.DUPLICATE
+        latest = self._connection.execute(
+            """SELECT source_timestamp FROM secondary_underlying_observations
+            WHERE provider=? AND instrument=?
+            ORDER BY source_timestamp DESC,id DESC LIMIT 1""",
+            (observation.provider.value, observation.instrument),
+        ).fetchone()
+        if latest is not None and source_timestamp < latest["source_timestamp"]:
+            return SecondaryAppendStatus.OUT_OF_ORDER
+
+        source_receive_ms = _duration_milliseconds(
+            observation.source_timestamp, observation.received_timestamp
+        )
+        started = time.perf_counter_ns()
+        cursor = self._connection.execute(
+            """INSERT INTO secondary_underlying_observations(
+                schema_version,asset,provider,instrument,price,price_semantics,bid,ask,
+                source_timestamp,received_timestamp,persisted_timestamp,
+                source_receive_latency_ms,receive_persist_latency_ms,provenance,
+                freshness,source_event_id,data_role,content_hash
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                SCHEMA_VERSION,
+                observation.asset.value,
+                observation.provider.value,
+                observation.instrument,
+                _decimal(observation.price),
+                observation.price_semantics.value,
+                _decimal(observation.bid),
+                _decimal(observation.ask),
+                source_timestamp,
+                received_timestamp,
+                None,
+                str(source_receive_ms),
+                None,
+                observation.provenance,
+                observation.freshness.value,
+                observation.source_event_id,
+                observation.role.value,
+                content_hash,
+            ),
+        )
+        self._connection.commit()
+        persisted = datetime.now(UTC)
+        persist_latency_ms = Decimal(time.perf_counter_ns() - started) / Decimal(1_000_000)
+        self._connection.execute(
+            """UPDATE secondary_underlying_observations
+            SET persisted_timestamp=?,receive_persist_latency_ms=? WHERE id=?""",
+            (_timestamp(persisted), str(persist_latency_ms), cursor.lastrowid),
+        )
+        self._connection.commit()
+        return SecondaryAppendStatus.INSERTED
 
     def append_prediction_quote(self, quote: PredictionMarketQuote) -> bool:
         """Append a changed official quote; suppress only consecutive identical states."""
@@ -1840,12 +1996,93 @@ class RecorderStore:
         for row in rows:
             yield self._underlying_record(row)
 
+    def latest_secondary_underlying(
+        self, asset: Asset, provider: UnderlyingProvider
+    ) -> SecondaryUnderlyingObservationRecord | None:
+        row = self._connection.execute(
+            """SELECT * FROM secondary_underlying_observations
+            WHERE asset=? AND provider=? ORDER BY received_timestamp DESC,id DESC LIMIT 1""",
+            (asset.value, provider.value),
+        ).fetchone()
+        return None if row is None else self._secondary_underlying_record(row)
+
+    def replay_secondary_underlying_range(
+        self,
+        asset: Asset,
+        provider: UnderlyingProvider,
+        *,
+        start: datetime,
+        end: datetime,
+    ) -> Iterator[SecondaryUnderlyingObservationRecord]:
+        if start.tzinfo is None or end.tzinfo is None or start > end:
+            raise ValueError("secondary range requires ordered aware timestamps")
+        rows = self._connection.execute(
+            """SELECT * FROM secondary_underlying_observations
+            WHERE asset=? AND provider=? AND received_timestamp>=? AND received_timestamp<=?
+            ORDER BY received_timestamp ASC,id ASC""",
+            (asset.value, provider.value, _timestamp(start), _timestamp(end)),
+        )
+        for row in rows:
+            yield self._secondary_underlying_record(row)
+
+    @staticmethod
+    def _secondary_underlying_record(
+        row: sqlite3.Row,
+    ) -> SecondaryUnderlyingObservationRecord:
+        try:
+            price = _parse_decimal(row["price"], "price")
+            bid = _parse_decimal(row["bid"], "bid", optional=True)
+            ask = _parse_decimal(row["ask"], "ask", optional=True)
+            source_receive = _parse_decimal(
+                row["source_receive_latency_ms"], "source_receive_latency_ms"
+            )
+            receive_persist = _parse_decimal(
+                row["receive_persist_latency_ms"],
+                "receive_persist_latency_ms",
+                optional=True,
+            )
+            persisted = (
+                _parse_timestamp(row["persisted_timestamp"], "persisted_timestamp")
+                if row["persisted_timestamp"] is not None
+                else None
+            )
+            if (
+                price is None
+                or source_receive is None
+                or not _compatible_record_version(row["schema_version"])
+            ):
+                raise RecorderStorageError("malformed secondary observation record")
+            return SecondaryUnderlyingObservationRecord(
+                row_id=int(row["id"]),
+                schema_version=int(row["schema_version"]),
+                asset=Asset(row["asset"]),
+                provider=UnderlyingProvider(row["provider"]),
+                instrument=str(row["instrument"]),
+                price=price,
+                price_semantics=SecondaryPriceSemantics(row["price_semantics"]),
+                bid=bid,
+                ask=ask,
+                source_timestamp=_parse_timestamp(row["source_timestamp"], "source_timestamp"),
+                received_timestamp=_parse_timestamp(
+                    row["received_timestamp"], "received_timestamp"
+                ),
+                persisted_timestamp=persisted,
+                source_receive_latency_ms=source_receive,
+                receive_persist_latency_ms=receive_persist,
+                provenance=str(row["provenance"]),
+                freshness=FreshnessState(row["freshness"]),
+                source_event_id=str(row["source_event_id"]),
+                role=DataRole(row["data_role"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise RecorderStorageError("malformed secondary observation record") from error
+
     @staticmethod
     def _underlying_record(row: sqlite3.Row) -> UnderlyingObservationRecord:
         try:
             price = _parse_decimal(row["price"], "price")
             confidence = _parse_decimal(row["confidence"], "confidence", optional=True)
-            if price is None or row["schema_version"] != SCHEMA_VERSION:
+            if price is None or not _compatible_record_version(row["schema_version"]):
                 raise RecorderStorageError("malformed underlying observation record")
             return UnderlyingObservationRecord(
                 row_id=int(row["id"]),
@@ -2299,6 +2536,7 @@ class RecorderStore:
             "kalshi_backfill_state",
             "recorder_events",
             "underlying_observations",
+            "secondary_underlying_observations",
         }:
             raise ValueError("unknown recorder table")
         row = self._connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
@@ -2316,6 +2554,7 @@ class RecorderStore:
                 "kalshi_prediction_quotes",
                 "coinbase_ticks",
                 "underlying_observations",
+                "secondary_underlying_observations",
                 "kalshi_settlements",
                 "kalshi_settlement_conflicts",
             )

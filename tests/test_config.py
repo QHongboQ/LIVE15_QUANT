@@ -36,6 +36,7 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.dataset_build_interval_seconds is None
     assert settings.recorder_max_backoff_seconds == 60
     assert settings.enable_pyth_underlying is False
+    assert settings.enable_secondary_underlying is False
     assert settings.pyth_api_key_path is None
     assert settings.pyth_hermes_base_url == PYTH_HERMES_BASE_URL
 
@@ -81,6 +82,8 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_PYTH_REST_FALLBACK_INTERVAL_SECONDS": "2.5",
             "LIVE15_PYTH_STREAM_READ_TIMEOUT_SECONDS": "22",
             "LIVE15_PYTH_REQUEST_BUDGET_PER_10_SECONDS": "7",
+            "LIVE15_ENABLE_SECONDARY_UNDERLYING": "true",
+            "LIVE15_RECORDER_SECONDARY_STALE_SECONDS": "6",
         }
     )
 
@@ -122,6 +125,8 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.enable_pyth_underlying is True
     assert settings.pyth_api_key_path == Path("C:/safe/pyth.key")
     assert settings.pyth_hermes_base_url == PYTH_HERMES_BASE_URL
+    assert settings.enable_secondary_underlying is True
+    assert settings.recorder_secondary_stale_seconds == 6
     assert settings.pyth_rest_fallback_interval_seconds == 2.5
     assert settings.pyth_stream_read_timeout_seconds == 22
     assert settings.pyth_request_budget_per_10_seconds == 7

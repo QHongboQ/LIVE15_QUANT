@@ -1,4 +1,4 @@
-"""Read-only official low-latency underlying streams used for isolated benchmarks."""
+"""Read-only official low-latency underlying streams and benchmark instrumentation."""
 
 from __future__ import annotations
 
@@ -265,17 +265,21 @@ class BinanceBnbBenchmarkSource:
                         except (TypeError, ValueError):
                             self.diagnostics.malformed_messages += 1
                             continue
-                        if payload.get("e") == "serverShutdown":
+                        if isinstance(payload, dict) and payload.get("e") == "serverShutdown":
                             break
                         parse_completed_monotonic_ns = self._monotonic_ns()
                         parse_completed = self._clock()
-                        tick = parse_binance_agg_trade(
-                            payload,
-                            socket_received=socket_received,
-                            parse_completed=parse_completed,
-                            socket_received_monotonic_ns=socket_received_monotonic_ns,
-                            parse_completed_monotonic_ns=parse_completed_monotonic_ns,
-                        )
+                        try:
+                            tick = parse_binance_agg_trade(
+                                payload,
+                                socket_received=socket_received,
+                                parse_completed=parse_completed,
+                                socket_received_monotonic_ns=socket_received_monotonic_ns,
+                                parse_completed_monotonic_ns=parse_completed_monotonic_ns,
+                            )
+                        except BenchmarkPayloadError:
+                            self.diagnostics.malformed_messages += 1
+                            continue
                         failures = 0
                         yield tick
                 if not self._closed:
@@ -353,13 +357,17 @@ class HyperliquidHypeBenchmarkSource:
                             continue
                         parse_completed_monotonic_ns = self._monotonic_ns()
                         parse_completed = self._clock()
-                        ticks = parse_hyperliquid_bbo(
-                            payload,
-                            socket_received=socket_received,
-                            parse_completed=parse_completed,
-                            socket_received_monotonic_ns=socket_received_monotonic_ns,
-                            parse_completed_monotonic_ns=parse_completed_monotonic_ns,
-                        )
+                        try:
+                            ticks = parse_hyperliquid_bbo(
+                                payload,
+                                socket_received=socket_received,
+                                parse_completed=parse_completed,
+                                socket_received_monotonic_ns=socket_received_monotonic_ns,
+                                parse_completed_monotonic_ns=parse_completed_monotonic_ns,
+                            )
+                        except BenchmarkPayloadError:
+                            self.diagnostics.malformed_messages += 1
+                            continue
                         if ticks:
                             failures = 0
                         for tick in ticks:
@@ -378,6 +386,14 @@ class HyperliquidHypeBenchmarkSource:
 
     async def close(self) -> None:
         self._closed = True
+
+
+class BinanceBnbPublicMarketDataSource(BinanceBnbBenchmarkSource):
+    """Production-named boundary for the same public, read-only Binance stream."""
+
+
+class HyperliquidHypePublicMarketDataSource(HyperliquidHypeBenchmarkSource):
+    """Production-named boundary for the same public, read-only Hyperliquid stream."""
 
 
 PYTH_PRO_FEEDS: Mapping[Asset, tuple[str, int, int]] = MappingProxyType(

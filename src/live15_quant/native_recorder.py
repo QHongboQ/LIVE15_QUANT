@@ -37,6 +37,12 @@ from live15_quant.providers.kalshi import (
     KalshiPublicApiError,
     KalshiTargetUnavailableError,
 )
+from live15_quant.providers.low_latency import (
+    BenchmarkPayloadError,
+    BenchmarkSource,
+    BinanceBnbPublicMarketDataSource,
+    HyperliquidHypePublicMarketDataSource,
+)
 from live15_quant.providers.pyth import (
     PYTH_FEEDS,
     PythFeedDemultiplexer,
@@ -48,10 +54,12 @@ from live15_quant.providers.pyth import (
 )
 from live15_quant.providers.robinhood_15min import Robinhood15MinuteProvider
 from live15_quant.records import KalshiMarketRecord
+from live15_quant.secondary import secondary_from_benchmark_tick
 from live15_quant.storage import (
     MarketIdentityConflictError,
     RecorderStorageError,
     RecorderStore,
+    SecondaryAppendStatus,
     SettlementConflictError,
 )
 
@@ -99,6 +107,9 @@ class KalshiNativeHealth:
     last_quotes: dict[Asset, datetime]
     last_coinbase: dict[str, datetime]
     last_additional_underlying: dict[Asset, datetime]
+    last_secondary_underlying: dict[str, datetime]
+    secondary_persist_latency_ms: dict[str, str]
+    secondary_diagnostics: dict[str, int]
     active_settlement_followups: int
     settlement_count: int
     database_bytes: int
@@ -149,6 +160,10 @@ class KalshiNativeHealth:
             "last_underlying_tick_age_seconds": ages(self.last_coinbase),
             "last_additional_underlying": timestamps(self.last_additional_underlying),
             "last_additional_underlying_age_seconds": ages(self.last_additional_underlying),
+            "last_secondary_underlying": timestamps(self.last_secondary_underlying),
+            "last_secondary_underlying_age_seconds": ages(self.last_secondary_underlying),
+            "secondary_persist_latency_ms": self.secondary_persist_latency_ms,
+            "secondary_diagnostics": self.secondary_diagnostics,
             "active_settlement_followups": self.active_settlement_followups,
             "settlement_count": self.settlement_count,
             "database_bytes": self.database_bytes,
@@ -177,6 +192,9 @@ class _MutableHealth:
     last_quotes: dict[Asset, datetime] = field(default_factory=dict)
     last_coinbase: dict[str, datetime] = field(default_factory=dict)
     last_additional_underlying: dict[Asset, datetime] = field(default_factory=dict)
+    last_secondary_underlying: dict[str, datetime] = field(default_factory=dict)
+    secondary_persist_latency_ms: dict[str, str] = field(default_factory=dict)
+    secondary_diagnostics: dict[str, int] = field(default_factory=dict)
     retry_counts: dict[str, int] = field(default_factory=dict)
     consecutive_failures: dict[str, int] = field(default_factory=dict)
     source_failures: dict[str, str] = field(default_factory=dict)
@@ -222,6 +240,7 @@ class KalshiNativeRecorder:
         coinbase_factory: Callable[[], TickStream] | None = None,
         robinhood_reference: RobinhoodReference | None = None,
         underlying_factory: Callable[[], UnderlyingSource] | None = None,
+        secondary_factories: dict[Asset, Callable[[], BenchmarkSource]] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._settings = settings
@@ -273,6 +292,10 @@ class KalshiNativeRecorder:
             lambda: CoinbaseWebSocketClient(settings, products=settings.products)
         )
         self._underlying_factory = underlying_factory or (lambda: PythHermesClient(settings))
+        self._secondary_factories = secondary_factories or {
+            Asset.BNB: BinanceBnbPublicMarketDataSource,
+            Asset.HYPE: HyperliquidHypePublicMarketDataSource,
+        }
         self._robinhood = robinhood_reference
         if settings.enable_robinhood_reference and self._robinhood is None:
             self._robinhood = Robinhood15MinuteProvider(settings)
@@ -354,6 +377,16 @@ class KalshiNativeRecorder:
                         > self._settings.recorder_pyth_stale_seconds
                     )
                 ]
+                + [
+                    f"secondary:{key}"
+                    for key in ("BNB:binance_spot", "HYPE:hyperliquid_perp")
+                    if self._settings.enable_secondary_underlying
+                    and (
+                        key not in self._health.last_secondary_underlying
+                        or (observed - self._health.last_secondary_underlying[key]).total_seconds()
+                        > self._settings.recorder_secondary_stale_seconds
+                    )
+                ]
             )
         )
         return KalshiNativeHealth(
@@ -369,6 +402,9 @@ class KalshiNativeRecorder:
             last_quotes=dict(self._health.last_quotes),
             last_coinbase=dict(self._health.last_coinbase),
             last_additional_underlying=dict(self._health.last_additional_underlying),
+            last_secondary_underlying=dict(self._health.last_secondary_underlying),
+            secondary_persist_latency_ms=dict(self._health.secondary_persist_latency_ms),
+            secondary_diagnostics=dict(self._health.secondary_diagnostics),
             active_settlement_followups=self._store.unsettled_kalshi_count(now=observed),
             settlement_count=self._health.row_counts["kalshi_settlements"],
             database_bytes=database_bytes,
@@ -394,6 +430,14 @@ class KalshiNativeRecorder:
         ]
         if self._settings.enable_pyth_underlying:
             tasks.append(asyncio.create_task(self._record_pyth(), name="pyth-predictive"))
+        if self._settings.enable_secondary_underlying:
+            tasks.extend(
+                asyncio.create_task(
+                    self._record_secondary(asset),
+                    name=f"secondary-{asset.value.lower()}",
+                )
+                for asset in (Asset.BNB, Asset.HYPE)
+            )
         for asset in KALSHI_15MIN_SERIES:
             tasks.extend(
                 (
@@ -932,6 +976,90 @@ class KalshiNativeRecorder:
                 observation.source_timestamp
             )
             self._source_ok(f"pyth:{observation.asset.value}")
+
+    async def _record_secondary(self, asset: Asset) -> None:
+        """Persist one isolated venue-native secondary stream in the same recorder."""
+
+        factory = self._secondary_factories[asset]
+        failures = 0
+        completed_reconnects = 0
+        completed_malformed = 0
+        while not self._stop_event.is_set():
+            source = factory()
+            key = f"secondary:{asset.value}"
+            try:
+                async for tick in source.ticks():
+                    self._health.secondary_diagnostics[f"{asset.value}:reconnects"] = (
+                        completed_reconnects + source.diagnostics.reconnects
+                    )
+                    self._health.secondary_diagnostics[f"{asset.value}:malformed"] = (
+                        completed_malformed + source.diagnostics.malformed_messages
+                    )
+                    observation = secondary_from_benchmark_tick(
+                        tick,
+                        max_source_age_seconds=self._settings.recorder_secondary_stale_seconds,
+                    )
+                    if observation.asset is not asset:
+                        raise ValueError("secondary source returned another asset")
+                    status = self._store.append_secondary_underlying(observation)
+                    health_key = f"{asset.value}:{observation.provider.value}"
+                    if status is SecondaryAppendStatus.INSERTED:
+                        self._wrote("secondary_underlying_observations")
+                        stored = self._store.latest_secondary_underlying(
+                            asset, observation.provider
+                        )
+                        if stored is not None and stored.receive_persist_latency_ms is not None:
+                            self._health.secondary_persist_latency_ms[health_key] = str(
+                                stored.receive_persist_latency_ms
+                            )
+                    elif status is SecondaryAppendStatus.DUPLICATE:
+                        self._increment_secondary_diagnostic(asset, "duplicates")
+                        self._source_ok(key)
+                        continue
+                    elif status is SecondaryAppendStatus.OUT_OF_ORDER:
+                        self._increment_secondary_diagnostic(asset, "out_of_order")
+                        self._source_failed(key, ValueError("out-of-order source observation"))
+                        continue
+                    self._health.last_secondary_underlying[health_key] = (
+                        observation.received_timestamp
+                    )
+                    self._source_ok(key)
+                    failures = 0
+                    if self._stop_event.is_set():
+                        return
+                if not self._stop_event.is_set():
+                    raise ConnectionError("secondary source stream ended")
+            except asyncio.CancelledError:
+                raise
+            except RecorderStorageError:
+                raise
+            except (
+                BenchmarkPayloadError,
+                ConnectionError,
+                OSError,
+                TimeoutError,
+                ValueError,
+            ) as error:
+                self._source_failed(key, error)
+            finally:
+                completed_reconnects += source.diagnostics.reconnects
+                completed_malformed += source.diagnostics.malformed_messages
+                self._health.secondary_diagnostics[f"{asset.value}:reconnects"] = (
+                    completed_reconnects
+                )
+                self._health.secondary_diagnostics[f"{asset.value}:malformed"] = completed_malformed
+                await source.close()
+            failures += 1
+            delay = min(
+                self._settings.recorder_max_backoff_seconds,
+                self._settings.reconnect_delay_seconds * (2 ** min(failures - 1, 8)),
+            )
+            if await self._wait(delay):
+                return
+
+    def _increment_secondary_diagnostic(self, asset: Asset, name: str) -> None:
+        key = f"{asset.value}:{name}"
+        self._health.secondary_diagnostics[key] = self._health.secondary_diagnostics.get(key, 0) + 1
 
     async def _record_robinhood_reference(self) -> None:
         assert self._robinhood is not None

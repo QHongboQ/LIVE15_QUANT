@@ -50,6 +50,8 @@ class Settings:
     pyth_stream_read_timeout_seconds: float = 20.0
     pyth_request_budget_per_10_seconds: int = 8
     recorder_pyth_stale_seconds: float = 15.0
+    enable_secondary_underlying: bool = False
+    recorder_secondary_stale_seconds: float = 10.0
     native_discovery_poll_interval_seconds: float = 15.0
     settlement_followup_interval_seconds: float = 15.0
     settlement_followup_batch_size: int = 25
@@ -295,6 +297,16 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         ),
         recorder_pyth_stale_seconds=_positive_float(
             source, "LIVE15_RECORDER_PYTH_STALE_SECONDS", defaults.recorder_pyth_stale_seconds
+        ),
+        enable_secondary_underlying=_boolean(
+            source,
+            "LIVE15_ENABLE_SECONDARY_UNDERLYING",
+            defaults.enable_secondary_underlying,
+        ),
+        recorder_secondary_stale_seconds=_positive_float(
+            source,
+            "LIVE15_RECORDER_SECONDARY_STALE_SECONDS",
+            defaults.recorder_secondary_stale_seconds,
         ),
         native_discovery_poll_interval_seconds=_positive_float(
             source,

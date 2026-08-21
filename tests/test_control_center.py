@@ -28,8 +28,10 @@ from live15_quant.models import (
     UnderlyingProvider,
 )
 from live15_quant.recorder_control import ManagedRecorderState, RecorderControlStatus
+from live15_quant.secondary import secondary_from_benchmark_tick
 from live15_quant.storage import RecorderStore
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
+from tests.test_secondary_underlying import bnb_tick
 
 
 def settings(tmp_path: Path, **overrides: object) -> Settings:
@@ -258,6 +260,68 @@ async def test_pyth_underlying_uses_configured_stale_threshold(tmp_path: Path) -
 
     assert payload["underlying_provider"] == "pyth_hermes"
     assert payload["underlying_status"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_bnb_detail_keeps_pyth_primary_and_exposes_binance_secondary(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    market = provider().parse_market(Asset.BNB, raw_market(Asset.BNB), NOW)
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_kalshi_market(market)
+        store.append_underlying(
+            UnderlyingObservation(
+                asset=Asset.BNB,
+                provider=UnderlyingProvider.PYTH_HERMES,
+                symbol="Crypto.BNB/USD",
+                feed_id="bnb-feed",
+                price=Decimal("870"),
+                source_timestamp=NOW,
+                received_timestamp=NOW,
+                confidence=None,
+                provenance="official-pyth",
+                freshness=FreshnessState.FRESH,
+            )
+        )
+        store.append_secondary_underlying(
+            secondary_from_benchmark_tick(
+                bnb_tick(source=NOW, received=NOW), max_source_age_seconds=10
+            )
+        )
+    write_health(configured.recorder_health_path, current_markets={"BNB": market.ticker})
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        payload = (await client.get("/api/markets/BNB")).json()
+
+    assert payload["primary_provider"] == "pyth_hermes"
+    assert payload["underlying_price"] == "870"
+    assert payload["secondary_provider"] == "binance_spot"
+    assert payload["secondary_price"] == "871.123456789"
+    assert payload["primary_secondary_price_diff"] == "1.123456789"
+    assert payload["secondary_status"] == "healthy"
+    assert payload["secondary_clock_skew"] is False
+
+
+@pytest.mark.asyncio
+async def test_secondary_clock_skew_does_not_make_receive_fresh_data_stale(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    market = provider().parse_market(Asset.BNB, raw_market(Asset.BNB), NOW)
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_kalshi_market(market)
+        store.append_secondary_underlying(
+            secondary_from_benchmark_tick(
+                bnb_tick(source=NOW, received=NOW - timedelta(milliseconds=75)),
+                max_source_age_seconds=10,
+            )
+        )
+    write_health(configured.recorder_health_path, current_markets={"BNB": market.ticker})
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        payload = (await client.get("/api/markets/BNB")).json()
+
+    assert payload["secondary_status"] == "healthy"
+    assert payload["secondary_clock_skew"] is True
 
 
 def test_health_ticker_cannot_cross_asset_boundary(tmp_path: Path) -> None:
@@ -492,6 +556,8 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
     assert "recorder_state" in script
     assert "quote_status" in script
     assert "underlying_status" in script
+    assert "Secondary \N{MINUS SIGN} primary" in script
+    assert "secondary_source_receive_latency_ms" in script
     assert "Exact source" in script
     assert "eventFilters" in script
     assert "await pending.catch" in script
