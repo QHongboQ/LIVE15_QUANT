@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
+import live15_quant.storage as storage_module
 from live15_quant.dataset import (
     DATASET_VERSION,
     DatasetBuildConfig,
@@ -36,7 +38,11 @@ from live15_quant.splits import (
     chronological_split,
     walk_forward_splits,
 )
-from live15_quant.storage import RecorderStorageError, RecorderStore
+from live15_quant.storage import (
+    ActiveRecorderAnalysisError,
+    RecorderStorageError,
+    RecorderStore,
+)
 from tests.test_kalshi_lifecycle import provider, quote, raw_market
 
 BASE = datetime(2026, 8, 20, 10, 0, tzinfo=UTC)
@@ -144,6 +150,24 @@ def test_multiple_decisions_pooled_and_per_asset_builds(tmp_path) -> None:
         assert destination.coverage_by_asset(pooled.build_id)[Asset.BTC] == (1, 2)
         assert destination.coverage_by_asset(pooled.build_id)[Asset.ETH] == (0, 0)
         assert source.settlement_counts_by_asset()[Asset.BTC] == 1
+        settlement_snapshot = source.training_source_snapshot()["kalshi_settlements"]
+        assert isinstance(settlement_snapshot, dict)
+        assert settlement_snapshot["counts_by_asset"]["BTC"] == 1
+
+
+def test_schema_v8_backfills_missing_bounded_settlement_summary(tmp_path) -> None:
+    """An early draft v8 database is repaired once at open, never by UI polling."""
+
+    path = tmp_path / "draft-v8.sqlite3"
+    with RecorderStore(path) as source:
+        add_event(source, BASE, result="yes")
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE kalshi_settlement_counts")
+    connection.commit()
+    connection.close()
+
+    with RecorderStore(path) as reopened:
+        assert reopened.settlement_counts_by_asset()[Asset.BTC] == 1
 
 
 def test_dataset_builder_uses_pyth_underlying_for_non_coinbase_asset(tmp_path) -> None:
@@ -485,3 +509,12 @@ def test_offline_engine_matches_raw_join_build_and_feature_store_replay(tmp_path
     assert replayed.features == offline
     assert replayed.target == joined.market.target
     assert replayed.label == joined.label.result
+
+
+def test_dataset_analysis_refuses_active_writer_database(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "raw.sqlite3"
+    (tmp_path / "recorder.pid").write_text("12345\n", encoding="ascii")
+    monkeypatch.setattr(storage_module, "process_alive", lambda pid: pid == 12345)
+    with RecorderStore(path) as source:
+        with pytest.raises(ActiveRecorderAnalysisError, match="read-only snapshot"):
+            source.training_source_snapshot()

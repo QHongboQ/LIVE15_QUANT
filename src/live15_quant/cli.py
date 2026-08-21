@@ -6,9 +6,11 @@ import argparse
 import asyncio
 import json
 import logging
+import tempfile
 import time
 from collections.abc import Sequence
 from datetime import timedelta
+from pathlib import Path
 
 import requests
 
@@ -45,7 +47,7 @@ from live15_quant.providers.low_latency import (
     PythProBenchmarkSource,
 )
 from live15_quant.providers.pyth import PythHermesClient
-from live15_quant.readiness import build_readiness_report, write_report_atomic
+from live15_quant.readiness import build_readiness_report, snapshot_database, write_report_atomic
 from live15_quant.recorder_control import (
     ManagedRecorderState,
     RecorderPidLease,
@@ -320,14 +322,19 @@ def kalshi_demo_audit_main() -> None:
     )
 
 
-def _build_dataset(settings: Settings) -> DatasetBuildSummary:
+def _build_dataset(settings: Settings, *, source_path: Path | None = None) -> DatasetBuildSummary:
+    if source_path is None:
+        with tempfile.TemporaryDirectory(prefix="live15-dataset-") as directory:
+            snapshot = Path(directory) / "raw.sqlite3"
+            snapshot_database(settings.recorder_data_path, snapshot)
+            return _build_dataset(settings, source_path=snapshot)
     policy = SamplingPolicy(
         tuple(timedelta(seconds=value) for value in settings.dataset_decision_offsets_seconds),
         quote_max_age=timedelta(seconds=settings.dataset_quote_max_age_seconds),
         underlying_max_age=timedelta(seconds=settings.dataset_underlying_max_age_seconds),
     )
     with (
-        RecorderStore(settings.recorder_data_path) as source,
+        RecorderStore(source_path) as source,
         FeatureStore(settings.feature_store_path) as destination,
     ):
         return DatasetBuilder(source, destination).build(DatasetBuildConfig(policy))
@@ -362,15 +369,18 @@ def coverage_main(argv: Sequence[str] | None = None) -> None:
     _parse_no_args("live15-coverage", coverage_main.__doc__ or "", argv)
     settings = load_settings()
     configure_logging(settings.log_level)
-    summary = _build_dataset(settings)
-    with (
-        RecorderStore(settings.recorder_data_path) as source,
-        FeatureStore(settings.feature_store_path) as destination,
-    ):
-        finalized = source.count("kalshi_settlements")
-        finalized_by_asset = source.settlement_counts_by_asset()
-        trainable_by_asset = destination.coverage_by_asset(summary.build_id)
-        integrity = source.integrity_check()
+    with tempfile.TemporaryDirectory(prefix="live15-coverage-") as directory:
+        snapshot = Path(directory) / "raw.sqlite3"
+        snapshot_database(settings.recorder_data_path, snapshot)
+        summary = _build_dataset(settings, source_path=snapshot)
+        with (
+            RecorderStore(snapshot) as source,
+            FeatureStore(settings.feature_store_path) as destination,
+        ):
+            finalized = source.count("kalshi_settlements")
+            finalized_by_asset = source.settlement_counts_by_asset()
+            trainable_by_asset = destination.coverage_by_asset(summary.build_id)
+            integrity = source.integrity_check()
     print(
         json.dumps(
             {

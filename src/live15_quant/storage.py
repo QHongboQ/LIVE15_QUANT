@@ -45,6 +45,7 @@ from live15_quant.models import (
     UnderlyingObservation,
     UnderlyingProvider,
 )
+from live15_quant.recorder_control import process_alive
 from live15_quant.records import (
     SCHEMA_VERSION,
     CoinbaseTickRecord,
@@ -66,6 +67,10 @@ from live15_quant.records import (
 
 class RecorderStorageError(RuntimeError):
     """Raised when persisted recorder data is invalid or incompatible."""
+
+
+class ActiveRecorderAnalysisError(RecorderStorageError):
+    """An unbounded analysis was attempted against the active writer database."""
 
 
 class SettlementConflictError(RecorderStorageError):
@@ -316,6 +321,13 @@ CREATE INDEX IF NOT EXISTS idx_kalshi_settlement_asset_cursor
 ON kalshi_settlements(asset, settlement_timestamp, id)
 """
 
+_KALSHI_SETTLEMENT_COUNT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS kalshi_settlement_counts (
+    asset TEXT PRIMARY KEY,
+    count INTEGER NOT NULL CHECK (count >= 0)
+) STRICT
+"""
+
 _KALSHI_NATIVE_QUOTE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS kalshi_prediction_quotes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -424,6 +436,11 @@ CREATE TABLE IF NOT EXISTS underlying_observations (
 _UNDERLYING_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_underlying_asset_provider_replay
 ON underlying_observations(asset, provider, received_timestamp, id)
+"""
+
+_SECONDARY_UNDERLYING_LATEST_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_secondary_underlying_latest_source
+ON secondary_underlying_observations(provider, instrument, source_timestamp DESC, id DESC)
 """
 
 _SECONDARY_UNDERLYING_TABLE_SQL = """
@@ -599,6 +616,7 @@ ON coinbase_ticks(product, received_timestamp, id);
 {_KALSHI_SETTLEMENT_TABLE_SQL};
 {_KALSHI_SETTLEMENT_INDEX_SQL};
 {_KALSHI_SETTLEMENT_ASSET_INDEX_SQL};
+{_KALSHI_SETTLEMENT_COUNT_TABLE_SQL};
 {_KALSHI_NATIVE_QUOTE_TABLE_SQL};
 {_KALSHI_NATIVE_QUOTE_INDEX_SQL};
 {_KALSHI_NATIVE_QUOTE_ASSET_INDEX_SQL};
@@ -610,6 +628,7 @@ ON coinbase_ticks(product, received_timestamp, id);
 {_UNDERLYING_INDEX_SQL};
 {_SECONDARY_UNDERLYING_TABLE_SQL};
 {_SECONDARY_UNDERLYING_INDEX_SQL};
+{_SECONDARY_UNDERLYING_LATEST_INDEX_SQL};
 {_KALSHI_WS_EVENT_TABLE_SQL};
 {_KALSHI_WS_EVENT_INDEX_SQL};
 {_KALSHI_WS_EVENT_TICKER_INDEX_SQL};
@@ -717,8 +736,17 @@ class RecorderStore:
             raise
 
     def _ensure_schema_objects(self) -> None:
+        settlement_counts_exist = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kalshi_settlement_counts'"
+        ).fetchone()
         try:
-            self._connection.executescript(f"BEGIN IMMEDIATE;\n{_SCHEMA}\nCOMMIT;")
+            self._connection.executescript(f"BEGIN IMMEDIATE;\n{_SCHEMA}")
+            if settlement_counts_exist is None:
+                self._connection.execute(
+                    """INSERT INTO kalshi_settlement_counts(asset,count)
+                    SELECT asset,COUNT(*) FROM kalshi_settlements GROUP BY asset"""
+                )
+            self._connection.commit()
         except Exception:
             self._connection.rollback()
             raise
@@ -904,6 +932,7 @@ class RecorderStore:
             self._connection.execute("BEGIN IMMEDIATE")
             self._connection.execute(_SECONDARY_UNDERLYING_TABLE_SQL)
             self._connection.execute(_SECONDARY_UNDERLYING_INDEX_SQL)
+            self._connection.execute(_SECONDARY_UNDERLYING_LATEST_INDEX_SQL)
             self._connection.execute(
                 "UPDATE recorder_metadata SET value=? WHERE key='schema_version'",
                 ("7",),
@@ -1675,6 +1704,11 @@ class RecorderStore:
                 content_hash,
             ),
         )
+        self._connection.execute(
+            """INSERT INTO kalshi_settlement_counts(asset,count) VALUES (?,1)
+            ON CONFLICT(asset) DO UPDATE SET count=count+1""",
+            (truth.asset.value,),
+        )
         self._connection.commit()
         return True
 
@@ -2004,11 +2038,19 @@ class RecorderStore:
 
     def settlement_counts_by_asset(self) -> dict[Asset, int]:
         counts = {asset: 0 for asset in Asset}
-        for row in self._connection.execute(
-            "SELECT asset, COUNT(*) AS count FROM kalshi_settlements GROUP BY asset"
-        ):
+        for row in self._connection.execute("SELECT asset, count FROM kalshi_settlement_counts"):
             counts[Asset(row["asset"])] = int(row["count"])
         return counts
+
+    def has_kalshi_settlement(self, ticker: str) -> bool:
+        """Use the unique ticker index for constant-time recorder bookkeeping."""
+
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM kalshi_settlements WHERE ticker=? LIMIT 1", (ticker,)
+            ).fetchone()
+            is not None
+        )
 
     def replay_kalshi_settlements(
         self, *, series: str | None = None, max_row_id: int | None = None
@@ -2991,6 +3033,16 @@ class RecorderStore:
     def training_source_snapshot(self) -> dict[str, object]:
         """Return path-free immutable row boundaries for a reproducible dataset build."""
 
+        pid_path = self.path.parent / "recorder.pid"
+        try:
+            pid = int(pid_path.read_text(encoding="ascii").strip())
+        except (FileNotFoundError, OSError, ValueError):
+            pid = None
+        if pid is not None and process_alive(pid):
+            raise ActiveRecorderAnalysisError(
+                "dataset analysis requires a read-only snapshot while recorder is active"
+            )
+
         tables = (
             "coinbase_ticks",
             "underlying_observations",
@@ -3016,6 +3068,11 @@ class RecorderStore:
                 "max_id": int(row["max_id"]),
                 "content_sha256": digest.hexdigest(),
             }
+        settlement_snapshot = snapshot["kalshi_settlements"]
+        assert isinstance(settlement_snapshot, dict)
+        settlement_snapshot["counts_by_asset"] = {
+            asset.value: count for asset, count in self.settlement_counts_by_asset().items()
+        }
         return snapshot
 
     def integrity_check(self) -> str:
@@ -3023,7 +3080,11 @@ class RecorderStore:
         return "missing_result" if row is None else str(row[0])
 
     def quick_check(self) -> str:
-        """Run SQLite's bounded-error structural check for periodic health monitoring."""
+        """Run SQLite's full structural scan, returning at most one error row.
+
+        This is appropriate at startup or on an offline snapshot, never as a
+        periodic operation on the active recorder event loop.
+        """
 
         row = self._connection.execute("PRAGMA quick_check(1)").fetchone()
         return "missing_result" if row is None else str(row[0])

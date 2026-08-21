@@ -86,6 +86,27 @@ class OneTickStream:
         await asyncio.sleep(60)
 
 
+class BufferedCoinbaseStream:
+    """A receive backlog that does not naturally suspend between ticks."""
+
+    def __init__(self) -> None:
+        self.drained = asyncio.Event()
+
+    async def ticks(self):
+        for offset in range(100):
+            observed = NOW + timedelta(microseconds=offset)
+            yield MarketTick(
+                symbol="BTC-USD",
+                price=Decimal("69541.123456789"),
+                bid=Decimal("69541.12"),
+                ask=Decimal("69541.13"),
+                received_at=observed,
+                exchange_time=observed - timedelta(milliseconds=1),
+            )
+        self.drained.set()
+        await asyncio.Event().wait()
+
+
 class FailingRobinhood:
     def __init__(self) -> None:
         self.calls = 0
@@ -245,6 +266,30 @@ def test_robinhood_disabled_core_records_lifecycle_and_coinbase(tmp_path) -> Non
     assert reference.calls == 0
     assert fake_discovery.calls >= 1
     assert quotes.calls >= 1
+
+
+@pytest.mark.asyncio
+async def test_buffered_coinbase_yields_to_other_recorder_workers(tmp_path) -> None:
+    """A backlogged exchange socket must not monopolize the shared event loop."""
+
+    with RecorderStore(tmp_path / "coinbase-fairness.sqlite3") as store:
+        source = BufferedCoinbaseStream()
+        recorder = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=lambda: source,
+            now=lambda: NOW,
+        )
+        task = asyncio.create_task(recorder._record_coinbase())
+        await asyncio.sleep(0)
+        assert store.count("coinbase_ticks") == 1
+        await asyncio.wait_for(source.drained.wait(), 1)
+        assert store.count("coinbase_ticks") == 100
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 def test_robinhood_reference_failure_never_blocks_kalshi_core(tmp_path) -> None:
@@ -900,6 +945,75 @@ def test_periodic_dataset_failure_does_not_terminate_scheduler(monkeypatch) -> N
             await task
 
     asyncio.run(scenario())
+
+
+@pytest.mark.asyncio
+async def test_health_reports_worker_progress_and_event_loop_lag(tmp_path, monkeypatch) -> None:
+    monotonic_values = iter((0.0, 0.025))
+    with RecorderStore(tmp_path / "worker-health.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                recorder_health_interval_seconds=0.01,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+            monotonic=lambda: next(monotonic_values),
+        )
+        recorder._worker_advanced("coinbase", NOW)
+        waits = iter((False, True))
+
+        async def controlled_wait(_seconds: float) -> bool:
+            return next(waits)
+
+        monkeypatch.setattr(recorder, "_wait", controlled_wait)
+        await recorder._report_health()
+        payload = json.loads((tmp_path / "health.json").read_text(encoding="utf-8"))
+        assert payload["worker_progress"]["coinbase"] == NOW.isoformat()
+        assert payload["event_loop_lag_seconds"] == pytest.approx(0.015)
+        assert "kalshi_discovery:BTC" in payload["stale_workers"]
+
+
+@pytest.mark.asyncio
+async def test_periodic_checkpoint_never_runs_full_database_quick_check(
+    tmp_path, monkeypatch
+) -> None:
+    """Live maintenance is bounded; structural scans belong to startup/snapshots."""
+
+    with RecorderStore(tmp_path / "bounded-checkpoint.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                recorder_checkpoint_interval_seconds=60,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        checkpoint_called = asyncio.Event()
+        original_checkpoint = store.checkpoint
+
+        def bounded_checkpoint() -> tuple[int, int, int]:
+            result = original_checkpoint()
+            checkpoint_called.set()
+            recorder.request_stop()
+            return result
+
+        monkeypatch.setattr(store, "checkpoint", bounded_checkpoint)
+
+        def forbidden_scan() -> str:
+            raise AssertionError("periodic maintenance attempted a full database scan")
+
+        monkeypatch.setattr(store, "quick_check", forbidden_scan)
+        await asyncio.wait_for(recorder._checkpoint(), 1)
+        assert checkpoint_called.is_set()
 
 
 def test_v3_to_v4_migration_failure_rolls_back(tmp_path) -> None:

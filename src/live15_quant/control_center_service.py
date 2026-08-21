@@ -89,6 +89,10 @@ class ControlCenterService:
                 retry_counts=self._int_map(raw.get("retry_counts")),
                 source_failures=self._string_map(raw.get("source_failures")),
                 stale_sources=self._string_list(raw.get("stale_sources")),
+                worker_progress=self._datetime_map(raw.get("worker_progress")),
+                worker_progress_age_seconds=self._float_map(raw.get("worker_progress_age_seconds")),
+                stale_workers=self._string_list(raw.get("stale_workers")),
+                event_loop_lag_seconds=self._optional_float(raw.get("event_loop_lag_seconds")),
                 fatal_task=self._optional_string(raw.get("fatal_task")),
                 fatal_error_type=self._optional_string(raw.get("fatal_error_type")),
             )
@@ -226,6 +230,36 @@ class ControlCenterService:
         if isinstance(value, int | float) and not isinstance(value, bool):
             return float(value)
         return None
+
+    @staticmethod
+    def _float_map(value: object) -> dict[str, float]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, float] = {}
+        for key, item in value.items():
+            if (
+                isinstance(key, str)
+                and isinstance(item, (int, float))
+                and not isinstance(item, bool)
+            ):
+                result[key] = float(item)
+        return result
+
+    @staticmethod
+    def _datetime_map(value: object) -> dict[str, datetime]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, datetime] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not isinstance(item, str):
+                continue
+            try:
+                parsed = datetime.fromisoformat(item)
+            except ValueError:
+                continue
+            if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                result[key] = parsed.astimezone(UTC)
+        return result
 
     @staticmethod
     def _optional_string(value: object) -> str | None:

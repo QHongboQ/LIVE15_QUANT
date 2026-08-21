@@ -5,12 +5,16 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from live15_quant.models import Asset, FreshnessState, UnderlyingObservation, UnderlyingProvider
 from live15_quant.readiness import (
     ReadinessStatus,
+    SnapshotTimeoutError,
     _live_source_ready_by_asset,
     _quality,
     _readiness_status,
+    _windowed_coverage,
     snapshot_database,
 )
 from live15_quant.storage import RecorderStore
@@ -42,6 +46,37 @@ def test_snapshot_database_is_consistent_and_does_not_modify_source(tmp_path: Pa
     with sqlite3.connect(destination) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("SELECT COUNT(*) FROM underlying_observations").fetchone()[0] == 1
+
+
+def test_snapshot_database_deadline_cleans_partial_destination(tmp_path: Path) -> None:
+    source = tmp_path / "raw.sqlite3"
+    destination = tmp_path / "partial.sqlite3"
+    with RecorderStore(source):
+        pass
+    with pytest.raises(SnapshotTimeoutError):
+        snapshot_database(source, destination, max_seconds=1e-12, pages_per_step=1)
+    assert not destination.exists()
+
+
+def test_windowed_coverage_preserves_real_gap_and_boundary_outage() -> None:
+    windows = _windowed_coverage(
+        iter(
+            (
+                NOW - timedelta(minutes=59),
+                NOW - timedelta(minutes=58, seconds=50),
+                NOW - timedelta(minutes=30),
+                NOW - timedelta(seconds=5),
+            )
+        ),
+        snapshot_at=NOW,
+        bucket_seconds=10,
+        stale_seconds=15,
+    )
+    one_hour = windows["1h"]
+    assert one_hour.observations == 4
+    assert one_hour.coverage_percent > 0
+    assert one_hour.stale_free_coverage_percent < 5
+    assert one_hour.max_continuous_gap_seconds == 1795
 
 
 def test_quality_reports_gaps_duplicates_order_and_clock_skew_without_repairing() -> None:

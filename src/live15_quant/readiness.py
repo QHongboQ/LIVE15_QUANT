@@ -6,7 +6,9 @@ import json
 import math
 import sqlite3
 import tempfile
+import time
 from collections import Counter, defaultdict
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -46,15 +48,243 @@ class SourceQuality:
     stale_duration_seconds: float
 
 
-def snapshot_database(source: Path, destination: Path) -> None:
-    """Take a transactionally consistent read-only SQLite backup."""
+@dataclass(frozen=True, slots=True)
+class SourceWindowCoverage:
+    observations: int
+    coverage_percent: float
+    stale_free_coverage_percent: float
+    max_continuous_gap_seconds: float
+    first_received_timestamp: str | None
+    last_received_timestamp: str | None
+
+
+_OBSERVABILITY_WINDOWS = {
+    "1h": timedelta(hours=1),
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+}
+
+
+def _windowed_coverage(
+    timestamps: Iterator[datetime],
+    *,
+    snapshot_at: datetime,
+    bucket_seconds: float,
+    stale_seconds: float,
+) -> dict[str, SourceWindowCoverage]:
+    if bucket_seconds <= 0 or stale_seconds <= 0:
+        raise ValueError("coverage bucket and stale threshold must be positive")
+    states = {
+        label: {
+            "start": snapshot_at - duration,
+            "first": None,
+            "last": None,
+            "previous": None,
+            "observations": 0,
+            "buckets": set(),
+            "stale_free_seconds": 0.0,
+            "max_internal_gap": 0.0,
+        }
+        for label, duration in _OBSERVABILITY_WINDOWS.items()
+    }
+    earliest = snapshot_at - max(_OBSERVABILITY_WINDOWS.values())
+    for received in timestamps:
+        received = received.astimezone(UTC)
+        if received < earliest or received > snapshot_at:
+            continue
+        for state in states.values():
+            start = state["start"]
+            assert isinstance(start, datetime)
+            if received < start:
+                continue
+            previous = state["previous"]
+            if isinstance(previous, datetime):
+                gap = max(0.0, (received - previous).total_seconds())
+                state["stale_free_seconds"] = float(state["stale_free_seconds"]) + min(
+                    gap, stale_seconds
+                )
+                state["max_internal_gap"] = max(float(state["max_internal_gap"]), gap)
+            else:
+                state["first"] = received
+            state["previous"] = received
+            state["last"] = received
+            state["observations"] = int(state["observations"]) + 1
+            bucket = int((received - start).total_seconds() // bucket_seconds)
+            buckets = state["buckets"]
+            assert isinstance(buckets, set)
+            buckets.add(bucket)
+
+    result: dict[str, SourceWindowCoverage] = {}
+    for label, duration in _OBSERVABILITY_WINDOWS.items():
+        state = states[label]
+        start = state["start"]
+        first = state["first"]
+        last = state["last"]
+        assert isinstance(start, datetime)
+        window_seconds = duration.total_seconds()
+        total_buckets = max(1, math.ceil(window_seconds / bucket_seconds))
+        buckets = state["buckets"]
+        assert isinstance(buckets, set)
+        if isinstance(last, datetime):
+            tail = max(0.0, (snapshot_at - last).total_seconds())
+            stale_free = float(state["stale_free_seconds"]) + min(tail, stale_seconds)
+            boundary_start = (
+                max(0.0, (first - start).total_seconds())
+                if isinstance(first, datetime)
+                else window_seconds
+            )
+            max_gap = max(boundary_start, float(state["max_internal_gap"]), tail)
+        else:
+            stale_free = 0.0
+            max_gap = window_seconds
+        result[label] = SourceWindowCoverage(
+            observations=int(state["observations"]),
+            coverage_percent=round(min(100.0, len(buckets) / total_buckets * 100), 6),
+            stale_free_coverage_percent=round(min(100.0, stale_free / window_seconds * 100), 6),
+            max_continuous_gap_seconds=max_gap,
+            first_received_timestamp=(first.isoformat() if isinstance(first, datetime) else None),
+            last_received_timestamp=(last.isoformat() if isinstance(last, datetime) else None),
+        )
+    return result
+
+
+def build_source_observability(
+    connection: sqlite3.Connection,
+    settings: Settings,
+    *,
+    snapshot_at: datetime,
+) -> dict[str, object]:
+    """Compute bounded-window metrics on a read-only snapshot, never the active DB."""
+
+    specs: list[tuple[str, str, str, tuple[object, ...], float, float]] = []
+    for asset in Asset:
+        specs.append(
+            (
+                f"kalshi_quote:{asset.value}",
+                "kalshi_prediction_quotes",
+                "asset=?",
+                (asset.value,),
+                max(1.0, settings.official_quote_poll_interval_seconds),
+                settings.official_quote_max_source_age_seconds,
+            )
+        )
+    for asset, product in COINBASE_PRODUCT_BY_ASSET.items():
+        specs.append(
+            (
+                f"coinbase:{asset.value}",
+                "coinbase_ticks",
+                "product=?",
+                (product,),
+                5.0,
+                settings.recorder_coinbase_stale_seconds,
+            )
+        )
+    for asset in PYTH_FEEDS:
+        specs.append(
+            (
+                f"pyth:{asset.value}",
+                "underlying_observations",
+                "asset=? AND provider=?",
+                (asset.value, "pyth_hermes"),
+                5.0,
+                settings.recorder_pyth_stale_seconds,
+            )
+        )
+    for asset, provider in (
+        (Asset.BNB, "binance_spot"),
+        (Asset.HYPE, "hyperliquid_perp"),
+    ):
+        specs.append(
+            (
+                f"secondary:{asset.value}",
+                "secondary_underlying_observations",
+                "asset=? AND provider=?",
+                (asset.value, provider),
+                5.0,
+                settings.recorder_secondary_stale_seconds,
+            )
+        )
+
+    earliest = snapshot_at - max(_OBSERVABILITY_WINDOWS.values())
+    report: dict[str, object] = {}
+    for name, table, predicate, parameters, bucket, stale in specs:
+        rows = connection.execute(
+            f"SELECT received_timestamp FROM {table} WHERE {predicate} "
+            "AND received_timestamp>=? AND received_timestamp<=? "
+            "ORDER BY received_timestamp,id",
+            (*parameters, earliest.isoformat(), snapshot_at.isoformat()),
+        )
+        windows = _windowed_coverage(
+            (_parse(str(row["received_timestamp"])) for row in rows),
+            snapshot_at=snapshot_at,
+            bucket_seconds=bucket,
+            stale_seconds=stale,
+        )
+        report[name] = {
+            "bucket_seconds": bucket,
+            "stale_threshold_seconds": stale,
+            "windows": {label: asdict(value) for label, value in windows.items()},
+        }
+    return report
+
+
+class SnapshotTimeoutError(TimeoutError):
+    """A throttled active-database snapshot exceeded its absolute budget."""
+
+
+def snapshot_database(
+    source: Path,
+    destination: Path,
+    *,
+    max_seconds: float = 120.0,
+    pages_per_step: int = 2048,
+    throttle_seconds: float = 0.002,
+) -> None:
+    """Take a throttled, deadline-bounded, transactionally consistent backup."""
 
     if source.resolve() == destination.resolve():
         raise ValueError("readiness snapshot destination must differ from raw truth")
+    if max_seconds <= 0 or pages_per_step <= 0 or throttle_seconds < 0:
+        raise ValueError("snapshot budget, page batch, and throttle must be bounded")
     source_uri = f"file:{source.resolve().as_posix()}?mode=ro"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(source_uri, uri=True) as reader, sqlite3.connect(destination) as writer:
-        reader.backup(writer)
+    deadline = time.monotonic() + max_seconds
+
+    def progress(_status: int, _remaining: int, _total: int) -> None:
+        if time.monotonic() >= deadline:
+            raise SnapshotTimeoutError(
+                f"read-only SQLite snapshot exceeded {max_seconds:g} seconds"
+            )
+        if throttle_seconds:
+            time.sleep(throttle_seconds)
+
+    reader: sqlite3.Connection | None = None
+    writer: sqlite3.Connection | None = None
+    try:
+        try:
+            reader = sqlite3.connect(source_uri, uri=True)
+            writer = sqlite3.connect(destination)
+            reader.execute("PRAGMA query_only=ON")
+            reader.execute("PRAGMA busy_timeout=2000")
+            # Pin one WAL snapshot before the incremental backup starts. Without
+            # this explicit read transaction, a continuously-writing source can
+            # keep moving the backup target and exhaust the absolute deadline.
+            reader.execute("BEGIN")
+            reader.execute("SELECT rootpage FROM sqlite_schema LIMIT 1").fetchone()
+            reader.backup(writer, pages=pages_per_step, progress=progress, sleep=0.05)
+        finally:
+            if writer is not None:
+                writer.close()
+            if reader is not None:
+                reader.close()
+    except Exception:
+        for path in (
+            destination,
+            destination.with_name(f"{destination.name}-wal"),
+            destination.with_name(f"{destination.name}-shm"),
+        ):
+            path.unlink(missing_ok=True)
+        raise
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
@@ -135,6 +365,9 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
                     "SELECT asset,COUNT(*) AS count FROM kalshi_prediction_quotes GROUP BY asset"
                 )
             }
+            source_observability = build_source_observability(
+                connection, settings, snapshot_at=snapshot_at
+            )
         finally:
             connection.close()
 
@@ -224,6 +457,7 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
         "report_version": "1.0.0",
         "generated_at": datetime.now(UTC).isoformat(),
         "snapshot_integrity": integrity,
+        "source_observability": source_observability,
         "assets": assets,
         "dataset": {
             "build_id": summary.build_id,

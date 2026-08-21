@@ -137,6 +137,27 @@ async def test_stale_health_is_explicit_and_secrets_are_whitelisted(tmp_path: Pa
     assert "heartbeat-signature" not in serialized
 
 
+@pytest.mark.asyncio
+async def test_health_exposes_bounded_worker_progress_and_event_loop_lag(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    write_health(
+        configured.recorder_health_path,
+        NOW,
+        worker_progress={"coinbase": NOW.isoformat()},
+        worker_progress_age_seconds={"coinbase": 0.25},
+        stale_workers=["kalshi_quote:BTC"],
+        event_loop_lag_seconds=0.015,
+    )
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        payload = (await client.get("/api/health")).json()
+    assert payload["worker_progress"]["coinbase"] == NOW.isoformat().replace("+00:00", "Z")
+    assert payload["worker_progress_age_seconds"]["coinbase"] == 0.25
+    assert payload["stale_workers"] == ["kalshi_quote:BTC"]
+    assert payload["event_loop_lag_seconds"] == 0.015
+
+
 def test_naive_health_timestamp_fails_closed(tmp_path: Path) -> None:
     configured = settings(tmp_path)
     write_health(configured.recorder_health_path, NOW.replace(tzinfo=None))

@@ -55,8 +55,9 @@ then raises an error.
 Startup reconstructs current OPEN markets, latest quote/tick receive cursors, all latest lifecycle
 states, unresolved predecessors, and last finalized settlements from SQLite. Exact repeated facts
 are idempotent; changed quote/orderbook state is retained. Follow-up batches and active market maps
-are bounded in memory. SQLite remains in WAL mode with passive periodic checkpoints, integrity
-checks in health, and append-only raw observations.
+are bounded in memory. SQLite remains in WAL mode with passive periodic checkpoints; full integrity
+scans run only at startup or against a read-only snapshot so they cannot starve live workers. The
+startup result is retained in health while raw observations remain append-only.
 
 ## REST and WebSocket boundary
 

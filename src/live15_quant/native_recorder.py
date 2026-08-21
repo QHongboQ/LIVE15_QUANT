@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -118,6 +119,9 @@ class KalshiNativeHealth:
     retry_counts: dict[str, int]
     source_failures: dict[str, str]
     stale_sources: tuple[str, ...]
+    worker_progress: dict[str, datetime]
+    stale_workers: tuple[str, ...]
+    event_loop_lag_seconds: float
     last_finalized_settlement: dict[Asset, str]
     written_records: int
     integrity: str
@@ -143,7 +147,7 @@ class KalshiNativeHealth:
             "storage_error"
             if self.integrity != "ok"
             else "degraded"
-            if self.source_failures or self.stale_sources
+            if self.source_failures or self.stale_sources or self.stale_workers
             else "healthy"
         )
         return {
@@ -172,6 +176,10 @@ class KalshiNativeHealth:
             "retry_counts": self.retry_counts,
             "source_failures": self.source_failures,
             "stale_sources": self.stale_sources,
+            "worker_progress": timestamps(self.worker_progress),
+            "worker_progress_age_seconds": ages(self.worker_progress),
+            "stale_workers": self.stale_workers,
+            "event_loop_lag_seconds": self.event_loop_lag_seconds,
             "last_finalized_settlement": {
                 str(key): value for key, value in self.last_finalized_settlement.items()
             },
@@ -198,9 +206,12 @@ class _MutableHealth:
     retry_counts: dict[str, int] = field(default_factory=dict)
     consecutive_failures: dict[str, int] = field(default_factory=dict)
     source_failures: dict[str, str] = field(default_factory=dict)
+    worker_progress: dict[str, datetime] = field(default_factory=dict)
+    event_loop_lag_seconds: float = 0.0
     last_finalized: dict[Asset, str] = field(default_factory=dict)
     written_records: int = 0
     row_counts: dict[str, int] = field(default_factory=dict)
+    active_settlement_followups: int = 0
     integrity: str = "not_checked"
     robinhood_reference_healthy: bool | None = None
     fatal_task: str | None = None
@@ -242,10 +253,12 @@ class KalshiNativeRecorder:
         underlying_factory: Callable[[], UnderlyingSource] | None = None,
         secondary_factories: dict[Asset, Callable[[], BenchmarkSource]] | None = None,
         now: Callable[[], datetime] | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._settings = settings
         self._store = store
         self._now = now or (lambda: datetime.now(UTC))
+        self._monotonic = monotonic
         self._owned_clients: list[KalshiOfficialQuoteProvider] = []
         if quotes is None:
             quote_clients = {
@@ -322,6 +335,7 @@ class KalshiNativeRecorder:
                 asset: f"{truth.ticker}:{truth.result.value}" for asset, truth in finalized.items()
             },
             row_counts=store.row_counts(),
+            active_settlement_followups=store.unsettled_kalshi_count(now=observed),
             integrity=store.quick_check(),
         )
         self._stop_event = asyncio.Event()
@@ -389,6 +403,14 @@ class KalshiNativeRecorder:
                 ]
             )
         )
+        stale_workers = tuple(
+            sorted(
+                key
+                for key, threshold in self._expected_worker_thresholds().items()
+                if key not in self._health.worker_progress
+                or (observed - self._health.worker_progress[key]).total_seconds() > threshold
+            )
+        )
         return KalshiNativeHealth(
             started_at=self._health.started_at,
             observed_at=observed,
@@ -405,7 +427,7 @@ class KalshiNativeRecorder:
             last_secondary_underlying=dict(self._health.last_secondary_underlying),
             secondary_persist_latency_ms=dict(self._health.secondary_persist_latency_ms),
             secondary_diagnostics=dict(self._health.secondary_diagnostics),
-            active_settlement_followups=self._store.unsettled_kalshi_count(now=observed),
+            active_settlement_followups=self._health.active_settlement_followups,
             settlement_count=self._health.row_counts["kalshi_settlements"],
             database_bytes=database_bytes,
             wal_bytes=wal_bytes,
@@ -413,6 +435,9 @@ class KalshiNativeRecorder:
             retry_counts=dict(self._health.retry_counts),
             source_failures=dict(self._health.source_failures),
             stale_sources=stale_sources,
+            worker_progress=dict(self._health.worker_progress),
+            stale_workers=stale_workers,
+            event_loop_lag_seconds=self._health.event_loop_lag_seconds,
             last_finalized_settlement=dict(self._health.last_finalized),
             written_records=self._health.written_records,
             integrity=self._health.integrity,
@@ -420,6 +445,35 @@ class KalshiNativeRecorder:
             fatal_task=self._health.fatal_task,
             fatal_error_type=self._health.fatal_error_type,
         )
+
+    def _expected_worker_thresholds(self) -> dict[str, float]:
+        thresholds = {
+            "coinbase": self._settings.recorder_coinbase_stale_seconds * 3,
+            "checkpoint": self._settings.recorder_checkpoint_interval_seconds * 2,
+        }
+        for asset in Asset:
+            thresholds[f"kalshi_discovery:{asset.value}"] = (
+                self._settings.native_discovery_poll_interval_seconds * 3
+            )
+            thresholds[f"kalshi_quote:{asset.value}"] = max(
+                15.0, self._settings.official_quote_poll_interval_seconds * 3
+            )
+            thresholds[f"kalshi_settlement:{asset.value}"] = (
+                self._settings.settlement_followup_interval_seconds * 3
+            )
+        if self._settings.enable_pyth_underlying:
+            thresholds["pyth"] = self._settings.recorder_pyth_stale_seconds * 3
+        if self._settings.enable_secondary_underlying:
+            for asset in (Asset.BNB, Asset.HYPE):
+                thresholds[f"secondary:{asset.value}"] = (
+                    self._settings.recorder_secondary_stale_seconds * 3
+                )
+        if self._settings.enable_robinhood_reference and self._robinhood is not None:
+            thresholds["robinhood_reference"] = self._settings.robinhood_poll_interval_seconds * 3
+        return thresholds
+
+    def _worker_advanced(self, key: str, observed: datetime | None = None) -> None:
+        self._health.worker_progress[key] = observed or self._utc_now()
 
     async def run(self) -> None:
         self._stop_event.clear()
@@ -466,7 +520,7 @@ class KalshiNativeRecorder:
                 "event": "kalshi_native_recorder_started",
                 "database": str(self._store.path),
                 "recovered_current": len(self._health.current),
-                "recovered_followups": self._store.unsettled_kalshi_count(now=self._utc_now()),
+                "recovered_followups": self._health.active_settlement_followups,
                 "robinhood_reference_enabled": self._settings.enable_robinhood_reference,
             },
         )
@@ -581,17 +635,27 @@ class KalshiNativeRecorder:
                 ),
             )
             return
+        pending_states = {KalshiLifecycle.CLOSED, KalshiLifecycle.SETTLEMENT_PENDING}
+        was_pending = prior in pending_states
+        settlement_existed = (
+            self._store.has_kalshi_settlement(market.ticker)
+            if market.settlement is not None
+            else False
+        )
         for observation in KalshiLifecycleStateMachine.observations(prior, market):
             if self._store.append_kalshi_market(observation):
                 self._wrote("kalshi_market_lifecycle")
             self._health.states[market.ticker] = observation.lifecycle
+        is_pending = self._health.states.get(market.ticker) in pending_states
+        if is_pending and not was_pending:
+            self._health.active_settlement_followups += 1
+        elif was_pending and not is_pending:
+            if self._health.active_settlement_followups <= 0:
+                raise RecorderStorageError("settlement follow-up count would move below zero")
+            self._health.active_settlement_followups -= 1
         if market.settlement is not None:
-            persisted_count = self._store.count("kalshi_settlements")
-            delta = persisted_count - self._health.row_counts["kalshi_settlements"]
-            if delta < 0:
-                raise RecorderStorageError("settlement row count moved backwards")
-            self._health.row_counts["kalshi_settlements"] = persisted_count
-            self._health.written_records += delta
+            if not settlement_existed:
+                self._wrote("kalshi_settlements")
             self._health.last_finalized[market.asset] = (
                 f"{market.ticker}:{market.settlement.result.value}"
             )
@@ -788,6 +852,7 @@ class KalshiNativeRecorder:
                 self._source_failed(key, error)
             except (KalshiPublicApiError, RecorderStorageError, ValueError):
                 raise
+            self._worker_advanced(key)
             if await self._wait(
                 self._retry_delay(key, self._settings.native_discovery_poll_interval_seconds)
             ):
@@ -823,6 +888,7 @@ class KalshiNativeRecorder:
                 except (KalshiPublicApiError, RecorderStorageError, ValueError):
                     raise
             key = f"kalshi_quote:{asset.value}"
+            self._worker_advanced(key)
             if await self._wait(
                 self._retry_delay(key, self._settings.official_quote_poll_interval_seconds)
             ):
@@ -879,6 +945,7 @@ class KalshiNativeRecorder:
                 except (KalshiPublicApiError, RecorderStorageError, ValueError):
                     raise
             key = f"kalshi_settlement:{asset.value}"
+            self._worker_advanced(key)
             if await self._wait(
                 self._retry_delay(key, self._settings.settlement_followup_interval_seconds)
             ):
@@ -892,14 +959,20 @@ class KalshiNativeRecorder:
                         self._wrote("coinbase_ticks")
                     self._health.last_coinbase[tick.symbol] = tick.received_at
                     self._source_ok("coinbase")
+                    self._worker_advanced("coinbase")
                     if self._stop_event.is_set():
                         return
+                    # WebSocket implementations can satisfy recv() immediately
+                    # from an internal backlog. Cooperatively yield after each
+                    # durable tick so timers/control and other sources progress.
+                    await asyncio.sleep(0)
             except asyncio.CancelledError:
                 raise
             except (RecorderStorageError, ValueError):
                 raise
             except Exception as error:
                 self._source_failed("coinbase", error)
+                self._worker_advanced("coinbase")
             if await self._wait(self._settings.reconnect_delay_seconds):
                 return
 
@@ -921,14 +994,17 @@ class KalshiNativeRecorder:
                             raise PythNetworkError("Pyth stream closed")
                         self._accept_pyth_batch(demultiplexer.accept(batch))
                         self._source_ok(stream_key)
+                        self._worker_advanced("pyth")
                 except asyncio.CancelledError:
                     raise
                 except (RecorderStorageError, ValueError) as error:
                     if not isinstance(error, PythPayloadError):
                         raise
                     self._source_failed(stream_key, error)
+                    self._worker_advanced("pyth")
                 except PythNetworkError as error:
                     self._source_failed(stream_key, error)
+                    self._worker_advanced("pyth")
                     if isinstance(error, PythRateLimitError):
                         retry_after = error.retry_after_seconds
                         rate_limited = True
@@ -940,14 +1016,17 @@ class KalshiNativeRecorder:
                         batch = await asyncio.to_thread(client.latest_batch)
                         self._accept_pyth_batch(demultiplexer.accept(batch))
                         self._source_ok("pyth:rest_fallback")
+                        self._worker_advanced("pyth")
                     except asyncio.CancelledError:
                         raise
                     except (RecorderStorageError, ValueError) as error:
                         if not isinstance(error, PythPayloadError):
                             raise
                         self._source_failed("pyth:rest_fallback", error)
+                        self._worker_advanced("pyth")
                     except PythNetworkError as error:
                         self._source_failed("pyth:rest_fallback", error)
+                        self._worker_advanced("pyth")
                         if isinstance(error, PythRateLimitError):
                             retry_after = max(retry_after, error.retry_after_seconds)
                 delay = max(
@@ -1015,18 +1094,27 @@ class KalshiNativeRecorder:
                     elif status is SecondaryAppendStatus.DUPLICATE:
                         self._increment_secondary_diagnostic(asset, "duplicates")
                         self._source_ok(key)
+                        self._worker_advanced(key)
+                        # A busy venue stream can have an already-buffered next message.
+                        # Yield explicitly so health, lifecycle, and the other sources
+                        # cannot be starved while this queue drains.
+                        await asyncio.sleep(0)
                         continue
                     elif status is SecondaryAppendStatus.OUT_OF_ORDER:
                         self._increment_secondary_diagnostic(asset, "out_of_order")
                         self._source_failed(key, ValueError("out-of-order source observation"))
+                        self._worker_advanced(key)
+                        await asyncio.sleep(0)
                         continue
                     self._health.last_secondary_underlying[health_key] = (
                         observation.received_timestamp
                     )
                     self._source_ok(key)
+                    self._worker_advanced(key)
                     failures = 0
                     if self._stop_event.is_set():
                         return
+                    await asyncio.sleep(0)
                 if not self._stop_event.is_set():
                     raise ConnectionError("secondary source stream ended")
             except asyncio.CancelledError:
@@ -1041,6 +1129,7 @@ class KalshiNativeRecorder:
                 ValueError,
             ) as error:
                 self._source_failed(key, error)
+                self._worker_advanced(key)
             finally:
                 completed_reconnects += source.diagnostics.reconnects
                 completed_malformed += source.diagnostics.malformed_messages
@@ -1070,6 +1159,7 @@ class KalshiNativeRecorder:
                     if contract.fetched_at < contract.end_time:
                         self._store.append_robinhood(contract)
                 self._health.robinhood_reference_healthy = True
+                self._worker_advanced("robinhood_reference")
             except asyncio.CancelledError:
                 raise
             except (RecorderStorageError, ValueError):
@@ -1077,23 +1167,30 @@ class KalshiNativeRecorder:
             except Exception as error:
                 self._health.robinhood_reference_healthy = False
                 self._source_failed("robinhood_reference", error)
+                self._worker_advanced("robinhood_reference")
             if await self._wait(self._settings.robinhood_poll_interval_seconds):
                 return
 
     async def _checkpoint(self) -> None:
         while not self._stop_event.is_set():
             self._store.checkpoint()
-            self._health.integrity = self._store.quick_check()
-            if self._health.integrity != "ok":
-                raise RecorderStorageError(
-                    f"periodic SQLite quick check failed: {self._health.integrity}"
-                )
+            self._worker_advanced("checkpoint")
+            # PRAGMA quick_check(1) limits error rows, not pages inspected: it is
+            # still a full-database scan. Running it synchronously on the recorder
+            # event loop can starve every source once the raw database is large.
+            # Integrity is checked at startup and on an offline/read-only snapshot;
+            # the live loop performs only the bounded passive WAL checkpoint.
             if await self._wait(self._settings.recorder_checkpoint_interval_seconds):
                 return
 
     async def _report_health(self) -> None:
         self._write_health_file(self.health())
-        while not await self._wait(self._settings.recorder_health_interval_seconds):
+        interval = self._settings.recorder_health_interval_seconds
+        deadline = self._monotonic() + interval
+        while not await self._wait(interval):
+            observed_monotonic = self._monotonic()
+            self._health.event_loop_lag_seconds = max(0.0, observed_monotonic - deadline)
+            deadline = observed_monotonic + interval
             health = self.health()
             stale = set(health.stale_sources)
             for source in sorted(stale - self._reported_stale_sources):

@@ -149,6 +149,18 @@ def test_v6_to_v7_migration_only_adds_secondary_table(tmp_path) -> None:
         assert store._connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_secondary_latest_source_lookup_is_indexed(tmp_path) -> None:
+    with RecorderStore(tmp_path / "secondary-index.sqlite3") as store:
+        plan = store._connection.execute(
+            """EXPLAIN QUERY PLAN
+            SELECT source_timestamp FROM secondary_underlying_observations
+            WHERE provider=? AND instrument=?
+            ORDER BY source_timestamp DESC,id DESC LIMIT 1""",
+            (UnderlyingProvider.BINANCE_SPOT.value, "BNBUSDT"),
+        ).fetchall()
+    assert any("idx_secondary_underlying_latest_source" in str(row[3]) for row in plan)
+
+
 def test_secondary_feature_boundary_never_uses_future_receive_time(tmp_path) -> None:
     path = tmp_path / "boundary.sqlite3"
     with RecorderStore(path) as store:
@@ -296,6 +308,28 @@ class _FailingSecondary:
         return None
 
 
+class _BufferedSecondary:
+    """A source whose next messages are immediately available without socket waits."""
+
+    diagnostics = SourceDiagnostics()
+
+    def __init__(self) -> None:
+        self.drained = asyncio.Event()
+
+    async def ticks(self):
+        for offset in range(100):
+            yield bnb_tick(
+                event_id=str(offset),
+                source=NOW + timedelta(microseconds=offset),
+                received=NOW + timedelta(milliseconds=1, microseconds=offset),
+            )
+        self.drained.set()
+        await asyncio.Event().wait()
+
+    async def close(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_one_secondary_outage_does_not_stop_other_recorder_sources(tmp_path) -> None:
     hype_emitted = asyncio.Event()
@@ -326,3 +360,34 @@ async def test_one_secondary_outage_does_not_stop_other_recorder_sources(tmp_pat
         assert store.count("secondary_underlying_observations") == 1
         assert recorder.health().fatal_task is None
         assert recorder.health().source_failures["secondary:BNB"] == "ConnectionError"
+
+
+@pytest.mark.asyncio
+async def test_buffered_secondary_yields_to_other_recorder_workers(tmp_path) -> None:
+    """A backlogged public stream must not monopolize the shared event loop."""
+
+    with RecorderStore(tmp_path / "fairness.sqlite3") as store:
+        source = _BufferedSecondary()
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                enable_secondary_underlying=True,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            secondary_factories={Asset.BNB: lambda: source},
+            now=lambda: NOW,
+        )
+        task = asyncio.create_task(recorder._record_secondary(Asset.BNB))
+        await asyncio.sleep(0)
+        # The first observation may run, but the buffered remaining 99 must yield
+        # so health/lifecycle tasks get a deterministic scheduling opportunity.
+        assert store.count("secondary_underlying_observations") == 1
+        await asyncio.wait_for(source.drained.wait(), 1)
+        assert store.count("secondary_underlying_observations") == 100
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

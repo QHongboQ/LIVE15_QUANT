@@ -462,14 +462,15 @@ class DashboardReadStore:
                 if isinstance(source_snapshot, dict)
                 else None
             )
-            snapshot_max_id = (
-                snapshot_settlements.get("max_id")
+            raw_snapshot_counts = (
+                snapshot_settlements.get("counts_by_asset")
                 if isinstance(snapshot_settlements, dict)
                 else None
             )
+            parsed_snapshot_counts = _int_dict(raw_snapshot_counts)
             snapshot_counts = (
-                self._finalized_counts(max_row_id=snapshot_max_id)
-                if isinstance(snapshot_max_id, int) and not isinstance(snapshot_max_id, bool)
+                {asset.value: parsed_snapshot_counts.get(asset.value, 0) for asset in Asset}
+                if parsed_snapshot_counts is not None
                 else None
             )
             counts = {
@@ -587,20 +588,14 @@ class DashboardReadStore:
             },
         }
 
-    def _finalized_counts(self, *, max_row_id: int | None = None) -> dict[str, int]:
+    def _finalized_counts(self) -> dict[str, int]:
         counts = {asset.value: 0 for asset in Asset}
         raw = self._open(self.raw_path)
         if raw is None:
             return counts
         try:
             raw.execute("BEGIN")
-            query = "SELECT asset,COUNT(*) count FROM kalshi_settlements"
-            parameters: tuple[object, ...] = ()
-            if max_row_id is not None:
-                query += " WHERE id<=?"
-                parameters = (max_row_id,)
-            query += " GROUP BY asset"
-            for item in raw.execute(query, parameters):
+            for item in raw.execute("SELECT asset,count FROM kalshi_settlement_counts"):
                 asset = str(item["asset"])
                 if asset in counts:
                     counts[asset] = int(item["count"])
