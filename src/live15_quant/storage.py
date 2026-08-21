@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
 
+from live15_quant.gaps import DataGap, GapReason, GapSource
 from live15_quant.kalshi_lifecycle import (
     KalshiLifecycle,
     KalshiMarket,
@@ -81,9 +82,20 @@ class MarketIdentityConflictError(RecorderStorageError):
     """Raised when one official event/window is presented under conflicting identity."""
 
 
+class DataGapConflictError(RecorderStorageError):
+    """Raised when one logical gap is presented with contradictory facts."""
+
+
 class TrainingDataUnavailableReason(StrEnum):
     OFFICIAL_SETTLEMENT_UNAVAILABLE = "official_settlement_unavailable"
     MISSING_DECISION_TIME_METADATA = "missing_decision_time_metadata"
+    SOURCE_GAP_OVERLAP = "source_gap_overlap"
+    RESTART_GAP = "restart_gap"
+    RUNTIME_STALL_GAP = "runtime_stall_gap"
+    STALE_SOURCE = "stale_source"
+    INSUFFICIENT_LOOKBACK = "insufficient_lookback"
+    SOURCE_UNAVAILABLE = "source_unavailable"
+    MARKET_SIDE_UNAVAILABLE = "market_side_unavailable"
 
 
 class TrainingDataUnavailableError(RecorderStorageError):
@@ -95,9 +107,9 @@ class TrainingDataUnavailableError(RecorderStorageError):
 
 
 def _compatible_record_version(value: object) -> bool:
-    """v6-v8 only add tables; immutable v5 rows remain byte-for-byte valid."""
+    """v6-v9 only add tables; immutable v5 rows remain byte-for-byte valid."""
 
-    return value in {5, 6, 7, SCHEMA_VERSION}
+    return value in {5, 6, 7, 8, SCHEMA_VERSION}
 
 
 class SecondaryAppendStatus(StrEnum):
@@ -538,6 +550,40 @@ CREATE INDEX IF NOT EXISTS idx_kalshi_ws_checkpoint_replay
 ON kalshi_ws_book_checkpoints(ticker, received_timestamp, id)
 """
 
+_DATA_GAP_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS data_gaps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    instrument TEXT NOT NULL,
+    gap_start TEXT NOT NULL,
+    gap_end TEXT,
+    duration_seconds TEXT,
+    detected_at TEXT NOT NULL,
+    threshold_seconds TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    error_type TEXT,
+    recovered INTEGER NOT NULL CHECK (recovered IN (0, 1)),
+    recorder_session_id TEXT,
+    incident_id TEXT,
+    content_hash TEXT NOT NULL,
+    CHECK ((recovered = 0 AND gap_end IS NULL AND duration_seconds IS NULL)
+        OR (recovered = 1 AND gap_end IS NOT NULL AND duration_seconds IS NOT NULL)),
+    UNIQUE(source, asset, instrument, gap_start, recovered)
+) STRICT
+"""
+
+_DATA_GAP_REPLAY_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_data_gap_replay
+ON data_gaps(source, asset, instrument, gap_start, recovered, gap_end, id)
+"""
+
+_DATA_GAP_OVERLAP_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_data_gap_overlap
+ON data_gaps(asset, source, recovered, gap_end, gap_start, id)
+"""
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS recorder_metadata (
     key TEXT PRIMARY KEY,
@@ -634,6 +680,9 @@ ON coinbase_ticks(product, received_timestamp, id);
 {_KALSHI_WS_EVENT_TICKER_INDEX_SQL};
 {_KALSHI_WS_CHECKPOINT_TABLE_SQL};
 {_KALSHI_WS_CHECKPOINT_INDEX_SQL};
+{_DATA_GAP_TABLE_SQL};
+{_DATA_GAP_REPLAY_INDEX_SQL};
+{_DATA_GAP_OVERLAP_INDEX_SQL};
 """
 
 
@@ -714,8 +763,13 @@ class RecorderStore:
             row = self._connection.execute(
                 "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
             ).fetchone()
-        if row is not None and row["value"] == "7" and SCHEMA_VERSION == 8:
+        if row is not None and row["value"] == "7":
             self._migrate_v7_to_v8()
+            row = self._connection.execute(
+                "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        if row is not None and row["value"] == "8" and SCHEMA_VERSION == 9:
+            self._migrate_v8_to_v9()
             self._ensure_schema_objects()
             return
         raise RecorderStorageError(
@@ -963,6 +1017,235 @@ class RecorderStore:
         except Exception:
             self._connection.rollback()
             raise
+
+    def _migrate_v8_to_v9(self) -> None:
+        """Atomically add immutable data-gap facts without rewriting raw observations."""
+
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            for statement in (
+                _DATA_GAP_TABLE_SQL,
+                _DATA_GAP_REPLAY_INDEX_SQL,
+                _DATA_GAP_OVERLAP_INDEX_SQL,
+            ):
+                self._connection.execute(statement)
+            self._connection.execute(
+                "UPDATE recorder_metadata SET value=? WHERE key='schema_version'",
+                ("9",),
+            )
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+
+    def append_data_gap(self, gap: DataGap) -> bool:
+        """Append one gap-state fact idempotently; contradictory facts fail loudly."""
+
+        try:
+            inserted = self._append_data_gap_uncommitted(gap)
+            self._connection.commit()
+            return inserted
+        except Exception:
+            self._connection.rollback()
+            raise
+
+    def append_data_gaps(self, gaps: Sequence[DataGap]) -> int:
+        """Materialize a deterministic detector result in one atomic transaction."""
+
+        ordered = sorted(
+            gaps,
+            key=lambda gap: (
+                gap.gap_start,
+                gap.source.value,
+                gap.asset.value,
+                gap.instrument,
+                gap.recovered,
+                gap.gap_end or datetime.max.replace(tzinfo=UTC),
+            ),
+        )
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            inserted = sum(self._append_data_gap_uncommitted(gap) for gap in ordered)
+            self._connection.commit()
+            return inserted
+        except Exception:
+            self._connection.rollback()
+            raise
+
+    def _append_data_gap_uncommitted(self, gap: DataGap) -> bool:
+        """Insert one gap inside the caller's transaction."""
+
+        values: tuple[object, ...] = (
+            SCHEMA_VERSION,
+            gap.source.value,
+            gap.asset.value,
+            gap.instrument,
+            _timestamp(gap.gap_start),
+            None if gap.gap_end is None else _timestamp(gap.gap_end),
+            None if gap.duration_seconds is None else str(gap.duration_seconds),
+            _timestamp(gap.detected_at),
+            str(gap.threshold_seconds),
+            gap.reason.value,
+            gap.error_type,
+            int(gap.recovered),
+            gap.recorder_session_id,
+            gap.incident_id,
+        )
+        # Detection time is provenance for the first materialization, not part
+        # of the immutable interval identity. Re-running the detector later is
+        # therefore idempotent while contradictory reason/threshold facts fail.
+        content_hash = _fingerprint((*values[1:7], *values[8:]))
+        existing = self._connection.execute(
+            """SELECT content_hash FROM data_gaps
+            WHERE source=? AND asset=? AND instrument=? AND gap_start=? AND recovered=?""",
+            (values[1], values[2], values[3], values[4], values[11]),
+        ).fetchone()
+        if existing is not None:
+            if existing["content_hash"] == content_hash:
+                return False
+            raise DataGapConflictError("conflicting facts for an existing data gap")
+        self._connection.execute(
+            """INSERT INTO data_gaps(
+            schema_version,source,asset,instrument,gap_start,gap_end,duration_seconds,
+            detected_at,threshold_seconds,reason,error_type,recovered,recorder_session_id,
+            incident_id,content_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (*values, content_hash),
+        )
+        return True
+
+    def replay_data_gaps(
+        self,
+        *,
+        source: GapSource | None = None,
+        asset: Asset | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        max_row_id: int | None = None,
+    ) -> tuple[DataGap, ...]:
+        """Replay gaps deterministically, optionally restricted to one overlap range."""
+
+        clauses: list[str] = []
+        parameters: list[object] = []
+        if source is not None:
+            clauses.append("source=?")
+            parameters.append(source.value)
+        if asset is not None:
+            clauses.append("asset=?")
+            parameters.append(asset.value)
+        if start is not None:
+            visible_recovery = ""
+            if max_row_id is not None:
+                visible_recovery = " AND closed.id<=?"
+            clauses.append(
+                "(gap_end>? OR (gap_end IS NULL AND NOT EXISTS ("
+                "SELECT 1 FROM data_gaps AS closed "
+                "WHERE closed.source=data_gaps.source "
+                "AND closed.asset=data_gaps.asset "
+                "AND closed.instrument=data_gaps.instrument "
+                "AND closed.gap_start=data_gaps.gap_start "
+                f"AND closed.recovered=1{visible_recovery})))"
+            )
+            parameters.append(_timestamp(start))
+            if max_row_id is not None:
+                parameters.append(max_row_id)
+        if end is not None:
+            clauses.append("gap_start<?")
+            parameters.append(_timestamp(end))
+        if max_row_id is not None:
+            clauses.append("id<=?")
+            parameters.append(max_row_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._connection.execute(
+            f"SELECT * FROM data_gaps {where} "
+            "ORDER BY gap_start,source,asset,instrument,recovered,gap_end,id",
+            tuple(parameters),
+        )
+        return tuple(self._data_gap(row) for row in rows)
+
+    def latest_gap_stream_timestamp(
+        self, source: GapSource, asset: Asset, instrument: str
+    ) -> datetime | None:
+        """Return one indexed cursor used to recover live gap tracking after restart."""
+
+        if source is GapSource.KALSHI_REST:
+            row = self._connection.execute(
+                "SELECT received_timestamp FROM kalshi_prediction_quotes WHERE asset=? "
+                "ORDER BY received_timestamp DESC,id DESC LIMIT 1",
+                (asset.value,),
+            ).fetchone()
+        elif source is GapSource.COINBASE:
+            row = self._connection.execute(
+                "SELECT received_timestamp FROM coinbase_ticks WHERE product=? "
+                "ORDER BY received_timestamp DESC,id DESC LIMIT 1",
+                (instrument,),
+            ).fetchone()
+        elif source is GapSource.PYTH:
+            row = self._connection.execute(
+                "SELECT received_timestamp FROM underlying_observations "
+                "WHERE asset=? AND provider=? ORDER BY received_timestamp DESC,id DESC LIMIT 1",
+                (asset.value, UnderlyingProvider.PYTH_HERMES.value),
+            ).fetchone()
+        else:
+            provider = (
+                UnderlyingProvider.BINANCE_SPOT
+                if source is GapSource.BINANCE
+                else UnderlyingProvider.HYPERLIQUID_PERP
+            )
+            row = self._connection.execute(
+                "SELECT received_timestamp FROM secondary_underlying_observations "
+                "WHERE asset=? AND provider=? ORDER BY received_timestamp DESC,id DESC LIMIT 1",
+                (asset.value, provider.value),
+            ).fetchone()
+        return (
+            None
+            if row is None
+            else _parse_timestamp(row["received_timestamp"], "received_timestamp")
+        )
+
+    def active_data_gaps(self) -> tuple[DataGap, ...]:
+        """Return the latest append-only OPEN facts not followed by recovery."""
+
+        rows = self._connection.execute(
+            """SELECT open.* FROM data_gaps AS open
+            WHERE open.recovered=0 AND NOT EXISTS (
+                SELECT 1 FROM data_gaps AS closed
+                WHERE closed.source=open.source AND closed.asset=open.asset
+                  AND closed.instrument=open.instrument AND closed.gap_start=open.gap_start
+                  AND closed.recovered=1
+            )
+            ORDER BY open.gap_start,open.source,open.asset,open.instrument,open.id"""
+        )
+        return tuple(self._data_gap(row) for row in rows)
+
+    @staticmethod
+    def _data_gap(row: sqlite3.Row) -> DataGap:
+        try:
+            duration = _parse_decimal(row["duration_seconds"], "duration_seconds", optional=True)
+            threshold = _parse_decimal(row["threshold_seconds"], "threshold_seconds")
+            assert threshold is not None
+            gap = DataGap(
+                source=GapSource(row["source"]),
+                asset=Asset(row["asset"]),
+                instrument=str(row["instrument"]),
+                gap_start=_parse_timestamp(row["gap_start"], "gap_start"),
+                gap_end=(
+                    None if row["gap_end"] is None else _parse_timestamp(row["gap_end"], "gap_end")
+                ),
+                detected_at=_parse_timestamp(row["detected_at"], "detected_at"),
+                threshold_seconds=threshold,
+                reason=GapReason(row["reason"]),
+                error_type=None if row["error_type"] is None else str(row["error_type"]),
+                recovered=bool(row["recovered"]),
+                recorder_session_id=(
+                    None if row["recorder_session_id"] is None else str(row["recorder_session_id"])
+                ),
+                incident_id=None if row["incident_id"] is None else str(row["incident_id"]),
+            )
+            if gap.duration_seconds != duration:
+                raise RecorderStorageError("data-gap duration does not match its timestamps")
+            return gap
+        except (ValueError, TypeError, AssertionError) as error:
+            raise RecorderStorageError("malformed data-gap record") from error
 
     def append_robinhood(self, contract: FifteenMinuteContract) -> bool:
         """Append one event snapshot; return false only for an exact duplicate."""
@@ -2992,6 +3275,7 @@ class RecorderStore:
             "secondary_underlying_observations",
             "kalshi_ws_orderbook_events",
             "kalshi_ws_book_checkpoints",
+            "data_gaps",
         }:
             raise ValueError("unknown recorder table")
         row = self._connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
@@ -3014,6 +3298,7 @@ class RecorderStore:
                 "kalshi_ws_book_checkpoints",
                 "kalshi_settlements",
                 "kalshi_settlement_conflicts",
+                "data_gaps",
             )
         }
 
@@ -3049,6 +3334,7 @@ class RecorderStore:
             "kalshi_prediction_quotes",
             "kalshi_market_lifecycle",
             "kalshi_settlements",
+            "data_gaps",
         )
         snapshot: dict[str, object] = {"recorder_schema_version": SCHEMA_VERSION}
         for table in tables:

@@ -32,14 +32,13 @@ name, unit, formula, lookback, missing policy, and timestamp semantics for every
 `live15_quant.feature_registry.FEATURE_REGISTRY`. Midpoint is descriptive only and is never an
 execution price or asserted true probability.
 
-Coinbase predictive inputs currently exist for BTC, ETH, XRP, SOL, and DOGE. Gold, Silver, WTI Oil,
-HYPE, and BNB rows can still carry Kalshi geometry/quote/orderbook features and official labels, but
-their underlying-derived features are explicitly `source_unavailable` until an authorized source is
-added.
+Coinbase predictive inputs exist for BTC, ETH, XRP, SOL, and DOGE. Gold, Silver, WTI Oil, HYPE, and
+BNB use the independently identified Pyth Hermes primary observations. Missing historical periods
+remain `source_unavailable`; neither provider is settlement truth.
 
 ## Reproducibility and restart
 
-Dataset version `1.0.0` and feature schema version `1.0.0` are stored with every row. A deterministic
+Dataset version `1.2.0` and feature schema version `1.0.0` are stored with every row. A deterministic
 build ID hashes configuration plus a path-free recorder snapshot: raw schema version and, for each
 source table, row count, maximum row ID, and ordered content-hash digest. All reads are capped at the
 captured row-ID boundaries, so a recorder that keeps appending cannot silently alter an in-progress
@@ -64,3 +63,20 @@ provided as a formal evaluation path.
 dataset build: callers must fit it only on the training event groups of each fold, then reuse that
 profile for validation/test or live inference. Missing inputs stay missing. This preserves both
 pooled-model and asset-specific model research without leaking future-fold statistics.
+
+## Gap quarantine
+
+Raw schema v9 records append-only OPEN and RECOVERED source-gap facts independently from
+observations. A dataset build deterministically projects each fact pair to one effective interval and pins
+the `data_gaps` max row ID in the same immutable manifest as quotes, ticks, metadata and settlement
+truth. Before calculating features, each decision checks the exact Kalshi quote freshness interval
+and the primary-underlying 300-second lookback plus configured age allowance. Only overlapping
+decision rows are rejected; later rows after recovery remain eligible. Restart and broad runtime
+stall gaps retain distinct machine-readable reasons. Missing or stale required inputs and missing
+market sides are also rejected without filling zeroes.
+
+No gap is repaired with forward fill, backward fill, interpolation, synthetic prices, or a later
+backfill that was unavailable at decision time. Kalshi finalized settlement remains label-only.
+The same typed readiness boundary returns only `PASS` or `DATA_UNAVAILABLE` for future live
+inference when a required source is stale, disconnected, inside a gap, lacks lookback, or has no
+synchronized orderbook.

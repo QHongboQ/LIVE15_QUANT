@@ -19,6 +19,7 @@ from live15_quant.config import Settings
 from live15_quant.dataset import DatasetBuildConfig, DatasetBuilder, FeatureStore
 from live15_quant.feature_registry import FEATURE_REGISTRY, FeatureFamily
 from live15_quant.features import COINBASE_PRODUCT_BY_ASSET, SamplingPolicy
+from live15_quant.gaps import DataGap, configured_streams, detect_gaps, effective_data_gaps
 from live15_quant.models import Asset
 from live15_quant.providers.pyth import PYTH_FEEDS
 from live15_quant.storage import RecorderStore
@@ -329,6 +330,7 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
     """Snapshot raw truth, migrate only the copy, and build a temporary feature store."""
 
     snapshot_at = datetime.now(UTC)
+    worker_progress = _worker_progress_report(settings.recorder_health_path)
     with tempfile.TemporaryDirectory(prefix="live15-readiness-") as directory:
         root = Path(directory)
         raw_snapshot = root / "raw.sqlite3"
@@ -340,7 +342,17 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
             underlying_max_age=timedelta(seconds=settings.dataset_underlying_max_age_seconds),
         )
         with RecorderStore(raw_snapshot) as source, FeatureStore(feature_store) as destination:
+            detected_gaps = detect_gaps(
+                source._connection,
+                configured_streams(settings),
+                start=snapshot_at - _OBSERVABILITY_WINDOWS["7d"],
+                end=snapshot_at,
+                detected_at=snapshot_at,
+                immutable_snapshot=True,
+            )
+            source.append_data_gaps(detected_gaps)
             summary = DatasetBuilder(source, destination).build(DatasetBuildConfig(policy))
+            dataset_source_snapshot = destination.build_source_snapshot(summary.build_id)
             finalized_by_asset = source.settlement_counts_by_asset()
             trainable_by_asset = destination.coverage_by_asset(summary.build_id)
             underlying_feature_rows = Counter(
@@ -349,6 +361,12 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
                 if row.features.by_name()["underlying_price"].value is not None
             )
             integrity = source.integrity_check()
+            persisted_gaps = effective_data_gaps(
+                source.replay_data_gaps(
+                    start=snapshot_at - _OBSERVABILITY_WINDOWS["7d"],
+                    end=snapshot_at,
+                )
+            )
         connection = sqlite3.connect(raw_snapshot)
         connection.row_factory = sqlite3.Row
         try:
@@ -458,9 +476,12 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
         "generated_at": datetime.now(UTC).isoformat(),
         "snapshot_integrity": integrity,
         "source_observability": source_observability,
+        "runtime_worker_progress": worker_progress,
+        "data_gaps": _gap_report(persisted_gaps, source_observability),
         "assets": assets,
         "dataset": {
             "build_id": summary.build_id,
+            "source_snapshot": dataset_source_snapshot,
             "evaluated_finalized_events": diagnostics.get("evaluated_finalized_events", 0),
             "trainable_events": summary.events,
             "training_rows": summary.rows,
@@ -470,6 +491,14 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
             "missing_feature_rates": missing_rates,
             "stale_feature_rates": stale_rates,
             "rejection_reasons": diagnostics.get("trainability_rejections", {}),
+            "rejected_rows_due_to_gaps": sum(
+                int(diagnostics.get("trainability_rejections", {}).get(reason, 0))
+                for reason in ("source_gap_overlap", "restart_gap", "runtime_stall_gap")
+            ),
+            "trainable_event_coverage_percent": _ratio_percent(
+                summary.events,
+                int(diagnostics.get("evaluated_finalized_events", 0)),
+            ),
             "missing_reason_counts": diagnostics.get("missing_reason_counts", {}),
             "missing_reason_counts_by_asset": diagnostics.get("missing_reason_counts_by_asset", {}),
         },
@@ -505,6 +534,87 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
             "negative_latency_is_reported_not_repaired": True,
             "future_timestamps_are_never_backdated": True,
         },
+    }
+
+
+def _gap_report(
+    gaps: tuple[DataGap, ...], source_observability: dict[str, object]
+) -> dict[str, object]:
+    grouped: dict[str, list[DataGap]] = defaultdict(list)
+    recovered = tuple(gap for gap in gaps if gap.recovered)
+    active = tuple(gap for gap in gaps if not gap.recovered)
+    for gap in recovered:
+        grouped[f"{gap.source.value}:{gap.asset.value}"].append(gap)
+    streams: dict[str, object] = {}
+    for key, values in sorted(grouped.items()):
+        durations = sorted(
+            float(value.duration_seconds) for value in values if value.duration_seconds
+        )
+        source_name, asset = key.split(":", 1)
+        observability_key = {
+            "kalshi_rest": f"kalshi_quote:{asset}",
+            "coinbase": f"coinbase:{asset}",
+            "pyth": f"pyth:{asset}",
+            "binance": f"secondary:{asset}",
+            "hyperliquid": f"secondary:{asset}",
+        }[source_name]
+        windows = source_observability.get(observability_key, {})
+        streams[key] = {
+            "gap_count": len(values),
+            "max_continuous_gap_seconds": max(durations),
+            "mean_gap_seconds": sum(durations) / len(durations),
+            "median_gap_seconds": durations[(len(durations) - 1) // 2],
+            "recovered_gap_count": len(values),
+            "reasons": dict(sorted(Counter(value.reason.value for value in values).items())),
+            "coverage_windows": (windows.get("windows", {}) if isinstance(windows, dict) else {}),
+        }
+    return {
+        "gap_schema_version": 1,
+        "gap_count": len(recovered),
+        "active_gap_count": len(active),
+        "active_gaps": [
+            {
+                "source": gap.source.value,
+                "asset": gap.asset.value,
+                "instrument": gap.instrument,
+                "gap_start": gap.gap_start.isoformat(),
+                "reason": gap.reason.value,
+            }
+            for gap in active
+        ],
+        "streams": streams,
+        "synthetic_fill_policy": "forbidden",
+        "deterministic_replay_order": ("gap_start,source,asset,instrument,recovered,gap_end,id"),
+    }
+
+
+def _ratio_percent(numerator: int, denominator: int) -> float | None:
+    return None if denominator == 0 else round(numerator / denominator * 100, 6)
+
+
+def _worker_progress_report(path: Path) -> dict[str, object]:
+    """Read only bounded, non-sensitive heartbeat progress fields."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {"available": False, "worker_progress_age_seconds": {}, "stale_workers": []}
+    if not isinstance(payload, dict):
+        return {"available": False, "worker_progress_age_seconds": {}, "stale_workers": []}
+    ages = payload.get("worker_progress_age_seconds")
+    stale = payload.get("stale_workers")
+    return {
+        "available": True,
+        "observed_at": payload.get("observed_at")
+        if isinstance(payload.get("observed_at"), str)
+        else None,
+        "event_loop_lag_seconds": (
+            payload.get("event_loop_lag_seconds")
+            if isinstance(payload.get("event_loop_lag_seconds"), (int, float))
+            else None
+        ),
+        "worker_progress_age_seconds": ages if isinstance(ages, dict) else {},
+        "stale_workers": stale if isinstance(stale, list) else [],
     }
 
 

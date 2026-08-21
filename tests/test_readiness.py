@@ -13,13 +13,20 @@ from live15_quant.readiness import (
     SnapshotTimeoutError,
     _live_source_ready_by_asset,
     _quality,
+    _ratio_percent,
     _readiness_status,
     _windowed_coverage,
+    _worker_progress_report,
     snapshot_database,
 )
 from live15_quant.storage import RecorderStore
 
 NOW = datetime(2026, 8, 21, tzinfo=UTC)
+
+
+def test_trainable_event_coverage_uses_evaluated_finalized_events() -> None:
+    assert _ratio_percent(365, 857) == 42.590432
+    assert _ratio_percent(0, 0) is None
 
 
 def test_snapshot_database_is_consistent_and_does_not_modify_source(tmp_path: Path) -> None:
@@ -151,3 +158,18 @@ def test_live_readiness_requires_asof_fresh_source_and_receive_timestamps(tmp_pa
 
     assert ready[Asset.GOLD] is True
     assert ready[Asset.BNB] is False
+
+
+def test_worker_progress_report_is_missing_safe_and_secret_free(tmp_path: Path) -> None:
+    path = tmp_path / "health.json"
+    assert _worker_progress_report(path)["available"] is False
+    path.write_text(
+        '{"observed_at":"2026-08-22T00:00:00+00:00",'
+        '"event_loop_lag_seconds":0.2,"worker_progress_age_seconds":{"coinbase":1.2},'
+        '"stale_workers":[],"api_key":"must-not-escape"}',
+        encoding="utf-8",
+    )
+    report = _worker_progress_report(path)
+    assert report["available"] is True
+    assert report["worker_progress_age_seconds"] == {"coinbase": 1.2}
+    assert "api_key" not in report

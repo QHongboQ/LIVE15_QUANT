@@ -97,5 +97,22 @@ future explicit retention policy.
 - `LIVE15_RECORDER_HEALTH_PATH` (default `data/health.json`)
 - `LIVE15_DATASET_BUILD_INTERVAL_SECONDS` (unset/disabled by default)
 
-Coinbase covers BTC, ETH, XRP, SOL and DOGE only. Gold, Silver, WTI Oil, HYPE and BNB have no
-fabricated underlying stream. Coinbase remains predictive input and is never settlement truth.
+Coinbase covers BTC, ETH, XRP, SOL and DOGE. Gold, Silver, WTI Oil, HYPE and BNB use one authenticated
+multi-feed Pyth stream when enabled; no source is fabricated. Predictive inputs are never settlement
+truth.
+
+## Receive-time gap detection
+
+The single recorder tracks the last durable receive timestamp for every Kalshi REST asset,
+Coinbase product, Pyth feed, Binance BNB secondary and Hyperliquid HYPE secondary. Thresholds come
+from the typed runtime settings already used for source freshness. Once a source exceeds its
+threshold, schema v9 appends one immutable OPEN `data_gaps` fact; the first recovery observation
+appends a second RECOVERED fact with the exact end. Neither fact is updated. Startup loads both the
+latest indexed cursor and unresolved OPEN facts, so restart overlap is classified rather than
+forgotten or duplicated. A source outage remains isolated; contradictory state, end, reason, or
+threshold facts still fail loudly.
+
+Historical detection and coverage use a throttled, deadline-bounded SQLite online backup and scan
+only that temporary snapshot. Active recorder health paths use bounded indexed cursors and never
+run full cadence, integrity, or DatasetBuilder scans. Gaps remain raw quality facts and are never
+filled or used as settlement truth.

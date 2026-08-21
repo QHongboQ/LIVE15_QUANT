@@ -27,12 +27,17 @@ from live15_quant.features import (
     SamplingPolicy,
     decimal_seconds,
 )
+from live15_quant.gaps import DataGap, GapReason, GapSource, effective_data_gaps
 from live15_quant.kalshi_lifecycle import KalshiResult
 from live15_quant.models import Asset, UnderlyingProvider
-from live15_quant.storage import RecorderStore, TrainingDataUnavailableError
+from live15_quant.storage import (
+    RecorderStore,
+    TrainingDataUnavailableError,
+    TrainingDataUnavailableReason,
+)
 
 DATASET_SCHEMA_VERSION = 2
-DATASET_VERSION = "1.1.0"
+DATASET_VERSION = "1.2.0"
 ASOF_QUERY_VERSION = "received-and-source-asof-v1"
 
 
@@ -287,6 +292,23 @@ class FeatureStore:
             raise FeatureStoreError("dataset build manifest conflict")
         self._connection.commit()
 
+    def build_source_snapshot(self, build_id: str) -> dict[str, object]:
+        """Return the path-free immutable source boundaries for one build."""
+
+        row = self._connection.execute(
+            "SELECT source_snapshot_json FROM dataset_builds WHERE build_id=?",
+            (build_id,),
+        ).fetchone()
+        if row is None:
+            raise FeatureStoreError("dataset build does not exist")
+        try:
+            payload = json.loads(row["source_snapshot_json"])
+        except (TypeError, json.JSONDecodeError) as error:
+            raise FeatureStoreError("dataset source snapshot is malformed") from error
+        if not isinstance(payload, dict):
+            raise FeatureStoreError("dataset source snapshot is malformed")
+        return payload
+
     def append(self, row: TrainingRow) -> bool:
         features = {
             item.name: str(item.value) if item.value is not None else None
@@ -531,6 +553,7 @@ class DatasetBuilder:
                 "kalshi_prediction_quotes",
                 "kalshi_market_lifecycle",
                 "kalshi_settlements",
+                "data_gaps",
             )
         }
         manifest = {
@@ -569,6 +592,35 @@ class DatasetBuilder:
             for decision in config.sampling_policy.decision_times(
                 settlement.window_start, settlement.window_end
             ):
+                underlying_source = (
+                    GapSource.COINBASE
+                    if settlement.asset in COINBASE_PRODUCT_BY_ASSET
+                    else GapSource.PYTH
+                )
+                gap_reason = _gap_quarantine_reason(
+                    effective_data_gaps(
+                        self._source.replay_data_gaps(
+                            source=GapSource.KALSHI_REST,
+                            asset=settlement.asset,
+                            start=decision - config.sampling_policy.quote_max_age,
+                            end=decision,
+                            max_row_id=table_limits["data_gaps"],
+                        )
+                        + self._source.replay_data_gaps(
+                            source=underlying_source,
+                            asset=settlement.asset,
+                            start=decision
+                            - timedelta(seconds=300)
+                            - config.sampling_policy.underlying_max_age,
+                            end=decision,
+                            max_row_id=table_limits["data_gaps"],
+                        )
+                    )
+                )
+                if gap_reason is not None:
+                    skipped += 1
+                    rejection_reasons[gap_reason.value] += 1
+                    continue
                 try:
                     joined = self._source.join_training_label(
                         settlement.ticker,
@@ -637,6 +689,11 @@ class DatasetBuilder:
                         safe_underlying,
                     )
                 )
+                feature_reason = _feature_quarantine_reason(vector)
+                if feature_reason is not None:
+                    skipped += 1
+                    rejection_reasons[feature_reason.value] += 1
+                    continue
                 eligible_ticks = tuple(tick.row_id for tick in safe_ticks)
                 eligible_underlying = tuple(item.row_id for item in safe_underlying)
                 eligible_quotes = tuple(quote.row_id for quote in safe_quotes)
@@ -773,6 +830,36 @@ def dataset_diagnostics(rows: tuple[TrainingRow, ...]) -> dict[str, object]:
 
 def _training_unavailable_reason(error: TrainingDataUnavailableError) -> str:
     return error.reason.value
+
+
+def _gap_quarantine_reason(
+    gaps: tuple[DataGap, ...],
+) -> TrainingDataUnavailableReason | None:
+    reasons = {gap.reason for gap in gaps}
+    if GapReason.RUNTIME_STALL in reasons:
+        return TrainingDataUnavailableReason.RUNTIME_STALL_GAP
+    if GapReason.RESTART in reasons:
+        return TrainingDataUnavailableReason.RESTART_GAP
+    if reasons:
+        return TrainingDataUnavailableReason.SOURCE_GAP_OVERLAP
+    return None
+
+
+def _feature_quarantine_reason(vector: FeatureVector) -> TrainingDataUnavailableReason | None:
+    missing = {observation.missing_reason for observation in vector.observations}
+    if MissingReason.STALE in missing:
+        return TrainingDataUnavailableReason.STALE_SOURCE
+    if MissingReason.SOURCE_UNAVAILABLE in missing:
+        return TrainingDataUnavailableReason.SOURCE_UNAVAILABLE
+    if any(
+        observation.missing_reason is MissingReason.NOT_ENOUGH_LOOKBACK
+        and observation.name not in {"yes_top_depth_change", "no_top_depth_change"}
+        for observation in vector.observations
+    ):
+        return TrainingDataUnavailableReason.INSUFFICIENT_LOOKBACK
+    if MissingReason.MARKET_SIDE_UNAVAILABLE in missing:
+        return TrainingDataUnavailableReason.MARKET_SIDE_UNAVAILABLE
+    return None
 
 
 def _diagnostic_int(diagnostics: dict[str, object], key: str) -> int:

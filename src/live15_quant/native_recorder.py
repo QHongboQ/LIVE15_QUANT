@@ -11,11 +11,21 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Protocol
 
 import requests
 
 from live15_quant.config import Settings
+from live15_quant.features import COINBASE_PRODUCT_BY_ASSET
+from live15_quant.gaps import (
+    DataGap,
+    GapReason,
+    GapSource,
+    GapStream,
+    configured_streams,
+    timedelta_seconds,
+)
 from live15_quant.kalshi_lifecycle import (
     KalshiDiscovery,
     KalshiLifecycle,
@@ -343,6 +353,24 @@ class KalshiNativeRecorder:
         self._operation_condition = threading.Condition()
         self._active_operations = 0
         self._reported_stale_sources: set[str] = set()
+        self._gap_streams = {
+            (stream.source, stream.asset): stream for stream in configured_streams(settings)
+        }
+        self._gap_last = {
+            key: timestamp
+            for key, stream in self._gap_streams.items()
+            if (
+                timestamp := store.latest_gap_stream_timestamp(
+                    stream.source, stream.asset, stream.instrument
+                )
+            )
+            is not None
+        }
+        self._active_gaps = {
+            (gap.source, gap.asset): gap
+            for gap in store.active_data_gaps()
+            if (gap.source, gap.asset) in self._gap_streams
+        }
 
     def _utc_now(self) -> datetime:
         value = self._now()
@@ -474,6 +502,120 @@ class KalshiNativeRecorder:
 
     def _worker_advanced(self, key: str, observed: datetime | None = None) -> None:
         self._health.worker_progress[key] = observed or self._utc_now()
+
+    def _observe_gap(
+        self,
+        source: GapSource,
+        asset: Asset,
+        received: datetime,
+        *,
+        source_health_key: str,
+    ) -> None:
+        """Close an append-only active gap when the next observation arrives."""
+
+        stream = self._gap_streams[(source, asset)]
+        received = received.astimezone(UTC)
+        previous = self._gap_last.get((source, asset))
+        if previous is not None and received > previous:
+            duration = timedelta_seconds(received - previous)
+            if duration > stream.threshold_seconds:
+                active = self._active_gaps.get((source, asset))
+                if active is None or active.gap_start != previous:
+                    active = self._open_gap(
+                        stream,
+                        previous,
+                        source_health_key=source_health_key,
+                        detected_at=self._utc_now(),
+                    )
+                recovered = DataGap(
+                    source=source,
+                    asset=asset,
+                    instrument=stream.instrument,
+                    gap_start=active.gap_start,
+                    gap_end=received,
+                    detected_at=self._utc_now(),
+                    threshold_seconds=active.threshold_seconds,
+                    reason=active.reason,
+                    error_type=active.error_type,
+                    recovered=True,
+                    recorder_session_id=active.recorder_session_id,
+                    incident_id=active.incident_id,
+                )
+                if self._store.append_data_gap(recovered):
+                    self._wrote("data_gaps")
+                self._active_gaps.pop((source, asset), None)
+        if previous is None or received > previous:
+            self._gap_last[(source, asset)] = received
+
+    def _open_gap(
+        self,
+        stream: GapStream,
+        gap_start: datetime,
+        *,
+        source_health_key: str,
+        detected_at: datetime,
+    ) -> DataGap:
+        reason = GapReason.OBSERVATION_INTERVAL
+        incident_id = None
+        if gap_start < self._health.started_at <= detected_at:
+            reason = GapReason.RESTART
+            incident_id = f"recorder-session:{self._health.started_at.isoformat()}"
+        elif Decimal(str(self._health.event_loop_lag_seconds)) > stream.threshold_seconds:
+            reason = GapReason.RUNTIME_STALL
+            incident_id = f"event-loop-lag:{self._health.started_at.isoformat()}"
+        elif source_health_key in self._health.source_failures:
+            reason = GapReason.SOURCE_OUTAGE
+        active = DataGap(
+            source=stream.source,
+            asset=stream.asset,
+            instrument=stream.instrument,
+            gap_start=gap_start,
+            gap_end=None,
+            detected_at=detected_at,
+            threshold_seconds=stream.threshold_seconds,
+            reason=reason,
+            error_type=self._health.source_failures.get(source_health_key),
+            recovered=False,
+            recorder_session_id=self._health.started_at.isoformat(),
+            incident_id=incident_id,
+        )
+        if self._store.append_data_gap(active):
+            self._wrote("data_gaps")
+        self._active_gaps[(stream.source, stream.asset)] = active
+        return active
+
+    def _open_due_gaps(self, observed: datetime) -> None:
+        """Persist stale intervals once, before a source eventually recovers."""
+
+        for key, previous in tuple(self._gap_last.items()):
+            stream = self._gap_streams[key]
+            if key in self._active_gaps or not self._gap_stream_enabled(stream):
+                continue
+            if timedelta_seconds(observed - previous) <= stream.threshold_seconds:
+                continue
+            self._open_gap(
+                stream,
+                previous,
+                source_health_key=self._gap_source_health_key(stream),
+                detected_at=observed,
+            )
+
+    def _gap_stream_enabled(self, stream: GapStream) -> bool:
+        if stream.source is GapSource.PYTH:
+            return self._settings.enable_pyth_underlying
+        if stream.source in {GapSource.BINANCE, GapSource.HYPERLIQUID}:
+            return self._settings.enable_secondary_underlying
+        return True
+
+    @staticmethod
+    def _gap_source_health_key(stream: GapStream) -> str:
+        if stream.source is GapSource.KALSHI_REST:
+            return f"kalshi_quote:{stream.asset.value}"
+        if stream.source is GapSource.COINBASE:
+            return "coinbase"
+        if stream.source is GapSource.PYTH:
+            return f"pyth:{stream.asset.value}"
+        return f"secondary:{stream.asset.value}"
 
     async def run(self) -> None:
         self._stop_event.clear()
@@ -875,6 +1017,12 @@ class KalshiNativeRecorder:
                     else:
                         if self._store.append_kalshi_quote(quote):
                             self._wrote("kalshi_prediction_quotes")
+                            self._observe_gap(
+                                GapSource.KALSHI_REST,
+                                asset,
+                                quote.received_timestamp,
+                                source_health_key=key,
+                            )
                         self._health.last_quotes[asset] = quote.received_timestamp
                         self._source_ok(key)
                 except asyncio.CancelledError:
@@ -957,6 +1105,21 @@ class KalshiNativeRecorder:
                 async for tick in self._coinbase_factory().ticks():
                     if self._store.append_coinbase(tick):
                         self._wrote("coinbase_ticks")
+                        asset = next(
+                            (
+                                candidate
+                                for candidate, product in COINBASE_PRODUCT_BY_ASSET.items()
+                                if product == tick.symbol
+                            ),
+                            None,
+                        )
+                        if asset is not None:
+                            self._observe_gap(
+                                GapSource.COINBASE,
+                                asset,
+                                tick.received_at,
+                                source_health_key="coinbase",
+                            )
                     self._health.last_coinbase[tick.symbol] = tick.received_at
                     self._source_ok("coinbase")
                     self._worker_advanced("coinbase")
@@ -1051,6 +1214,12 @@ class KalshiNativeRecorder:
         for observation in batch.observations:
             if self._store.append_underlying(observation):
                 self._wrote("underlying_observations")
+                self._observe_gap(
+                    GapSource.PYTH,
+                    observation.asset,
+                    observation.received_timestamp,
+                    source_health_key=f"pyth:{observation.asset.value}",
+                )
             self._health.last_additional_underlying[observation.asset] = (
                 observation.source_timestamp
             )
@@ -1084,6 +1253,12 @@ class KalshiNativeRecorder:
                     health_key = f"{asset.value}:{observation.provider.value}"
                     if status is SecondaryAppendStatus.INSERTED:
                         self._wrote("secondary_underlying_observations")
+                        self._observe_gap(
+                            (GapSource.BINANCE if asset is Asset.BNB else GapSource.HYPERLIQUID),
+                            asset,
+                            observation.received_timestamp,
+                            source_health_key=key,
+                        )
                         stored = self._store.latest_secondary_underlying(
                             asset, observation.provider
                         )
@@ -1191,6 +1366,7 @@ class KalshiNativeRecorder:
             observed_monotonic = self._monotonic()
             self._health.event_loop_lag_seconds = max(0.0, observed_monotonic - deadline)
             deadline = observed_monotonic + interval
+            self._open_due_gaps(self._utc_now())
             health = self.health()
             stale = set(health.stale_sources)
             for source in sorted(stale - self._reported_stale_sources):

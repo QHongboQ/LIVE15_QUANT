@@ -9,6 +9,7 @@ import pytest
 
 import live15_quant.storage as storage_module
 from live15_quant.dataset import (
+    ASOF_QUERY_VERSION,
     DATASET_VERSION,
     DatasetBuildConfig,
     DatasetBuilder,
@@ -287,6 +288,7 @@ def test_dataset_version_changes_are_part_of_reproducible_manifest(tmp_path) -> 
         add_event(source, BASE, result="yes")
         first = DatasetBuilder(source, destination).build(DatasetBuildConfig(sampling()))
         first_snapshot = source.training_source_snapshot()
+        persisted_first_snapshot = destination.build_source_snapshot(first.build_id)
         source.append_coinbase(
             MarketTick(
                 symbol="BTC-USD",
@@ -300,8 +302,11 @@ def test_dataset_version_changes_are_part_of_reproducible_manifest(tmp_path) -> 
         second_snapshot = source.training_source_snapshot()
         second = DatasetBuilder(source, destination).build(DatasetBuildConfig(sampling()))
 
-    assert DATASET_VERSION == "1.1.0"
+    assert DATASET_VERSION == "1.2.0"
     assert first_snapshot["recorder_schema_version"] == SCHEMA_VERSION
+    assert all(persisted_first_snapshot[key] == value for key, value in first_snapshot.items())
+    assert persisted_first_snapshot["dataset_query_metadata"]["version"] == ASOF_QUERY_VERSION
+    assert "content_sha256" in persisted_first_snapshot["data_gaps"]
     assert first_snapshot != second_snapshot
     assert len(first.build_id) == 64
     assert second.build_id != first.build_id

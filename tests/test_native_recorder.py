@@ -12,6 +12,7 @@ import requests
 
 import live15_quant.cli as cli
 from live15_quant.config import Settings
+from live15_quant.gaps import GapReason, GapSource
 from live15_quant.kalshi_lifecycle import (
     KalshiDiscovery,
     KalshiLifecycle,
@@ -976,6 +977,98 @@ async def test_health_reports_worker_progress_and_event_loop_lag(tmp_path, monke
         assert payload["worker_progress"]["coinbase"] == NOW.isoformat()
         assert payload["event_loop_lag_seconds"] == pytest.approx(0.015)
         assert "kalshi_discovery:BTC" in payload["stale_workers"]
+
+
+def test_realtime_gap_opens_once_and_closes_append_only_after_recovery(tmp_path) -> None:
+    path = tmp_path / "live-gap.sqlite3"
+    previous = NOW - timedelta(seconds=40)
+    settings = Settings(
+        products=("BTC-USD",),
+        recorder_coinbase_stale_seconds=15,
+        recorder_health_path=tmp_path / "health.json",
+    )
+    with RecorderStore(path) as store:
+        store.append_coinbase(
+            MarketTick(
+                symbol="BTC-USD",
+                price=Decimal("1"),
+                bid=Decimal("0.9"),
+                ask=Decimal("1.1"),
+                received_at=previous,
+                exchange_time=previous,
+            )
+        )
+        recorder = KalshiNativeRecorder(
+            settings,
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        recorder._open_due_gaps(NOW)
+        recorder._open_due_gaps(NOW + timedelta(seconds=1))
+        active = store.active_data_gaps()
+        assert len(active) == 1
+        assert active[0].reason is GapReason.RESTART
+        assert store.count("data_gaps") == 1
+
+        recorder._observe_gap(
+            GapSource.COINBASE,
+            Asset.BTC,
+            NOW + timedelta(seconds=1),
+            source_health_key="coinbase",
+        )
+        assert store.active_data_gaps() == ()
+        facts = store.replay_data_gaps()
+        assert len(facts) == 2
+        assert not facts[0].recovered
+        assert facts[1].recovered
+        assert facts[1].gap_start == facts[0].gap_start
+        assert facts[1].reason is facts[0].reason
+
+
+def test_restart_recovers_persisted_active_gap_without_duplicate_open(tmp_path) -> None:
+    path = tmp_path / "restart-gap.sqlite3"
+    previous = NOW - timedelta(seconds=40)
+    settings = Settings(
+        products=("BTC-USD",),
+        recorder_coinbase_stale_seconds=15,
+        recorder_health_path=tmp_path / "health.json",
+    )
+    with RecorderStore(path) as store:
+        store.append_coinbase(
+            MarketTick(
+                symbol="BTC-USD",
+                price=Decimal("1"),
+                bid=Decimal("0.9"),
+                ask=Decimal("1.1"),
+                received_at=previous,
+                exchange_time=previous,
+            )
+        )
+        first = KalshiNativeRecorder(
+            settings,
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        first._open_due_gaps(NOW)
+
+    with RecorderStore(path) as recovered:
+        restarted = KalshiNativeRecorder(
+            settings,
+            recovered,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW + timedelta(seconds=5),
+        )
+        restarted._open_due_gaps(NOW + timedelta(seconds=5))
+        assert recovered.count("data_gaps") == 1
+        assert len(recovered.active_data_gaps()) == 1
 
 
 @pytest.mark.asyncio
