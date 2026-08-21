@@ -22,7 +22,9 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from live15_quant.config import KALSHI_PRODUCTION_WEBSOCKET_URL
 from live15_quant.kalshi_ws import (
     KalshiServerMessage,
+    KalshiSubscriptionCommand,
     KalshiWsPayloadError,
+    KalshiWsRuntimeState,
     parse_kalshi_server_message,
     subscribe_command,
 )
@@ -122,6 +124,17 @@ class KalshiWsDiagnostics:
     last_disconnect_at: datetime | None = None
     last_reconnect_duration_seconds: float | None = None
     receive_queue_high_watermark: int = 0
+    receive_queue_capacity: int = 0
+    receive_queue_depth: int = 0
+    receive_queue_enqueued: int = 0
+    receive_queue_dequeued: int = 0
+    receive_queue_full_waits: int = 0
+    receive_queue_dropped: int = 0
+    receive_queue_max_backlog_seconds: float = 0.0
+    receive_queue_above_50_seconds: float = 0.0
+    receive_queue_above_75_seconds: float = 0.0
+    receive_queue_above_90_seconds: float = 0.0
+    transport_state: KalshiWsRuntimeState = KalshiWsRuntimeState.CONNECTING
 
 
 Connector = Callable[..., Any]
@@ -176,12 +189,45 @@ class KalshiProductionReadOnlyWebSocket:
         self._receive_queue_capacity = receive_queue_capacity
         self._closed = False
         self._active: KalshiWsConnection | None = None
-        self.diagnostics = KalshiWsDiagnostics()
+        self._desired_tickers: tuple[str, ...] = ()
+        self.diagnostics = KalshiWsDiagnostics(receive_queue_capacity=receive_queue_capacity)
+        self._queue_last_observed_ns: int | None = None
+        self._queue_last_depth = 0
+        self._queue_backlog_started_ns: int | None = None
+
+    def _observe_queue(self, depth: int, observed_ns: int) -> None:
+        """Measure bounded-queue pressure with the local monotonic clock."""
+
+        previous = self._queue_last_observed_ns
+        if previous is not None:
+            elapsed = max(0, observed_ns - previous) / 1_000_000_000
+            capacity = self._receive_queue_capacity
+            ratio = self._queue_last_depth / capacity
+            if ratio >= 0.5:
+                self.diagnostics.receive_queue_above_50_seconds += elapsed
+            if ratio >= 0.75:
+                self.diagnostics.receive_queue_above_75_seconds += elapsed
+            if ratio >= 0.9:
+                self.diagnostics.receive_queue_above_90_seconds += elapsed
+        if depth > 0 and self._queue_backlog_started_ns is None:
+            self._queue_backlog_started_ns = observed_ns
+        elif depth == 0 and self._queue_backlog_started_ns is not None:
+            duration = max(0, observed_ns - self._queue_backlog_started_ns) / 1_000_000_000
+            self.diagnostics.receive_queue_max_backlog_seconds = max(
+                self.diagnostics.receive_queue_max_backlog_seconds, duration
+            )
+            self._queue_backlog_started_ns = None
+        self._queue_last_observed_ns = observed_ns
+        self._queue_last_depth = depth
+        self.diagnostics.receive_queue_depth = depth
+        self.diagnostics.receive_queue_high_watermark = max(
+            self.diagnostics.receive_queue_high_watermark, depth
+        )
 
     async def _receive_frames(
         self,
         websocket: KalshiWsConnection,
-        queue: asyncio.Queue[tuple[str | bytes, datetime, int] | BaseException],
+        queue: asyncio.Queue[tuple[str | bytes, datetime, int, datetime, int] | BaseException],
     ) -> None:
         """Drain the socket promptly so consumer persistence cannot distort receive time."""
 
@@ -190,11 +236,26 @@ class KalshiProductionReadOnlyWebSocket:
                 raw = await websocket.recv()
                 received = self._clock()
                 received_monotonic_ns = self._perf_counter_ns()
-                await queue.put((raw, received, received_monotonic_ns))
-                self.diagnostics.receive_queue_high_watermark = max(
-                    self.diagnostics.receive_queue_high_watermark,
-                    queue.qsize(),
-                )
+                while True:
+                    enqueued = self._clock()
+                    enqueued_monotonic_ns = self._perf_counter_ns()
+                    try:
+                        queue.put_nowait(
+                            (
+                                raw,
+                                received,
+                                received_monotonic_ns,
+                                enqueued,
+                                enqueued_monotonic_ns,
+                            )
+                        )
+                        break
+                    except asyncio.QueueFull:
+                        self.diagnostics.receive_queue_full_waits += 1
+                        self._observe_queue(queue.qsize(), self._perf_counter_ns())
+                        await self._sleeper(0)
+                self.diagnostics.receive_queue_enqueued += 1
+                self._observe_queue(queue.qsize(), enqueued_monotonic_ns)
         except asyncio.CancelledError:
             raise
         except (ConnectionClosed, OSError, TimeoutError) as error:
@@ -221,6 +282,7 @@ class KalshiProductionReadOnlyWebSocket:
                 settings.kalshi_production_private_key_path,
             ),
             read_timeout_seconds=settings.kalshi_websocket_read_timeout_seconds,
+            receive_queue_capacity=settings.kalshi_websocket_queue_capacity,
             repository_root=repository_root,
             **overrides,
         )
@@ -235,10 +297,15 @@ class KalshiProductionReadOnlyWebSocket:
         }
 
     async def messages(self, tickers: Sequence[str]) -> AsyncIterator[KalshiServerMessage]:
-        command = subscribe_command(1, tickers)
+        self.set_reconnect_tickers(tickers)
         failures = 0
         while not self._closed:
             self.diagnostics.connection_attempts += 1
+            self.diagnostics.transport_state = (
+                KalshiWsRuntimeState.CONNECTING
+                if self.diagnostics.connection_attempts == 1
+                else KalshiWsRuntimeState.RECONNECTING
+            )
             started = self._monotonic()
             connection_id = self._connection_id_factory()
             try:
@@ -254,20 +321,30 @@ class KalshiProductionReadOnlyWebSocket:
                 ) as websocket:
                     headers = {}  # discard authentication header references immediately
                     self._active = websocket
+                    self.diagnostics.transport_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
                     self.diagnostics.connected_at = self._clock()
                     self.diagnostics.last_reconnect_duration_seconds = self._monotonic() - started
-                    await websocket.send(command.payload)
+                    await websocket.send(subscribe_command(1, self._desired_tickers).payload)
                     failures = 0
-                    queue: asyncio.Queue[tuple[str | bytes, datetime, int] | BaseException] = (
-                        asyncio.Queue(maxsize=self._receive_queue_capacity)
-                    )
+                    queue: asyncio.Queue[
+                        tuple[str | bytes, datetime, int, datetime, int] | BaseException
+                    ] = asyncio.Queue(maxsize=self._receive_queue_capacity)
+                    self._observe_queue(0, self._perf_counter_ns())
                     receiver = asyncio.create_task(self._receive_frames(websocket, queue))
                     try:
                         while not self._closed:
                             queued = await asyncio.wait_for(queue.get(), timeout=self._read_timeout)
+                            self.diagnostics.receive_queue_dequeued += 1
+                            self._observe_queue(queue.qsize(), self._perf_counter_ns())
                             if isinstance(queued, BaseException):
                                 raise queued
-                            raw, received, received_monotonic_ns = queued
+                            (
+                                raw,
+                                received,
+                                received_monotonic_ns,
+                                enqueued,
+                                enqueued_monotonic_ns,
+                            ) = queued
                             try:
                                 decoded = json.loads(raw, parse_float=Decimal, parse_int=Decimal)
                             except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
@@ -281,6 +358,8 @@ class KalshiProductionReadOnlyWebSocket:
                                 socket_received_timestamp=received,
                                 parse_timestamp=parsed,
                                 socket_received_monotonic_ns=received_monotonic_ns,
+                                enqueue_timestamp=enqueued,
+                                enqueue_monotonic_ns=enqueued_monotonic_ns,
                             )
                             self.diagnostics.messages += 1
                             yield message
@@ -295,6 +374,7 @@ class KalshiProductionReadOnlyWebSocket:
                 if self._closed:
                     return
                 self.diagnostics.transport_errors += 1
+                self.diagnostics.transport_state = KalshiWsRuntimeState.RECONNECTING
             finally:
                 self._active = None
                 self.diagnostics.last_disconnect_at = self._clock()
@@ -304,6 +384,25 @@ class KalshiProductionReadOnlyWebSocket:
             delay = min(self._max_backoff, self._base_backoff * (2 ** min(failures, 8)))
             failures += 1
             await self._sleeper(delay)
+
+    def set_reconnect_tickers(self, tickers: Sequence[str]) -> None:
+        """Set exact read-only markets used by the next authenticated connection."""
+
+        command = subscribe_command(1, tickers)
+        payload = command.as_object()
+        params = payload["params"]
+        assert isinstance(params, Mapping)
+        values = params["market_tickers"]
+        assert isinstance(values, list)
+        self._desired_tickers = tuple(str(value) for value in values)
+
+    async def send_command(self, command: KalshiSubscriptionCommand) -> None:
+        """Send one documented market-data subscription command on the active socket."""
+
+        active = self._active
+        if active is None:
+            raise KalshiReadOnlyWsError("Kalshi WebSocket is not connected")
+        await active.send(command.payload)
 
     async def close(self) -> None:
         self._closed = True

@@ -95,6 +95,56 @@ class ControlCenterService:
                 event_loop_lag_seconds=self._optional_float(raw.get("event_loop_lag_seconds")),
                 fatal_task=self._optional_string(raw.get("fatal_task")),
                 fatal_error_type=self._optional_string(raw.get("fatal_error_type")),
+                kalshi_ws_connection_state=str(raw.get("kalshi_ws_connection_state", "disabled")),
+                kalshi_ws_synchronized_markets=self._string_map(
+                    raw.get("kalshi_ws_synchronized_markets"), optional=True
+                ),
+                kalshi_ws_synchronized_count=(
+                    self._optional_int(raw.get("kalshi_ws_synchronized_count")) or 0
+                ),
+                kalshi_ws_book_age_seconds=self._float_map(raw.get("kalshi_ws_book_age_seconds")),
+                kalshi_ws_seq_gaps=self._optional_int(raw.get("kalshi_ws_seq_gaps")) or 0,
+                kalshi_ws_resync_count=self._optional_int(raw.get("kalshi_ws_resync_count")) or 0,
+                kalshi_ws_reconnect_count=(
+                    self._optional_int(raw.get("kalshi_ws_reconnect_count")) or 0
+                ),
+                kalshi_ws_queue_high_watermark=(
+                    self._optional_int(raw.get("kalshi_ws_queue_high_watermark")) or 0
+                ),
+                kalshi_ws_queue_capacity=(
+                    self._optional_int(raw.get("kalshi_ws_queue_capacity")) or 0
+                ),
+                kalshi_ws_queue_depth=(self._optional_int(raw.get("kalshi_ws_queue_depth")) or 0),
+                kalshi_ws_queue_enqueued=(
+                    self._optional_int(raw.get("kalshi_ws_queue_enqueued")) or 0
+                ),
+                kalshi_ws_queue_dequeued=(
+                    self._optional_int(raw.get("kalshi_ws_queue_dequeued")) or 0
+                ),
+                kalshi_ws_queue_full_waits=(
+                    self._optional_int(raw.get("kalshi_ws_queue_full_waits")) or 0
+                ),
+                kalshi_ws_queue_dropped=(
+                    self._optional_int(raw.get("kalshi_ws_queue_dropped")) or 0
+                ),
+                kalshi_ws_queue_max_backlog_seconds=(
+                    self._optional_float(raw.get("kalshi_ws_queue_max_backlog_seconds")) or 0.0
+                ),
+                kalshi_ws_queue_above_50_seconds=(
+                    self._optional_float(raw.get("kalshi_ws_queue_above_50_seconds")) or 0.0
+                ),
+                kalshi_ws_queue_above_75_seconds=(
+                    self._optional_float(raw.get("kalshi_ws_queue_above_75_seconds")) or 0.0
+                ),
+                kalshi_ws_queue_above_90_seconds=(
+                    self._optional_float(raw.get("kalshi_ws_queue_above_90_seconds")) or 0.0
+                ),
+                kalshi_ws_receive_persist_latency_ms=self._optional_string(
+                    raw.get("kalshi_ws_receive_persist_latency_ms")
+                ),
+                kalshi_rest_fallback_status=str(
+                    raw.get("kalshi_rest_fallback_status", "unavailable")
+                ),
             )
             return self._apply_managed_state(response)
         except FileNotFoundError:

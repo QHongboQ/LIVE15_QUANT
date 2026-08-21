@@ -33,6 +33,24 @@ from live15_quant.kalshi_lifecycle import (
     KalshiMarket,
     KalshiNativeMarketProvider,
 )
+from live15_quant.kalshi_ws import (
+    KalshiAtomicOrderBookCoordinator,
+    KalshiAtomicSessionProcessor,
+    KalshiBookInvariantError,
+    KalshiBookSyncStatus,
+    KalshiCommandAcknowledged,
+    KalshiOrderBookDelta,
+    KalshiOrderBookSnapshot,
+    KalshiServerMessage,
+    KalshiSubscribed,
+    KalshiSubscriptionCommand,
+    KalshiTickerUpdate,
+    KalshiUnsynchronizedBookError,
+    KalshiWsErrorMessage,
+    KalshiWsRuntimeState,
+    SynchronizedKalshiOrderBook,
+    update_subscription_command,
+)
 from live15_quant.models import (
     Asset,
     FifteenMinuteContract,
@@ -47,6 +65,10 @@ from live15_quant.providers.kalshi import (
     KalshiOfficialQuoteProvider,
     KalshiPublicApiError,
     KalshiTargetUnavailableError,
+)
+from live15_quant.providers.kalshi_ws import (
+    KalshiProductionReadOnlyWebSocket,
+    KalshiReadOnlyWsError,
 )
 from live15_quant.providers.low_latency import (
     BenchmarkPayloadError,
@@ -109,6 +131,18 @@ class UnderlyingSource(Protocol):
     def close(self) -> None: ...
 
 
+class KalshiWsSource(Protocol):
+    diagnostics: object
+
+    def messages(self, tickers: Sequence[str]) -> AsyncIterator[KalshiServerMessage]: ...
+
+    def set_reconnect_tickers(self, tickers: Sequence[str]) -> None: ...
+
+    async def send_command(self, command: KalshiSubscriptionCommand) -> None: ...
+
+    async def close(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class KalshiNativeHealth:
     started_at: datetime
@@ -138,6 +172,25 @@ class KalshiNativeHealth:
     robinhood_reference_healthy: bool | None
     fatal_task: str | None
     fatal_error_type: str | None
+    kalshi_ws_connection_state: KalshiWsRuntimeState
+    kalshi_ws_synchronized_markets: dict[Asset, str]
+    kalshi_ws_last_books: dict[Asset, datetime]
+    kalshi_ws_seq_gaps: int
+    kalshi_ws_resync_count: int
+    kalshi_ws_reconnect_count: int
+    kalshi_ws_queue_high_watermark: int
+    kalshi_ws_queue_capacity: int
+    kalshi_ws_queue_depth: int
+    kalshi_ws_queue_enqueued: int
+    kalshi_ws_queue_dequeued: int
+    kalshi_ws_queue_full_waits: int
+    kalshi_ws_queue_dropped: int
+    kalshi_ws_queue_max_backlog_seconds: float
+    kalshi_ws_queue_above_50_seconds: float
+    kalshi_ws_queue_above_75_seconds: float
+    kalshi_ws_queue_above_90_seconds: float
+    kalshi_ws_receive_persist_latency_ms: str | None
+    kalshi_rest_fallback_status: str
 
     @property
     def uptime_seconds(self) -> float:
@@ -198,6 +251,28 @@ class KalshiNativeHealth:
             "robinhood_reference_healthy": self.robinhood_reference_healthy,
             "fatal_task": self.fatal_task,
             "fatal_error_type": self.fatal_error_type,
+            "kalshi_ws_connection_state": self.kalshi_ws_connection_state.value,
+            "kalshi_ws_synchronized_markets": {
+                str(asset): ticker for asset, ticker in self.kalshi_ws_synchronized_markets.items()
+            },
+            "kalshi_ws_synchronized_count": len(self.kalshi_ws_synchronized_markets),
+            "kalshi_ws_book_age_seconds": ages(self.kalshi_ws_last_books),
+            "kalshi_ws_seq_gaps": self.kalshi_ws_seq_gaps,
+            "kalshi_ws_resync_count": self.kalshi_ws_resync_count,
+            "kalshi_ws_reconnect_count": self.kalshi_ws_reconnect_count,
+            "kalshi_ws_queue_high_watermark": self.kalshi_ws_queue_high_watermark,
+            "kalshi_ws_queue_capacity": self.kalshi_ws_queue_capacity,
+            "kalshi_ws_queue_depth": self.kalshi_ws_queue_depth,
+            "kalshi_ws_queue_enqueued": self.kalshi_ws_queue_enqueued,
+            "kalshi_ws_queue_dequeued": self.kalshi_ws_queue_dequeued,
+            "kalshi_ws_queue_full_waits": self.kalshi_ws_queue_full_waits,
+            "kalshi_ws_queue_dropped": self.kalshi_ws_queue_dropped,
+            "kalshi_ws_queue_max_backlog_seconds": self.kalshi_ws_queue_max_backlog_seconds,
+            "kalshi_ws_queue_above_50_seconds": self.kalshi_ws_queue_above_50_seconds,
+            "kalshi_ws_queue_above_75_seconds": self.kalshi_ws_queue_above_75_seconds,
+            "kalshi_ws_queue_above_90_seconds": self.kalshi_ws_queue_above_90_seconds,
+            "kalshi_ws_receive_persist_latency_ms": self.kalshi_ws_receive_persist_latency_ms,
+            "kalshi_rest_fallback_status": self.kalshi_rest_fallback_status,
         }
 
 
@@ -226,6 +301,13 @@ class _MutableHealth:
     robinhood_reference_healthy: bool | None = None
     fatal_task: str | None = None
     fatal_error_type: str | None = None
+    kalshi_ws_state: KalshiWsRuntimeState = KalshiWsRuntimeState.CONNECTING
+    kalshi_ws_synchronized: dict[Asset, str] = field(default_factory=dict)
+    kalshi_ws_last_books: dict[Asset, datetime] = field(default_factory=dict)
+    kalshi_ws_seq_gaps: int = 0
+    kalshi_ws_resync_count: int = 0
+    kalshi_ws_reconnect_count: int = 0
+    kalshi_ws_receive_persist_latency_ms: str | None = None
 
 
 def _market_from_record(record: KalshiMarketRecord) -> KalshiMarket:
@@ -262,6 +344,7 @@ class KalshiNativeRecorder:
         robinhood_reference: RobinhoodReference | None = None,
         underlying_factory: Callable[[], UnderlyingSource] | None = None,
         secondary_factories: dict[Asset, Callable[[], BenchmarkSource]] | None = None,
+        kalshi_ws_factory: Callable[[], KalshiWsSource] | None = None,
         now: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -319,6 +402,21 @@ class KalshiNativeRecorder:
             Asset.BNB: BinanceBnbPublicMarketDataSource,
             Asset.HYPE: HyperliquidHypePublicMarketDataSource,
         }
+        self._kalshi_ws: KalshiWsSource | None = None
+        if settings.enable_kalshi_production_websocket:
+            self._kalshi_ws = (
+                kalshi_ws_factory()
+                if kalshi_ws_factory is not None
+                else KalshiProductionReadOnlyWebSocket.from_settings(settings)
+            )
+        self._kalshi_ws_coordinator: KalshiAtomicOrderBookCoordinator | None = None
+        self._kalshi_ws_books: dict[Asset, SynchronizedKalshiOrderBook] = {}
+        self._kalshi_ws_pending: list[
+            tuple[
+                KalshiOrderBookSnapshot | KalshiOrderBookDelta | KalshiCommandAcknowledged,
+                KalshiBookSyncStatus,
+            ]
+        ] = []
         self._robinhood = robinhood_reference
         if settings.enable_robinhood_reference and self._robinhood is None:
             self._robinhood = Robinhood15MinuteProvider(settings)
@@ -384,6 +482,13 @@ class KalshiNativeRecorder:
     def health(self) -> KalshiNativeHealth:
         observed = self._utc_now()
         database_bytes, wal_bytes = self._store.database_sizes()
+        ws_state = self._health.kalshi_ws_state
+        if (
+            self._kalshi_ws is not None
+            and getattr(self._kalshi_ws.diagnostics, "transport_state", None)
+            is KalshiWsRuntimeState.RECONNECTING
+        ):
+            ws_state = KalshiWsRuntimeState.RECONNECTING
         stale_sources = tuple(
             sorted(
                 [
@@ -399,6 +504,17 @@ class KalshiNativeRecorder:
                     if asset not in self._health.last_quotes
                     or (observed - self._health.last_quotes[asset]).total_seconds()
                     > self._settings.official_quote_max_source_age_seconds
+                ]
+                + [
+                    f"kalshi_ws:{asset.value}"
+                    for asset in self._health.current
+                    if self._settings.enable_kalshi_production_websocket
+                    and (
+                        asset not in self._health.kalshi_ws_last_books
+                        or (observed - self._health.kalshi_ws_last_books[asset]).total_seconds()
+                        > self._settings.kalshi_websocket_stale_seconds
+                        or asset not in self._health.kalshi_ws_synchronized
+                    )
                 ]
                 + [
                     f"coinbase:{product}"
@@ -472,6 +588,85 @@ class KalshiNativeRecorder:
             robinhood_reference_healthy=self._health.robinhood_reference_healthy,
             fatal_task=self._health.fatal_task,
             fatal_error_type=self._health.fatal_error_type,
+            kalshi_ws_connection_state=ws_state,
+            kalshi_ws_synchronized_markets=dict(self._health.kalshi_ws_synchronized),
+            kalshi_ws_last_books=dict(self._health.kalshi_ws_last_books),
+            kalshi_ws_seq_gaps=self._health.kalshi_ws_seq_gaps,
+            kalshi_ws_resync_count=self._health.kalshi_ws_resync_count,
+            kalshi_ws_reconnect_count=(
+                int(getattr(self._kalshi_ws.diagnostics, "reconnects", 0))
+                if self._kalshi_ws is not None
+                else 0
+            ),
+            kalshi_ws_queue_high_watermark=(
+                int(getattr(self._kalshi_ws.diagnostics, "receive_queue_high_watermark", 0))
+                if self._kalshi_ws is not None
+                else 0
+            ),
+            kalshi_ws_queue_capacity=(
+                int(getattr(self._kalshi_ws.diagnostics, "receive_queue_capacity", 0))
+                if self._kalshi_ws is not None
+                else 0
+            ),
+            kalshi_ws_queue_depth=(
+                int(getattr(self._kalshi_ws.diagnostics, "receive_queue_depth", 0))
+                if self._kalshi_ws is not None
+                else 0
+            ),
+            kalshi_ws_queue_enqueued=(
+                int(getattr(self._kalshi_ws.diagnostics, "receive_queue_enqueued", 0))
+                if self._kalshi_ws is not None
+                else 0
+            ),
+            kalshi_ws_queue_dequeued=(
+                int(getattr(self._kalshi_ws.diagnostics, "receive_queue_dequeued", 0))
+                if self._kalshi_ws is not None
+                else 0
+            ),
+            kalshi_ws_queue_full_waits=(
+                int(getattr(self._kalshi_ws.diagnostics, "receive_queue_full_waits", 0))
+                if self._kalshi_ws is not None
+                else 0
+            ),
+            kalshi_ws_queue_dropped=(
+                int(getattr(self._kalshi_ws.diagnostics, "receive_queue_dropped", 0))
+                if self._kalshi_ws is not None
+                else 0
+            ),
+            kalshi_ws_queue_max_backlog_seconds=(
+                float(
+                    getattr(
+                        self._kalshi_ws.diagnostics,
+                        "receive_queue_max_backlog_seconds",
+                        0.0,
+                    )
+                )
+                if self._kalshi_ws is not None
+                else 0.0
+            ),
+            kalshi_ws_queue_above_50_seconds=(
+                float(getattr(self._kalshi_ws.diagnostics, "receive_queue_above_50_seconds", 0.0))
+                if self._kalshi_ws is not None
+                else 0.0
+            ),
+            kalshi_ws_queue_above_75_seconds=(
+                float(getattr(self._kalshi_ws.diagnostics, "receive_queue_above_75_seconds", 0.0))
+                if self._kalshi_ws is not None
+                else 0.0
+            ),
+            kalshi_ws_queue_above_90_seconds=(
+                float(getattr(self._kalshi_ws.diagnostics, "receive_queue_above_90_seconds", 0.0))
+                if self._kalshi_ws is not None
+                else 0.0
+            ),
+            kalshi_ws_receive_persist_latency_ms=(
+                self._health.kalshi_ws_receive_persist_latency_ms
+            ),
+            kalshi_rest_fallback_status=(
+                "healthy"
+                if any(asset in self._health.last_quotes for asset in self._health.current)
+                else "unavailable"
+            ),
         )
 
     def _expected_worker_thresholds(self) -> dict[str, float]:
@@ -496,6 +691,9 @@ class KalshiNativeRecorder:
                 thresholds[f"secondary:{asset.value}"] = (
                     self._settings.recorder_secondary_stale_seconds * 3
                 )
+        if self._settings.enable_kalshi_production_websocket:
+            thresholds["kalshi_ws"] = self._settings.kalshi_websocket_stale_seconds * 3
+            thresholds["kalshi_ws_persistence"] = 1.0
         if self._settings.enable_robinhood_reference and self._robinhood is not None:
             thresholds["robinhood_reference"] = self._settings.robinhood_poll_interval_seconds * 3
         return thresholds
@@ -516,17 +714,34 @@ class KalshiNativeRecorder:
         stream = self._gap_streams[(source, asset)]
         received = received.astimezone(UTC)
         previous = self._gap_last.get((source, asset))
-        if previous is not None and received > previous:
+        active = self._active_gaps.get((source, asset))
+        if active is not None and received > active.gap_start:
+            recovered = DataGap(
+                source=source,
+                asset=asset,
+                instrument=stream.instrument,
+                gap_start=active.gap_start,
+                gap_end=received,
+                detected_at=self._utc_now(),
+                threshold_seconds=active.threshold_seconds,
+                reason=active.reason,
+                error_type=active.error_type,
+                recovered=True,
+                recorder_session_id=active.recorder_session_id,
+                incident_id=active.incident_id,
+            )
+            if self._store.append_data_gap(recovered):
+                self._wrote("data_gaps")
+            self._active_gaps.pop((source, asset), None)
+        elif previous is not None and received > previous:
             duration = timedelta_seconds(received - previous)
             if duration > stream.threshold_seconds:
-                active = self._active_gaps.get((source, asset))
-                if active is None or active.gap_start != previous:
-                    active = self._open_gap(
-                        stream,
-                        previous,
-                        source_health_key=source_health_key,
-                        detected_at=self._utc_now(),
-                    )
+                active = self._open_gap(
+                    stream,
+                    previous,
+                    source_health_key=source_health_key,
+                    detected_at=self._utc_now(),
+                )
                 recovered = DataGap(
                     source=source,
                     asset=asset,
@@ -554,10 +769,13 @@ class KalshiNativeRecorder:
         *,
         source_health_key: str,
         detected_at: datetime,
+        reason_override: GapReason | None = None,
     ) -> DataGap:
-        reason = GapReason.OBSERVATION_INTERVAL
+        reason = reason_override or GapReason.OBSERVATION_INTERVAL
         incident_id = None
-        if gap_start < self._health.started_at <= detected_at:
+        if reason_override is not None:
+            incident_id = f"kalshi-ws:{self._health.started_at.isoformat()}"
+        elif gap_start < self._health.started_at <= detected_at:
             reason = GapReason.RESTART
             incident_id = f"recorder-session:{self._health.started_at.isoformat()}"
         elif Decimal(str(self._health.event_loop_lag_seconds)) > stream.threshold_seconds:
@@ -601,6 +819,8 @@ class KalshiNativeRecorder:
             )
 
     def _gap_stream_enabled(self, stream: GapStream) -> bool:
+        if stream.source is GapSource.KALSHI_WS:
+            return self._settings.enable_kalshi_production_websocket
         if stream.source is GapSource.PYTH:
             return self._settings.enable_pyth_underlying
         if stream.source in {GapSource.BINANCE, GapSource.HYPERLIQUID}:
@@ -611,6 +831,8 @@ class KalshiNativeRecorder:
     def _gap_source_health_key(stream: GapStream) -> str:
         if stream.source is GapSource.KALSHI_REST:
             return f"kalshi_quote:{stream.asset.value}"
+        if stream.source is GapSource.KALSHI_WS:
+            return f"kalshi_ws:{stream.asset.value}"
         if stream.source is GapSource.COINBASE:
             return "coinbase"
         if stream.source is GapSource.PYTH:
@@ -633,6 +855,11 @@ class KalshiNativeRecorder:
                     name=f"secondary-{asset.value.lower()}",
                 )
                 for asset in (Asset.BNB, Asset.HYPE)
+            )
+        if self._kalshi_ws is not None:
+            tasks.append(asyncio.create_task(self._record_kalshi_ws(), name="kalshi-ws"))
+            tasks.append(
+                asyncio.create_task(self._flush_kalshi_ws_loop(), name="kalshi-ws-persistence")
             )
         for asset in KALSHI_15MIN_SERIES:
             tasks.extend(
@@ -721,6 +948,9 @@ class KalshiNativeRecorder:
                 client.close()
             if isinstance(self._robinhood, Robinhood15MinuteProvider):
                 self._robinhood.close()
+            if self._kalshi_ws is not None:
+                await self._kalshi_ws.close()
+                self._flush_kalshi_ws_pending()
             self._write_health_file(self.health())
             logger.info(
                 "Kalshi-native recorder stopped",
@@ -1324,6 +1554,322 @@ class KalshiNativeRecorder:
     def _increment_secondary_diagnostic(self, asset: Asset, name: str) -> None:
         key = f"{asset.value}:{name}"
         self._health.secondary_diagnostics[key] = self._health.secondary_diagnostics.get(key, 0) + 1
+
+    def synchronized_kalshi_ws_book(self, ticker: str) -> SynchronizedKalshiOrderBook:
+        """Return the live primary only while the official WS state is synchronized."""
+
+        coordinator = self._kalshi_ws_coordinator
+        diagnostics = None if self._kalshi_ws is None else self._kalshi_ws.diagnostics
+        transport_state = getattr(diagnostics, "transport_state", None)
+        dropped = int(getattr(diagnostics, "receive_queue_dropped", 0))
+        if (
+            coordinator is None
+            or self._health.kalshi_ws_state is not KalshiWsRuntimeState.SYNCHRONIZED
+            or transport_state
+            in {KalshiWsRuntimeState.CONNECTING, KalshiWsRuntimeState.RECONNECTING}
+            or dropped != 0
+        ):
+            raise KalshiUnsynchronizedBookError("Kalshi WS primary is unavailable")
+        return coordinator.book(ticker)
+
+    def _flush_kalshi_ws_pending(self) -> None:
+        if not self._kalshi_ws_pending:
+            return
+        pending = tuple(self._kalshi_ws_pending)
+        inserted, latency = self._store.append_kalshi_ws_orderbook_event_batch(pending)
+        del self._kalshi_ws_pending[: len(pending)]
+        if inserted:
+            self._health.row_counts["kalshi_ws_orderbook_events"] = (
+                self._health.row_counts.get("kalshi_ws_orderbook_events", 0) + inserted
+            )
+            self._health.written_records += inserted
+        if latency is not None:
+            self._health.kalshi_ws_receive_persist_latency_ms = str(latency)
+
+    async def _flush_kalshi_ws_loop(self) -> None:
+        """Bound durable latency without committing every high-rate delta separately."""
+
+        while not await self._wait(0.025):
+            self._flush_kalshi_ws_pending()
+            self._worker_advanced("kalshi_ws_persistence")
+
+    def _mark_kalshi_ws_unsynchronized(self, reason: GapReason) -> None:
+        self._health.kalshi_ws_state = (
+            KalshiWsRuntimeState.RECONNECTING
+            if reason is GapReason.RECONNECT
+            else KalshiWsRuntimeState.UNSYNCHRONIZED
+        )
+        self._health.kalshi_ws_synchronized.clear()
+        self._kalshi_ws_books.clear()
+        detected = self._utc_now()
+        for asset in self._health.current:
+            key = (GapSource.KALSHI_WS, asset)
+            if key in self._active_gaps:
+                continue
+            start = self._gap_last.get(key, self._health.kalshi_ws_last_books.get(asset, detected))
+            self._open_gap(
+                self._gap_streams[key],
+                start,
+                source_health_key=f"kalshi_ws:{asset.value}",
+                detected_at=detected,
+                reason_override=reason,
+            )
+
+    async def _send_kalshi_ws_payload(self, payload: str) -> None:
+        if self._kalshi_ws is None:
+            raise KalshiReadOnlyWsError("Kalshi WebSocket is not configured")
+        decoded = json.loads(payload)
+        if not isinstance(decoded, dict) or not isinstance(decoded.get("id"), int):
+            raise KalshiReadOnlyWsError("invalid typed Kalshi WebSocket command")
+        await self._kalshi_ws.send_command(KalshiSubscriptionCommand(decoded["id"], payload))
+
+    async def _record_kalshi_ws(self) -> None:
+        """Keep transport outages isolated while correctness/storage failures remain fatal."""
+
+        while not self._stop_event.is_set():
+            try:
+                await self._record_kalshi_ws_session()
+                if self._stop_event.is_set():
+                    return
+                raise ConnectionError("Kalshi WebSocket stream ended")
+            except asyncio.CancelledError:
+                raise
+            except RecorderStorageError:
+                self._health.kalshi_ws_state = KalshiWsRuntimeState.UNSYNCHRONIZED
+                self._health.kalshi_ws_synchronized.clear()
+                self._kalshi_ws_books.clear()
+                raise
+            except (KalshiBookInvariantError, KalshiReadOnlyWsError, ValueError):
+                self._mark_kalshi_ws_unsynchronized(GapReason.SOURCE_OUTAGE)
+                raise
+            except (ConnectionError, OSError, TimeoutError) as error:
+                self._source_failed("kalshi_ws", error)
+                self._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
+                self._worker_advanced("kalshi_ws")
+                if await self._wait(
+                    self._retry_delay("kalshi_ws", self._settings.reconnect_delay_seconds)
+                ):
+                    return
+
+    async def _record_kalshi_ws_session(self) -> None:
+        """Persist one official stream and expose only synchronized atomic books."""
+
+        source = self._kalshi_ws
+        if source is None:
+            return
+        while not self._stop_event.is_set() and not self._health.current:
+            self._health.kalshi_ws_state = KalshiWsRuntimeState.CONNECTING
+            self._worker_advanced("kalshi_ws")
+            if await self._wait(0.1):
+                return
+        desired_by_asset = {asset: market.ticker for asset, market in self._health.current.items()}
+        source.set_reconnect_tickers(tuple(desired_by_asset.values()))
+        connection_id: str | None = None
+        coordinator: KalshiAtomicOrderBookCoordinator | None = None
+        processor: KalshiAtomicSessionProcessor | None = None
+        ticker_assets = {ticker: asset for asset, ticker in desired_by_asset.items()}
+        pending_removals: dict[str, str] = {}
+        pending_delete_requests: dict[int, str] = {}
+        predecessor_by_asset: dict[Asset, str] = {}
+        request_id = 20_000
+        async for message in source.messages(tuple(desired_by_asset.values())):
+            if self._stop_event.is_set():
+                return
+            self._source_ok("kalshi_ws")
+            message_connection = getattr(message, "connection_id", None)
+            if isinstance(message_connection, str) and message_connection != connection_id:
+                if connection_id is not None:
+                    self._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
+                connection_id = message_connection
+                current_at_connect = {
+                    asset: market.ticker for asset, market in self._health.current.items()
+                }
+                if current_at_connect:
+                    desired_by_asset = current_at_connect
+                ticker_assets = {ticker: asset for asset, ticker in desired_by_asset.items()}
+                source.set_reconnect_tickers(tuple(desired_by_asset.values()))
+                coordinator = KalshiAtomicOrderBookCoordinator(
+                    connection_id, tuple(desired_by_asset.values())
+                )
+                self._kalshi_ws_coordinator = coordinator
+                processor = KalshiAtomicSessionProcessor(
+                    coordinator,
+                    self._send_kalshi_ws_payload,
+                    first_request_id=request_id,
+                    monotonic=self._monotonic,
+                )
+                request_id += 1_000
+                pending_removals.clear()
+                pending_delete_requests.clear()
+                self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+            if isinstance(message, KalshiWsErrorMessage):
+                raise KalshiReadOnlyWsError(
+                    f"official Kalshi WebSocket command failed with code {message.code}"
+                )
+            if isinstance(message, KalshiSubscribed):
+                self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+                self._worker_advanced("kalshi_ws")
+                await asyncio.sleep(0)
+                continue
+            if isinstance(message, KalshiTickerUpdate) and (
+                coordinator is None or processor is None
+            ):
+                self._worker_advanced("kalshi_ws", message.socket_received_timestamp)
+                await asyncio.sleep(0)
+                continue
+            if coordinator is None or processor is None:
+                raise KalshiReadOnlyWsError("Kalshi WebSocket data preceded connection identity")
+
+            latest = {asset: market.ticker for asset, market in self._health.current.items()}
+            for asset in tuple(desired_by_asset.keys() - latest.keys()):
+                predecessor_by_asset[asset] = desired_by_asset.pop(asset)
+                self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+                self._health.kalshi_ws_synchronized.pop(asset, None)
+                self._kalshi_ws_books.pop(asset, None)
+                gap_key = (GapSource.KALSHI_WS, asset)
+                if gap_key not in self._active_gaps:
+                    observed = self._utc_now()
+                    self._open_gap(
+                        self._gap_streams[gap_key],
+                        observed,
+                        source_health_key=f"kalshi_ws:{asset.value}",
+                        detected_at=observed,
+                        reason_override=GapReason.SOURCE_OUTAGE,
+                    )
+                if desired_by_asset:
+                    source.set_reconnect_tickers(tuple(desired_by_asset.values()))
+            subscription_id = coordinator.subscription_id
+            if subscription_id is not None:
+                for asset, successor in latest.items():
+                    predecessor = desired_by_asset.get(asset) or predecessor_by_asset.get(asset)
+                    if successor == predecessor or successor in coordinator.subscribed_tickers:
+                        continue
+                    coordinator.add_expected_ticker(successor)
+                    ticker_assets[successor] = asset
+                    pending_removals[successor] = (
+                        predecessor if predecessor in coordinator.subscribed_tickers else ""
+                    )
+                    self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+                    self._health.kalshi_ws_synchronized.pop(asset, None)
+                    self._kalshi_ws_books.pop(asset, None)
+                    gap_key = (GapSource.KALSHI_WS, asset)
+                    if gap_key not in self._active_gaps:
+                        observed = self._utc_now()
+                        self._open_gap(
+                            self._gap_streams[gap_key],
+                            observed,
+                            source_health_key=f"kalshi_ws:{asset.value}",
+                            detected_at=observed,
+                            reason_override=GapReason.SOURCE_OUTAGE,
+                        )
+                    await source.send_command(
+                        update_subscription_command(
+                            request_id, subscription_id, "add_markets", (successor,)
+                        )
+                    )
+                    request_id += 1
+                    desired_by_asset[asset] = successor
+                    predecessor_by_asset.pop(asset, None)
+                    source.set_reconnect_tickers(tuple(desired_by_asset.values()))
+
+            if isinstance(message, KalshiTickerUpdate):
+                self._worker_advanced("kalshi_ws", message.socket_received_timestamp)
+                await asyncio.sleep(0)
+                continue
+
+            requests_before = processor.diagnostics.requests
+            book = await processor.process(message)
+            if isinstance(message, KalshiCommandAcknowledged):
+                predecessor = pending_delete_requests.pop(message.request_id, None)
+                if predecessor is not None:
+                    coordinator.remove_expected_ticker(predecessor)
+                    ticker_assets.pop(predecessor, None)
+            if processor.diagnostics.requests > requests_before:
+                self._health.kalshi_ws_seq_gaps += 1
+                self._mark_kalshi_ws_unsynchronized(GapReason.SOURCE_OUTAGE)
+            synchronized = set(coordinator.synchronized_tickers)
+            sync_status = (
+                KalshiBookSyncStatus.SYNCHRONIZED
+                if getattr(message, "ticker", None) in synchronized
+                else KalshiBookSyncStatus.UNSYNCHRONIZED
+            )
+            if isinstance(message, (KalshiOrderBookSnapshot, KalshiOrderBookDelta)) or (
+                isinstance(message, KalshiCommandAcknowledged)
+                and message.subscription_id is not None
+            ):
+                self._kalshi_ws_pending.append((message, sync_status))
+                if len(self._kalshi_ws_pending) >= 128:
+                    self._flush_kalshi_ws_pending()
+
+            if book is not None:
+                asset = ticker_assets.get(book.ticker)
+                if asset is None:
+                    raise KalshiReadOnlyWsError(
+                        "Kalshi WebSocket ticker has no exact asset mapping"
+                    )
+                if desired_by_asset.get(asset) == book.ticker:
+                    self._kalshi_ws_books[asset] = book
+                    self._health.kalshi_ws_synchronized[asset] = book.ticker
+                    self._health.kalshi_ws_last_books[asset] = book.received_timestamp
+                    self._observe_gap(
+                        GapSource.KALSHI_WS,
+                        asset,
+                        book.received_timestamp,
+                        source_health_key=f"kalshi_ws:{asset.value}",
+                    )
+                    self._source_ok(f"kalshi_ws:{asset.value}")
+                    if isinstance(message, KalshiOrderBookSnapshot):
+                        if self._store.append_kalshi_ws_checkpoint(book):
+                            self._wrote("kalshi_ws_book_checkpoints")
+                predecessor = pending_removals.pop(book.ticker, None)
+                if predecessor:
+                    delete_request_id = request_id
+                    await source.send_command(
+                        update_subscription_command(
+                            delete_request_id,
+                            book.subscription_id,
+                            "delete_markets",
+                            (predecessor,),
+                        )
+                    )
+                    request_id += 1
+                    pending_delete_requests[delete_request_id] = predecessor
+
+            # A delta already returns the one reconstructed book it changed. Rebuilding and
+            # sorting every other market on every hot-stream message is both redundant and
+            # capable of starving the receive pump. The full refresh is needed only once
+            # after a multi-market resync, because intermediate recovery snapshots are
+            # intentionally withheld until the complete subscription is synchronized.
+            if len(synchronized) == len(desired_by_asset) and len(
+                self._health.kalshi_ws_synchronized
+            ) < len(desired_by_asset):
+                for ticker in synchronized:
+                    synchronized_book = coordinator.book(ticker)
+                    asset = ticker_assets.get(ticker)
+                    if asset is None or desired_by_asset.get(asset) != ticker:
+                        continue
+                    self._kalshi_ws_books[asset] = synchronized_book
+                    self._health.kalshi_ws_synchronized[asset] = ticker
+                    self._health.kalshi_ws_last_books[asset] = synchronized_book.received_timestamp
+                    self._observe_gap(
+                        GapSource.KALSHI_WS,
+                        asset,
+                        synchronized_book.received_timestamp,
+                        source_health_key=f"kalshi_ws:{asset.value}",
+                    )
+                    if isinstance(message, KalshiOrderBookSnapshot):
+                        if self._store.append_kalshi_ws_checkpoint(synchronized_book):
+                            self._wrote("kalshi_ws_book_checkpoints")
+
+            if latest and len(self._health.kalshi_ws_synchronized) == len(latest):
+                self._health.kalshi_ws_state = KalshiWsRuntimeState.SYNCHRONIZED
+            elif processor.diagnostics.requests:
+                self._health.kalshi_ws_state = KalshiWsRuntimeState.UNSYNCHRONIZED
+            else:
+                self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+            self._health.kalshi_ws_resync_count = processor.diagnostics.completed
+            self._worker_advanced("kalshi_ws")
+            await asyncio.sleep(0)
 
     async def _record_robinhood_reference(self) -> None:
         assert self._robinhood is not None

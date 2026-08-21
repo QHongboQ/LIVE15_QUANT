@@ -26,7 +26,7 @@ from live15_quant.models import (
     Venue,
 )
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,8 +146,10 @@ class KalshiWsOrderBookEventRecord:
     no_bids: tuple[OrderBookLevel, ...]
     source_timestamp: datetime | None
     socket_received_timestamp: datetime
+    enqueue_timestamp: datetime | None
     parse_timestamp: datetime
     persisted_timestamp: datetime | None
+    receive_enqueue_latency_ms: Decimal | None
     receive_persist_latency_ms: Decimal | None
     sync_status_after: KalshiBookSyncStatus
     provenance: str

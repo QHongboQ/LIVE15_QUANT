@@ -76,12 +76,14 @@ there is no title/fuzzy matching.
 
 ## Persistence and replay
 
-Recorder schema v8 adds two role-isolated tables:
+Recorder schema v8 added two role-isolated tables; schema v10 adds nullable enqueue timing to the
+raw event table without fabricating values for historical rows:
 
 - `kalshi_ws_orderbook_events`: every raw snapshot/delta and sequenced subscription acknowledgement
   in local arrival order, including
-  connection ID, `sid`, `seq`, exact identity, source/socket/parse/persist clocks, sync status and
-  true receive-to-persist latency derived from the local monotonic clock.
+  connection ID, `sid`, `seq`, exact identity, source/socket/enqueue/parse/persist clocks, sync
+  status, receive-to-enqueue latency, and true receive-to-persist latency derived from the local
+  monotonic clock.
 - `kalshi_ws_book_checkpoints`: sparse synchronized books written after official snapshot/resync,
   not after every delta.
 
@@ -96,13 +98,14 @@ not read the WS tables in this stage.
 
 ## REST fallback and execution boundary
 
-REST remains the active production recorder source and fallback. A REST market response plus a
+The synchronized WebSocket book is now the live orderbook primary. REST remains an independently
+recorded fallback and cross-check. A REST market response plus a
 separate REST orderbook response is never relabeled as an atomic WS state. If WS is disconnected or
 unsynchronized, the WS candidate is blocked; independently collected REST observations can still
 be recorded under their original provenance.
 
-The paper layer is unchanged. `SynchronizedKalshiBookProvider` is only a typed future boundary and
-returns synchronized WS books or raises. It contains no execution method.
+The paper layer is unchanged. `SynchronizedKalshiBookProvider` returns synchronized WS books or
+raises; current paper behavior is not silently switched. It contains no execution method.
 
 ## Credential boundary and Production smoke
 
@@ -126,6 +129,7 @@ A bounded 10-market Production read-only smoke completed successfully on 2026-08
   pure network latency.
 
 The adapter rejects repository-local credential paths, fixes the host to the documented Production
-endpoint, redacts filesystem/parser failures, and exposes no order/account method. The existing
-continuous recorder was not stopped and remains on REST. Enabling WS as its primary live book
-source remains a separate reviewed integration step.
+endpoint, redacts filesystem/parser failures, and exposes no order/account method. The continuous
+recorder now owns this same bounded stream: dynamic rollover adds a successor, waits for its
+synchronized snapshot, sends predecessor deletion, and removes the predecessor locally only after
+the sequenced acknowledgement. REST lifecycle and official finalized settlement remain independent.

@@ -158,6 +158,53 @@ async def test_health_exposes_bounded_worker_progress_and_event_loop_lag(tmp_pat
     assert payload["event_loop_lag_seconds"] == 0.015
 
 
+@pytest.mark.asyncio
+async def test_health_exposes_bounded_ws_sync_state_without_credentials(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    write_health(
+        configured.recorder_health_path,
+        NOW,
+        kalshi_ws_connection_state="synchronized",
+        kalshi_ws_synchronized_markets={"BTC": "KXBTC15M-EXACT"},
+        kalshi_ws_synchronized_count=1,
+        kalshi_ws_book_age_seconds={"BTC": 0.25},
+        kalshi_ws_seq_gaps=2,
+        kalshi_ws_resync_count=2,
+        kalshi_ws_reconnect_count=1,
+        kalshi_ws_queue_high_watermark=17,
+        kalshi_ws_queue_capacity=32,
+        kalshi_ws_queue_depth=3,
+        kalshi_ws_queue_enqueued=100,
+        kalshi_ws_queue_dequeued=97,
+        kalshi_ws_queue_full_waits=4,
+        kalshi_ws_queue_dropped=0,
+        kalshi_ws_queue_max_backlog_seconds=0.75,
+        kalshi_ws_queue_above_50_seconds=0.5,
+        kalshi_ws_queue_above_75_seconds=0.25,
+        kalshi_ws_queue_above_90_seconds=0.125,
+        kalshi_ws_receive_persist_latency_ms="0.125",
+        kalshi_rest_fallback_status="healthy",
+        private_key="must-not-escape",
+        signature="must-not-escape",
+    )
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.get("/api/health")
+    payload = response.json()
+    assert payload["kalshi_ws_connection_state"] == "synchronized"
+    assert payload["kalshi_ws_synchronized_count"] == 1
+    assert payload["kalshi_ws_book_age_seconds"] == {"BTC": 0.25}
+    assert payload["kalshi_ws_queue_capacity"] == 32
+    assert payload["kalshi_ws_queue_depth"] == 3
+    assert payload["kalshi_ws_queue_enqueued"] == 100
+    assert payload["kalshi_ws_queue_dequeued"] == 97
+    assert payload["kalshi_ws_queue_dropped"] == 0
+    assert payload["kalshi_ws_queue_above_90_seconds"] == 0.125
+    assert payload["kalshi_rest_fallback_status"] == "healthy"
+    assert "must-not-escape" not in response.text
+
+
 def test_naive_health_timestamp_fails_closed(tmp_path: Path) -> None:
     configured = settings(tmp_path)
     write_health(configured.recorder_health_path, NOW.replace(tzinfo=None))

@@ -41,6 +41,8 @@ class Settings:
     kalshi_production_api_key_id_path: Path | None = field(default=None, repr=False)
     kalshi_production_private_key_path: Path | None = field(default=None, repr=False)
     kalshi_websocket_read_timeout_seconds: float = 45.0
+    kalshi_websocket_stale_seconds: float = 10.0
+    kalshi_websocket_queue_capacity: int = 8192
     official_quote_poll_interval_seconds: float = 2.0
     official_quote_max_source_age_seconds: float = 15.0
     official_quote_orderbook_depth: int = 10
@@ -271,6 +273,17 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             source,
             "LIVE15_KALSHI_WEBSOCKET_READ_TIMEOUT_SECONDS",
             defaults.kalshi_websocket_read_timeout_seconds,
+        ),
+        kalshi_websocket_stale_seconds=_positive_float(
+            source,
+            "LIVE15_KALSHI_WEBSOCKET_STALE_SECONDS",
+            defaults.kalshi_websocket_stale_seconds,
+        ),
+        kalshi_websocket_queue_capacity=_bounded_positive_int(
+            source,
+            "LIVE15_KALSHI_WEBSOCKET_QUEUE_CAPACITY",
+            defaults.kalshi_websocket_queue_capacity,
+            65536,
         ),
         official_quote_poll_interval_seconds=_positive_float(
             source,

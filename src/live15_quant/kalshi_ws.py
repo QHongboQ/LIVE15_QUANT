@@ -41,6 +41,14 @@ class KalshiBookSyncStatus(StrEnum):
     UNSYNCHRONIZED = "unsynchronized"
 
 
+class KalshiWsRuntimeState(StrEnum):
+    CONNECTING = "connecting"
+    WAITING_SNAPSHOT = "waiting_snapshot"
+    SYNCHRONIZED = "synchronized"
+    UNSYNCHRONIZED = "unsynchronized"
+    RECONNECTING = "reconnecting"
+
+
 class KalshiWsEventKind(StrEnum):
     SNAPSHOT = "orderbook_snapshot"
     DELTA = "orderbook_delta"
@@ -76,6 +84,13 @@ def _aware(value: datetime, field: str) -> datetime:
 def _monotonic(value: int | None) -> None:
     if value is not None and (isinstance(value, bool) or value < 0):
         raise ValueError("socket receive monotonic timestamp must be non-negative")
+
+
+def _monotonic_order(received: int | None, enqueued: int | None) -> None:
+    _monotonic(received)
+    _monotonic(enqueued)
+    if received is not None and enqueued is not None and enqueued < received:
+        raise ValueError("enqueue monotonic timestamp cannot precede socket receive")
 
 
 def _decimal(value: object, field: str) -> Decimal:
@@ -178,6 +193,8 @@ class KalshiOrderBookSnapshot:
     socket_received_timestamp: datetime
     parse_timestamp: datetime
     socket_received_monotonic_ns: int | None = None
+    enqueue_timestamp: datetime | None = None
+    enqueue_monotonic_ns: int | None = None
     provenance: str = KALSHI_WS_PROVENANCE
     role: DataRole = DataRole.CONTRACT_MARKET_QUOTE
 
@@ -201,6 +218,8 @@ class KalshiOrderBookDelta:
     socket_received_timestamp: datetime
     parse_timestamp: datetime
     socket_received_monotonic_ns: int | None = None
+    enqueue_timestamp: datetime | None = None
+    enqueue_monotonic_ns: int | None = None
     provenance: str = KALSHI_WS_PROVENANCE
     role: DataRole = DataRole.CONTRACT_MARKET_QUOTE
 
@@ -228,6 +247,8 @@ class KalshiTickerUpdate:
     socket_received_timestamp: datetime
     parse_timestamp: datetime
     socket_received_monotonic_ns: int | None = None
+    enqueue_timestamp: datetime | None = None
+    enqueue_monotonic_ns: int | None = None
     provenance: str = KALSHI_WS_PROVENANCE
     role: DataRole = DataRole.CONTRACT_MARKET_QUOTE
 
@@ -247,7 +268,9 @@ class KalshiTickerUpdate:
             raise ValueError("Kalshi ticker prices must be finite and within [0, 1]")
         if self.yes_ask < self.yes_bid or self.volume < 0:
             raise ValueError("Kalshi ticker book or volume is invalid")
-        _monotonic(self.socket_received_monotonic_ns)
+        _monotonic_order(self.socket_received_monotonic_ns, self.enqueue_monotonic_ns)
+        if self.enqueue_timestamp is not None:
+            _aware(self.enqueue_timestamp, "ticker enqueue timestamp")
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +290,8 @@ class KalshiCommandAcknowledged:
     socket_received_timestamp: datetime
     parse_timestamp: datetime
     socket_received_monotonic_ns: int | None = None
+    enqueue_timestamp: datetime | None = None
+    enqueue_monotonic_ns: int | None = None
     provenance: str = KALSHI_WS_PROVENANCE
     role: DataRole = DataRole.CONTRACT_MARKET_QUOTE
 
@@ -285,7 +310,9 @@ class KalshiCommandAcknowledged:
         _aware(self.parse_timestamp, "acknowledgement parse timestamp")
         if self.parse_timestamp < self.socket_received_timestamp:
             raise ValueError("acknowledgement parse timestamp cannot precede receive timestamp")
-        _monotonic(self.socket_received_monotonic_ns)
+        _monotonic_order(self.socket_received_monotonic_ns, self.enqueue_monotonic_ns)
+        if self.enqueue_timestamp is not None:
+            _aware(self.enqueue_timestamp, "acknowledgement enqueue timestamp")
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,7 +344,9 @@ def _validate_envelope(message: KalshiOrderBookMessage) -> None:
     _aware(message.parse_timestamp, "parse timestamp")
     if message.parse_timestamp < message.socket_received_timestamp:
         raise ValueError("parse timestamp cannot precede socket receive timestamp")
-    _monotonic(message.socket_received_monotonic_ns)
+    _monotonic_order(message.socket_received_monotonic_ns, message.enqueue_monotonic_ns)
+    if message.enqueue_timestamp is not None:
+        _aware(message.enqueue_timestamp, "enqueue timestamp")
 
 
 def parse_kalshi_server_message(
@@ -327,6 +356,8 @@ def parse_kalshi_server_message(
     socket_received_timestamp: datetime,
     parse_timestamp: datetime,
     socket_received_monotonic_ns: int | None = None,
+    enqueue_timestamp: datetime | None = None,
+    enqueue_monotonic_ns: int | None = None,
 ) -> KalshiServerMessage:
     """Parse only documented server messages without floating-point conversion."""
 
@@ -368,6 +399,8 @@ def parse_kalshi_server_message(
             socket_received_timestamp=socket_received_timestamp,
             parse_timestamp=parse_timestamp,
             socket_received_monotonic_ns=socket_received_monotonic_ns,
+            enqueue_timestamp=enqueue_timestamp,
+            enqueue_monotonic_ns=enqueue_monotonic_ns,
         )
     if kind == "error":
         if not isinstance(msg, Mapping):
@@ -396,6 +429,8 @@ def parse_kalshi_server_message(
             socket_received_timestamp=socket_received_timestamp,
             parse_timestamp=parse_timestamp,
             socket_received_monotonic_ns=socket_received_monotonic_ns,
+            enqueue_timestamp=enqueue_timestamp,
+            enqueue_monotonic_ns=enqueue_monotonic_ns,
         )
     if kind == KalshiWsEventKind.DELTA:
         try:
@@ -415,6 +450,8 @@ def parse_kalshi_server_message(
             socket_received_timestamp=socket_received_timestamp,
             parse_timestamp=parse_timestamp,
             socket_received_monotonic_ns=socket_received_monotonic_ns,
+            enqueue_timestamp=enqueue_timestamp,
+            enqueue_monotonic_ns=enqueue_monotonic_ns,
         )
     if kind == "ticker":
         source = _source_timestamp(msg)
@@ -433,6 +470,8 @@ def parse_kalshi_server_message(
             socket_received_timestamp=socket_received_timestamp,
             parse_timestamp=parse_timestamp,
             socket_received_monotonic_ns=socket_received_monotonic_ns,
+            enqueue_timestamp=enqueue_timestamp,
+            enqueue_monotonic_ns=enqueue_monotonic_ns,
         )
     raise KalshiWsPayloadError("unsupported Kalshi WebSocket message type")
 
@@ -486,6 +525,18 @@ class KalshiAtomicOrderBookCoordinator:
     @property
     def subscribed_tickers(self) -> tuple[str, ...]:
         return tuple(sorted(self._subscribed))
+
+    @property
+    def synchronized_tickers(self) -> tuple[str, ...]:
+        if self._resync_pending:
+            return ()
+        return tuple(
+            sorted(
+                ticker
+                for ticker, book in self._books.items()
+                if book.status is KalshiBookSyncStatus.SYNCHRONIZED
+            )
+        )
 
     def add_expected_ticker(self, ticker: str) -> None:
         if _TICKER.fullmatch(ticker) is None:

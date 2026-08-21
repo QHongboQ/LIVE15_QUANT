@@ -197,6 +197,17 @@ class RecorderProcessController:
             # Public, market-data-only secondary streams are part of the single
             # UI-managed recorder. Manual foreground runs remain opt-in via env.
             environment.setdefault("LIVE15_ENABLE_SECONDARY_UNDERLYING", "true")
+            credential_root = Path.home() / ".live15_quant" / "credentials"
+            production_key_id = credential_root / "kalshi-production-readonly-key-id.txt"
+            production_private_key = credential_root / "kalshi-production-readonly.key"
+            if production_key_id.is_file() and production_private_key.is_file():
+                environment.setdefault("LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET", "true")
+                environment.setdefault(
+                    "LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH", str(production_key_id)
+                )
+                environment.setdefault(
+                    "LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH", str(production_private_key)
+                )
             flags = 0
             if os.name == "nt":
                 # DETACHED_PROCESS is deliberately absent: combined with CREATE_NO_WINDOW

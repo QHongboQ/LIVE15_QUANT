@@ -18,6 +18,7 @@ from live15_quant.providers.pyth import PYTH_FEEDS
 
 class GapSource(StrEnum):
     KALSHI_REST = "kalshi_rest"
+    KALSHI_WS = "kalshi_ws"
     COINBASE = "coinbase"
     PYTH = "pyth"
     BINANCE = "binance"
@@ -134,6 +135,16 @@ def configured_streams(settings: Settings) -> tuple[GapStream, ...]:
     for asset in Asset:
         streams.append(
             GapStream(GapSource.KALSHI_REST, asset, KALSHI_15MIN_SERIES[asset], quote_threshold)
+        )
+    ws_threshold = Decimal(str(settings.kalshi_websocket_stale_seconds))
+    for asset in Asset:
+        streams.append(
+            GapStream(
+                GapSource.KALSHI_WS,
+                asset,
+                KALSHI_15MIN_SERIES[asset],
+                ws_threshold,
+            )
         )
     coinbase_threshold = Decimal(str(settings.recorder_coinbase_stale_seconds))
     for asset, product in COINBASE_PRODUCT_BY_ASSET.items():
@@ -285,6 +296,16 @@ def _received_timestamps(
             "ORDER BY received_timestamp,id"
         )
         parameters = (stream.asset.value, lower, upper)
+    elif stream.source is GapSource.KALSHI_WS:
+        sql = (
+            "SELECT socket_received_timestamp FROM kalshi_ws_orderbook_events AS ws "
+            "WHERE ws.ticker IS NOT NULL AND socket_received_timestamp>=? "
+            "AND socket_received_timestamp<=? AND EXISTS ("
+            "SELECT 1 FROM kalshi_market_lifecycle AS market "
+            "WHERE market.ticker=ws.ticker AND market.asset=?) "
+            "ORDER BY socket_received_timestamp,id"
+        )
+        parameters = (lower, upper, stream.asset.value)
     elif stream.source is GapSource.COINBASE:
         sql = (
             "SELECT received_timestamp FROM coinbase_ticks "
@@ -324,6 +345,15 @@ def _received_timestamps(
             "ORDER BY received_timestamp DESC,id DESC LIMIT 1"
         )
         prior_parameters = (stream.asset.value, lower)
+    elif stream.source is GapSource.KALSHI_WS:
+        prior_sql = (
+            "SELECT socket_received_timestamp FROM kalshi_ws_orderbook_events AS ws "
+            "WHERE ws.ticker IS NOT NULL AND socket_received_timestamp<? AND EXISTS ("
+            "SELECT 1 FROM kalshi_market_lifecycle AS market "
+            "WHERE market.ticker=ws.ticker AND market.asset=?) "
+            "ORDER BY socket_received_timestamp DESC,id DESC LIMIT 1"
+        )
+        prior_parameters = (lower, stream.asset.value)
     elif stream.source is GapSource.COINBASE:
         prior_sql = (
             "SELECT received_timestamp FROM coinbase_ticks "
@@ -406,6 +436,7 @@ def _event_matches_stream(stream: GapStream, asset: str | None, source: str | No
         return asset == stream.asset.value
     prefixes = {
         GapSource.KALSHI_REST: ("kalshi_quote:", "kalshi_discovery:"),
+        GapSource.KALSHI_WS: ("kalshi_ws",),
         GapSource.COINBASE: ("coinbase",),
         GapSource.PYTH: ("pyth",),
         GapSource.BINANCE: ("secondary:BNB",),

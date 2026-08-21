@@ -107,9 +107,9 @@ class TrainingDataUnavailableError(RecorderStorageError):
 
 
 def _compatible_record_version(value: object) -> bool:
-    """v6-v9 only add tables; immutable v5 rows remain byte-for-byte valid."""
+    """v6-v10 only add tables/nullable timing; immutable v5 rows remain valid."""
 
-    return value in {5, 6, 7, 8, SCHEMA_VERSION}
+    return value in {5, 6, 7, 8, 9, SCHEMA_VERSION}
 
 
 class SecondaryAppendStatus(StrEnum):
@@ -503,8 +503,10 @@ CREATE TABLE IF NOT EXISTS kalshi_ws_orderbook_events (
     no_bids TEXT NOT NULL,
     source_timestamp TEXT,
     socket_received_timestamp TEXT NOT NULL,
+    enqueue_timestamp TEXT,
     parse_timestamp TEXT NOT NULL,
     persisted_timestamp TEXT,
+    receive_enqueue_latency_ms TEXT,
     receive_persist_latency_ms TEXT,
     sync_status_after TEXT NOT NULL,
     provenance TEXT NOT NULL,
@@ -768,8 +770,13 @@ class RecorderStore:
             row = self._connection.execute(
                 "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
             ).fetchone()
-        if row is not None and row["value"] == "8" and SCHEMA_VERSION == 9:
+        if row is not None and row["value"] == "8":
             self._migrate_v8_to_v9()
+            row = self._connection.execute(
+                "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        if row is not None and row["value"] == "9" and SCHEMA_VERSION == 10:
+            self._migrate_v9_to_v10()
             self._ensure_schema_objects()
             return
         raise RecorderStorageError(
@@ -1038,6 +1045,32 @@ class RecorderStore:
             self._connection.rollback()
             raise
 
+    def _migrate_v9_to_v10(self) -> None:
+        """Add optional local queue timing without inventing values for old rows."""
+
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            columns = {
+                str(row[1])
+                for row in self._connection.execute("PRAGMA table_info(kalshi_ws_orderbook_events)")
+            }
+            if "enqueue_timestamp" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE kalshi_ws_orderbook_events ADD COLUMN enqueue_timestamp TEXT"
+                )
+            if "receive_enqueue_latency_ms" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE kalshi_ws_orderbook_events "
+                    "ADD COLUMN receive_enqueue_latency_ms TEXT"
+                )
+            self._connection.execute(
+                "UPDATE recorder_metadata SET value='10' WHERE key='schema_version'"
+            )
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+
     def append_data_gap(self, gap: DataGap) -> bool:
         """Append one gap-state fact idempotently; contradictory facts fail loudly."""
 
@@ -1171,6 +1204,16 @@ class RecorderStore:
             row = self._connection.execute(
                 "SELECT received_timestamp FROM kalshi_prediction_quotes WHERE asset=? "
                 "ORDER BY received_timestamp DESC,id DESC LIMIT 1",
+                (asset.value,),
+            ).fetchone()
+        elif source is GapSource.KALSHI_WS:
+            row = self._connection.execute(
+                """SELECT socket_received_timestamp AS received_timestamp
+                FROM kalshi_ws_orderbook_events AS ws
+                WHERE ws.ticker IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM kalshi_market_lifecycle AS market
+                    WHERE market.ticker=ws.ticker AND market.asset=?
+                ) ORDER BY socket_received_timestamp DESC,id DESC LIMIT 1""",
                 (asset.value,),
             ).fetchone()
         elif source is GapSource.COINBASE:
@@ -1537,6 +1580,199 @@ class RecorderStore:
     ) -> bool:
         """Persist one raw WS message; conflicting sequence facts fail loudly."""
 
+        row_id = self.stage_kalshi_ws_orderbook_event(message, sync_status_after=sync_status_after)
+        if row_id is None:
+            return False
+        self.finalize_kalshi_ws_orderbook_events(((row_id, message.socket_received_monotonic_ns),))
+        return True
+
+    def append_kalshi_ws_orderbook_event_batch(
+        self,
+        events: Sequence[
+            tuple[KalshiOrderBookMessage | KalshiCommandAcknowledged, KalshiBookSyncStatus]
+        ],
+    ) -> tuple[int, Decimal | None]:
+        """Persist a bounded verified batch with one duplicate lookup and one transaction."""
+
+        if not events:
+            return 0, None
+        if len(events) > 1024:
+            raise RecorderStorageError("Kalshi WS persistence batch exceeds bounded capacity")
+        prepared: dict[tuple[str, int, int], tuple[tuple[object, ...], str, int | None]] = {}
+        for message, sync_status_after in events:
+            acknowledgement = message if isinstance(message, KalshiCommandAcknowledged) else None
+            if acknowledgement is not None and (
+                acknowledgement.subscription_id is None or acknowledgement.sequence is None
+            ):
+                raise RecorderStorageError(
+                    "unsequenced Kalshi WS acknowledgement is not replay state"
+                )
+            snapshot = message if isinstance(message, KalshiOrderBookSnapshot) else None
+            delta = message if isinstance(message, KalshiOrderBookDelta) else None
+            event_kind = (
+                KalshiWsEventKind.SUBSCRIPTION_ACK
+                if acknowledgement is not None
+                else KalshiWsEventKind.SNAPSHOT
+                if snapshot is not None
+                else KalshiWsEventKind.DELTA
+            )
+            yes_bids = json.dumps(
+                [[str(level.price), str(level.quantity)] for level in snapshot.yes_bids]
+                if snapshot is not None
+                else [],
+                separators=(",", ":"),
+            )
+            no_bids = json.dumps(
+                [[str(level.price), str(level.quantity)] for level in snapshot.no_bids]
+                if snapshot is not None
+                else [],
+                separators=(",", ":"),
+            )
+            market_tickers = json.dumps(
+                acknowledgement.market_tickers if acknowledgement is not None else (),
+                separators=(",", ":"),
+            )
+            immutable: tuple[object, ...] = (
+                message.connection_id,
+                message.subscription_id,
+                message.sequence,
+                event_kind.value,
+                message.ticker if acknowledgement is None else None,
+                message.market_id if acknowledgement is None else None,
+                market_tickers,
+                delta.side.value if delta is not None else None,
+                _decimal(delta.price) if delta is not None else None,
+                _decimal(delta.quantity_delta) if delta is not None else None,
+                yes_bids,
+                no_bids,
+                (
+                    _timestamp(message.source_timestamp)
+                    if acknowledgement is None and message.source_timestamp is not None
+                    else None
+                ),
+                message.provenance,
+                message.role.value,
+            )
+            content_hash = _fingerprint(immutable)
+            enqueue_latency = (
+                Decimal(message.enqueue_monotonic_ns - message.socket_received_monotonic_ns)
+                / Decimal(1_000_000)
+                if message.enqueue_monotonic_ns is not None
+                and message.socket_received_monotonic_ns is not None
+                else None
+            )
+            if enqueue_latency is not None and enqueue_latency < 0:
+                raise RecorderStorageError("Kalshi WS enqueue timing is not monotonic")
+            key = (
+                message.connection_id,
+                int(message.subscription_id),
+                int(message.sequence),
+            )
+            values: tuple[object, ...] = (
+                SCHEMA_VERSION,
+                *immutable[:13],
+                _timestamp(message.socket_received_timestamp),
+                (
+                    _timestamp(message.enqueue_timestamp)
+                    if message.enqueue_timestamp is not None
+                    else None
+                ),
+                _timestamp(message.parse_timestamp),
+                None,
+                str(enqueue_latency) if enqueue_latency is not None else None,
+                None,
+                sync_status_after.value,
+                *immutable[13:],
+                content_hash,
+            )
+            prior = prepared.get(key)
+            if prior is not None:
+                if prior[1] != content_hash:
+                    raise RecorderStorageError(
+                        "conflicting Kalshi WS fact inside persistence batch"
+                    )
+                continue
+            prepared[key] = (values, content_hash, message.socket_received_monotonic_ns)
+
+        keys = tuple(prepared)
+        placeholders = ",".join("(?,?,?)" for _ in keys)
+        existing = {
+            (str(row[0]), int(row[1]), int(row[2])): str(row[3])
+            for row in self._connection.execute(
+                "SELECT connection_id,subscription_id,sequence,content_hash "
+                f"FROM kalshi_ws_orderbook_events WHERE "
+                f"(connection_id,subscription_id,sequence) IN ({placeholders})",
+                tuple(value for key in keys for value in key),
+            )
+        }
+        inserts: list[tuple[object, ...]] = []
+        inserted_keys: list[tuple[str, int, int]] = []
+        received_values: list[int] = []
+        for key, (values, content_hash, received_ns) in prepared.items():
+            existing_hash = existing.get(key)
+            if existing_hash is not None:
+                if existing_hash != content_hash:
+                    raise RecorderStorageError(
+                        "conflicting Kalshi WS fact for subscription sequence"
+                    )
+                continue
+            inserts.append(values)
+            inserted_keys.append(key)
+            if received_ns is not None:
+                received_values.append(received_ns)
+        if not inserts:
+            return 0, None
+        with self._connection:
+            self._connection.executemany(
+                """INSERT INTO kalshi_ws_orderbook_events(
+                    schema_version,connection_id,subscription_id,sequence,event_kind,ticker,
+                    market_id,market_tickers,side,price,quantity_delta,yes_bids,no_bids,
+                    source_timestamp,socket_received_timestamp,enqueue_timestamp,parse_timestamp,
+                    persisted_timestamp,receive_enqueue_latency_ms,receive_persist_latency_ms,
+                    sync_status_after,provenance,data_role,content_hash
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                inserts,
+            )
+            completed_ns = time.perf_counter_ns()
+            persisted = _timestamp(datetime.now(UTC))
+            latency_by_key = {
+                key: (
+                    Decimal(completed_ns - prepared[key][2]) / Decimal(1_000_000)
+                    if prepared[key][2] is not None
+                    else None
+                )
+                for key in inserted_keys
+            }
+            if any(value is not None and value < 0 for value in latency_by_key.values()):
+                raise RecorderStorageError("Kalshi WS persistence timing is not monotonic")
+            self._connection.executemany(
+                """UPDATE kalshi_ws_orderbook_events
+                SET persisted_timestamp=?,receive_persist_latency_ms=?
+                WHERE connection_id=? AND subscription_id=? AND sequence=?""",
+                (
+                    (
+                        persisted,
+                        str(latency_by_key[key]) if latency_by_key[key] is not None else None,
+                        *key,
+                    )
+                    for key in inserted_keys
+                ),
+            )
+        maximum = (
+            max(value for value in latency_by_key.values() if value is not None)
+            if received_values
+            else None
+        )
+        return len(inserts), maximum
+
+    def stage_kalshi_ws_orderbook_event(
+        self,
+        message: KalshiOrderBookMessage | KalshiCommandAcknowledged,
+        *,
+        sync_status_after: KalshiBookSyncStatus,
+    ) -> int | None:
+        """Stage one immutable raw event for a bounded group commit."""
+
         acknowledgement = message if isinstance(message, KalshiCommandAcknowledged) else None
         if acknowledgement is not None and (
             acknowledgement.subscription_id is None or acknowledgement.sequence is None
@@ -1588,53 +1824,90 @@ class RecorderStore:
             message.role.value,
         )
         content_hash = _fingerprint(immutable)
-        existing = self._connection.execute(
-            """SELECT content_hash FROM kalshi_ws_orderbook_events
-            WHERE connection_id=? AND subscription_id=? AND sequence=?""",
-            (message.connection_id, message.subscription_id, message.sequence),
-        ).fetchone()
-        if existing is not None:
-            if existing["content_hash"] != content_hash:
-                raise RecorderStorageError("conflicting Kalshi WS fact for subscription sequence")
-            return False
-        with self._connection:
-            cursor = self._connection.execute(
-                """INSERT INTO kalshi_ws_orderbook_events(
-                    schema_version,connection_id,subscription_id,sequence,event_kind,ticker,
-                    market_id,market_tickers,side,price,quantity_delta,yes_bids,no_bids,
-                    source_timestamp,socket_received_timestamp,parse_timestamp,
-                    persisted_timestamp,receive_persist_latency_ms,sync_status_after,provenance,
-                    data_role,content_hash
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        enqueue_latency = (
+            Decimal(message.enqueue_monotonic_ns - message.socket_received_monotonic_ns)
+            / Decimal(1_000_000)
+            if message.enqueue_monotonic_ns is not None
+            and message.socket_received_monotonic_ns is not None
+            else None
+        )
+        if enqueue_latency is not None and enqueue_latency < 0:
+            raise RecorderStorageError("Kalshi WS enqueue timing is not monotonic")
+        cursor = self._connection.execute(
+            """INSERT OR IGNORE INTO kalshi_ws_orderbook_events(
+                schema_version,connection_id,subscription_id,sequence,event_kind,ticker,
+                market_id,market_tickers,side,price,quantity_delta,yes_bids,no_bids,
+                source_timestamp,socket_received_timestamp,enqueue_timestamp,parse_timestamp,
+                persisted_timestamp,receive_enqueue_latency_ms,receive_persist_latency_ms,
+                sync_status_after,provenance,data_role,content_hash
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                SCHEMA_VERSION,
+                *immutable[:13],
+                _timestamp(message.socket_received_timestamp),
                 (
-                    SCHEMA_VERSION,
-                    *immutable[:13],
-                    _timestamp(message.socket_received_timestamp),
-                    _timestamp(message.parse_timestamp),
-                    None,
-                    None,
-                    sync_status_after.value,
-                    *immutable[13:],
-                    content_hash,
+                    _timestamp(message.enqueue_timestamp)
+                    if message.enqueue_timestamp is not None
+                    else None
                 ),
-            )
-            persisted = datetime.now(UTC)
-            persist_latency = (
-                Decimal(time.perf_counter_ns() - message.socket_received_monotonic_ns)
-                / Decimal(1_000_000)
-                if message.socket_received_monotonic_ns is not None
+                _timestamp(message.parse_timestamp),
+                None,
+                str(enqueue_latency) if enqueue_latency is not None else None,
+                None,
+                sync_status_after.value,
+                *immutable[13:],
+                content_hash,
+            ),
+        )
+        if cursor.rowcount == 0:
+            existing = self._connection.execute(
+                """SELECT content_hash FROM kalshi_ws_orderbook_events
+                WHERE connection_id=? AND subscription_id=? AND sequence=?""",
+                (message.connection_id, message.subscription_id, message.sequence),
+            ).fetchone()
+            if existing is None or existing["content_hash"] != content_hash:
+                raise RecorderStorageError("conflicting Kalshi WS fact for subscription sequence")
+            return None
+        assert cursor.lastrowid is not None
+        return int(cursor.lastrowid)
+
+    def finalize_kalshi_ws_orderbook_events(
+        self, events: Sequence[tuple[int, int | None]]
+    ) -> Decimal | None:
+        """Atomically mark a bounded staged batch durable and return its worst latency."""
+
+        if not events:
+            return None
+        persisted = datetime.now(UTC)
+        completed_ns = time.perf_counter_ns()
+        values: list[tuple[str, str | None, int]] = []
+        latencies: list[Decimal] = []
+        for row_id, received_ns in events:
+            if row_id < 1 or (received_ns is not None and received_ns < 0):
+                raise RecorderStorageError("invalid staged Kalshi WS persistence identity")
+            latency = (
+                Decimal(completed_ns - received_ns) / Decimal(1_000_000)
+                if received_ns is not None
                 else None
             )
-            self._connection.execute(
-                """UPDATE kalshi_ws_orderbook_events
-                SET persisted_timestamp=?,receive_persist_latency_ms=? WHERE id=?""",
+            if latency is not None and latency < 0:
+                raise RecorderStorageError("Kalshi WS persistence timing is not monotonic")
+            if latency is not None:
+                latencies.append(latency)
+            values.append(
                 (
                     _timestamp(persisted),
-                    str(persist_latency) if persist_latency is not None else None,
-                    cursor.lastrowid,
-                ),
+                    str(latency) if latency is not None else None,
+                    row_id,
+                )
             )
-        return True
+        with self._connection:
+            self._connection.executemany(
+                """UPDATE kalshi_ws_orderbook_events
+                SET persisted_timestamp=?,receive_persist_latency_ms=? WHERE id=?""",
+                values,
+            )
+        return max(latencies) if latencies else None
 
     def append_kalshi_ws_checkpoint(self, book: SynchronizedKalshiOrderBook) -> bool:
         """Store a sparse synchronized book, normally only after snapshot/resync."""
@@ -2703,11 +2976,21 @@ class RecorderStore:
                 socket_received_timestamp=_parse_timestamp(
                     row["socket_received_timestamp"], "socket_received_timestamp"
                 ),
+                enqueue_timestamp=(
+                    _parse_timestamp(row["enqueue_timestamp"], "enqueue_timestamp")
+                    if row["enqueue_timestamp"] is not None
+                    else None
+                ),
                 parse_timestamp=_parse_timestamp(row["parse_timestamp"], "parse_timestamp"),
                 persisted_timestamp=(
                     _parse_timestamp(row["persisted_timestamp"], "persisted_timestamp")
                     if row["persisted_timestamp"] is not None
                     else None
+                ),
+                receive_enqueue_latency_ms=_parse_decimal(
+                    row["receive_enqueue_latency_ms"],
+                    "receive_enqueue_latency_ms",
+                    optional=True,
                 ),
                 receive_persist_latency_ms=_parse_decimal(
                     row["receive_persist_latency_ms"],

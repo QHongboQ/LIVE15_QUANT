@@ -60,6 +60,26 @@ class HealthResponse(StrictResponse):
     event_loop_lag_seconds: float | None = None
     fatal_task: str | None = None
     fatal_error_type: str | None = None
+    kalshi_ws_connection_state: str = "disabled"
+    kalshi_ws_synchronized_markets: dict[str, str] = Field(default_factory=dict)
+    kalshi_ws_synchronized_count: int = 0
+    kalshi_ws_book_age_seconds: dict[str, float] = Field(default_factory=dict)
+    kalshi_ws_seq_gaps: int = 0
+    kalshi_ws_resync_count: int = 0
+    kalshi_ws_reconnect_count: int = 0
+    kalshi_ws_queue_high_watermark: int = 0
+    kalshi_ws_queue_capacity: int = 0
+    kalshi_ws_queue_depth: int = 0
+    kalshi_ws_queue_enqueued: int = 0
+    kalshi_ws_queue_dequeued: int = 0
+    kalshi_ws_queue_full_waits: int = 0
+    kalshi_ws_queue_dropped: int = 0
+    kalshi_ws_queue_max_backlog_seconds: float = 0.0
+    kalshi_ws_queue_above_50_seconds: float = 0.0
+    kalshi_ws_queue_above_75_seconds: float = 0.0
+    kalshi_ws_queue_above_90_seconds: float = 0.0
+    kalshi_ws_receive_persist_latency_ms: str | None = None
+    kalshi_rest_fallback_status: str = "unavailable"
 
 
 class MarketResponse(StrictResponse):

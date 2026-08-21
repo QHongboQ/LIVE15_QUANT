@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections import deque
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from itertools import count
 from pathlib import Path
 from typing import Any
 
@@ -412,6 +414,33 @@ def test_schema_v7_to_v8_migration_rolls_back_atomically(
     assert ws_tables == []
 
 
+def test_schema_v9_to_v10_adds_nullable_enqueue_timing_without_rewriting(tmp_path: Path) -> None:
+    path = tmp_path / "v9.sqlite3"
+    with RecorderStore(path) as store:
+        store.append_kalshi_ws_orderbook_event(
+            snapshot(), sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+        )
+    connection = sqlite3.connect(path)
+    connection.execute("ALTER TABLE kalshi_ws_orderbook_events DROP COLUMN enqueue_timestamp")
+    connection.execute(
+        "ALTER TABLE kalshi_ws_orderbook_events DROP COLUMN receive_enqueue_latency_ms"
+    )
+    connection.execute("UPDATE kalshi_ws_orderbook_events SET schema_version=9")
+    connection.execute("UPDATE recorder_metadata SET value='9' WHERE key='schema_version'")
+    connection.commit()
+    connection.close()
+
+    with RecorderStore(path) as migrated:
+        record = next(migrated.replay_kalshi_ws_orderbook_events("connection-1", 2))
+        version = migrated._connection.execute(
+            "SELECT value FROM recorder_metadata WHERE key='schema_version'"
+        ).fetchone()[0]
+        assert version == "10"
+        assert record.enqueue_timestamp is None
+        assert record.receive_enqueue_latency_ms is None
+        assert migrated.integrity_check() == "ok"
+
+
 def test_persisted_gap_and_official_snapshot_resync_replay_deterministically(
     tmp_path: Path,
 ) -> None:
@@ -470,6 +499,31 @@ def test_conflicting_same_connection_sequence_fails_loudly(tmp_path: Path) -> No
             )
 
 
+def test_bounded_ws_batch_is_idempotent_and_conflicts_fail_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = replace(snapshot(10), socket_received_monotonic_ns=1_000_000)
+    second = replace(delta(11), socket_received_monotonic_ns=1_500_000)
+    monkeypatch.setattr(storage_module.time, "perf_counter_ns", lambda: 2_500_000)
+    batch = (
+        (first, KalshiBookSyncStatus.SYNCHRONIZED),
+        (second, KalshiBookSyncStatus.SYNCHRONIZED),
+    )
+    with RecorderStore(tmp_path / "batch.sqlite3") as store:
+        inserted, maximum_latency = store.append_kalshi_ws_orderbook_event_batch(batch)
+        assert inserted == 2
+        assert maximum_latency == Decimal("1.5")
+        assert store.append_kalshi_ws_orderbook_event_batch(batch) == (0, None)
+        with pytest.raises(RecorderStorageError, match="conflicting Kalshi WS fact"):
+            store.append_kalshi_ws_orderbook_event_batch(
+                ((replace(first, market_id="conflict"), KalshiBookSyncStatus.UNSYNCHRONIZED),)
+            )
+        records = tuple(store.replay_kalshi_ws_orderbook_events("connection-1", 2))
+    assert len(records) == 2
+    assert records[0].receive_persist_latency_ms == Decimal("1.5")
+    assert records[1].receive_persist_latency_ms == Decimal("1")
+
+
 def test_rest_and_ws_provenance_are_not_interchangeable() -> None:
     assert snapshot().provenance == KALSHI_WS_PROVENANCE
     assert snapshot().provenance != "kalshi_rest"
@@ -483,7 +537,7 @@ class _FakeSigner:
 
 class _FakeWebSocket:
     def __init__(self, messages: list[str | BaseException]) -> None:
-        self.messages = messages
+        self.messages = deque(messages)
         self.sent: list[str] = []
         self.closed = False
 
@@ -494,7 +548,7 @@ class _FakeWebSocket:
         if not self.messages:
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
-        value = self.messages.pop(0)
+        value = self.messages.popleft()
         if isinstance(value, BaseException):
             raise value
         return value
@@ -569,6 +623,78 @@ async def test_read_only_adapter_authenticates_reconnects_and_resubscribes(tmp_p
         "KALSHI-ACCESS-SIGNATURE",
         "KALSHI-ACCESS-TIMESTAMP",
     }
+
+
+@pytest.mark.asyncio
+async def test_receive_queue_backpressure_is_lossless_and_bounded(tmp_path: Path) -> None:
+    websocket = _FakeWebSocket([snapshot_payload(10), snapshot_payload(11)])
+    adapter = KalshiProductionReadOnlyWebSocket(
+        credentials(tmp_path),
+        connector=lambda *_args, **_kwargs: _FakeConnection(websocket),
+        signer=_FakeSigner(),
+        clock_ms=lambda: 1700000000000,
+        connection_id_factory=lambda: "connection-1",
+        receive_queue_capacity=1,
+        repository_root=Path.cwd(),
+    )
+    messages = adapter.messages((BTC,))
+    first = await anext(messages)
+    second = await anext(messages)
+    await adapter.close()
+    assert (first.sequence, second.sequence) == (10, 11)
+    assert adapter.diagnostics.messages == 2
+    assert adapter.diagnostics.receive_queue_high_watermark == 1
+
+
+@pytest.mark.asyncio
+async def test_deterministic_burst_backpressure_is_lossless_and_cooperative(
+    tmp_path: Path,
+) -> None:
+    burst = 10_000
+    capacity = 32
+    websocket = _FakeWebSocket([snapshot_payload(sequence + 1) for sequence in range(burst)])
+    monotonic_ns = count(0, 100_000).__next__
+    adapter = KalshiProductionReadOnlyWebSocket(
+        credentials(tmp_path),
+        connector=lambda *_args, **_kwargs: _FakeConnection(websocket),
+        signer=_FakeSigner(),
+        clock_ms=lambda: 1700000000000,
+        perf_counter_ns=monotonic_ns,
+        connection_id_factory=lambda: "connection-1",
+        receive_queue_capacity=capacity,
+        repository_root=Path.cwd(),
+    )
+    stop_pulse = asyncio.Event()
+    pulse_count = 0
+
+    async def pulse() -> None:
+        nonlocal pulse_count
+        while not stop_pulse.is_set():
+            pulse_count += 1
+            await asyncio.sleep(0)
+
+    pulse_task = asyncio.create_task(pulse())
+    messages = adapter.messages((BTC,))
+    observed = [await anext(messages) for _ in range(burst)]
+    stop_pulse.set()
+    await pulse_task
+    await adapter.close()
+    diagnostics = adapter.diagnostics
+    assert [message.sequence for message in observed] == list(range(1, burst + 1))
+    assert diagnostics.receive_queue_enqueued == burst
+    assert diagnostics.receive_queue_dequeued == burst
+    assert diagnostics.receive_queue_depth == 0
+    assert diagnostics.receive_queue_high_watermark == capacity
+    assert diagnostics.receive_queue_full_waits > 0
+    assert diagnostics.receive_queue_dropped == 0
+    assert diagnostics.receive_queue_max_backlog_seconds > 0
+    assert diagnostics.receive_queue_above_50_seconds > 0
+    assert diagnostics.receive_queue_above_75_seconds > 0
+    assert diagnostics.receive_queue_above_90_seconds > 0
+    assert pulse_count > 0
+    assert all(
+        message.enqueue_monotonic_ns >= message.socket_received_monotonic_ns for message in observed
+    )
 
 
 def test_credential_repr_errors_and_interface_do_not_expose_secrets(tmp_path: Path) -> None:

@@ -26,6 +26,7 @@ from live15_quant.models import (
     RecorderEventSeverity,
     RecorderEventType,
 )
+from live15_quant.records import SCHEMA_VERSION
 from live15_quant.storage import DataGapConflictError, RecorderStore
 from tests.test_dataset import BASE, add_event, sampling
 
@@ -137,7 +138,7 @@ def test_schema_v8_to_v9_gap_migration_is_atomic(tmp_path) -> None:
         version = migrated._connection.execute(
             "SELECT value FROM recorder_metadata WHERE key='schema_version'"
         ).fetchone()[0]
-        assert version == "9"
+        assert version == str(SCHEMA_VERSION)
         assert migrated.count("data_gaps") == 0
         assert migrated.integrity_check() == "ok"
         assert migrated._connection.execute("PRAGMA foreign_key_check").fetchall() == []

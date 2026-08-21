@@ -87,7 +87,7 @@ Gold、Silver、WTI 使用对应 Pyth 1-minute candlestick 在窗口结束点的
 
 任一 metadata 改变或 instrument mismatch 都抑制本轮 quote。native quote 只保存 Kalshi series/ticker/event ticker 和官方 evidence，不以 Robinhood 字段作别名。旧 `PredictionMarketQuote` 路径保留用于 Milestone 4/paper compatibility，不属于 native recorder 核心。
 
-[Kalshi public market-data API](https://docs.kalshi.com/getting_started/quick_start_market_data) 明确允许免认证读取实时 markets 和 orderbook。REST 提供显式 `yes_bid_dollars`、`yes_ask_dollars`、`no_bid_dollars`、`no_ask_dollars`、`last_price_dollars`、`volume_fp`，orderbook 提供 Yes/No bid depth；缺失字段保持 SQL `NULL`，不通过 `1 - price` 推导。REST payload 的 market `updated_time` 在实测中不会随每次 quote 变化，不能冒充 quote event timestamp；因此保存低精度 HTTP `Date` 并明确标注 `http_response_date` 语义，另存本地 receive timestamp。官方 [WebSocket](https://docs.kalshi.com/getting_started/quick_start_websockets) 即使订阅 public ticker/trade channel 也要求 API key 握手，因此当前 production recorder 使用免认证 REST polling，不请求或保存 Kalshi credentials。
+[Kalshi public market-data API](https://docs.kalshi.com/getting_started/quick_start_market_data) 明确允许免认证读取实时 markets 和 orderbook。REST 提供显式 `yes_bid_dollars`、`yes_ask_dollars`、`no_bid_dollars`、`no_ask_dollars`、`last_price_dollars`、`volume_fp`，orderbook 提供 Yes/No bid depth；缺失字段保持 SQL `NULL`，不通过 `1 - price` 推导。REST payload 的 market `updated_time` 在实测中不会随每次 quote 变化，不能冒充 quote event timestamp；因此保存低精度 HTTP `Date` 并明确标注 `http_response_date` 语义，另存本地 receive timestamp。官方 [WebSocket](https://docs.kalshi.com/getting_started/quick_start_websockets) 即使只读 market data 也要求 API key 握手；仓库只保存 repository 外 credential 的路径引用。synchronized WS orderbook 是 live primary，免认证 REST 继续独立承担 discovery、metadata、fallback 与 cross-check。
 
 正式 quote 必须具有 verified mapping，market 与 orderbook 两个响应都必须通过 typed validation；orderbook 请求重试耗尽或 payload malformed 时，本轮 quote 整体失败并由 recorder 记录错误，不能降级成伪装为有效的空 depth quote。合法的真实空 orderbook 仍保存为空 tuple。
 
@@ -289,7 +289,7 @@ snapshot 已评估的 finalized 数。snapshot 之后到达的事件显示为 `u
 
 ### Recorder 生命周期
 
-`live15-record` 启动 Kalshi-native lifecycle discovery、Kalshi quote/orderbook、Coinbase predictive stream 与 health 独立任务。配置 Pyth key并显式启用后，同一个 recorder 追加一个五-feed Hermes SSE ingestion task；启用 secondary 后再追加 Binance BNB 与 Hyperliquid HYPE 两个 public WebSocket tasks，仍然只有一个 recorder/process/SQLite writer。source identity/错误状态独立。lifecycle 默认每 15 秒按十个固定 series 和 UTC close-time range 发现 previous/current/next；quote loop 每个 batch 后默认等待 2 秒。只有 `LIVE15_ENABLE_ROBINHOOD_REFERENCE=true` 才额外启动 Robinhood 参考任务。
+`live15-record` 启动 Kalshi-native lifecycle discovery、独立 REST fallback/cross-check、Coinbase predictive stream 与 health 独立任务。UI-managed recorder 在标准仓库外 read-only Production credential 文件存在时，同时启动一条 Kalshi WebSocket，动态订阅十个 current ticker；只有 `SYNCHRONIZED` atomic book 才是 live orderbook primary。配置 Pyth key并显式启用后，同一个 recorder 追加一个五-feed Hermes SSE ingestion task；启用 secondary 后再追加 Binance BNB 与 Hyperliquid HYPE 两个 public WebSocket tasks，仍然只有一个 recorder/process/SQLite writer。source identity/错误状态独立。lifecycle 默认每 15 秒按十个固定 series 和 UTC close-time range 发现 previous/current/next；REST quote loop 每个 batch 后默认等待 2 秒。只有 `LIVE15_ENABLE_ROBINHOOD_REFERENCE=true` 才额外启动 Robinhood 参考任务。
 
 明确的 `end_time` 是训练 snapshot 的硬边界：`fetched_timestamp >= end_time` 的旧事件永不写入 `robinhood_snapshots`。如果旧事件结束而新事件尚未公开，recorder 进入可持久恢复的 `rollover_gap`，在 health/log 中报告 gap 开始时间和持续时间；它不会延长旧窗口、猜测下一事件或伪造 quote。上游页面继续返回旧事件的事实只写入隔离的 diagnostics 表。真正的新 event ID/contract ID 出现后才关闭 gap 并恢复正常记录。
 
@@ -307,7 +307,7 @@ snapshot 已评估的 finalized 数。snapshot 之后到达的事件显示为 `u
 - 所有 price、bid、ask、spread、size、volume 和 probability 均以 Decimal 原始字符串保存；绝不按 settlement rounding precision 截断。
 - SQLite 可直接被 pandas、Polars 或 DuckDB 查询，后续可批量导出 Parquet。JSONL 缺少可靠事务和索引；Parquet 更适合冷数据批量文件，不适合当前逐 tick append 和 crash recovery，因此两者均未用作热存储。
 
-当前数据库 metadata 为 `schema_version=7`；历史 immutable rows 保留其原 schema version。v1→v5 迁移保持不变，v5→v6 原子新增 primary provider-neutral underlying table，v6→v7 原子新增独立 secondary table。任何检查失败都会 rollback；未知或未来版本会在修改 recorder tables 前明确拒绝。
+当前数据库 metadata 为 `schema_version=10`；历史 immutable rows 保留其原 schema version。v5→v6 新增 primary provider-neutral underlying，v6→v7 新增独立 secondary，v7→v8 新增 WS raw/checkpoint，v8→v9 新增 append-only data gaps，v9→v10 只为 WS raw event 增加 nullable enqueue timing。迁移均在单一事务中执行；旧 WS rows 不伪造 enqueue timestamp，任何失败都会 rollback，未知或未来版本会在修改 recorder tables 前明确拒绝。
 
 Kalshi settlement follow-up 偶尔会在已观察到 `settlement_pending` 或 finalized truth 后返回较旧的
 `closed`/`determined` representation。recorder 只对严格白名单的同 ticker、同 series、同 event、
@@ -466,8 +466,8 @@ secrets 目录也已 Git ignored 作为第二道保护，但正式要求仍是�
 - Robinhood public category page 只暴露当前 snapshot，若页面缓存、暂时缺少 card 或事件在两次轮询之间出现并消失，recorder 无法补回从未公开观察到的数据。
 - 页面偶尔先发布 upcoming event state、稍后才发布 contract ID/target；这类 placeholder 会产生结构化 warning 并暂不写入，待公开 metadata 完整后才开始记录，绝不猜测 ID 或 target。
 - Kalshi official venue orderbook 与 finalized settlement truth 均已采集；venue book 仍不等同 Robinhood executable quote。
-- Kalshi 免认证 REST 的 market `updated_time` 不是逐次 order-book event timestamp；当前保存 HTTP `Date`（秒级 response-time 语义）与本地 receive timestamp。Production WebSocket 所有握手均需 Production API key；Demo credential 不会用于 Production。当前已实现固定官方 host、RSA-PSS handshake、bounded receive pump、snapshot/delta parser、subscription-level seq guard、`get_snapshot` resync、event-driven add-successor/remove-predecessor、schema v8 raw event/checkpoint 与 deterministic replay；使用仓库外 read-only credential 的 10-market Production smoke 已通过，但 continuous recorder 仍使用 REST，尚未切换 primary。完整审计见 [`docs/kalshi_websocket_readonly_audit.md`](docs/kalshi_websocket_readonly_audit.md)。
-- REST market top-of-book 与 orderbook depth 来自相邻的两次请求，不是交易所原子快照；高速变动时两者可能存在小幅时间偏差。
+- Kalshi 免认证 REST 的 market `updated_time` 不是逐次 order-book event timestamp；当前保存 HTTP `Date`（秒级 response-time 语义）与本地 receive timestamp。Production WebSocket 所有握手均需 Production API key；Demo credential 不会用于 Production。continuous recorder 已接入固定官方 host、RSA-PSS handshake、bounded receive pump、snapshot/delta parser、subscription-level seq guard、`get_snapshot` resync、event-driven add-successor/remove-predecessor、schema v8/v10 raw timing/checkpoint 与 deterministic replay。只有 synchronized WS book 是 live primary；gap/reconnect 期间 fail-closed，REST 仍按 `kalshi_rest` provenance 独立保存。完整审计见 [`docs/kalshi_websocket_readonly_audit.md`](docs/kalshi_websocket_readonly_audit.md)。
+- REST market top-of-book 与 orderbook depth 来自相邻的两次请求，不是交易所原子快照；因此它只作为 fallback/cross-check，绝不冒充 atomic WS book。
 - 30 分钟 acceptance 中大量 `price_moved` 主要来自 REST market 与 orderbook 两次非原子读取之间的变化。这是正确性保护而非放宽条件的理由；后续应使用官方 authenticated WebSocket orderbook snapshot/delta 构造单一原子 market state，在完成前不得取消 top-of-book/depth 一致性检查。
 - Paper fills 是基于轮询时观察到的 venue depth 的保守本地模拟，不代表真实 queue position、网络延迟、成交保证或 Robinhood executable quote；fill uncertainty 会被 hard-risk layer 阻断。
 - Settlement truth 已独立落库，但 Milestone 6 不改变 paper settlement accounting；到期未平仓 paper positions 仍保持 `pending_settlement`，后续里程碑再以显式 settlement adapter 接入，当前不伪造 payout。

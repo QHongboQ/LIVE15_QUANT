@@ -61,12 +61,17 @@ startup result is retained in health while raw observations remain append-only.
 
 ## REST and WebSocket boundary
 
-The production recorder uses the documented credentialless Kalshi REST market endpoints. Kalshi's
-official WebSocket sends ticker/trade/lifecycle and snapshot-first orderbook deltas, but the
-connection handshake requires an API key even for public-data channels. The project therefore
-keeps its typed snapshot/delta sequence guard as the future adapter boundary and does not load Demo
-credentials into production collection or create Production credentials. REST remains the safe
-fallback and no Demo/Production order method is called.
+The production recorder uses one authenticated, read-only Kalshi Production WebSocket connection
+for the ten dynamically discovered current tickers. A book is live-primary only after an official
+snapshot and every subsequent subscription sequence is contiguous. A duplicate, backward sequence,
+gap, reconnect, ticker mismatch, or missing snapshot invalidates the entire subscription, opens
+typed `kalshi_ws` gap facts, blocks book consumption, and requests official `get_snapshot` data.
+Only complete resynchronization restores `SYNCHRONIZED` state.
+
+Credentialless REST remains independently recorded for discovery, metadata, fallback, and
+cross-check. A REST market response plus a separate REST orderbook response is never relabeled as
+an atomic WS state. Demo credentials are never loaded into Production, and neither adapter exposes
+an order, position, balance, transfer, or account-mutation method.
 
 ## Retention and growth planning
 
@@ -95,6 +100,10 @@ future explicit retention policy.
 - `LIVE15_RECORDER_CHECKPOINT_INTERVAL_SECONDS` (default 300)
 - `LIVE15_RECORDER_HEALTH_INTERVAL_SECONDS` (default 30)
 - `LIVE15_RECORDER_HEALTH_PATH` (default `data/health.json`)
+- `LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET` (managed recorder enables this when both standard
+  repository-external read-only credential files exist)
+- `LIVE15_KALSHI_WEBSOCKET_STALE_SECONDS` (default 10)
+- `LIVE15_KALSHI_WEBSOCKET_QUEUE_CAPACITY` (default 8192; bounded backpressure, no silent drop)
 - `LIVE15_DATASET_BUILD_INTERVAL_SECONDS` (unset/disabled by default)
 
 Coinbase covers BTC, ETH, XRP, SOL and DOGE. Gold, Silver, WTI Oil, HYPE and BNB use one authenticated
@@ -103,7 +112,8 @@ truth.
 
 ## Receive-time gap detection
 
-The single recorder tracks the last durable receive timestamp for every Kalshi REST asset,
+The single recorder tracks the last durable receive timestamp for every Kalshi REST and synchronized
+Kalshi WS asset,
 Coinbase product, Pyth feed, Binance BNB secondary and Hyperliquid HYPE secondary. Thresholds come
 from the typed runtime settings already used for source freshness. Once a source exceeds its
 threshold, schema v9 appends one immutable OPEN `data_gaps` fact; the first recovery observation

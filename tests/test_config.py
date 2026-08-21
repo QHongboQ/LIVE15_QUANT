@@ -83,6 +83,8 @@ def test_load_settings_normalizes_environment_values() -> None:
             "LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH": "C:/safe/kalshi-prod-id.txt",
             "LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH": "C:/safe/kalshi-prod.pem",
             "LIVE15_KALSHI_WEBSOCKET_READ_TIMEOUT_SECONDS": "40",
+            "LIVE15_KALSHI_WEBSOCKET_STALE_SECONDS": "8",
+            "LIVE15_KALSHI_WEBSOCKET_QUEUE_CAPACITY": "4096",
             "LIVE15_ENABLE_PYTH_UNDERLYING": "true",
             "LIVE15_PYTH_API_KEY_PATH": "C:/safe/pyth.key",
             "LIVE15_PYTH_HERMES_URL": "https://untrusted.example",
@@ -130,6 +132,8 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.kalshi_production_api_key_id_path == Path("C:/safe/kalshi-prod-id.txt")
     assert settings.kalshi_production_private_key_path == Path("C:/safe/kalshi-prod.pem")
     assert settings.kalshi_websocket_read_timeout_seconds == 40
+    assert settings.kalshi_websocket_stale_seconds == 8
+    assert settings.kalshi_websocket_queue_capacity == 4096
     assert settings.kalshi_public_api_base_url != KALSHI_DEMO_API_BASE_URL
     assert "demo-key-id" not in repr(settings)
     assert "kalshi-demo.key" not in repr(settings)
