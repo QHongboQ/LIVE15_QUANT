@@ -206,7 +206,12 @@ def test_partial_file_and_manifest_crash_boundaries_recover(
     monkeypatch.setattr(manifest, "advance", crash_after_publish)
     with pytest.raises(KeyboardInterrupt):
         service.run_once(now=NOW)
-    assert manifest.chunks()[0].state is not ArchiveState.FAILED
+    intermediate = manifest.chunks()[0]
+    assert intermediate.state is not ArchiveState.FAILED
+    assert int(manifest.metrics()["retention_verified"] or 0) == int(
+        intermediate.state
+        in {ArchiveState.COMMITTED, ArchiveState.PURGE_ELIGIBLE, ArchiveState.PURGED}
+    )
     monkeypatch.setattr(manifest, "advance", original)
     recovered = service.run_once(now=NOW).chunk
     assert recovered is not None and recovered.state is ArchiveState.PURGE_ELIGIBLE

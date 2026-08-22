@@ -42,6 +42,25 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.enable_secondary_underlying is False
     assert settings.pyth_api_key_path is None
     assert settings.pyth_hermes_base_url == PYTH_HERMES_BASE_URL
+    assert settings.enable_adaptive_ws_retention is True
+    assert settings.adaptive_retention_min_seconds == 3600
+    assert settings.adaptive_retention_max_seconds == 21600
+    assert settings.adaptive_retention_state_path is None
+    assert settings.adaptive_retention_disk_deescalation_samples == 3
+
+
+def test_adaptive_retention_rejects_non_ladder_starting_value() -> None:
+    with pytest.raises(ValueError, match="outside the safety ladder"):
+        load_settings({"LIVE15_WS_ARCHIVE_HOT_RETENTION_SECONDS": "18000"})
+
+
+def test_adaptive_runtime_state_cannot_share_the_raw_database_path() -> None:
+    with pytest.raises(ValueError, match="runtime paths must be different"):
+        load_settings(
+            {
+                "LIVE15_RECORDER_DATA_PATH": "data/adaptive-retention.sqlite3",
+            }
+        )
 
 
 def test_load_settings_normalizes_environment_values() -> None:

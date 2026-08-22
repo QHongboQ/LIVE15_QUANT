@@ -345,6 +345,25 @@ crash 后可自动取得过期 lease。FAILED verification 会阻断后续 range
 `LIVE15_WS_COMPACTION_MIN_RECLAIM_BYTES` / `LIVE15_WS_COMPACTION_MIN_RECLAIM_PERCENT`
 调整。archive/purge 可以持续积累，不会因为出现一个 eligible chunk 就频繁重写整个 DB。
 
+`live15-adaptive-retention --once` 是 non-blocking 的只读状态检查命令；它不会写 evidence、推进
+recommendation streak 或修改 production retention。recorder 内部的 bounded background controller 才是
+唯一 apply owner。候选档位严格为 `6h → 4h → 3h → 2h → 1h`，上下限、证据窗口、recovery
+safety margin、重复 PASS 次数、独立 recovery session 数、projection window、cooldown 和磁盘状态
+de-escalation hysteresis 均可配置。controller 只读取独立 archive manifest、SQLite page/freelist
+counters、bounded cursor evidence、health heartbeat 和磁盘容量，不扫描 active raw event tables。缩短
+retention 必须同时满足：连续观测时长与样本数、完整 manifest-committed verified chunk 数量、多个独立
+recovery session、完整 HOT-access evidence、窗口内 archive/checksum/reopen/replay 可靠率 100%、无 active
+DataGap、无近期严重 incident、可信 raw-growth projection，并且 candidate 严格大于 observed
+recovery/HOT-access lookback 加 safety margin；连续多次独立 evaluation PASS 后仍一次最多下降一档。
+缺失 evidence 保持 `UNKNOWN`，绝不按 0 处理。证据不足时返回
+`INSUFFICIENT_EVIDENCE` 并立即退出，production 继续保持 6 小时。安全证据恶化时允许自动上调一档；
+磁盘进入 fail-safe（或 critical 且 archive 不可信）时只请求 managed controlled pause，绝不删除未验证
+raw truth，也不会自动 force-kill/auto-resume。
+决策状态保存在 raw DB 之外的 `adaptive-retention.sqlite3`，machine-readable snapshot 写入
+`adaptive-retention.json`，两者均属于 runtime data，不进入 Git。steady-state 下缩短 retention 主要
+降低 HOT SQLite plateau；完整 raw WS truth 仍进入 COLD archive，因此不会把 archive 增长伪报成
+“消失的每日数据”。
+
 `live15_quant.native_acceptance` 不依赖固定日期或固定 UTC 开盘时刻。它每次启动先按十个精确 series 动态发现 previous/current/next，选择仍有可观察时间且最接近结束的真实 OPEN market，然后只跟踪该 asset。只有新 market 的 `window_start` 严格等于旧 market 的 `window_end` 才算 rollover；排期或维护 gap 不会被伪造成相邻窗口。验收要求旧 ticker 的 OPEN→CLOSED→SETTLEMENT_PENDING→官方 SETTLED_YES/NO、successor quote、SQLite restart/integrity 全部成立。默认且绝对 wall-clock 上限为 1,800 秒；acceptance 禁用 transport 内部的多轮 retry，每个 GET timeout 都被剩余总预算截断，并由外层执行 bounded capped backoff，避免一次晚到请求越过总 deadline。期限内上游未提供有效窗口、相邻 successor 或 settlement 时返回结构化 `expected_upstream_unavailable`，而 instrument、timestamp、Decimal、storage 或 lifecycle correctness 错误仍直接失败。可选 `--database-path` 使中断后在同一隔离数据库幂等继续；未指定时使用并自动清理系统临时数据库。
 
 2026-08-20 的 event-driven acceptance 实测 `rollover_latency_seconds=22.14`。该值严格定义为**新窗口官方 metadata 首次被本轮 discovery 收到的本地时间减去新窗口 `window_start`**，包含 polling phase、REST 请求耗时以及 target/market 发布延迟；它不是 Kalshi settlement latency、quote latency、订单延迟或交易执行延迟。该次官方 settlement timestamp 是独立字段，二者不得混用。

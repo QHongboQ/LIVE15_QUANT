@@ -11,13 +11,22 @@ import sqlite3
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
 
 import requests
 
+from live15_quant.adaptive_retention import (
+    AdaptiveRetentionController,
+    AdaptiveRetentionError,
+    AdaptiveRetentionMode,
+    AdaptiveRetentionObservation,
+    AdaptiveRetentionPolicy,
+    AdaptiveRetentionStateError,
+    write_adaptive_retention_status,
+)
 from live15_quant.config import Settings
 from live15_quant.features import COINBASE_PRODUCT_BY_ASSET
 from live15_quant.gaps import (
@@ -381,6 +390,7 @@ class KalshiNativeRecorder:
         initial_active_settlement_followups: int | None = None,
         last_verified_integrity: str | None = None,
         startup_phase_observer: Callable[[str, float], None] | None = None,
+        controlled_pause: Callable[[str], None] | None = None,
         now: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -389,6 +399,7 @@ class KalshiNativeRecorder:
         self._now = now or (lambda: datetime.now(UTC))
         self._monotonic = monotonic
         self._startup_phase_observer = startup_phase_observer
+        self._controlled_pause = controlled_pause
         self._startup_ws_synchronized_reported = False
         self._owned_clients: list[KalshiOfficialQuoteProvider] = []
         if quotes is None:
@@ -521,6 +532,21 @@ class KalshiNativeRecorder:
             )
             is not None
         }
+        current_ws_cursor_times = [
+            timestamp
+            for (source, asset), timestamp in self._gap_last.items()
+            if source is GapSource.KALSHI_WS and asset in current
+        ]
+        self._hot_ws_access_evidence_complete = (
+            bool(current)
+            and len(current_ws_cursor_times) == len(current)
+            and all(timestamp <= observed for timestamp in current_ws_cursor_times)
+        )
+        self._startup_ws_recovery_lookback_seconds = (
+            max((observed - value).total_seconds() for value in current_ws_cursor_times)
+            if self._hot_ws_access_evidence_complete
+            else None
+        )
         self._active_gaps = {
             (gap.source, gap.asset): gap
             for gap in store.active_data_gaps(tuple(self._gap_streams.values()))
@@ -530,6 +556,7 @@ class KalshiNativeRecorder:
         phase_started = self._startup_phase_started()
         self._archive_service: WsArchiveService | None = None
         self._purge_service: WsPurgeService | None = None
+        self._adaptive_retention: AdaptiveRetentionController | None = None
         if settings.enable_ws_archive:
             archive_root = settings.ws_archive_root or (store.path.parent / "ws_archive")
             manifest_path = settings.ws_archive_manifest_path or (
@@ -549,6 +576,54 @@ class KalshiNativeRecorder:
                 manifest,
                 batch_rows=settings.ws_archive_purge_batch_rows,
             )
+            if settings.enable_adaptive_ws_retention:
+                policy = AdaptiveRetentionPolicy(
+                    minimum_seconds=settings.adaptive_retention_min_seconds,
+                    maximum_seconds=settings.adaptive_retention_max_seconds,
+                    evidence_window=timedelta(
+                        seconds=settings.adaptive_retention_evidence_window_seconds
+                    ),
+                    minimum_evidence_duration=timedelta(
+                        seconds=settings.adaptive_retention_min_evidence_seconds
+                    ),
+                    minimum_verified_chunks=settings.adaptive_retention_min_verified_chunks,
+                    minimum_evidence_samples=(settings.adaptive_retention_min_evidence_samples),
+                    minimum_recovery_sessions=(settings.adaptive_retention_min_recovery_sessions),
+                    minimum_simulation_passes=settings.adaptive_retention_simulation_passes,
+                    safety_margin=timedelta(
+                        seconds=settings.adaptive_retention_safety_margin_seconds
+                    ),
+                    cooldown=timedelta(seconds=settings.adaptive_retention_cooldown_seconds),
+                    reevaluation_interval=timedelta(
+                        seconds=settings.adaptive_retention_reevaluation_seconds
+                    ),
+                    serious_incident_quiet_period=timedelta(
+                        seconds=settings.adaptive_retention_incident_quiet_seconds
+                    ),
+                    minimum_projection_window=timedelta(
+                        seconds=(settings.adaptive_retention_min_projection_window_seconds)
+                    ),
+                    disk_deescalation_samples=(
+                        settings.adaptive_retention_disk_deescalation_samples
+                    ),
+                    auto_adjust=settings.adaptive_retention_auto_adjust,
+                )
+                try:
+                    self._adaptive_retention = AdaptiveRetentionController(
+                        settings.adaptive_retention_state_path
+                        or (store.path.parent / "adaptive-retention.sqlite3"),
+                        policy,
+                        initial_retention_seconds=int(settings.ws_archive_hot_retention_seconds),
+                    )
+                    self._archive_service.hot_retention = timedelta(
+                        seconds=self._adaptive_retention.current_retention_seconds()
+                    )
+                except (AdaptiveRetentionError, sqlite3.DatabaseError) as error:
+                    self._adaptive_retention = None
+                    self._archive_service.hot_retention = timedelta(
+                        seconds=settings.adaptive_retention_max_seconds
+                    )
+                    self._source_failed("adaptive_retention", error)
             self._health.ws_archive_metrics = manifest.metrics()
         self._mark_startup_phase("recorder_state_ready", phase_started)
 
@@ -2158,6 +2233,84 @@ class KalshiNativeRecorder:
                     storage_metrics,
                     observed_at=observed,
                 )
+                adaptive_status = None
+                if self._adaptive_retention is not None:
+                    diagnostics = (
+                        self._kalshi_ws.diagnostics if self._kalshi_ws is not None else None
+                    )
+                    adaptive_observation = AdaptiveRetentionObservation(
+                        observed_at=observed,
+                        verified_chunks=int(manifest_metrics.get("retention_verified") or 0),
+                        failed_chunks=int(manifest_metrics.get("failed") or 0),
+                        physical_database_bytes=storage_metrics.physical_database_bytes,
+                        hot_used_bytes=storage_metrics.hot_sqlite_used_bytes,
+                        freelist_reusable_bytes=storage_metrics.freelist_reusable_bytes,
+                        cold_archive_bytes=storage_metrics.cold_archive_bytes,
+                        cold_growth_bytes_per_day=storage_metrics.cold_archive_growth_bytes_per_day,
+                        raw_ws_growth_bytes_per_day=storage_metrics.raw_ws_growth_bytes_per_day,
+                        raw_ws_observation_window_seconds=(
+                            storage_metrics.raw_ws_observation_window_seconds
+                        ),
+                        disk_free_bytes=disk.free,
+                        disk_total_bytes=disk.total,
+                        event_loop_lag_seconds=self._health.event_loop_lag_seconds,
+                        ws_queue_depth=int(getattr(diagnostics, "receive_queue_depth", 0)),
+                        ws_queue_capacity=int(getattr(diagnostics, "receive_queue_capacity", 0)),
+                        ws_sequence_gaps=int(getattr(diagnostics, "sequence_gaps", 0)),
+                        ws_resyncs=int(getattr(diagnostics, "resyncs", 0)),
+                        ws_reconnects=int(getattr(diagnostics, "reconnects", 0)),
+                        data_gap_incidents=int(self._health.row_counts.get("data_gaps", 0)),
+                        unresolved_data_gaps=len(self._active_gaps),
+                        archive_or_replay_failure=int(manifest_metrics.get("failed") or 0) > 0,
+                        serious_runtime_incident=(
+                            self._health.fatal_task is not None
+                            or self._health.fatal_error_type is not None
+                        ),
+                        disk_threshold_state=disk_state.value,
+                        # These remain UNKNOWN until explicit recovery/access
+                        # instrumentation reports them. Missing evidence must never be
+                        # converted to zero and used to shorten retention.
+                        recovery_lookback_seconds=(self._startup_ws_recovery_lookback_seconds),
+                        hot_access_age_seconds=(
+                            self._startup_ws_recovery_lookback_seconds
+                            if self._hot_ws_access_evidence_complete
+                            else None
+                        ),
+                        recovery_session_id=(
+                            self._health.started_at.isoformat()
+                            if self._startup_ws_recovery_lookback_seconds is not None
+                            else None
+                        ),
+                        hot_access_evidence_complete=(self._hot_ws_access_evidence_complete),
+                    )
+                    try:
+                        adaptive_status = await asyncio.to_thread(
+                            self._adaptive_retention.evaluate_once,
+                            adaptive_observation,
+                            actual_retention_seconds=int(
+                                self._archive_service.hot_retention.total_seconds()
+                            ),
+                            allow_adjustment=True,
+                        )
+                    except sqlite3.DatabaseError as error:
+                        raise AdaptiveRetentionStateError(
+                            "adaptive retention state database is unavailable or corrupt"
+                        ) from error
+                    self._archive_service.hot_retention = timedelta(
+                        seconds=adaptive_status.current_retention_seconds
+                    )
+                    adaptive_status = replace(
+                        adaptive_status,
+                        actual_applied_retention_seconds=(
+                            adaptive_status.current_retention_seconds
+                        ),
+                    )
+                    await asyncio.to_thread(
+                        write_adaptive_retention_status,
+                        self._settings.adaptive_retention_status_path
+                        or (self._store.path.parent / "adaptive-retention.json"),
+                        adaptive_status,
+                    )
                 latest = self._archive_service.manifest.latest()
                 uncompressed = int(manifest_metrics.get("uncompressed") or 0)
                 compressed = int(manifest_metrics.get("compressed") or 0)
@@ -2165,7 +2318,12 @@ class KalshiNativeRecorder:
                     **manifest_metrics,
                     **hot_metrics,
                     "enabled": True,
-                    "hot_retention_seconds": self._settings.ws_archive_hot_retention_seconds,
+                    "hot_retention_seconds": int(
+                        self._archive_service.hot_retention.total_seconds()
+                    ),
+                    "adaptive_retention": (
+                        None if adaptive_status is None else adaptive_status.as_dict()
+                    ),
                     "archive_backlog_events": result.backlog_events,
                     "archive_backlog_capped": result.backlog_events > 0,
                     "archive_throughput_events_per_second": result.events_per_second,
@@ -2199,6 +2357,11 @@ class KalshiNativeRecorder:
                     "cold_archive_growth_bytes_per_day": (
                         storage_metrics.cold_archive_growth_bytes_per_day
                     ),
+                    "raw_ws_growth_bytes_per_hour": storage_metrics.raw_ws_growth_bytes_per_hour,
+                    "raw_ws_growth_bytes_per_day": storage_metrics.raw_ws_growth_bytes_per_day,
+                    "raw_ws_observation_window_seconds": (
+                        storage_metrics.raw_ws_observation_window_seconds
+                    ),
                     "net_disk_growth_sample_seconds": (storage_growth.sample_interval_seconds),
                     "net_disk_growth_bytes_per_hour": (
                         storage_growth.net_disk_growth_bytes_per_hour
@@ -2210,6 +2373,16 @@ class KalshiNativeRecorder:
                     "shadow_acceptance_passed": shadow_passed,
                     "deferred_for_ws_backpressure": False,
                 }
+                if (
+                    adaptive_status is not None
+                    and adaptive_status.controller_mode is AdaptiveRetentionMode.FAIL_SAFE
+                    and self._controlled_pause is not None
+                ):
+                    self._controlled_pause(adaptive_status.reason)
+                    self.request_stop()
+                    self._source_failed(key, RecorderStorageError(adaptive_status.reason))
+                    self._worker_advanced(key, observed)
+                    return
                 if disk_state.value == "fail_safe":
                     raise RecorderStorageError(
                         "disk fail-safe threshold reached; unverified raw data was preserved"
@@ -2220,6 +2393,16 @@ class KalshiNativeRecorder:
                 self._source_failed(key, error)
                 self._worker_advanced(key, observed)
                 if await self._wait(self._retry_delay(key, 1.0)):
+                    return
+                continue
+            except AdaptiveRetentionError as error:
+                self._adaptive_retention = None
+                self._archive_service.hot_retention = timedelta(
+                    seconds=self._settings.adaptive_retention_max_seconds
+                )
+                self._source_failed("adaptive_retention", error)
+                self._worker_advanced(key, observed)
+                if await self._wait(self._settings.ws_archive_poll_interval_seconds):
                     return
                 continue
             if await self._wait(self._settings.ws_archive_poll_interval_seconds):

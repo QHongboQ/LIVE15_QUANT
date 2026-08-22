@@ -133,6 +133,9 @@ class StorageTierMetrics:
     cold_archive_bytes: int
     cold_archive_growth_bytes_per_hour: float | None
     cold_archive_growth_bytes_per_day: float | None
+    raw_ws_growth_bytes_per_hour: float | None = None
+    raw_ws_growth_bytes_per_day: float | None = None
+    raw_ws_observation_window_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,6 +745,7 @@ class WsRetentionManifest:
                 SUM(state IN (
                     'checksum_verified','replay_verified','committed','purge_eligible','purged'
                 )) verified,
+                SUM(state IN ('committed','purge_eligible','purged')) retention_verified,
                 SUM(state='failed') failed,SUM(state='purge_eligible') eligible,
                 COALESCE(SUM(purged_events),0) purged,
                 COALESCE(SUM(compressed_bytes),0) compressed,
@@ -786,15 +790,38 @@ class WsRetentionManifest:
                     ArchiveState.PURGED.value,
                 ),
             ).fetchone()
+            verified_raw = connection.execute(
+                """SELECT COALESCE(SUM(uncompressed_bytes),0),
+                MIN(first_received_timestamp),MAX(last_received_timestamp)
+                FROM ws_retention_chunks WHERE state IN (?,?,?)""",
+                (
+                    ArchiveState.COMMITTED.value,
+                    ArchiveState.PURGE_ELIGIBLE.value,
+                    ArchiveState.PURGED.value,
+                ),
+            ).fetchone()
         assert row is not None
+        assert verified_raw is not None
         cold_bytes = int(row[0])
-        duration_hours = None
+        cold_duration_hours = None
         if row[1] is not None and row[2] is not None:
-            duration_hours = (
+            cold_duration_hours = (
                 _parse_time(str(row[2])) - _parse_time(str(row[1]))
             ).total_seconds() / 3600
         cold_per_hour = (
-            None if duration_hours is None or duration_hours <= 0 else cold_bytes / duration_hours
+            None
+            if cold_duration_hours is None or cold_duration_hours <= 0
+            else cold_bytes / cold_duration_hours
+        )
+        raw_duration_hours = None
+        if verified_raw[1] is not None and verified_raw[2] is not None:
+            raw_duration_hours = (
+                _parse_time(str(verified_raw[2])) - _parse_time(str(verified_raw[1]))
+            ).total_seconds() / 3600
+        raw_per_hour = (
+            None
+            if raw_duration_hours is None or raw_duration_hours <= 0
+            else int(verified_raw[0]) / raw_duration_hours
         )
         physical = page_count * page_size
         reusable = freelist_count * page_size
@@ -808,6 +835,11 @@ class WsRetentionManifest:
             cold_archive_growth_bytes_per_hour=cold_per_hour,
             cold_archive_growth_bytes_per_day=(
                 None if cold_per_hour is None else cold_per_hour * 24
+            ),
+            raw_ws_growth_bytes_per_hour=raw_per_hour,
+            raw_ws_growth_bytes_per_day=(None if raw_per_hour is None else raw_per_hour * 24),
+            raw_ws_observation_window_seconds=(
+                None if raw_duration_hours is None else raw_duration_hours * 3600
             ),
         )
 

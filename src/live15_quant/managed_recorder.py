@@ -193,6 +193,11 @@ async def _run(startup: StartupDiagnostics) -> None:
                 "not_checked" if verified_health is None else verified_health.integrity
             ),
             startup_phase_observer=observe_phase,
+            controlled_pause=lambda reason: controller.write_child_state(
+                "paused",
+                ManagedRecorderState.STOPPING,
+                f"controlled storage pause: {reason}",
+            ),
         )
         if controller.desired_state() == "paused":
             raise StartupCancelled("startup cancelled before worker creation")

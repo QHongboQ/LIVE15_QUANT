@@ -6,15 +6,22 @@ import argparse
 import asyncio
 import json
 import logging
+import shutil
 import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import asdict
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import requests
 
+from live15_quant.adaptive_retention import (
+    AdaptiveRetentionController,
+    AdaptiveRetentionObservation,
+    AdaptiveRetentionPolicy,
+    write_adaptive_retention_status,
+)
 from live15_quant.config import Settings, load_settings
 from live15_quant.dataset import (
     DatasetBuildConfig,
@@ -61,6 +68,7 @@ from live15_quant.storage_scaling import benchmark_snapshot
 from live15_quant.ws_retention import (
     ArchiveState,
     CompactionBenefitGate,
+    DiskQuota,
     WsArchiveService,
     WsPurgeService,
     WsRetentionManifest,
@@ -190,7 +198,19 @@ async def _run_recorder(
     settings: Settings, controller: RecorderProcessController | None = None
 ) -> None:
     with RecorderStore(settings.recorder_data_path) as store:
-        recorder = KalshiNativeRecorder(settings, store)
+        recorder = KalshiNativeRecorder(
+            settings,
+            store,
+            controlled_pause=(
+                None
+                if controller is None
+                else lambda reason: controller.write_child_state(
+                    "paused",
+                    ManagedRecorderState.STOPPING,
+                    f"controlled storage pause: {reason}",
+                )
+            ),
+        )
         control_task = (
             asyncio.create_task(_watch_recorder_control(recorder, controller))
             if controller is not None
@@ -732,3 +752,115 @@ def archive_maintenance_main(argv: Sequence[str] | None = None) -> None:
             sort_keys=True,
         )
     )
+
+
+def adaptive_retention_main(argv: Sequence[str] | None = None) -> None:
+    """Observe bounded retention metadata once, persist the decision, and exit."""
+
+    parser = argparse.ArgumentParser(prog="live15-adaptive-retention")
+    parser.add_argument("--once", action="store_true", required=True)
+    arguments = parser.parse_args(argv)
+    del arguments
+    settings = load_settings()
+    manifest_path = settings.ws_archive_manifest_path or (
+        settings.recorder_data_path.parent / "ws_archive_manifest.sqlite3"
+    )
+    manifest = WsRetentionManifest(manifest_path)
+    metrics = manifest.metrics()
+    storage = manifest.storage_metrics(settings.recorder_data_path)
+    disk = shutil.disk_usage(settings.recorder_data_path.parent)
+    disk_state = DiskQuota().classify(total_bytes=disk.total, free_bytes=disk.free)
+    health: dict[str, object] = {}
+    if settings.recorder_health_path.is_file():
+        try:
+            value = json.loads(settings.recorder_health_path.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                health = value
+        except (OSError, json.JSONDecodeError):
+            health = {}
+    policy = AdaptiveRetentionPolicy(
+        minimum_seconds=settings.adaptive_retention_min_seconds,
+        maximum_seconds=settings.adaptive_retention_max_seconds,
+        evidence_window=timedelta(seconds=settings.adaptive_retention_evidence_window_seconds),
+        minimum_evidence_duration=timedelta(
+            seconds=settings.adaptive_retention_min_evidence_seconds
+        ),
+        minimum_verified_chunks=settings.adaptive_retention_min_verified_chunks,
+        minimum_evidence_samples=settings.adaptive_retention_min_evidence_samples,
+        minimum_recovery_sessions=settings.adaptive_retention_min_recovery_sessions,
+        minimum_simulation_passes=settings.adaptive_retention_simulation_passes,
+        safety_margin=timedelta(seconds=settings.adaptive_retention_safety_margin_seconds),
+        cooldown=timedelta(seconds=settings.adaptive_retention_cooldown_seconds),
+        reevaluation_interval=timedelta(seconds=settings.adaptive_retention_reevaluation_seconds),
+        serious_incident_quiet_period=timedelta(
+            seconds=settings.adaptive_retention_incident_quiet_seconds
+        ),
+        minimum_projection_window=timedelta(
+            seconds=settings.adaptive_retention_min_projection_window_seconds
+        ),
+        disk_deescalation_samples=settings.adaptive_retention_disk_deescalation_samples,
+        auto_adjust=settings.adaptive_retention_auto_adjust,
+    )
+    controller = AdaptiveRetentionController(
+        settings.adaptive_retention_state_path
+        or (settings.recorder_data_path.parent / "adaptive-retention.sqlite3"),
+        policy,
+        initial_retention_seconds=int(settings.ws_archive_hot_retention_seconds),
+    )
+    source_failures = health.get("source_failures")
+    health_archive = health.get("ws_archive")
+    actual_retention = (
+        int(health_archive.get("hot_retention_seconds") or 0)
+        if isinstance(health_archive, dict)
+        else controller.current_retention_seconds()
+    )
+    if actual_retention == 0:
+        actual_retention = controller.current_retention_seconds()
+    status = controller.evaluate_once(
+        AdaptiveRetentionObservation(
+            observed_at=datetime.now(UTC),
+            verified_chunks=int(metrics.get("retention_verified") or 0),
+            failed_chunks=int(metrics.get("failed") or 0),
+            physical_database_bytes=storage.physical_database_bytes,
+            hot_used_bytes=storage.hot_sqlite_used_bytes,
+            freelist_reusable_bytes=storage.freelist_reusable_bytes,
+            cold_archive_bytes=storage.cold_archive_bytes,
+            cold_growth_bytes_per_day=storage.cold_archive_growth_bytes_per_day,
+            raw_ws_growth_bytes_per_day=storage.raw_ws_growth_bytes_per_day,
+            raw_ws_observation_window_seconds=storage.raw_ws_observation_window_seconds,
+            disk_free_bytes=disk.free,
+            disk_total_bytes=disk.total,
+            event_loop_lag_seconds=float(health.get("event_loop_lag_seconds") or 0.0),
+            ws_queue_depth=int(health.get("kalshi_ws_queue_depth") or 0),
+            ws_queue_capacity=int(health.get("kalshi_ws_queue_capacity") or 0),
+            ws_sequence_gaps=int(health.get("kalshi_ws_seq_gaps") or 0),
+            ws_resyncs=int(health.get("kalshi_ws_resync_count") or 0),
+            ws_reconnects=int(health.get("kalshi_ws_reconnect_count") or 0),
+            data_gap_incidents=int(
+                (health.get("row_counts") or {}).get("data_gaps", 0)
+                if isinstance(health.get("row_counts"), dict)
+                else 0
+            ),
+            unresolved_data_gaps=None,
+            archive_or_replay_failure=int(metrics.get("failed") or 0) > 0,
+            serious_runtime_incident=bool(
+                health.get("fatal_task")
+                or health.get("fatal_error_type")
+                or (isinstance(source_failures, dict) and "ws_archive" in source_failures)
+            ),
+            disk_threshold_state=disk_state.value,
+            recovery_lookback_seconds=None,
+            hot_access_age_seconds=None,
+            recovery_session_id=None,
+            hot_access_evidence_complete=False,
+        ),
+        actual_retention_seconds=actual_retention,
+        allow_adjustment=False,
+        record_evidence=False,
+    )
+    write_adaptive_retention_status(
+        settings.adaptive_retention_status_path
+        or (settings.recorder_data_path.parent / "adaptive-retention.json"),
+        status,
+    )
+    print(json.dumps(status.as_dict(), indent=2, sort_keys=True))

@@ -35,7 +35,7 @@ from live15_quant.providers.pyth import (
     PythUpdateBatch,
 )
 from live15_quant.storage import MarketIdentityConflictError, RecorderStore
-from live15_quant.ws_retention import WsRetentionError
+from live15_quant.ws_retention import StorageGrowthMetrics, StorageTierMetrics, WsRetentionError
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 from tests.test_storage import prediction_quote
 
@@ -1244,6 +1244,64 @@ async def test_archive_failure_isolated_from_core_recorder(
         assert health.source_failures["ws_archive"] == type(failure).__name__
         assert health.fatal_task is None
         assert health.fatal_error_type is None
+
+
+@pytest.mark.asyncio
+async def test_adaptive_retention_fail_safe_requests_managed_pause(tmp_path, monkeypatch) -> None:
+    pause_reasons: list[str] = []
+    with RecorderStore(tmp_path / "adaptive-fail-safe.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                recorder_health_path=tmp_path / "health.json",
+                ws_archive_poll_interval_seconds=60,
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            controlled_pause=pause_reasons.append,
+            now=lambda: NOW,
+        )
+        assert recorder._archive_service is not None
+        manifest = recorder._archive_service.manifest
+        monkeypatch.setattr(
+            recorder._archive_service,
+            "run_once",
+            lambda **_kwargs: SimpleNamespace(
+                backlog_events=0,
+                events_per_second=0.0,
+                elapsed_seconds=0.0,
+            ),
+        )
+        monkeypatch.setattr(
+            recorder._archive_service,
+            "hot_metrics",
+            lambda _now: {},
+        )
+        monkeypatch.setattr(
+            manifest,
+            "metrics",
+            lambda: {"verified": 0, "failed": 1, "uncompressed": 0, "compressed": 0},
+        )
+        storage = StorageTierMetrics(10_000, 0, 10_000, 0, 0, None, None, None, None)
+        monkeypatch.setattr(manifest, "storage_metrics", lambda _path: storage)
+        monkeypatch.setattr(
+            manifest,
+            "record_storage_sample",
+            lambda *_args, **_kwargs: StorageGrowthMetrics(None, None, None),
+        )
+        monkeypatch.setattr(manifest, "latest", lambda: None)
+        monkeypatch.setattr(
+            "live15_quant.native_recorder.DiskQuota",
+            lambda: SimpleNamespace(classify=lambda **_kwargs: SimpleNamespace(value="fail_safe")),
+        )
+
+        await asyncio.wait_for(recorder._archive_ws_retention(), 1)
+
+        assert pause_reasons
+        assert "controlled pause" in pause_reasons[0]
+        assert recorder._stop_event.is_set()
 
 
 @pytest.mark.asyncio

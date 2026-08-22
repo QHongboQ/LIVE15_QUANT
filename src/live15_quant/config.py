@@ -73,6 +73,24 @@ class Settings:
     ws_archive_purge_batch_rows: int = 20_000
     ws_compaction_min_reclaim_bytes: int = 8 * 1024**3
     ws_compaction_min_reclaim_percent: Decimal = Decimal("25")
+    enable_adaptive_ws_retention: bool = True
+    adaptive_retention_state_path: Path | None = None
+    adaptive_retention_status_path: Path | None = None
+    adaptive_retention_min_seconds: int = 3_600
+    adaptive_retention_max_seconds: int = 21_600
+    adaptive_retention_evidence_window_seconds: int = 7 * 86_400
+    adaptive_retention_min_evidence_seconds: int = 3 * 86_400
+    adaptive_retention_min_verified_chunks: int = 100
+    adaptive_retention_min_evidence_samples: int = 24
+    adaptive_retention_min_recovery_sessions: int = 3
+    adaptive_retention_simulation_passes: int = 3
+    adaptive_retention_safety_margin_seconds: int = 1_800
+    adaptive_retention_cooldown_seconds: int = 86_400
+    adaptive_retention_reevaluation_seconds: int = 3_600
+    adaptive_retention_incident_quiet_seconds: int = 86_400
+    adaptive_retention_min_projection_window_seconds: int = 86_400
+    adaptive_retention_disk_deescalation_samples: int = 3
+    adaptive_retention_auto_adjust: bool = True
     recorder_operation_timeout_seconds: float = 45.0
     recorder_max_backoff_seconds: float = 60.0
     recorder_health_path: Path = Path("data/health.json")
@@ -97,6 +115,36 @@ class Settings:
     paper_max_consecutive_losses: int = 3
     paper_kill_switch: bool = False
     log_level: str = "INFO"
+
+    def __post_init__(self) -> None:
+        ladder = (21_600, 14_400, 10_800, 7_200, 3_600)
+        if self.enable_adaptive_ws_retention and (
+            self.adaptive_retention_min_seconds not in ladder
+            or self.adaptive_retention_max_seconds not in ladder
+            or self.adaptive_retention_min_seconds > self.adaptive_retention_max_seconds
+            or self.ws_archive_hot_retention_seconds not in ladder
+            or not (
+                self.adaptive_retention_min_seconds
+                <= self.ws_archive_hot_retention_seconds
+                <= self.adaptive_retention_max_seconds
+            )
+            or not (
+                0
+                < self.adaptive_retention_min_evidence_seconds
+                <= self.adaptive_retention_evidence_window_seconds
+            )
+            or self.adaptive_retention_min_verified_chunks < 1
+            or self.adaptive_retention_min_evidence_samples < 2
+            or self.adaptive_retention_min_recovery_sessions < 1
+            or self.adaptive_retention_simulation_passes < 1
+            or self.adaptive_retention_safety_margin_seconds < 0
+            or self.adaptive_retention_cooldown_seconds < 0
+            or self.adaptive_retention_reevaluation_seconds < 1
+            or self.adaptive_retention_incident_quiet_seconds < 0
+            or self.adaptive_retention_min_projection_window_seconds < 1
+            or self.adaptive_retention_disk_deescalation_samples < 1
+        ):
+            raise ValueError("adaptive WS retention configuration is outside the safety ladder")
 
 
 def _positive_float(source: Mapping[str, str], name: str, default: float) -> float:
@@ -214,8 +262,24 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         if source.get("LIVE15_WS_ARCHIVE_MANIFEST_PATH")
         else None
     )
+    adaptive_retention_state_path = (
+        Path(source["LIVE15_ADAPTIVE_RETENTION_STATE_PATH"])
+        if source.get("LIVE15_ADAPTIVE_RETENTION_STATE_PATH")
+        else None
+    )
+    adaptive_retention_status_path = (
+        Path(source["LIVE15_ADAPTIVE_RETENTION_STATUS_PATH"])
+        if source.get("LIVE15_ADAPTIVE_RETENTION_STATUS_PATH")
+        else None
+    )
     pyth_api_key_path = (
         Path(source["LIVE15_PYTH_API_KEY_PATH"]) if source.get("LIVE15_PYTH_API_KEY_PATH") else None
+    )
+    effective_adaptive_state_path = adaptive_retention_state_path or (
+        recorder_data_path.parent / "adaptive-retention.sqlite3"
+    )
+    effective_adaptive_status_path = adaptive_retention_status_path or (
+        recorder_data_path.parent / "adaptive-retention.json"
     )
     resolved_paths = {
         recorder_data_path.resolve(),
@@ -225,10 +289,12 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         recorder_control_path.resolve(),
         recorder_pid_path.resolve(),
         readiness_report_path.resolve(),
+        effective_adaptive_state_path.resolve(),
+        effective_adaptive_status_path.resolve(),
     }
     if ws_archive_manifest_path is not None:
         resolved_paths.add(ws_archive_manifest_path.resolve())
-    expected_paths = 7 + (1 if ws_archive_manifest_path is not None else 0)
+    expected_paths = 9 + (1 if ws_archive_manifest_path is not None else 0)
     if len(resolved_paths) != expected_paths:
         raise ValueError("database and recorder runtime paths must be different from each other")
     paper_account_id = source.get("LIVE15_PAPER_ACCOUNT_ID", defaults.paper_account_id).strip()
@@ -434,6 +500,88 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             source,
             "LIVE15_WS_COMPACTION_MIN_RECLAIM_PERCENT",
             defaults.ws_compaction_min_reclaim_percent,
+        ),
+        enable_adaptive_ws_retention=_boolean(
+            source,
+            "LIVE15_ENABLE_ADAPTIVE_WS_RETENTION",
+            defaults.enable_adaptive_ws_retention,
+        ),
+        adaptive_retention_state_path=adaptive_retention_state_path,
+        adaptive_retention_status_path=adaptive_retention_status_path,
+        adaptive_retention_min_seconds=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_MIN_SECONDS",
+            defaults.adaptive_retention_min_seconds,
+        ),
+        adaptive_retention_max_seconds=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_MAX_SECONDS",
+            defaults.adaptive_retention_max_seconds,
+        ),
+        adaptive_retention_evidence_window_seconds=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_EVIDENCE_WINDOW_SECONDS",
+            defaults.adaptive_retention_evidence_window_seconds,
+        ),
+        adaptive_retention_min_evidence_seconds=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_MIN_EVIDENCE_SECONDS",
+            defaults.adaptive_retention_min_evidence_seconds,
+        ),
+        adaptive_retention_min_verified_chunks=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_MIN_VERIFIED_CHUNKS",
+            defaults.adaptive_retention_min_verified_chunks,
+        ),
+        adaptive_retention_min_evidence_samples=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_MIN_EVIDENCE_SAMPLES",
+            defaults.adaptive_retention_min_evidence_samples,
+        ),
+        adaptive_retention_min_recovery_sessions=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_MIN_RECOVERY_SESSIONS",
+            defaults.adaptive_retention_min_recovery_sessions,
+        ),
+        adaptive_retention_simulation_passes=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_SIMULATION_PASSES",
+            defaults.adaptive_retention_simulation_passes,
+        ),
+        adaptive_retention_safety_margin_seconds=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_SAFETY_MARGIN_SECONDS",
+            defaults.adaptive_retention_safety_margin_seconds,
+        ),
+        adaptive_retention_cooldown_seconds=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_COOLDOWN_SECONDS",
+            defaults.adaptive_retention_cooldown_seconds,
+        ),
+        adaptive_retention_reevaluation_seconds=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_REEVALUATION_SECONDS",
+            defaults.adaptive_retention_reevaluation_seconds,
+        ),
+        adaptive_retention_incident_quiet_seconds=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_INCIDENT_QUIET_SECONDS",
+            defaults.adaptive_retention_incident_quiet_seconds,
+        ),
+        adaptive_retention_min_projection_window_seconds=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_MIN_PROJECTION_WINDOW_SECONDS",
+            defaults.adaptive_retention_min_projection_window_seconds,
+        ),
+        adaptive_retention_disk_deescalation_samples=_positive_int(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_DISK_DEESCALATION_SAMPLES",
+            defaults.adaptive_retention_disk_deescalation_samples,
+        ),
+        adaptive_retention_auto_adjust=_boolean(
+            source,
+            "LIVE15_ADAPTIVE_RETENTION_AUTO_ADJUST",
+            defaults.adaptive_retention_auto_adjust,
         ),
         recorder_operation_timeout_seconds=_positive_float(
             source,

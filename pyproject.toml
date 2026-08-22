@@ -44,6 +44,7 @@ live15-secondary-diagnostics = "live15_quant.cli:secondary_diagnostics_main"
 live15-storage-audit = "live15_quant.cli:storage_audit_main"
 live15-ws-retention = "live15_quant.cli:ws_retention_main"
 live15-archive-maintenance = "live15_quant.cli:archive_maintenance_main"
+live15-adaptive-retention = "live15_quant.cli:adaptive_retention_main"
 live15-ui = "live15_quant.control_center:main"
 
 [tool.setuptools.packages.find]
