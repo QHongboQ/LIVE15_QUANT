@@ -499,6 +499,39 @@ def model_zoo_main(argv: Sequence[str] | None = None) -> None:
     )
 
 
+def model_zoo_v2_main(argv: Sequence[str] | None = None) -> None:
+    """Build development-only Model Zoo v2 candidates from Dataset v1 train rows."""
+
+    from live15_quant.model_zoo import load_certified_dataset
+    from live15_quant.model_zoo_v2 import ModelZooV2, ModelZooV2Config
+
+    parser = argparse.ArgumentParser(prog="live15-model-zoo-v2")
+    parser.add_argument("--dataset", type=Path, required=True)
+    parser.add_argument("--v1-model-zoo", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, default=Path("data/models"))
+    parser.add_argument("--seed", type=int, default=20260823)
+    arguments = parser.parse_args(argv)
+    summary = ModelZooV2(
+        load_certified_dataset(arguments.dataset),
+        arguments.output_root,
+        arguments.v1_model_zoo,
+        ModelZooV2Config(seed=arguments.seed),
+    ).build()
+    print(
+        json.dumps(
+            {
+                "zoo_id": summary.zoo_id,
+                "dataset_id": summary.dataset_id,
+                "status": summary.status,
+                "forward_candidate_ids": list(summary.forward_candidate_ids),
+                "reused_existing_artifact": summary.reused_existing_artifact,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 def coverage_main(argv: Sequence[str] | None = None) -> None:
     """Build a consistent snapshot and print machine-readable training coverage."""
 

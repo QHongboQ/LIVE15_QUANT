@@ -196,6 +196,16 @@ metrics、成本假设及 artifact hashes。相同输入只验证并复用同一
 fail loudly。`NO_CHAMPION` 是合法且预期的结果：它表示没有候选同时通过 frozen validation calibration
 gate 和最终、含成本的 test gate；它不触发交易或参数追逐。
 
+### Development-only Model Zoo v2
+
+当 Dataset v1 final test 已经揭盲后，`live15-model-zoo-v2 --dataset <Dataset-v1> --v1-model-zoo <Model-Zoo-v1>`
+只消费 Dataset 的 `train` split，并进行 event-window grouped chronological expanding folds。它预先固定
+`0.03/0.05/0.075/0.10/0.125/0.15` executable-ask edge ladder、现有 taker-fee 成本模型、候选族与
+promotion gates；不会读取或输出 Dataset v1 test rows/metrics。输出只会是 `FORWARD_CANDIDATE`、
+`REJECTED` 或 `NO_FORWARD_CANDIDATE`，任何 forward candidate 都仍需新的 Paper/Shadow/Demo forward
+数据验证。Artifact 明确记录 v1 final test 已揭盲、该 test 未用于 v2 development、chronological folds、
+成本 sensitivity、asset-aware 配置与完整 lineage。
+
 Milestone 7.5 将该路径升级为无需人工盯守的连续采集服务：十个资产逐一隔离发现，rollover 后继续有界追踪 predecessor 到官方 finalized，重启时完全从 SQLite 恢复，并原子输出机器可读 health。长期运行、恢复、容量规划与 Windows restart helper 见 [Continuous training-data recorder](docs/continuous_recorder.md)。
 
 默认 sampling grid 是距结束 14m、12m、10m、8m、5m、3m、2m、1m、30s，可通过 `LIVE15_DATASET_DECISION_OFFSETS_SECONDS` 配置。核心 `SamplingPolicy` 不含固定现实日期、固定 UTC 时刻或固定 grid。每个 event 可以产生多行，但 chronological/expanding/rolling split 都以完整 ticker event 为 group，同一 event 不会跨 train/validation/test。
