@@ -56,6 +56,16 @@ class PaperPositionStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class PaperSettlement:
+    """Official settlement applied to a local paper position exactly once."""
+
+    event_id: str
+    outcome_yes: bool
+    settlement_timestamp: datetime
+    realized_pnl: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class StrategyDecision:
     decision_id: str
     signal_timestamp: datetime
@@ -253,6 +263,35 @@ class PaperPortfolio:
                 self._positions[key] = replace(
                     position, status=PaperPositionStatus.PENDING_SETTLEMENT
                 )
+
+    def settle_event(
+        self, event_id: str, *, outcome_yes: bool, settlement_timestamp: datetime
+    ) -> PaperSettlement:
+        """Apply only official contract truth; underlying prices are never a proxy."""
+
+        if settlement_timestamp.tzinfo is None or settlement_timestamp.utcoffset() is None:
+            raise ValueError("paper settlement timestamp must be timezone-aware")
+        realized_before = self.realized_pnl
+        for key, position in tuple(self._positions.items()):
+            if position.event_id != event_id:
+                continue
+            won = (position.outcome is ContractOutcome.YES) == outcome_yes
+            payout = position.quantity if won else Decimal(0)
+            # Entry notional was intentionally excluded from realized PnL at buy time;
+            # recognize it exactly once when authoritative Kalshi settlement arrives.
+            realized = payout - position.average_cost * position.quantity
+            self.cash += payout
+            self.realized_pnl += realized
+            if settlement_timestamp.astimezone(UTC).date() == self._daily_date:
+                self.daily_realized_pnl += realized
+            self._positions.pop(key)
+            self.record_exit_order_pnl(realized)
+        return PaperSettlement(
+            event_id=event_id,
+            outcome_yes=outcome_yes,
+            settlement_timestamp=settlement_timestamp.astimezone(UTC),
+            realized_pnl=self.realized_pnl - realized_before,
+        )
 
     def state(
         self, marks: dict[tuple[str, ContractOutcome], Decimal], as_of: datetime

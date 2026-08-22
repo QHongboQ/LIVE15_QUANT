@@ -462,6 +462,10 @@ class KalshiNativeRecorder:
             )
         self._kalshi_ws_coordinator: KalshiAtomicOrderBookCoordinator | None = None
         self._kalshi_ws_books: dict[Asset, SynchronizedKalshiOrderBook] = {}
+        # One compact as-of book per configured forward decision bucket is enough
+        # for frozen-paper inference.  Keep only the current ticker's offsets in
+        # memory so this observability aid cannot grow for a 24/7 recorder.
+        self._forward_shadow_checkpointed: dict[tuple[Asset, str], set[int]] = {}
         self._kalshi_ws_pending: list[
             tuple[
                 KalshiOrderBookSnapshot | KalshiOrderBookDelta | KalshiCommandAcknowledged,
@@ -1911,6 +1915,38 @@ class KalshiNativeRecorder:
                 ):
                     return
 
+    def _capture_forward_shadow_checkpoint(
+        self, asset: Asset, book: SynchronizedKalshiOrderBook
+    ) -> None:
+        """Persist a bounded, pre-decision WS book for frozen forward validation.
+
+        Raw deltas remain the lossless truth.  This sparse checkpoint is only a
+        locally materialized as-of boundary: it is captured before, never after,
+        each configured decision timestamp.  At most one extra checkpoint is
+        written per ``asset/ticker/decision bucket``.
+        """
+
+        market = self._health.current.get(asset)
+        if market is None or market.ticker != book.ticker:
+            return
+        key = (asset, book.ticker)
+        completed = self._forward_shadow_checkpointed.setdefault(key, set())
+        for stale_key in tuple(self._forward_shadow_checkpointed):
+            if stale_key[0] is asset and stale_key != key:
+                self._forward_shadow_checkpointed.pop(stale_key, None)
+        # The receive pump is high-rate, so a five-second pre-decision window
+        # reliably captures an actual book without accepting a future update.
+        capture_window = timedelta(seconds=5)
+        for offset in self._settings.dataset_decision_offsets_seconds:
+            if offset in completed:
+                continue
+            decision = market.window_end - timedelta(seconds=offset)
+            if not decision - capture_window <= book.received_timestamp <= decision:
+                continue
+            if self._store.append_kalshi_ws_checkpoint(book):
+                self._wrote("kalshi_ws_book_checkpoints")
+            completed.add(offset)
+
     async def _record_kalshi_ws_session(self) -> None:
         """Persist one official stream and expose only synchronized atomic books."""
 
@@ -2117,6 +2153,7 @@ class KalshiNativeRecorder:
                     )
                 if desired_by_asset.get(asset) == book.ticker:
                     self._kalshi_ws_books[asset] = book
+                    self._capture_forward_shadow_checkpoint(asset, book)
                     self._health.kalshi_ws_synchronized[asset] = book.ticker
                     self._health.kalshi_ws_last_books[asset] = book.received_timestamp
                     self._observe_gap(
@@ -2157,6 +2194,7 @@ class KalshiNativeRecorder:
                     if asset is None or desired_by_asset.get(asset) != ticker:
                         continue
                     self._kalshi_ws_books[asset] = synchronized_book
+                    self._capture_forward_shadow_checkpoint(asset, synchronized_book)
                     self._health.kalshi_ws_synchronized[asset] = ticker
                     self._health.kalshi_ws_last_books[asset] = synchronized_book.received_timestamp
                     self._observe_gap(

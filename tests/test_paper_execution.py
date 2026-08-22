@@ -544,6 +544,23 @@ def test_paper_store_integrity_includes_foreign_keys(tmp_path) -> None:
     store.close()
 
 
+def test_paper_v1_settlement_migration_is_atomic_and_revalidates_account(tmp_path) -> None:
+    path = tmp_path / "paper.sqlite3"
+    with PaperStore(path, account_id="paper", starting_cash=Decimal("1000")):
+        pass
+    import sqlite3
+
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE paper_settlements")
+    connection.execute("UPDATE paper_metadata SET value='1' WHERE key='schema_version'")
+    connection.commit()
+    connection.close()
+    with PaperStore(path, account_id="paper", starting_cash=Decimal("1000")) as migrated:
+        assert migrated.settlement_for_event("event-1") is None
+    with pytest.raises(PaperStorageError, match="configuration"):
+        PaperStore(path, account_id="other", starting_cash=Decimal("1000"))
+
+
 def test_hard_risk_gate_instance_cannot_be_reconfigured() -> None:
     layer = ImmutableHardRiskLayer(
         HardRiskLimits(Decimal("1"), Decimal("2"), Decimal("3"), Decimal("4"), 5)

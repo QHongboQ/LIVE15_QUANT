@@ -17,11 +17,12 @@ from live15_quant.paper import (
     PaperExecutionReason,
     PaperExecutionResult,
     PaperPortfolioState,
+    PaperSettlement,
     StrategyDecision,
 )
 from live15_quant.risk import RiskDecision
 
-PAPER_SCHEMA_VERSION = 1
+PAPER_SCHEMA_VERSION = 2
 
 
 class PaperStorageError(RuntimeError):
@@ -128,6 +129,14 @@ class PaperPortfolioRecord:
     daily_pnl: Decimal
     consecutive_losses: int
     fill_state_certain: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PaperSettlementRecord:
+    event_id: str
+    outcome_yes: bool
+    settlement_timestamp: datetime
+    realized_pnl: Decimal
 
 
 _SCHEMA = """
@@ -262,6 +271,16 @@ CREATE TABLE paper_portfolio_snapshots (
     fill_state_certain INTEGER NOT NULL CHECK (fill_state_certain IN (0, 1)),
     data_role TEXT NOT NULL
 ) STRICT;
+
+CREATE TABLE paper_settlements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version INTEGER NOT NULL,
+    event_id TEXT NOT NULL UNIQUE,
+    outcome_yes INTEGER NOT NULL CHECK (outcome_yes IN (0, 1)),
+    settlement_timestamp TEXT NOT NULL,
+    realized_pnl TEXT NOT NULL,
+    data_role TEXT NOT NULL
+) STRICT;
 """
 
 
@@ -319,6 +338,29 @@ class PaperStore:
             row["key"]: row["value"]
             for row in self._connection.execute("SELECT key,value FROM paper_metadata")
         }
+        if metadata.get("schema_version") == "1":
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                self._connection.execute(
+                    """CREATE TABLE paper_settlements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    schema_version INTEGER NOT NULL,
+                    event_id TEXT NOT NULL UNIQUE,
+                    outcome_yes INTEGER NOT NULL CHECK (outcome_yes IN (0, 1)),
+                    settlement_timestamp TEXT NOT NULL,
+                    realized_pnl TEXT NOT NULL,
+                    data_role TEXT NOT NULL
+                    ) STRICT"""
+                )
+                self._connection.execute(
+                    "UPDATE paper_metadata SET value=? WHERE key='schema_version'",
+                    (str(PAPER_SCHEMA_VERSION),),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+            metadata["schema_version"] = str(PAPER_SCHEMA_VERSION)
         if metadata.get("schema_version") != str(PAPER_SCHEMA_VERSION):
             raise PaperStorageError("incompatible paper schema")
         if metadata.get("account_id") != account_id or metadata.get("starting_cash") != str(
@@ -567,6 +609,58 @@ class PaperStore:
                 ),
             )
             self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+
+    def settlement_for_event(self, event_id: str) -> PaperSettlementRecord | None:
+        row = self._connection.execute(
+            "SELECT * FROM paper_settlements WHERE event_id=?", (event_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return PaperSettlementRecord(
+            event_id=str(row["event_id"]),
+            outcome_yes=bool(row["outcome_yes"]),
+            settlement_timestamp=_parse_ts(row["settlement_timestamp"]),
+            realized_pnl=_required_decimal(row["realized_pnl"]),
+        )
+
+    def settled_event_ids(self) -> tuple[str, ...]:
+        return tuple(
+            str(row["event_id"])
+            for row in self._connection.execute(
+                "SELECT event_id FROM paper_settlements ORDER BY id"
+            )
+        )
+
+    def append_settlement(self, settlement: PaperSettlement) -> bool:
+        existing = self.settlement_for_event(settlement.event_id)
+        if existing is not None:
+            if (
+                existing.outcome_yes != settlement.outcome_yes
+                or existing.settlement_timestamp != settlement.settlement_timestamp
+                or existing.realized_pnl != settlement.realized_pnl
+            ):
+                raise PaperStorageError("paper settlement conflicts with immutable official truth")
+            return False
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            self._connection.execute(
+                """INSERT INTO paper_settlements(
+                schema_version,event_id,outcome_yes,settlement_timestamp,realized_pnl,data_role
+                ) VALUES (?,?,?,?,?,?)""",
+                (
+                    PAPER_SCHEMA_VERSION,
+                    settlement.event_id,
+                    int(settlement.outcome_yes),
+                    _ts(settlement.settlement_timestamp),
+                    str(settlement.realized_pnl),
+                    "paper_execution",
+                ),
+            )
+            self._connection.commit()
+            return True
         except Exception:
             self._connection.rollback()
             raise

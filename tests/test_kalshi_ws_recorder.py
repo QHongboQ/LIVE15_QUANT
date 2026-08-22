@@ -21,12 +21,46 @@ from live15_quant.kalshi_ws import (
     KalshiSubscriptionCommand,
     KalshiUnsynchronizedBookError,
     KalshiWsRuntimeState,
+    SynchronizedKalshiOrderBook,
 )
 from live15_quant.models import Asset, OrderBookLevel
 from live15_quant.native_recorder import KalshiNativeRecorder
 from live15_quant.storage import RecorderStorageError, RecorderStore
 from tests.test_kalshi_lifecycle import NOW
 from tests.test_native_recorder import FakeDiscovery, FakeQuotes, OneTickStream, discovery_for
+
+
+def test_forward_shadow_checkpoint_is_predecision_bounded_and_idempotent(tmp_path) -> None:
+    discovery = discovery_for(Asset.BTC)
+    with RecorderStore(tmp_path / "raw.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery((discovery,)),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        recorder._accept_discovery(discovery)
+        market = recorder._health.current[Asset.BTC]
+        decision = market.window_end - timedelta(seconds=60)
+        book = SynchronizedKalshiOrderBook(
+            connection_id="connection",
+            subscription_id=1,
+            sequence=10,
+            ticker=market.ticker,
+            market_id="market",
+            yes_bids=(OrderBookLevel(Decimal("0.40"), Decimal("2")),),
+            no_bids=(OrderBookLevel(Decimal("0.50"), Decimal("3")),),
+            source_timestamp=None,
+            received_timestamp=decision - timedelta(seconds=1),
+        )
+        recorder._capture_forward_shadow_checkpoint(Asset.BTC, book)
+        recorder._capture_forward_shadow_checkpoint(Asset.BTC, book)
+        assert store.count("kalshi_ws_book_checkpoints") == 1
+        future_book = replace(book, sequence=11, received_timestamp=decision + timedelta(seconds=1))
+        recorder._capture_forward_shadow_checkpoint(Asset.BTC, future_book)
+        assert store.count("kalshi_ws_book_checkpoints") == 1
 
 
 class FakeProductionWs:

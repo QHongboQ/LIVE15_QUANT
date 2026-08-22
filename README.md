@@ -206,6 +206,18 @@ promotion gates；不会读取或输出 Dataset v1 test rows/metrics。输出只
 数据验证。Artifact 明确记录 v1 final test 已揭盲、该 test 未用于 v2 development、chronological folds、
 成本 sensitivity、asset-aware 配置与完整 lineage。
 
+### Frozen Paper / Shadow forward validation
+
+`live15-paper-shadow` 是本地、只读 market-data 的 forward-validation worker；它没有任何
+Demo/Production order、account 或 credential endpoint。首次仅以
+`--materialize-frozen-models` 从 Dataset v1 的 **train split** 原子材料化 v2 已批准候选的权重，之后
+只加载该不可变 snapshot，不自动重训、调 threshold 或提升 champion。它将每个 model/event/decision
+opportunity 的 immutable fact 写入独立 Git-ignored ledger，并为 Logistic L2、pooled XGBoost 和
+asset-aware XGBoost 分别维护独立 paper portfolio。只有 validation-start 之后、已同步 Kalshi WS book、
+fresh primary underlying、完整 required lookback 且没有必要 source gap 的数据才可产生 paper order；否则
+显式记录 `HOLD / DATA_UNAVAILABLE`。Gold、Silver、WTI 仍可研究性预测，但不会进入正式 paper performance。
+Kalshi finalized settlement 是唯一的 PnL truth；价格/underlying 不会代替 settlement。
+
 Milestone 7.5 将该路径升级为无需人工盯守的连续采集服务：十个资产逐一隔离发现，rollover 后继续有界追踪 predecessor 到官方 finalized，重启时完全从 SQLite 恢复，并原子输出机器可读 health。长期运行、恢复、容量规划与 Windows restart helper 见 [Continuous training-data recorder](docs/continuous_recorder.md)。
 
 默认 sampling grid 是距结束 14m、12m、10m、8m、5m、3m、2m、1m、30s，可通过 `LIVE15_DATASET_DECISION_OFFSETS_SECONDS` 配置。核心 `SamplingPolicy` 不含固定现实日期、固定 UTC 时刻或固定 grid。每个 event 可以产生多行，但 chronological/expanding/rolling split 都以完整 ticker event 为 group，同一 event 不会跨 train/validation/test。
@@ -255,6 +267,12 @@ live15-ui
 
 # 真实公开 Kalshi 行情驱动、只写本地 SQLite 的 deterministic paper runtime
 live15-paper
+
+# one-time Train-only materialization of frozen v2 candidates; then one forward-only cycle
+live15-paper-shadow --once --materialize-frozen-models
+
+# bounded read-only current feature/data-gate probe; never creates a forward decision
+live15-paper-shadow --probe
 
 # 显式 30 分钟隔离 acceptance；数据库写入系统临时目录
 python -m live15_quant.paper_acceptance --duration-seconds 1800

@@ -39,6 +39,7 @@ from live15_quant.paper_storage import (
     PaperFillRecord,
     PaperOrderRecord,
     PaperPortfolioRecord,
+    PaperSettlementRecord,
     PaperStore,
 )
 from live15_quant.risk import (
@@ -82,6 +83,14 @@ class KalshiPaperExecutionProvider:
             replay_order_id = fill.order_id
             replay_group.append(fill)
         self._apply_fill_group(replay_group)
+        for event_id in store.settled_event_ids():
+            settlement = store.settlement_for_event(event_id)
+            assert settlement is not None
+            self._portfolio.settle_event(
+                event_id,
+                outcome_yes=settlement.outcome_yes,
+                settlement_timestamp=settlement.settlement_timestamp,
+            )
         for event_id in store.pending_event_ids():
             self._portfolio.mark_pending_settlement(event_id)
 
@@ -224,6 +233,36 @@ class KalshiPaperExecutionProvider:
 
         self._portfolio.mark_pending_settlement(event_id)
         self._quotes = {key: quote for key, quote in self._quotes.items() if key[0] != event_id}
+
+    def settle_event(
+        self, *, event_id: str, outcome_yes: bool, settlement_timestamp: datetime
+    ) -> bool:
+        """Apply Kalshi finalized truth once and persist the resulting local accounting."""
+
+        if settlement_timestamp.tzinfo is None or settlement_timestamp.utcoffset() is None:
+            raise PaperExecutionError("paper settlement timestamp must be timezone-aware")
+        settlement_timestamp = settlement_timestamp.astimezone(UTC)
+        existing = self._store.settlement_for_event(event_id)
+        if existing is not None:
+            if (
+                existing.outcome_yes != outcome_yes
+                or existing.settlement_timestamp != settlement_timestamp.astimezone(UTC)
+            ):
+                raise PaperExecutionError("paper settlement conflicts with official truth")
+            return False
+        settlement = self._portfolio.settle_event(
+            event_id,
+            outcome_yes=outcome_yes,
+            settlement_timestamp=settlement_timestamp,
+        )
+        inserted = self._store.append_settlement(settlement)
+        self._store.append_portfolio(self._portfolio.state(self._marks(), settlement_timestamp))
+        return inserted
+
+    def settlement_record(self, event_id: str) -> PaperSettlementRecord | None:
+        """Bounded local-ledger read used by forward reconciliation only."""
+
+        return self._store.settlement_for_event(event_id)
 
     def _existing_result(self, decision: StrategyDecision) -> PaperExecutionResult | None:
         record = self._store.order_for_decision(decision.decision_id)

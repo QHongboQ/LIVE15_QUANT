@@ -115,9 +115,29 @@ class Settings:
     paper_max_total_exposure: Decimal = Decimal("100")
     paper_max_consecutive_losses: int = 3
     paper_kill_switch: bool = False
+    # Forward shadow validation is local-only.  It is intentionally separate from
+    # both the raw recorder and the pre-existing exploratory paper ledger.
+    forward_shadow_data_path: Path = Path("data/forward-shadow.sqlite3")
+    forward_shadow_paper_root: Path = Path("data/forward-paper")
+    forward_shadow_model_zoo_v2_path: Path = Path(
+        "data/model_zoo_v2/model_zoo_v2/live15-model-zoo-v2-11f5eb6ff68f3da1391c"
+    )
+    forward_shadow_dataset_path: Path = Path("data/datasets/live15-dataset-v1-f81d7d1feebcbbaecff9")
+    forward_shadow_model_root: Path = Path("data/forward-models")
+    forward_shadow_starting_cash: Decimal = Decimal("1000")
+    forward_shadow_order_quantity: Decimal = Decimal("1")
+    forward_shadow_poll_interval_seconds: float = 1.0
+    forward_shadow_decision_grace_seconds: float = 10.0
     log_level: str = "INFO"
 
     def __post_init__(self) -> None:
+        if (
+            self.forward_shadow_starting_cash <= 0
+            or self.forward_shadow_order_quantity <= 0
+            or self.forward_shadow_poll_interval_seconds <= 0
+            or self.forward_shadow_decision_grace_seconds <= 0
+        ):
+            raise ValueError("forward shadow configuration must be positive")
         ladder = (21_600, 14_400, 10_800, 7_200, 3_600)
         if self.enable_adaptive_ws_retention and (
             self.adaptive_retention_min_seconds not in ladder
@@ -240,6 +260,24 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         source.get("LIVE15_RECORDER_DATA_PATH", str(defaults.recorder_data_path))
     )
     paper_data_path = Path(source.get("LIVE15_PAPER_DATA_PATH", str(defaults.paper_data_path)))
+    forward_shadow_data_path = Path(
+        source.get("LIVE15_FORWARD_SHADOW_DATA_PATH", str(defaults.forward_shadow_data_path))
+    )
+    forward_shadow_paper_root = Path(
+        source.get("LIVE15_FORWARD_SHADOW_PAPER_ROOT", str(defaults.forward_shadow_paper_root))
+    )
+    forward_shadow_model_zoo_v2_path = Path(
+        source.get(
+            "LIVE15_FORWARD_SHADOW_MODEL_ZOO_V2_PATH",
+            str(defaults.forward_shadow_model_zoo_v2_path),
+        )
+    )
+    forward_shadow_dataset_path = Path(
+        source.get("LIVE15_FORWARD_SHADOW_DATASET_PATH", str(defaults.forward_shadow_dataset_path))
+    )
+    forward_shadow_model_root = Path(
+        source.get("LIVE15_FORWARD_SHADOW_MODEL_ROOT", str(defaults.forward_shadow_model_root))
+    )
     feature_store_path = Path(
         source.get("LIVE15_FEATURE_STORE_PATH", str(defaults.feature_store_path))
     )
@@ -285,6 +323,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     resolved_paths = {
         recorder_data_path.resolve(),
         paper_data_path.resolve(),
+        forward_shadow_data_path.resolve(),
         feature_store_path.resolve(),
         recorder_health_path.resolve(),
         recorder_control_path.resolve(),
@@ -295,7 +334,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     }
     if ws_archive_manifest_path is not None:
         resolved_paths.add(ws_archive_manifest_path.resolve())
-    expected_paths = 9 + (1 if ws_archive_manifest_path is not None else 0)
+    expected_paths = 10 + (1 if ws_archive_manifest_path is not None else 0)
     if len(resolved_paths) != expected_paths:
         raise ValueError("database and recorder runtime paths must be different from each other")
     paper_account_id = source.get("LIVE15_PAPER_ACCOUNT_ID", defaults.paper_account_id).strip()
@@ -654,5 +693,30 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             defaults.paper_max_consecutive_losses,
         ),
         paper_kill_switch=_boolean(source, "LIVE15_PAPER_KILL_SWITCH", defaults.paper_kill_switch),
+        forward_shadow_data_path=forward_shadow_data_path,
+        forward_shadow_paper_root=forward_shadow_paper_root,
+        forward_shadow_model_zoo_v2_path=forward_shadow_model_zoo_v2_path,
+        forward_shadow_dataset_path=forward_shadow_dataset_path,
+        forward_shadow_model_root=forward_shadow_model_root,
+        forward_shadow_starting_cash=_positive_decimal(
+            source,
+            "LIVE15_FORWARD_SHADOW_STARTING_CASH",
+            defaults.forward_shadow_starting_cash,
+        ),
+        forward_shadow_order_quantity=_positive_decimal(
+            source,
+            "LIVE15_FORWARD_SHADOW_ORDER_QUANTITY",
+            defaults.forward_shadow_order_quantity,
+        ),
+        forward_shadow_poll_interval_seconds=_positive_float(
+            source,
+            "LIVE15_FORWARD_SHADOW_POLL_INTERVAL_SECONDS",
+            defaults.forward_shadow_poll_interval_seconds,
+        ),
+        forward_shadow_decision_grace_seconds=_positive_float(
+            source,
+            "LIVE15_FORWARD_SHADOW_DECISION_GRACE_SECONDS",
+            defaults.forward_shadow_decision_grace_seconds,
+        ),
         log_level=source.get("LIVE15_LOG_LEVEL", defaults.log_level).upper(),
     )

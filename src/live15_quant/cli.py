@@ -31,6 +31,7 @@ from live15_quant.dataset import (
     FeatureStore,
 )
 from live15_quant.features import SamplingPolicy
+from live15_quant.forward_shadow import ForwardShadowRuntime
 from live15_quant.kalshi_lifecycle import KalshiNativeMarketProvider
 from live15_quant.latency_benchmark import LowLatencyBenchmarkRunner
 from live15_quant.logging_config import configure_logging
@@ -321,6 +322,49 @@ def paper_main() -> None:
             PaperRuntime(settings, store).run()
     except KeyboardInterrupt:
         logger.info("Paper runtime interrupted safely", extra={"event": "paper_interrupted"})
+
+
+def paper_shadow_main(argv: Sequence[str] | None = None) -> None:
+    """Run bounded, local-only frozen-candidate forward paper/shadow validation."""
+
+    parser = argparse.ArgumentParser(
+        prog="live15-paper-shadow", description=paper_shadow_main.__doc__
+    )
+    parser.add_argument("--once", action="store_true", help="process only currently due decisions")
+    parser.add_argument("--duration-seconds", type=float, default=None)
+    parser.add_argument(
+        "--materialize-frozen-models",
+        action="store_true",
+        help="one-time Train-only immutable materialization of approved v2 candidates",
+    )
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="read current features without creating a forward decision",
+    )
+    arguments = parser.parse_args(argv)
+    if arguments.duration_seconds is not None and arguments.duration_seconds <= 0:
+        parser.error("--duration-seconds must be positive")
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    with ForwardShadowRuntime(
+        settings, allow_model_materialization=arguments.materialize_frozen_models
+    ) as runtime:
+        if arguments.probe:
+            logger.info(
+                "Forward shadow probe", extra={"event": "forward_shadow_probe", **runtime.probe()}
+            )
+            return
+        started = time.monotonic()
+        while True:
+            summary = runtime.run_once()
+            logger.info("Forward shadow cycle", extra={"event": "forward_shadow_cycle", **summary})
+            if arguments.once or (
+                arguments.duration_seconds is not None
+                and time.monotonic() - started >= arguments.duration_seconds
+            ):
+                return
+            time.sleep(settings.forward_shadow_poll_interval_seconds)
 
 
 def kalshi_demo_audit_main() -> None:
