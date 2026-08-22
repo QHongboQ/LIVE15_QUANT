@@ -9,6 +9,7 @@ import logging
 import tempfile
 import time
 from collections.abc import Sequence
+from dataclasses import asdict
 from datetime import timedelta
 from pathlib import Path
 
@@ -54,7 +55,19 @@ from live15_quant.recorder_control import (
     RecorderProcessController,
 )
 from live15_quant.secondary_diagnostics import build_secondary_diagnostics
+from live15_quant.sqlite_attribution import attribute_sqlite_snapshot
 from live15_quant.storage import RecorderStore
+from live15_quant.storage_scaling import benchmark_snapshot
+from live15_quant.ws_retention import (
+    ArchiveState,
+    CompactionBenefitGate,
+    WsArchiveService,
+    WsPurgeService,
+    WsRetentionManifest,
+    checkpoint_stopped_database,
+    compact_database_offline,
+    evaluate_database_compaction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -482,3 +495,240 @@ def secondary_diagnostics_main(argv: Sequence[str] | None = None) -> None:
         lookback=timedelta(minutes=arguments.minutes),
     )
     print(json.dumps([item.as_dict() for item in report], indent=2, sort_keys=True))
+
+
+def storage_audit_main(argv: Sequence[str] | None = None) -> None:
+    """Attribute and benchmark an explicit fixed snapshot; active raw storage is refused."""
+
+    parser = argparse.ArgumentParser(prog="live15-storage-audit")
+    parser.add_argument("--snapshot", type=Path, required=True)
+    parser.add_argument("--records", type=int, default=100_000)
+    arguments = parser.parse_args(argv)
+    if not 1 <= arguments.records <= 1_000_000:
+        raise SystemExit("--records must be in [1, 1000000]")
+    settings = load_settings()
+    snapshot = arguments.snapshot.resolve()
+    if snapshot == settings.recorder_data_path.resolve():
+        raise SystemExit("active recorder database is forbidden; supply a fixed snapshot")
+    attribution = attribute_sqlite_snapshot(snapshot)
+    benchmark = benchmark_snapshot(snapshot, maximum_records=arguments.records)
+    print(
+        json.dumps(
+            {
+                "snapshot": snapshot.name,
+                "total_bytes": attribution.total_bytes,
+                "unattributed_bytes": attribution.unattributed_pages * attribution.page_size,
+                "objects": [
+                    {
+                        "name": item.name,
+                        "type": item.object_type,
+                        "table": item.table_name,
+                        "entries": item.entries,
+                        "bytes": item.allocated_bytes,
+                        "average_bytes_per_entry": item.average_bytes_per_entry,
+                    }
+                    for item in attribution.objects
+                ],
+                "benchmark": [
+                    {
+                        "scheme": item.scheme,
+                        "records": item.records,
+                        "bytes": item.bytes_on_disk,
+                        "bytes_per_record": item.bytes_per_record,
+                        "write_records_per_second": item.write_records_per_second,
+                        "replay_records_per_second": item.replay_records_per_second,
+                        "book_hash": item.book_hash,
+                    }
+                    for item in benchmark
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def ws_retention_main(argv: Sequence[str] | None = None) -> None:
+    """Inspect or advance bounded verified WS retention without arbitrary paths or commands."""
+
+    parser = argparse.ArgumentParser(prog="live15-ws-retention")
+    parser.add_argument("action", choices=("status", "archive-once", "purge-once", "compact-copy"))
+    parser.add_argument("--destination", type=Path)
+    arguments = parser.parse_args(argv)
+    settings = load_settings()
+    root = settings.ws_archive_root or (settings.recorder_data_path.parent / "ws_archive")
+    manifest_path = settings.ws_archive_manifest_path or (
+        settings.recorder_data_path.parent / "ws_archive_manifest.sqlite3"
+    )
+    manifest = WsRetentionManifest(manifest_path)
+    service = WsArchiveService(
+        settings.recorder_data_path,
+        root,
+        manifest,
+        hot_retention=timedelta(seconds=settings.ws_archive_hot_retention_seconds),
+        chunk_records=settings.ws_archive_chunk_records,
+    )
+    if arguments.action == "status":
+        print(
+            json.dumps(
+                {**manifest.metrics(), **service.hot_metrics()},
+                indent=2,
+                sort_keys=True,
+                default=str,
+            )
+        )
+        return
+    if arguments.action == "archive-once":
+        print(json.dumps(asdict(service.run_once()), indent=2, default=str, sort_keys=True))
+        return
+    if arguments.action == "purge-once":
+        result = WsPurgeService(
+            settings.recorder_data_path,
+            root,
+            manifest,
+            batch_rows=settings.ws_archive_purge_batch_rows,
+        ).run_once()
+        print(json.dumps(asdict(result), indent=2, default=str, sort_keys=True))
+        return
+    if arguments.destination is None:
+        raise SystemExit("compact-copy requires --destination")
+    benefit = evaluate_database_compaction(
+        settings.recorder_data_path,
+        CompactionBenefitGate(
+            settings.ws_compaction_min_reclaim_bytes,
+            settings.ws_compaction_min_reclaim_percent,
+        ),
+    )
+    if not benefit.allowed:
+        raise SystemExit(
+            "compact-copy refused: reclaimable bytes/percent are below the configured gate"
+        )
+    controller = RecorderProcessController(settings)
+    if controller.status().pid is not None:
+        raise SystemExit("compact-copy requires the managed recorder to be paused")
+    destination = arguments.destination.resolve()
+    if destination.parent != settings.recorder_data_path.resolve().parent:
+        raise SystemExit("compact-copy destination must stay beside the recorder database")
+    checkpoint_stopped_database(settings.recorder_data_path)
+    print(
+        json.dumps(
+            compact_database_offline(
+                settings.recorder_data_path,
+                destination,
+                minimum_free_bytes=25 * 1024**3,
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def archive_maintenance_main(argv: Sequence[str] | None = None) -> None:
+    """Run one scheduler-safe archive/verified-purge pass and exit without waiting."""
+
+    parser = argparse.ArgumentParser(prog="live15-archive-maintenance")
+    parser.add_argument("--once", action="store_true", required=True)
+    parser.add_argument("--max-chunks", type=int, default=1, choices=range(0, 4))
+    parser.add_argument("--max-purge-batches", type=int, default=8, choices=range(0, 101))
+    arguments = parser.parse_args(argv)
+    settings = load_settings()
+    root = settings.ws_archive_root or (settings.recorder_data_path.parent / "ws_archive")
+    manifest_path = settings.ws_archive_manifest_path or (
+        settings.recorder_data_path.parent / "ws_archive_manifest.sqlite3"
+    )
+    manifest = WsRetentionManifest(manifest_path)
+    service = WsArchiveService(
+        settings.recorder_data_path,
+        root,
+        manifest,
+        hot_retention=timedelta(seconds=settings.ws_archive_hot_retention_seconds),
+        chunk_records=settings.ws_archive_chunk_records,
+    )
+    before = service.eligibility()
+    storage_before = manifest.storage_metrics(settings.recorder_data_path)
+    results = []
+    if before.status == "ELIGIBLE":
+        for _ in range(arguments.max_chunks):
+            eligibility = service.eligibility()
+            if eligibility.status != "ELIGIBLE":
+                break
+            result = service.run_once()
+            if result.chunk is None:
+                break
+            results.append(asdict(result))
+    purge = WsPurgeService(
+        settings.recorder_data_path,
+        root,
+        manifest,
+        batch_rows=settings.ws_archive_purge_batch_rows,
+    )
+    purge_results = []
+    for _ in range(arguments.max_purge_batches):
+        if not manifest.chunks(ArchiveState.PURGE_ELIGIBLE):
+            break
+        purge_result = purge.run_once()
+        if purge_result.chunk_id is None or purge_result.deleted_events == 0:
+            break
+        purge_results.append(asdict(purge_result))
+    after = service.eligibility()
+    storage_after = manifest.storage_metrics(settings.recorder_data_path)
+    storage_growth = manifest.record_storage_sample(storage_after)
+    purged_chunk_ids = tuple(dict.fromkeys(item["chunk_id"] for item in purge_results))
+    if not purged_chunk_ids and arguments.max_purge_batches:
+        purged_chunk_ids = tuple(
+            chunk.chunk_id
+            for chunk in manifest.chunks(ArchiveState.PURGED)[-arguments.max_purge_batches :]
+        )
+    post_purge_verified = []
+    if purged_chunk_ids:
+        chunks_by_id = {chunk.chunk_id: chunk for chunk in manifest.chunks()}
+        for chunk_id in purged_chunk_ids:
+            chunk = chunks_by_id[chunk_id]
+            if chunk.state is not ArchiveState.PURGED:
+                continue
+            purge.verify_preserved_archive(chunk)
+            post_purge_verified.append(chunk_id)
+    compaction = evaluate_database_compaction(
+        settings.recorder_data_path,
+        CompactionBenefitGate(
+            settings.ws_compaction_min_reclaim_bytes,
+            settings.ws_compaction_min_reclaim_percent,
+        ),
+    )
+    print(
+        json.dumps(
+            {
+                "status": (
+                    "ARCHIVED_AND_PURGED"
+                    if results and purge_results
+                    else "ARCHIVED"
+                    if results
+                    else "PURGED"
+                    if purge_results
+                    else before.status
+                ),
+                "before": asdict(before),
+                "after": asdict(after),
+                "archived_chunks": results,
+                "manifest": manifest.metrics(),
+                "purge_attempted": bool(arguments.max_purge_batches),
+                "purge_batches": purge_results,
+                "purged_rows": sum(item["deleted_events"] for item in purge_results),
+                "purge_transaction_seconds_max": max(
+                    (item["transaction_seconds"] for item in purge_results), default=0.0
+                ),
+                "purge_reusable_bytes_created": sum(
+                    item["reusable_bytes_increase"] for item in purge_results
+                ),
+                "post_purge_verified_chunks": post_purge_verified,
+                "storage_before": asdict(storage_before),
+                "storage_after": asdict(storage_after),
+                "storage_growth": asdict(storage_growth),
+                "compaction_gate": asdict(compaction),
+                "compaction_attempted": False,
+            },
+            indent=2,
+            default=str,
+            sort_keys=True,
+        )
+    )

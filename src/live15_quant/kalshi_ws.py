@@ -786,12 +786,23 @@ def replay_orderbook_events(
     if not records:
         return {}
     connection_id = records[0].connection_id
-    coordinator = KalshiAtomicOrderBookCoordinator(connection_id, subscribed_tickers)
+    initial_tickers = (
+        records[0].market_tickers
+        if records[0].event_kind is KalshiWsEventKind.SUBSCRIPTION_ACK and records[0].market_tickers
+        else subscribed_tickers
+    )
+    coordinator = KalshiAtomicOrderBookCoordinator(connection_id, initial_tickers)
     for record in records:
         if record.connection_id != connection_id:
             raise KalshiBookInvariantError("replay cannot cross WebSocket connections")
         if record.event_kind is KalshiWsEventKind.SUBSCRIPTION_ACK:
             try:
+                acknowledged = set(record.market_tickers)
+                current = set(coordinator.subscribed_tickers)
+                for ticker in sorted(acknowledged - current):
+                    coordinator.add_expected_ticker(ticker)
+                for ticker in sorted(current - acknowledged):
+                    coordinator.remove_expected_ticker(ticker)
                 coordinator.accept_ack(
                     KalshiCommandAcknowledged(
                         connection_id=record.connection_id,

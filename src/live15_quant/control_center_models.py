@@ -38,6 +38,47 @@ class StrictResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class WsArchiveHealth(StrictResponse):
+    enabled: bool = False
+    chunks: int = 0
+    verified: int = 0
+    failed: int = 0
+    eligible: int = 0
+    purged: int = 0
+    compressed: int = 0
+    uncompressed: int = 0
+    last_archive: datetime | None = None
+    last_replay: datetime | None = None
+    hot_events_estimate: int = 0
+    hot_oldest_timestamp: datetime | None = None
+    hot_newest_timestamp: datetime | None = None
+    hot_oldest_age_seconds: float | None = None
+    hot_retention_seconds: float | None = None
+    archive_backlog_events: int = 0
+    archive_backlog_capped: bool = False
+    archive_throughput_events_per_second: float = 0.0
+    archive_elapsed_seconds: float = 0.0
+    archive_lag_seconds: float | None = None
+    compression_ratio: float | None = None
+    last_purge_deleted_events: int = 0
+    last_purge_transaction_seconds: float = 0.0
+    last_purge_reusable_bytes: int = 0
+    hot_sqlite_used_bytes: int | None = None
+    freelist_reusable_bytes: int | None = None
+    physical_database_bytes: int | None = None
+    wal_bytes: int | None = None
+    cold_archive_bytes: int | None = None
+    cold_archive_growth_bytes_per_hour: float | None = None
+    cold_archive_growth_bytes_per_day: float | None = None
+    net_disk_growth_sample_seconds: float | None = None
+    net_disk_growth_bytes_per_hour: float | None = None
+    net_disk_growth_bytes_per_day: float | None = None
+    disk_total_bytes: int | None = None
+    disk_free_bytes: int | None = None
+    disk_threshold_state: str = "unknown"
+    shadow_acceptance_passed: bool = False
+
+
 class HealthResponse(StrictResponse):
     status: str
     recorder_state: RecorderState
@@ -80,6 +121,7 @@ class HealthResponse(StrictResponse):
     kalshi_ws_queue_above_90_seconds: float = 0.0
     kalshi_ws_receive_persist_latency_ms: str | None = None
     kalshi_rest_fallback_status: str = "unavailable"
+    ws_archive: WsArchiveHealth = Field(default_factory=WsArchiveHealth)
 
 
 class MarketResponse(StrictResponse):

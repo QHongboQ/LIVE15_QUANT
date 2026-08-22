@@ -321,6 +321,30 @@ settlement truth；不会写退化 lifecycle。身份/target 冲突、官方 YES
 
 `KalshiBackfillService.run(asset, start=..., end=..., historical=True)` 可按 UTC range 回填 archive。每页逐条幂等保存 typed markets/final labels，完成该页后再提交 cursor；中断后同参数自动续跑并安全重放未完成页。API 顺序不参与 replay，重复 ticker/result 幂等。Production historical endpoint 对 `series_ticker + mve_filter=exclude` 的实际响应与文档组合存在 400 差异，因此实现只使用足以精确限定这十个非-MVE series 的 `series_ticker`，并对 `Target price: TBD` 等无效 archive placeholder fail closed。
 
+WS raw storage 的离线归因、四方案 lossless benchmark、HOT/COLD 推荐与 quota 设计见
+[`docs/storage_scaling.md`](docs/storage_scaling.md)。`live15-storage-audit --snapshot <fixed-copy>`
+只接受 WAL-free 固定副本，并明确拒绝当前配置的 active recorder DB；它不会执行 VACUUM、
+删除或修改 raw truth。
+
+`live15-ws-retention` 提供 verified COLD archive 与有界 HOT retention。默认保留最近 6 小时
+WS rows；immutable chunk 必须通过 reopen、checksum、逐事件相等与 deterministic book replay，
+再由独立 manifest 提交后才可删除对应精确 ID range。配置的前三个 verified chunks 是启用 purge
+前的最低 shadow gate；首次 production acceptance 已对四个 chunks 完成 verified purge/page reuse。
+离线 `compact-copy` 只在 recorder 已停止且 WAL checkpoint 后运行，并验证 integrity、foreign keys、
+完整 table inventory 与逐表 row counts；archive/manifest 始终位于 raw DB 外。
+`live15-archive-maintenance --once` 是 scheduler-compatible、non-blocking 的单次入口：它立即
+返回 `WAITING_FOR_RETENTION_ELIGIBILITY` 与 `next_eligible_at`，或验证 bounded chunks 后，
+仅对已重新打开并复核 checksum/replay/manifest/连续 ID 的 `PURGE_ELIGIBLE` range 执行 20k-row
+短事务。`--max-chunks` 和 `--max-purge-batches` 为每次执行设置绝对工作上限；命令不 sleep，
+永不 compact，也不修改 Task Scheduler 或 Windows service。purge 只增加 SQLite freelist，物理
+文件由后续写入优先复用；不会为视觉缩小文件而频繁 VACUUM。
+recorder loop 与 CLI 共享可过期的 manifest maintenance lease，禁止两个进程同时处理同一 chunk；
+crash 后可自动取得过期 lease。FAILED verification 会阻断后续 range，绝不跳过坏区间继续 purge。
+`compact-copy` 另有 benefit gate：默认只有 SQLite freelist 可回收空间同时达到 8 GiB 和 DB
+的 25% 才允许进入 managed offline compaction；阈值可由
+`LIVE15_WS_COMPACTION_MIN_RECLAIM_BYTES` / `LIVE15_WS_COMPACTION_MIN_RECLAIM_PERCENT`
+调整。archive/purge 可以持续积累，不会因为出现一个 eligible chunk 就频繁重写整个 DB。
+
 `live15_quant.native_acceptance` 不依赖固定日期或固定 UTC 开盘时刻。它每次启动先按十个精确 series 动态发现 previous/current/next，选择仍有可观察时间且最接近结束的真实 OPEN market，然后只跟踪该 asset。只有新 market 的 `window_start` 严格等于旧 market 的 `window_end` 才算 rollover；排期或维护 gap 不会被伪造成相邻窗口。验收要求旧 ticker 的 OPEN→CLOSED→SETTLEMENT_PENDING→官方 SETTLED_YES/NO、successor quote、SQLite restart/integrity 全部成立。默认且绝对 wall-clock 上限为 1,800 秒；acceptance 禁用 transport 内部的多轮 retry，每个 GET timeout 都被剩余总预算截断，并由外层执行 bounded capped backoff，避免一次晚到请求越过总 deadline。期限内上游未提供有效窗口、相邻 successor 或 settlement 时返回结构化 `expected_upstream_unavailable`，而 instrument、timestamp、Decimal、storage 或 lifecycle correctness 错误仍直接失败。可选 `--database-path` 使中断后在同一隔离数据库幂等继续；未指定时使用并自动清理系统临时数据库。
 
 2026-08-20 的 event-driven acceptance 实测 `rollover_latency_seconds=22.14`。该值严格定义为**新窗口官方 metadata 首次被本轮 discovery 收到的本地时间减去新窗口 `window_start`**，包含 polling phase、REST 请求耗时以及 target/market 发布延迟；它不是 Kalshi settlement latency、quote latency、订单延迟或交易执行延迟。该次官方 settlement timestamp 是独立字段，二者不得混用。
@@ -472,5 +496,5 @@ secrets 目录也已 Git ignored 作为第二道保护，但正式要求仍是�
 - Paper fills 是基于轮询时观察到的 venue depth 的保守本地模拟，不代表真实 queue position、网络延迟、成交保证或 Robinhood executable quote；fill uncertainty 会被 hard-risk layer 阻断。
 - Settlement truth 已独立落库，但 Milestone 6 不改变 paper settlement accounting；到期未平仓 paper positions 仍保持 `pending_settlement`，后续里程碑再以显式 settlement adapter 接入，当前不伪造 payout。
 - 当前已有 Kalshi Demo-only RSA-PSS signer 与 authenticated GET-only connectivity audit，但没有 Demo/Production execution client，也没有任何仓库内 credential。用户仍需本人创建 Demo account/key 并安全保管 RSA private key；Demo 与 Production credentials 不通用。
-- SQLite recorder 尚未实现 retention、压缩、Parquet export 或多进程同时写入；单 recorder 进程是当前支持的运行模式。
+- SQLite recorder 已实现 verified WS retention/压缩，但尚未实现 Parquet export 或多进程同时写入；单 recorder 进程是当前支持的运行模式。
 - Feature store 当前使用 SQLite，而不是 Parquet；它支持确定性 replay 和后续 pandas/Polars/DuckDB 读取，但尚未提供批量 Parquet export。历史 backfill 若只有事后 finalized metadata、没有 decision-time quote/tick observation，会被诚实跳过，不能凭最终结果重建当时 feature。

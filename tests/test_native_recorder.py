@@ -33,6 +33,7 @@ from live15_quant.providers.pyth import (
     PythUpdateBatch,
 )
 from live15_quant.storage import MarketIdentityConflictError, RecorderStore
+from live15_quant.ws_retention import WsRetentionError
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 from tests.test_storage import prediction_quote
 
@@ -1107,6 +1108,42 @@ async def test_periodic_checkpoint_never_runs_full_database_quick_check(
         monkeypatch.setattr(store, "quick_check", forbidden_scan)
         await asyncio.wait_for(recorder._checkpoint(), 1)
         assert checkpoint_called.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [WsRetentionError("bad archive"), OSError("archive offline")])
+async def test_archive_failure_isolated_from_core_recorder(
+    tmp_path, monkeypatch, failure: Exception
+) -> None:
+    with RecorderStore(tmp_path / "archive-isolation.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                recorder_health_path=tmp_path / "health.json",
+                ws_archive_poll_interval_seconds=60,
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        assert recorder._archive_service is not None
+
+        def fail_archive(*_args: object, **_kwargs: object) -> None:
+            raise failure
+
+        monkeypatch.setattr(recorder._archive_service, "run_once", fail_archive)
+
+        async def stop_after_failure(_seconds: float) -> bool:
+            return True
+
+        monkeypatch.setattr(recorder, "_wait", stop_after_failure)
+        await asyncio.wait_for(recorder._archive_ws_retention(), 1)
+        health = recorder.health()
+        assert health.source_failures["ws_archive"] == type(failure).__name__
+        assert health.fatal_task is None
+        assert health.fatal_error_type is None
 
 
 def test_v3_to_v4_migration_failure_rolls_back(tmp_path) -> None:

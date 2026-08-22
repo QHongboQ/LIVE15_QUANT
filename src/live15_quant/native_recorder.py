@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import sqlite3
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
@@ -94,6 +96,13 @@ from live15_quant.storage import (
     RecorderStore,
     SecondaryAppendStatus,
     SettlementConflictError,
+)
+from live15_quant.ws_retention import (
+    DiskQuota,
+    WsArchiveService,
+    WsPurgeService,
+    WsRetentionError,
+    WsRetentionManifest,
 )
 
 logger = logging.getLogger(__name__)
@@ -191,6 +200,7 @@ class KalshiNativeHealth:
     kalshi_ws_queue_above_90_seconds: float
     kalshi_ws_receive_persist_latency_ms: str | None
     kalshi_rest_fallback_status: str
+    ws_archive_metrics: dict[str, object]
 
     @property
     def uptime_seconds(self) -> float:
@@ -273,6 +283,7 @@ class KalshiNativeHealth:
             "kalshi_ws_queue_above_90_seconds": self.kalshi_ws_queue_above_90_seconds,
             "kalshi_ws_receive_persist_latency_ms": self.kalshi_ws_receive_persist_latency_ms,
             "kalshi_rest_fallback_status": self.kalshi_rest_fallback_status,
+            "ws_archive": self.ws_archive_metrics,
         }
 
 
@@ -308,6 +319,7 @@ class _MutableHealth:
     kalshi_ws_resync_count: int = 0
     kalshi_ws_reconnect_count: int = 0
     kalshi_ws_receive_persist_latency_ms: str | None = None
+    ws_archive_metrics: dict[str, object] = field(default_factory=dict)
 
 
 def _market_from_record(record: KalshiMarketRecord) -> KalshiMarket:
@@ -469,6 +481,28 @@ class KalshiNativeRecorder:
             for gap in store.active_data_gaps()
             if (gap.source, gap.asset) in self._gap_streams
         }
+        self._archive_service: WsArchiveService | None = None
+        self._purge_service: WsPurgeService | None = None
+        if settings.enable_ws_archive:
+            archive_root = settings.ws_archive_root or (store.path.parent / "ws_archive")
+            manifest_path = settings.ws_archive_manifest_path or (
+                store.path.parent / "ws_archive_manifest.sqlite3"
+            )
+            manifest = WsRetentionManifest(manifest_path)
+            self._archive_service = WsArchiveService(
+                store.path,
+                archive_root,
+                manifest,
+                hot_retention=timedelta(seconds=settings.ws_archive_hot_retention_seconds),
+                chunk_records=settings.ws_archive_chunk_records,
+            )
+            self._purge_service = WsPurgeService(
+                store.path,
+                archive_root,
+                manifest,
+                batch_rows=settings.ws_archive_purge_batch_rows,
+            )
+            self._health.ws_archive_metrics = manifest.metrics()
 
     def _utc_now(self) -> datetime:
         value = self._now()
@@ -667,6 +701,7 @@ class KalshiNativeRecorder:
                 if any(asset in self._health.last_quotes for asset in self._health.current)
                 else "unavailable"
             ),
+            ws_archive_metrics=dict(self._health.ws_archive_metrics),
         )
 
     def _expected_worker_thresholds(self) -> dict[str, float]:
@@ -694,6 +729,10 @@ class KalshiNativeRecorder:
         if self._settings.enable_kalshi_production_websocket:
             thresholds["kalshi_ws"] = self._settings.kalshi_websocket_stale_seconds * 3
             thresholds["kalshi_ws_persistence"] = 1.0
+        if self._archive_service is not None:
+            thresholds["ws_archive"] = max(
+                60.0, self._settings.ws_archive_poll_interval_seconds * 30
+            )
         if self._settings.enable_robinhood_reference and self._robinhood is not None:
             thresholds["robinhood_reference"] = self._settings.robinhood_poll_interval_seconds * 3
         return thresholds
@@ -846,6 +885,8 @@ class KalshiNativeRecorder:
             asyncio.create_task(self._report_health(), name="kalshi-native-health"),
             asyncio.create_task(self._checkpoint(), name="sqlite-checkpoint"),
         ]
+        if self._archive_service is not None:
+            tasks.append(asyncio.create_task(self._archive_ws_retention(), name="ws-archive"))
         if self._settings.enable_pyth_underlying:
             tasks.append(asyncio.create_task(self._record_pyth(), name="pyth-predictive"))
         if self._settings.enable_secondary_underlying:
@@ -1902,6 +1943,112 @@ class KalshiNativeRecorder:
             # Integrity is checked at startup and on an offline/read-only snapshot;
             # the live loop performs only the bounded passive WAL checkpoint.
             if await self._wait(self._settings.recorder_checkpoint_interval_seconds):
+                return
+
+    async def _archive_ws_retention(self) -> None:
+        assert self._archive_service is not None
+        assert self._purge_service is not None
+        key = "ws_archive"
+        quota = DiskQuota()
+        while not self._stop_event.is_set():
+            observed = self._utc_now()
+            try:
+                result = await asyncio.to_thread(self._archive_service.run_once, now=observed)
+                manifest_metrics = self._archive_service.manifest.metrics()
+                hot_metrics = await asyncio.to_thread(self._archive_service.hot_metrics, observed)
+                disk = shutil.disk_usage(self._store.path.parent)
+                disk_state = quota.classify(
+                    total_bytes=disk.total,
+                    free_bytes=disk.free,
+                )
+                verified = int(manifest_metrics.get("verified") or 0)
+                purge_result = None
+                shadow_passed = verified >= self._settings.ws_archive_shadow_chunks
+                recorder_core_healthy = (
+                    self._health.fatal_task is None
+                    and self._health.fatal_error_type is None
+                    and (
+                        not self._settings.enable_kalshi_production_websocket
+                        or len(self._health.kalshi_ws_synchronized) == len(KALSHI_15MIN_SERIES)
+                    )
+                )
+                if shadow_passed and recorder_core_healthy:
+                    purge_result = await asyncio.to_thread(
+                        self._purge_service.run_once, now=observed
+                    )
+                    manifest_metrics = self._archive_service.manifest.metrics()
+                storage_metrics = await asyncio.to_thread(
+                    self._archive_service.manifest.storage_metrics, self._store.path
+                )
+                storage_growth = await asyncio.to_thread(
+                    self._archive_service.manifest.record_storage_sample,
+                    storage_metrics,
+                    observed_at=observed,
+                )
+                latest = self._archive_service.manifest.latest()
+                uncompressed = int(manifest_metrics.get("uncompressed") or 0)
+                compressed = int(manifest_metrics.get("compressed") or 0)
+                self._health.ws_archive_metrics = {
+                    **manifest_metrics,
+                    **hot_metrics,
+                    "enabled": True,
+                    "hot_retention_seconds": self._settings.ws_archive_hot_retention_seconds,
+                    "archive_backlog_events": result.backlog_events,
+                    "archive_backlog_capped": result.backlog_events > 0,
+                    "archive_throughput_events_per_second": result.events_per_second,
+                    "archive_elapsed_seconds": result.elapsed_seconds,
+                    "archive_lag_seconds": (
+                        None
+                        if latest is None
+                        else max(
+                            0.0,
+                            (observed - latest.last_received_timestamp).total_seconds(),
+                        )
+                    ),
+                    "compression_ratio": (None if compressed == 0 else uncompressed / compressed),
+                    "last_purge_deleted_events": (
+                        0 if purge_result is None else purge_result.deleted_events
+                    ),
+                    "last_purge_transaction_seconds": (
+                        0.0 if purge_result is None else purge_result.transaction_seconds
+                    ),
+                    "last_purge_reusable_bytes": (
+                        0 if purge_result is None else purge_result.reusable_bytes_increase
+                    ),
+                    "hot_sqlite_used_bytes": storage_metrics.hot_sqlite_used_bytes,
+                    "freelist_reusable_bytes": storage_metrics.freelist_reusable_bytes,
+                    "physical_database_bytes": storage_metrics.physical_database_bytes,
+                    "wal_bytes": storage_metrics.wal_bytes,
+                    "cold_archive_bytes": storage_metrics.cold_archive_bytes,
+                    "cold_archive_growth_bytes_per_hour": (
+                        storage_metrics.cold_archive_growth_bytes_per_hour
+                    ),
+                    "cold_archive_growth_bytes_per_day": (
+                        storage_metrics.cold_archive_growth_bytes_per_day
+                    ),
+                    "net_disk_growth_sample_seconds": (storage_growth.sample_interval_seconds),
+                    "net_disk_growth_bytes_per_hour": (
+                        storage_growth.net_disk_growth_bytes_per_hour
+                    ),
+                    "net_disk_growth_bytes_per_day": (storage_growth.net_disk_growth_bytes_per_day),
+                    "disk_total_bytes": disk.total,
+                    "disk_free_bytes": disk.free,
+                    "disk_threshold_state": disk_state.value,
+                    "shadow_acceptance_passed": shadow_passed,
+                }
+                if disk_state.value == "fail_safe":
+                    raise RecorderStorageError(
+                        "disk fail-safe threshold reached; unverified raw data was preserved"
+                    )
+                self._source_ok(key)
+                self._worker_advanced(key, observed)
+            except (OSError, sqlite3.OperationalError, WsRetentionError) as error:
+                self._source_failed(key, error)
+                self._worker_advanced(key, observed)
+                if await self._wait(self._retry_delay(key, 1.0)):
+                    return
+                continue
+            if await self._wait(self._settings.ws_archive_poll_interval_seconds):
                 return
 
     async def _report_health(self) -> None:

@@ -18,6 +18,7 @@ from live15_quant.control_center_models import (
     RecorderEventResponse,
     RecorderState,
     SystemResponse,
+    WsArchiveHealth,
 )
 from live15_quant.control_center_store import DashboardReadStore
 from live15_quant.models import Asset, RecorderEventSeverity
@@ -144,6 +145,11 @@ class ControlCenterService:
                 ),
                 kalshi_rest_fallback_status=str(
                     raw.get("kalshi_rest_fallback_status", "unavailable")
+                ),
+                ws_archive=(
+                    WsArchiveHealth.model_validate(raw["ws_archive"])
+                    if isinstance(raw.get("ws_archive"), dict)
+                    else WsArchiveHealth()
                 ),
             )
             return self._apply_managed_state(response)

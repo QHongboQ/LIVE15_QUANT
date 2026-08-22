@@ -1,0 +1,584 @@
+from __future__ import annotations
+
+import sqlite3
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from live15_quant.kalshi_ws import (
+    KalshiBookSide,
+    KalshiBookSyncStatus,
+    KalshiCommandAcknowledged,
+    KalshiOrderBookDelta,
+    KalshiOrderBookSnapshot,
+)
+from live15_quant.models import OrderBookLevel
+from live15_quant.storage import RecorderStore
+from live15_quant.ws_retention import (
+    ArchiveState,
+    CompactionBenefitGate,
+    DiskQuota,
+    DiskThresholdState,
+    WsArchiveService,
+    WsMaintenanceBusy,
+    WsPurgeService,
+    WsRetentionError,
+    WsRetentionManifest,
+    _read_records,
+    assess_purge_benefit,
+    compact_database_offline,
+    evaluate_database_compaction,
+    swap_compacted_database,
+)
+
+NOW = datetime(2026, 8, 22, 12, tzinfo=UTC)
+TICKER = "KXBTC15M-26AUG221215-15"
+
+
+def _populate(path: Path, count: int = 31) -> None:
+    store = RecorderStore(path)
+    received = NOW - timedelta(hours=8)
+    acknowledgement = KalshiCommandAcknowledged(
+        connection_id="connection-1",
+        request_id=1,
+        subscription_id=2,
+        sequence=1,
+        market_tickers=(TICKER,),
+        socket_received_timestamp=received,
+        parse_timestamp=received + timedelta(microseconds=1),
+    )
+    store.append_kalshi_ws_orderbook_event(
+        acknowledgement, sync_status_after=KalshiBookSyncStatus.UNSYNCHRONIZED
+    )
+    snapshot = KalshiOrderBookSnapshot(
+        connection_id="connection-1",
+        subscription_id=2,
+        sequence=2,
+        ticker=TICKER,
+        market_id="market-1",
+        yes_bids=(OrderBookLevel(Decimal("0.5000"), Decimal("10.0000")),),
+        no_bids=(OrderBookLevel(Decimal("0.4900"), Decimal("11.0000")),),
+        source_timestamp=received,
+        socket_received_timestamp=received + timedelta(microseconds=2),
+        parse_timestamp=received + timedelta(microseconds=3),
+    )
+    store.append_kalshi_ws_orderbook_event(
+        snapshot, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+    )
+    for sequence in range(3, count + 1):
+        observed = received + timedelta(microseconds=sequence)
+        delta = KalshiOrderBookDelta(
+            connection_id="connection-1",
+            subscription_id=2,
+            sequence=sequence,
+            ticker=TICKER,
+            market_id="market-1",
+            side=KalshiBookSide.YES,
+            price=Decimal("0.5000"),
+            quantity_delta=Decimal("0.0001"),
+            source_timestamp=observed,
+            socket_received_timestamp=observed,
+            parse_timestamp=observed + timedelta(microseconds=1),
+        )
+        store.append_kalshi_ws_orderbook_event(
+            delta, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+        )
+    store.close()
+
+
+def _service(
+    tmp_path: Path, *, chunk: int = 10, count: int = 31
+) -> tuple[WsArchiveService, WsRetentionManifest]:
+    database = tmp_path / "raw.sqlite3"
+    _populate(database, count=count)
+    manifest = WsRetentionManifest(tmp_path / "archive-manifest.sqlite3")
+    return (
+        WsArchiveService(
+            database,
+            tmp_path / "archive",
+            manifest,
+            hot_retention=timedelta(hours=6),
+            chunk_records=chunk,
+        ),
+        manifest,
+    )
+
+
+def test_sequential_chunks_are_exact_verified_and_restart_safe(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    first = service.run_once(now=NOW)
+    second = service.run_once(now=NOW)
+    assert first.chunk is not None and second.chunk is not None
+    assert first.chunk.state is ArchiveState.PURGE_ELIGIBLE
+    assert second.chunk.first_event_id == first.chunk.last_event_id + 1
+    assert first.chunk.event_type_counts == {
+        "orderbook_delta": 8,
+        "orderbook_snapshot": 1,
+        "subscription_ack": 1,
+    }
+    assert first.chunk.logical_checksum
+    assert first.chunk.file_checksum
+    assert first.chunk.source_replay_hash == first.chunk.archive_replay_hash
+    assert first.chunk.tickers == (TICKER,)
+    restarted = WsArchiveService(
+        service.source_database,
+        service.archive_root,
+        WsRetentionManifest(manifest.path),
+        hot_retention=timedelta(hours=6),
+        chunk_records=10,
+    )
+    third = restarted.run_once(now=NOW)
+    assert third.chunk is not None and third.chunk.first_event_id == 21
+
+
+def test_eligibility_is_non_blocking_and_resumable(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    waiting = service.eligibility(now=NOW - timedelta(hours=3))
+    assert waiting.status == "WAITING_FOR_RETENTION_ELIGIBILITY"
+    assert waiting.eligible_rows_bounded == 0
+    assert waiting.next_eligible_at == NOW - timedelta(hours=2)
+    assert manifest.chunks() == ()
+
+    eligible = service.eligibility(now=NOW)
+    assert eligible.status == "ELIGIBLE"
+    assert eligible.eligible_first_event_id == 1
+    assert eligible.eligible_last_event_id == 10
+    assert eligible.eligible_rows_bounded == 10
+    assert eligible.eligible_rows_capped is True
+
+    archived = service.run_once(now=NOW)
+    assert archived.chunk is not None
+    resumed = service.eligibility(now=NOW)
+    assert resumed.eligible_first_event_id == 11
+
+
+def test_waiting_eligibility_never_loads_raw_event_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _manifest = _service(tmp_path)
+
+    def forbidden_read(*_args: object, **_kwargs: object) -> tuple[()]:
+        raise AssertionError("waiting eligibility loaded raw rows")
+
+    monkeypatch.setattr("live15_quant.ws_retention._read_records", forbidden_read)
+    result = service.eligibility(now=NOW - timedelta(hours=3))
+    assert result.status == "WAITING_FOR_RETENTION_ELIGIBILITY"
+
+
+def test_overlap_conflict_fails_loudly(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    archived = service.run_once(now=NOW).chunk
+    assert archived is not None
+    records = service._range_records(archived)
+    with pytest.raises(WsRetentionError, match="overlaps"):
+        manifest.reserve(records[1:], relative_path="conflict.zlib", created_at=NOW)
+
+
+@pytest.mark.parametrize(
+    "crash_state",
+    [
+        ArchiveState.WRITTEN,
+        ArchiveState.CHECKSUM_VERIFIED,
+        ArchiveState.REPLAY_VERIFIED,
+        ArchiveState.COMMITTED,
+        ArchiveState.PURGE_ELIGIBLE,
+    ],
+)
+def test_partial_file_and_manifest_crash_boundaries_recover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash_state: ArchiveState
+) -> None:
+    service, manifest = _service(tmp_path)
+    partial = tmp_path / "archive" / "2026-08-22" / "04" / "chunk-1-10.zlib.partial"
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"truncated")
+    original = manifest.advance
+    crashed = False
+
+    def crash_after_publish(chunk_id, state, **kwargs):
+        nonlocal crashed
+        if state is crash_state and not crashed:
+            crashed = True
+            raise KeyboardInterrupt("simulated process crash")
+        return original(chunk_id, state, **kwargs)
+
+    monkeypatch.setattr(manifest, "advance", crash_after_publish)
+    with pytest.raises(KeyboardInterrupt):
+        service.run_once(now=NOW)
+    assert manifest.chunks()[0].state is not ArchiveState.FAILED
+    monkeypatch.setattr(manifest, "advance", original)
+    recovered = service.run_once(now=NOW).chunk
+    assert recovered is not None and recovered.state is ArchiveState.PURGE_ELIGIBLE
+    assert not tuple((tmp_path / "archive").rglob("*.partial"))
+
+
+def test_missing_sequence_in_source_is_not_archived_or_repaired(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    connection = sqlite3.connect(service.source_database)
+    with connection:
+        connection.execute("DELETE FROM kalshi_ws_orderbook_events WHERE id=5")
+    connection.close()
+    with pytest.raises(WsRetentionError, match="sequence discontinuity"):
+        service.run_once(now=NOW)
+    assert manifest.chunks()[0].state is ArchiveState.FAILED
+    connection = sqlite3.connect(service.source_database)
+    try:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM kalshi_ws_orderbook_events").fetchone()[0]
+            == 30
+        )
+    finally:
+        connection.close()
+
+
+def test_manifest_cannot_skip_verification_states(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    records = _read_records(
+        service.source_database,
+        after_id=0,
+        cutoff=NOW - timedelta(hours=6),
+        maximum_records=10,
+    )
+    chunk = manifest.reserve(records, relative_path="chunk.zlib", created_at=NOW)
+    with pytest.raises(WsRetentionError, match="skipped verification"):
+        manifest.advance(chunk.chunk_id, ArchiveState.REPLAY_VERIFIED, now=NOW)
+
+
+def test_purge_refuses_unverified_and_deletes_only_exact_verified_range(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    assert (
+        WsPurgeService(service.source_database, service.archive_root, manifest, batch_rows=3)
+        .run_once()
+        .chunk_id
+        is None
+    )
+    chunk = service.run_once(now=NOW).chunk
+    assert chunk is not None
+    purge = WsPurgeService(service.source_database, service.archive_root, manifest, batch_rows=3)
+    deleted = 0
+    while True:
+        result = purge.run_once(now=NOW)
+        deleted += result.deleted_events
+        if result.remaining_events == 0:
+            break
+    assert deleted == chunk.event_count
+    connection = sqlite3.connect(service.source_database)
+    try:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM kalshi_ws_orderbook_events WHERE id BETWEEN ? AND ?",
+                (chunk.first_event_id, chunk.last_event_id),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM kalshi_ws_orderbook_events WHERE id>?", (chunk.last_event_id,)
+            ).fetchone()[0]
+            == 21
+        )
+    finally:
+        connection.close()
+    assert manifest.chunks()[0].state is ArchiveState.PURGED
+
+
+def test_purge_restart_infers_committed_delete_before_manifest_update(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service, manifest = _service(tmp_path)
+    chunk = service.run_once(now=NOW).chunk
+    assert chunk is not None
+    purge = WsPurgeService(service.source_database, service.archive_root, manifest, batch_rows=4)
+    original = manifest.update_purge_progress
+    monkeypatch.setattr(
+        manifest,
+        "update_purge_progress",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        purge.run_once(now=NOW)
+    monkeypatch.setattr(manifest, "update_purge_progress", original)
+    while purge.run_once(now=NOW).remaining_events:
+        pass
+    assert manifest.chunks()[0].state is ArchiveState.PURGED
+
+
+def test_partial_purge_recovery_rejects_non_prefix_hole(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    chunk = service.run_once(now=NOW).chunk
+    assert chunk is not None
+    connection = sqlite3.connect(service.source_database)
+    with connection:
+        connection.execute(
+            "DELETE FROM kalshi_ws_orderbook_events WHERE id=?",
+            (chunk.first_event_id + 4,),
+        )
+    connection.close()
+    purge = WsPurgeService(service.source_database, service.archive_root, manifest, batch_rows=3)
+    with pytest.raises(WsRetentionError, match="exact contiguous suffix"):
+        purge.run_once(now=NOW)
+    assert manifest.chunks()[0].purged_events == 0
+
+
+def test_purge_reopens_and_reauthorizes_archive_before_delete(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    chunk = service.run_once(now=NOW).chunk
+    assert chunk is not None
+    archive = service.archive_root / chunk.relative_path
+    archive.write_bytes(b"corrupted-after-verification")
+    purge = WsPurgeService(service.source_database, service.archive_root, manifest, batch_rows=3)
+    with pytest.raises(WsRetentionError, match="checksum changed"):
+        purge.run_once(now=NOW)
+    connection = sqlite3.connect(service.source_database)
+    try:
+        remaining = connection.execute(
+            "SELECT COUNT(*) FROM kalshi_ws_orderbook_events WHERE id BETWEEN ? AND ?",
+            (chunk.first_event_id, chunk.last_event_id),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert remaining == chunk.event_count
+
+
+def test_purged_archive_can_be_reopened_and_verified(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    chunk = service.run_once(now=NOW).chunk
+    assert chunk is not None
+    purge = WsPurgeService(
+        service.source_database, service.archive_root, manifest, batch_rows=20_000
+    )
+    assert purge.run_once(now=NOW).remaining_events == 0
+    purged = manifest.chunks()[0]
+    assert purged.state is ArchiveState.PURGED
+    purge.verify_preserved_archive(purged)
+
+
+def test_bounded_purge_creates_reusable_pages_without_shrinking_file(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path, count=4000, chunk=3999)
+    chunk = service.run_once(now=NOW).chunk
+    assert chunk is not None
+    physical_before = service.source_database.stat().st_size
+    purge = WsPurgeService(
+        service.source_database, service.archive_root, manifest, batch_rows=20_000
+    )
+    result = purge.run_once(now=NOW)
+    assert result.deleted_events == chunk.event_count
+    assert result.freelist_pages_after > result.freelist_pages_before
+    assert result.reusable_bytes_increase > 0
+    assert service.source_database.stat().st_size == physical_before
+
+    metrics = manifest.storage_metrics(service.source_database)
+    assert metrics.freelist_reusable_bytes > 0
+    assert metrics.physical_database_bytes >= metrics.hot_sqlite_used_bytes
+    assert metrics.cold_archive_bytes == chunk.compressed_bytes
+
+
+def test_sqlite_new_writes_reuse_freelist_before_file_growth(tmp_path: Path) -> None:
+    database = tmp_path / "page-reuse.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE observations(id INTEGER PRIMARY KEY,payload BLOB NOT NULL)")
+    connection.executemany(
+        "INSERT INTO observations(payload) VALUES(?)", ((b"x" * 2000,) for _ in range(5000))
+    )
+    connection.commit()
+    page_count_before = int(connection.execute("PRAGMA page_count").fetchone()[0])
+    connection.execute("DELETE FROM observations")
+    connection.commit()
+    freelist_after_delete = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+    assert freelist_after_delete > 0
+    connection.executemany(
+        "INSERT INTO observations(payload) VALUES(?)", ((b"y" * 2000,) for _ in range(4000))
+    )
+    connection.commit()
+    page_count_after_reuse = int(connection.execute("PRAGMA page_count").fetchone()[0])
+    freelist_after_reuse = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+    connection.close()
+    assert page_count_after_reuse == page_count_before
+    assert freelist_after_reuse < freelist_after_delete
+
+
+def test_storage_growth_samples_are_low_frequency_and_bounded(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    metrics = manifest.storage_metrics(service.source_database)
+    first = manifest.record_storage_sample(metrics, observed_at=NOW, maximum_samples=3)
+    assert first.net_disk_growth_bytes_per_hour is None
+    unchanged = manifest.record_storage_sample(
+        metrics, observed_at=NOW + timedelta(seconds=30), maximum_samples=3
+    )
+    assert unchanged.net_disk_growth_bytes_per_hour is None
+    grown = manifest.record_storage_sample(
+        type(metrics)(
+            hot_sqlite_used_bytes=metrics.hot_sqlite_used_bytes + 3600,
+            freelist_reusable_bytes=metrics.freelist_reusable_bytes,
+            physical_database_bytes=metrics.physical_database_bytes + 3600,
+            wal_bytes=metrics.wal_bytes,
+            cold_archive_bytes=metrics.cold_archive_bytes,
+            cold_archive_growth_bytes_per_hour=metrics.cold_archive_growth_bytes_per_hour,
+            cold_archive_growth_bytes_per_day=metrics.cold_archive_growth_bytes_per_day,
+        ),
+        observed_at=NOW + timedelta(hours=1),
+        maximum_samples=3,
+    )
+    assert grown.net_disk_growth_bytes_per_hour == pytest.approx(3600)
+    for hour in range(2, 7):
+        manifest.record_storage_sample(
+            metrics, observed_at=NOW + timedelta(hours=hour), maximum_samples=3
+        )
+    connection = sqlite3.connect(manifest.path)
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM ws_storage_samples").fetchone()[0] == 3
+    finally:
+        connection.close()
+
+
+def test_failed_verification_keeps_raw_source(tmp_path: Path, monkeypatch) -> None:
+    service, manifest = _service(tmp_path)
+    before = service.source_database.stat().st_size
+    monkeypatch.setattr(
+        "live15_quant.ws_retention.decode_archive_chunk",
+        lambda _blob: (_ for _ in ()).throw(WsRetentionError("bad checksum")),
+    )
+    with pytest.raises(WsRetentionError, match="bad checksum"):
+        service.run_once(now=NOW)
+    assert service.source_database.stat().st_size == before
+    assert manifest.chunks()[0].state is ArchiveState.FAILED
+
+
+def test_failed_archive_blocks_later_ranges_instead_of_skipping_raw_truth(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service, manifest = _service(tmp_path)
+    monkeypatch.setattr(
+        "live15_quant.ws_retention.decode_archive_chunk",
+        lambda _blob: (_ for _ in ()).throw(WsRetentionError("verification failed")),
+    )
+    with pytest.raises(WsRetentionError, match="verification failed"):
+        service.run_once(now=NOW)
+    monkeypatch.undo()
+    with pytest.raises(WsRetentionError, match="blocks later retention"):
+        service.run_once(now=NOW)
+    assert len(manifest.chunks()) == 1
+    assert manifest.chunks()[0].state is ArchiveState.FAILED
+
+
+def test_cross_process_maintenance_lease_fails_fast(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    with manifest.maintenance_lease():
+        with pytest.raises(WsMaintenanceBusy, match="maintenance pass is active"):
+            service.run_once(now=NOW)
+    assert service.run_once(now=NOW).chunk is not None
+
+
+def test_expired_maintenance_lease_is_restart_recoverable(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    connection = sqlite3.connect(manifest.path)
+    with connection:
+        connection.execute(
+            "INSERT INTO ws_retention_lease VALUES('archive-purge','crashed-owner',?)",
+            ((datetime.now(UTC) - timedelta(minutes=1)).isoformat(),),
+        )
+    connection.close()
+    assert service.run_once(now=NOW).chunk is not None
+
+
+def test_disk_quota_thresholds_fail_closed() -> None:
+    quota = DiskQuota(
+        warning_free_bytes=100,
+        critical_free_bytes=50,
+        fail_safe_free_bytes=25,
+    )
+    assert quota.classify(total_bytes=1000, free_bytes=500) is DiskThresholdState.NORMAL
+    assert quota.classify(total_bytes=1000, free_bytes=290) is DiskThresholdState.WARNING
+    assert quota.classify(total_bytes=1000, free_bytes=240) is DiskThresholdState.ARCHIVE_URGENT
+    assert quota.classify(total_bytes=1000, free_bytes=140) is DiskThresholdState.CRITICAL
+    assert quota.classify(total_bytes=1000, free_bytes=20) is DiskThresholdState.FAIL_SAFE
+
+
+def test_compaction_benefit_gate_requires_bytes_and_percent(tmp_path: Path) -> None:
+    gate = CompactionBenefitGate(100, Decimal("25"))
+    assert gate.evaluate(database_bytes=1000, reclaimable_bytes=300) is True
+    assert gate.evaluate(database_bytes=1000, reclaimable_bytes=99) is False
+    assert gate.evaluate(database_bytes=1000, reclaimable_bytes=200) is False
+
+    database = tmp_path / "pages.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE disposable(value BLOB)")
+    connection.executemany(
+        "INSERT INTO disposable VALUES(?)", ((b"x" * 1000,) for _ in range(2000))
+    )
+    connection.commit()
+    connection.execute("DROP TABLE disposable")
+    connection.commit()
+    connection.close()
+    decision = evaluate_database_compaction(database, CompactionBenefitGate(1, Decimal("0.01")))
+    assert decision.reclaimable_bytes > 0
+    assert decision.allowed is True
+
+
+def test_purge_benefit_assessment_uses_disposable_snapshot(tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite3"
+    _populate(source)
+    result = assess_purge_benefit(source, tmp_path / "post.sqlite3", ((1, 10),))
+    assert result.deleted_rows == 10
+    assert result.purge_physical_bytes > 0
+    assert result.post_purge_compacted_bytes < result.baseline_compacted_bytes
+
+
+def test_offline_compaction_requires_headroom_and_preserves_database(tmp_path: Path) -> None:
+    source = tmp_path / "raw.sqlite3"
+    _populate(source)
+    with pytest.raises(WsRetentionError, match="headroom"):
+        compact_database_offline(source, tmp_path / "too-large.sqlite3", minimum_free_bytes=10**18)
+    destination = tmp_path / "compact.sqlite3"
+    result = compact_database_offline(source, destination, minimum_free_bytes=0)
+    assert result["compacted_bytes"] <= result["source_bytes"]
+    source_connection = sqlite3.connect(source)
+    compact_connection = sqlite3.connect(destination)
+    try:
+        assert (
+            source_connection.execute("SELECT COUNT(*) FROM kalshi_ws_orderbook_events").fetchone()
+            == compact_connection.execute(
+                "SELECT COUNT(*) FROM kalshi_ws_orderbook_events"
+            ).fetchone()
+        )
+    finally:
+        source_connection.close()
+        compact_connection.close()
+
+
+def test_verified_compact_swap_retains_rollback(tmp_path: Path) -> None:
+    source = tmp_path / "raw.sqlite3"
+    _populate(source)
+    compacted = tmp_path / "compact.sqlite3"
+    compact_database_offline(source, compacted, minimum_free_bytes=0)
+    rollback = tmp_path / "raw.rollback.sqlite3"
+    result = swap_compacted_database(source, compacted, rollback)
+    assert source.is_file() and rollback.is_file() and not compacted.exists()
+    assert result.rollback_path == rollback
+    connection = sqlite3.connect(source)
+    try:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        connection.close()
+
+
+def test_failed_compact_swap_automatically_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "raw.sqlite3"
+    _populate(source)
+    compacted = tmp_path / "compact.sqlite3"
+    compact_database_offline(source, compacted, minimum_free_bytes=0)
+    rollback = tmp_path / "raw.rollback.sqlite3"
+    original = Path.replace
+
+    def fail_new_database(value: Path, target: Path) -> Path:
+        if value == compacted:
+            raise OSError("simulated atomic swap failure")
+        return original(value, target)
+
+    monkeypatch.setattr(Path, "replace", fail_new_database)
+    with pytest.raises(OSError, match="simulated"):
+        swap_compacted_database(source, compacted, rollback)
+    assert source.is_file() and compacted.is_file() and not rollback.exists()

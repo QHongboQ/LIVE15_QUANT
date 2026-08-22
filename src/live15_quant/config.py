@@ -62,6 +62,16 @@ class Settings:
     settlement_followup_interval_seconds: float = 15.0
     settlement_followup_batch_size: int = 25
     recorder_checkpoint_interval_seconds: float = 300.0
+    enable_ws_archive: bool = True
+    ws_archive_root: Path | None = None
+    ws_archive_manifest_path: Path | None = None
+    ws_archive_hot_retention_seconds: float = 21_600.0
+    ws_archive_chunk_records: int = 100_000
+    ws_archive_poll_interval_seconds: float = 2.0
+    ws_archive_shadow_chunks: int = 3
+    ws_archive_purge_batch_rows: int = 20_000
+    ws_compaction_min_reclaim_bytes: int = 8 * 1024**3
+    ws_compaction_min_reclaim_percent: Decimal = Decimal("25")
     recorder_operation_timeout_seconds: float = 45.0
     recorder_max_backoff_seconds: float = 60.0
     recorder_health_path: Path = Path("data/health.json")
@@ -116,6 +126,13 @@ def _positive_decimal(source: Mapping[str, str], name: str, default: Decimal) ->
         raise ValueError(f"{name} must be a decimal") from error
     if not value.is_finite() or value <= 0:
         raise ValueError(f"{name} must be positive")
+    return value
+
+
+def _percentage_decimal(source: Mapping[str, str], name: str, default: Decimal) -> Decimal:
+    value = _positive_decimal(source, name, default)
+    if value > 100:
+        raise ValueError(f"{name} must be at most 100")
     return value
 
 
@@ -188,6 +205,14 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     recorder_pid_path = Path(
         source.get("LIVE15_RECORDER_PID_PATH", str(defaults.recorder_pid_path))
     )
+    ws_archive_root = (
+        Path(source["LIVE15_WS_ARCHIVE_ROOT"]) if source.get("LIVE15_WS_ARCHIVE_ROOT") else None
+    )
+    ws_archive_manifest_path = (
+        Path(source["LIVE15_WS_ARCHIVE_MANIFEST_PATH"])
+        if source.get("LIVE15_WS_ARCHIVE_MANIFEST_PATH")
+        else None
+    )
     pyth_api_key_path = (
         Path(source["LIVE15_PYTH_API_KEY_PATH"]) if source.get("LIVE15_PYTH_API_KEY_PATH") else None
     )
@@ -200,7 +225,10 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         recorder_pid_path.resolve(),
         readiness_report_path.resolve(),
     }
-    if len(resolved_paths) != 7:
+    if ws_archive_manifest_path is not None:
+        resolved_paths.add(ws_archive_manifest_path.resolve())
+    expected_paths = 7 + (1 if ws_archive_manifest_path is not None else 0)
+    if len(resolved_paths) != expected_paths:
         raise ValueError("database and recorder runtime paths must be different from each other")
     paper_account_id = source.get("LIVE15_PAPER_ACCOUNT_ID", defaults.paper_account_id).strip()
     if not paper_account_id:
@@ -364,6 +392,47 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             source,
             "LIVE15_RECORDER_CHECKPOINT_INTERVAL_SECONDS",
             defaults.recorder_checkpoint_interval_seconds,
+        ),
+        enable_ws_archive=_boolean(source, "LIVE15_ENABLE_WS_ARCHIVE", defaults.enable_ws_archive),
+        ws_archive_root=ws_archive_root,
+        ws_archive_manifest_path=ws_archive_manifest_path,
+        ws_archive_hot_retention_seconds=_positive_float(
+            source,
+            "LIVE15_WS_ARCHIVE_HOT_RETENTION_SECONDS",
+            defaults.ws_archive_hot_retention_seconds,
+        ),
+        ws_archive_chunk_records=_bounded_positive_int(
+            source,
+            "LIVE15_WS_ARCHIVE_CHUNK_RECORDS",
+            defaults.ws_archive_chunk_records,
+            250_000,
+        ),
+        ws_archive_poll_interval_seconds=_positive_float(
+            source,
+            "LIVE15_WS_ARCHIVE_POLL_INTERVAL_SECONDS",
+            defaults.ws_archive_poll_interval_seconds,
+        ),
+        ws_archive_shadow_chunks=_bounded_positive_int(
+            source,
+            "LIVE15_WS_ARCHIVE_SHADOW_CHUNKS",
+            defaults.ws_archive_shadow_chunks,
+            100,
+        ),
+        ws_archive_purge_batch_rows=_bounded_positive_int(
+            source,
+            "LIVE15_WS_ARCHIVE_PURGE_BATCH_ROWS",
+            defaults.ws_archive_purge_batch_rows,
+            100_000,
+        ),
+        ws_compaction_min_reclaim_bytes=_positive_int(
+            source,
+            "LIVE15_WS_COMPACTION_MIN_RECLAIM_BYTES",
+            defaults.ws_compaction_min_reclaim_bytes,
+        ),
+        ws_compaction_min_reclaim_percent=_percentage_decimal(
+            source,
+            "LIVE15_WS_COMPACTION_MIN_RECLAIM_PERCENT",
+            defaults.ws_compaction_min_reclaim_percent,
         ),
         recorder_operation_timeout_seconds=_positive_float(
             source,
