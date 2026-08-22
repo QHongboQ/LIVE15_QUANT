@@ -134,6 +134,8 @@ class RecorderEventType(StrEnum):
     MAPPING_CONFLICT = "mapping_ticker_conflict"
     SQLITE_FAILURE = "sqlite_integrity_failure"
     FATAL_TASK = "fatal_task"
+    WS_PROTOCOL_NOTICE = "ws_protocol_notice"
+    WS_PAYLOAD_RECOVERY = "ws_payload_recovery"
 
 
 @dataclass(frozen=True, slots=True)

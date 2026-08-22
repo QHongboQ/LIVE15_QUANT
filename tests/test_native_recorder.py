@@ -6,6 +6,7 @@ import threading
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -17,6 +18,7 @@ from live15_quant.kalshi_lifecycle import (
     KalshiDiscovery,
     KalshiLifecycle,
 )
+from live15_quant.kalshi_ws import KalshiOrderBookSnapshot, KalshiWsPayloadIssue
 from live15_quant.models import (
     Asset,
     FreshnessState,
@@ -528,12 +530,110 @@ def test_multi_asset_network_failure_isolated_and_health_is_machine_readable(tmp
             assert Asset.BTC in health.current_markets
             assert health.retry_counts["kalshi_discovery:ETH"] == 1
             assert health.source_failures["kalshi_discovery:ETH"] == "ConnectionError"
-            assert health.integrity == "ok"
+            assert health.integrity == "not_checked"
 
     asyncio.run(scenario())
     payload = json.loads(health_path.read_text(encoding="utf-8"))
     assert payload["status"] == "degraded"
     assert payload["current_markets"]["BTC"].startswith("KXBTC15M-")
+
+
+def test_managed_restart_can_reuse_verified_health_without_full_startup_scans(
+    tmp_path, monkeypatch
+) -> None:
+    with RecorderStore(tmp_path / "native.sqlite3") as store:
+        monkeypatch.setattr(
+            store,
+            "row_counts",
+            lambda: (_ for _ in ()).throw(AssertionError("must not scan row counts")),
+        )
+        monkeypatch.setattr(
+            store,
+            "quick_check",
+            lambda: (_ for _ in ()).throw(AssertionError("must not scan database")),
+        )
+        recorder = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            initial_row_counts={
+                "kalshi_market_lifecycle": 1_000_000_000_001,
+                "kalshi_prediction_quotes": 1_000_000_000_002,
+                "coinbase_ticks": 1_000_000_000_123,
+                "underlying_observations": 1_000_000_000_004,
+                "secondary_underlying_observations": 1_000_000_000_005,
+                "kalshi_ws_orderbook_events": 1_000_000_000_006,
+                "kalshi_ws_book_checkpoints": 1_000_000_000_007,
+                "kalshi_settlements": 1_000_000_000_008,
+                "kalshi_settlement_conflicts": 0,
+                "data_gaps": 1_000_000_000_009,
+            },
+            initial_row_counts_complete=True,
+            last_verified_integrity="ok",
+            now=lambda: NOW,
+        )
+
+    assert recorder.health().row_counts["coinbase_ticks"] == 1_000_000_000_123
+    assert recorder.health().row_counts_complete is True
+    assert recorder.health().integrity == "ok"
+
+
+def test_missing_health_baseline_uses_bounded_estimates_not_full_scans(
+    tmp_path, monkeypatch
+) -> None:
+    with RecorderStore(tmp_path / "native.sqlite3") as store:
+        monkeypatch.setattr(
+            store,
+            "row_counts",
+            lambda: (_ for _ in ()).throw(AssertionError("must not scan row counts")),
+        )
+        monkeypatch.setattr(
+            store,
+            "quick_check",
+            lambda: (_ for _ in ()).throw(AssertionError("must not scan database")),
+        )
+        recorder = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+
+    assert recorder.health().row_counts_complete is False
+    assert recorder.health().integrity == "not_checked"
+
+
+def test_normal_startup_sql_contains_no_full_size_dependent_scans(tmp_path) -> None:
+    with RecorderStore(tmp_path / "native.sqlite3") as store:
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+        KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+
+    selects = [
+        " ".join(statement.upper().split())
+        for statement in statements
+        if statement.lstrip().upper().startswith(("SELECT", "PRAGMA"))
+    ]
+    assert len(selects) <= 100
+    assert not any("COUNT(" in statement for statement in selects)
+    assert not any("PRAGMA QUICK_CHECK" in statement for statement in selects)
+    assert not any("PRAGMA INTEGRITY_CHECK" in statement for statement in selects)
+    assert not any("MAX(RECEIVED_TIMESTAMP)" in statement for statement in selects)
+    assert not any(
+        "FROM KALSHI_MARKET_LIFECYCLE WHERE ASSET=" in statement and "WINDOW_END>=" not in statement
+        for statement in selects
+    )
 
 
 def test_target_unavailable_quote_isolated_to_one_asset(tmp_path) -> None:
@@ -1144,6 +1244,221 @@ async def test_archive_failure_isolated_from_core_recorder(
         assert health.source_failures["ws_archive"] == type(failure).__name__
         assert health.fatal_task is None
         assert health.fatal_error_type is None
+
+
+@pytest.mark.asyncio
+async def test_archive_retention_defers_to_live_ws_backpressure(tmp_path, monkeypatch) -> None:
+    with RecorderStore(tmp_path / "archive-backpressure.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                recorder_health_path=tmp_path / "health.json",
+                ws_archive_poll_interval_seconds=60,
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        assert recorder._archive_service is not None
+        recorder._kalshi_ws = SimpleNamespace(
+            diagnostics=SimpleNamespace(
+                receive_queue_capacity=8192,
+                receive_queue_depth=2048,
+            )
+        )
+
+        def forbidden_archive(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("archive ran while the live WS queue was under pressure")
+
+        monkeypatch.setattr(recorder._archive_service, "run_once", forbidden_archive)
+
+        async def stop_after_defer(_seconds: float) -> bool:
+            return True
+
+        monkeypatch.setattr(recorder, "_wait", stop_after_defer)
+        await asyncio.wait_for(recorder._archive_ws_retention(), 1)
+
+        health = recorder.health()
+        assert health.worker_progress["ws_archive"] == NOW
+        assert health.ws_archive_metrics["deferred_for_ws_backpressure"] is True
+        assert health.source_failures == {}
+
+
+@pytest.mark.asyncio
+async def test_archive_chunk_work_yields_event_loop_to_control_and_health(
+    tmp_path, monkeypatch
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    with RecorderStore(tmp_path / "archive-fairness.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                recorder_health_path=tmp_path / "health.json",
+                ws_archive_poll_interval_seconds=60,
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        assert recorder._archive_service is not None
+
+        def bounded_archive_burst(*_args: object, **_kwargs: object) -> None:
+            entered.set()
+            assert release.wait(1)
+            raise WsRetentionError("deterministic archive completion")
+
+        monkeypatch.setattr(recorder._archive_service, "run_once", bounded_archive_burst)
+
+        async def stop_after_iteration(_seconds: float) -> bool:
+            return True
+
+        monkeypatch.setattr(recorder, "_wait", stop_after_iteration)
+        archive_task = asyncio.create_task(recorder._archive_ws_retention())
+        assert await asyncio.to_thread(entered.wait, 1)
+
+        control_and_health_progressed = asyncio.Event()
+
+        async def control_and_health_probe() -> None:
+            recorder._worker_advanced("control_watcher", NOW)
+            recorder._worker_advanced("health", NOW)
+            control_and_health_progressed.set()
+
+        probe = asyncio.create_task(control_and_health_probe())
+        await asyncio.wait_for(control_and_health_progressed.wait(), 0.2)
+        release.set()
+        await asyncio.gather(archive_task, probe)
+
+        assert recorder.health().worker_progress["control_watcher"] == NOW
+        assert recorder.health().worker_progress["health"] == NOW
+
+
+def test_archive_retention_waits_for_current_ws_books_to_synchronize(tmp_path) -> None:
+    with RecorderStore(tmp_path / "archive-ws-startup.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                recorder_health_path=tmp_path / "health.json",
+                enable_kalshi_production_websocket=True,
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            kalshi_ws_factory=lambda: SimpleNamespace(
+                diagnostics=SimpleNamespace(receive_queue_capacity=8192, receive_queue_depth=0)
+            ),
+            now=lambda: NOW,
+        )
+        weekend_current_assets = tuple(
+            asset for asset in Asset if asset not in {Asset.GOLD, Asset.SILVER, Asset.WTI_OIL}
+        )
+        current_markets = {
+            asset: market
+            for asset in weekend_current_assets
+            if (market := discovery_for(asset).current) is not None
+        }
+        assert len(current_markets) == 7
+        recorder._health.current.update(current_markets)
+        recorder._kalshi_ws = SimpleNamespace(
+            diagnostics=SimpleNamespace(receive_queue_capacity=8192, receive_queue_depth=0)
+        )
+
+        assert recorder._archive_service is not None
+        assert recorder._archive_service.chunk_records == 10_000
+        assert recorder._ws_archive_backpressure_active() is True
+        assert recorder._retention_core_healthy() is False
+        for asset, market in tuple(current_markets.items())[:-1]:
+            recorder._health.kalshi_ws_synchronized[asset] = market.ticker
+        assert recorder._ws_archive_backpressure_active() is True
+        assert recorder._retention_core_healthy() is False
+        last_asset, last_market = tuple(current_markets.items())[-1]
+        recorder._health.kalshi_ws_synchronized[last_asset] = last_market.ticker
+        assert recorder._ws_archive_backpressure_active() is False
+        assert recorder._retention_core_healthy() is True
+
+
+@pytest.mark.asyncio
+async def test_malformed_ws_market_isolated_and_official_snapshot_recovers_recorder(
+    tmp_path,
+) -> None:
+    market = discovery_for(Asset.BTC).current
+    assert market is not None
+    issue = KalshiWsPayloadIssue(
+        connection_id="connection-recovery",
+        message_type="orderbook_delta",
+        channel=None,
+        subscription_id=2,
+        sequence=11,
+        ticker=market.ticker,
+        parser_stage="data_payload",
+        reason="malformed Kalshi WebSocket market_id",
+        schema_keys=("top:type", "msg:market_ticker"),
+        payload_shape_hash="0123456789abcdef",
+        affects_orderbook=True,
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+    recovered = KalshiOrderBookSnapshot(
+        connection_id="connection-recovery",
+        subscription_id=2,
+        sequence=20,
+        ticker=market.ticker,
+        market_id="official-market-id",
+        yes_bids=(),
+        no_bids=(),
+        source_timestamp=NOW,
+        socket_received_timestamp=NOW + timedelta(milliseconds=1),
+        parse_timestamp=NOW + timedelta(milliseconds=1),
+    )
+
+    class RecoveringStream:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+            self.diagnostics = SimpleNamespace(receive_queue_capacity=8192, receive_queue_depth=0)
+
+        def set_reconnect_tickers(self, _tickers) -> None:
+            return None
+
+        async def send_command(self, command) -> None:
+            self.commands.append(command.payload)
+
+        async def messages(self, _tickers):
+            yield issue
+            yield recovered
+
+    source = RecoveringStream()
+    with RecorderStore(tmp_path / "ws-payload-recovery.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                recorder_health_path=tmp_path / "health.json",
+                enable_ws_archive=False,
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        recorder._kalshi_ws = source
+        recorder._health.current[Asset.BTC] = market
+        await recorder._record_kalshi_ws_session()
+
+        health = recorder.health()
+        diagnostics = store.replay_recorder_events(limit=10)
+
+    assert json.loads(source.commands[0])["params"]["action"] == "get_snapshot"
+    assert health.kalshi_ws_connection_state.value == "synchronized"
+    assert health.kalshi_ws_synchronized_markets == {Asset.BTC: market.ticker}
+    assert health.fatal_task is None and health.fatal_error_type is None
+    assert health.source_failures == {}
+    assert health.retry_counts["kalshi_ws"] == 1
+    assert any(event.error_type == "KalshiWsPayloadIssue" for event in diagnostics)
 
 
 def test_normal_market_closure_is_not_reported_as_stale_or_source_failure(tmp_path) -> None:

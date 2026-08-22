@@ -132,7 +132,7 @@ class RecorderProcessController:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         popen: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
-        start_timeout: float = 15.0,
+        start_timeout: float = 30.0,
         stop_timeout: float = 60.0,
     ) -> None:
         self.settings = settings
@@ -228,6 +228,22 @@ class RecorderProcessController:
             deadline = self._monotonic() + self.start_timeout
             while self._monotonic() < deadline:
                 status = self.status()
+                desired_paused = self._read_control().get("desired") == "paused"
+                if status.state is ManagedRecorderState.ERROR:
+                    self._write_control(
+                        "paused" if desired_paused else "running",
+                        ManagedRecorderState.ERROR,
+                        "recorder failed during startup",
+                    )
+                    raise RuntimeError("recorder failed during bounded startup")
+                if desired_paused:
+                    if process.poll() is not None or status.pid is None:
+                        self._write_control(
+                            "paused", ManagedRecorderState.PAUSED, "startup cancelled gracefully"
+                        )
+                        return self.status()
+                    self._sleep(min(0.1, max(0.0, deadline - self._monotonic())))
+                    continue
                 if status.pid is not None and self._heartbeat_since(
                     launched_at, previous_heartbeat
                 ):
@@ -235,9 +251,10 @@ class RecorderProcessController:
                         "running", ManagedRecorderState.RUNNING, "recorder is running"
                     )
                     return self.status()
-                if process.poll() is not None or status.state is ManagedRecorderState.ERROR:
+                if process.poll() is not None:
+                    desired = str(self._read_control().get("desired", "running"))
                     self._write_control(
-                        "running", ManagedRecorderState.ERROR, "recorder failed during startup"
+                        desired, ManagedRecorderState.ERROR, "recorder failed during startup"
                     )
                     raise RuntimeError("recorder failed during bounded startup")
                 self._sleep(min(0.1, max(0.0, deadline - self._monotonic())))
@@ -246,7 +263,7 @@ class RecorderProcessController:
                 ManagedRecorderState.STOPPING,
                 "startup heartbeat timed out; graceful stop requested",
             )
-            cleanup_deadline = self._monotonic() + min(5.0, self.stop_timeout)
+            cleanup_deadline = self._monotonic() + min(30.0, self.stop_timeout)
             while self._monotonic() < cleanup_deadline:
                 pid = _read_pid(self._pid_path)
                 if pid is None or not process_alive(pid):

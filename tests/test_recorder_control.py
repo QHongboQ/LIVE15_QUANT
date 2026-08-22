@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
 
 import live15_quant.control_center_launcher as launcher
+import live15_quant.managed_recorder as managed
 import live15_quant.recorder_control as control
 from live15_quant.config import Settings
+from live15_quant.managed_recorder import (
+    StartupCancelled,
+    StartupDiagnostics,
+    StartupHealthBaseline,
+    _last_verified_health,
+)
 from live15_quant.recorder_control import (
     WINDOWS_BACKGROUND_FLAGS,
     ManagedRecorderState,
@@ -31,6 +39,84 @@ def write_control(path: Path, *, desired: str, state: str) -> None:
     path.write_text(
         json.dumps({"desired": desired, "state": state, "message": state}), encoding="utf-8"
     )
+
+
+def test_managed_restart_reuses_only_valid_last_verified_health(tmp_path) -> None:
+    configured = managed_settings(tmp_path)
+    configured.recorder_health_path.parent.mkdir(parents=True)
+    counts = {
+        "kalshi_market_lifecycle": 1,
+        "kalshi_prediction_quotes": 2,
+        "coinbase_ticks": 123,
+        "underlying_observations": 4,
+        "secondary_underlying_observations": 5,
+        "kalshi_ws_orderbook_events": 6,
+        "kalshi_ws_book_checkpoints": 7,
+        "kalshi_settlements": 8,
+        "kalshi_settlement_conflicts": 0,
+        "data_gaps": 9,
+    }
+    configured.recorder_health_path.write_text(
+        json.dumps(
+            {
+                "integrity": "ok",
+                "row_counts": counts,
+                "active_settlement_followups": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _last_verified_health(configured) == StartupHealthBaseline(counts, 3, "ok")
+
+    configured.recorder_health_path.write_text(
+        json.dumps({"integrity": "not_checked", "row_counts": {"coinbase_ticks": 123}}),
+        encoding="utf-8",
+    )
+    assert _last_verified_health(configured) is None
+
+
+def test_startup_phase_diagnostics_are_bounded_and_path_free(tmp_path) -> None:
+    path = tmp_path / "data" / "recorder-startup.json"
+    clock = iter((10.0, 10.0, 10.25, 10.5)).__next__
+    diagnostics = StartupDiagnostics(path, monotonic=clock)
+    diagnostics.record("schema_check", 0.25)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["phase"] == "schema_check"
+    assert payload["phases"]["schema_check"] == {
+        "duration_seconds": 0.25,
+        "elapsed_seconds": 0.25,
+    }
+    assert str(tmp_path) not in path.read_text(encoding="utf-8")
+
+
+def test_pause_during_synchronous_startup_is_observed_between_bounded_phases(
+    tmp_path, monkeypatch
+) -> None:
+    configured = managed_settings(tmp_path)
+    monkeypatch.setattr(control, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(managed, "load_settings", lambda: configured)
+    write_control(configured.recorder_control_path, desired="running", state="starting")
+    phases: list[str] = []
+
+    class PauseAfterDatabaseOpen:
+        def record(self, phase: str, _duration: float) -> None:
+            phases.append(phase)
+            if phase == "db_open":
+                write_control(configured.recorder_control_path, desired="paused", state="stopping")
+
+    with pytest.raises(StartupCancelled, match="db_open"):
+        asyncio.run(managed._run(PauseAfterDatabaseOpen()))  # type: ignore[arg-type]
+
+    assert phases == ["db_open"]
+    assert json.loads(configured.recorder_control_path.read_text())["desired"] == "paused"
+
+
+def test_default_startup_budget_is_30_seconds(tmp_path, monkeypatch) -> None:
+    configured = managed_settings(tmp_path)
+    monkeypatch.setattr(control, "project_root", lambda: tmp_path)
+    controller = RecorderProcessController(configured)
+    assert controller.start_timeout == 30.0
 
 
 def test_duplicate_start_returns_running_without_spawning(tmp_path, monkeypatch) -> None:
@@ -160,7 +246,52 @@ def test_start_requires_a_new_recorder_heartbeat(tmp_path, monkeypatch) -> None:
 
     with pytest.raises(TimeoutError, match="heartbeat"):
         controller.start()
-    assert json.loads(configured.recorder_control_path.read_text())["state"] == "error"
+    payload = json.loads(configured.recorder_control_path.read_text())
+    assert payload["state"] == "error"
+    assert payload["desired"] == "paused"
+    assert clock[0] <= 60.2
+
+
+def test_startup_timeout_requests_pause_and_observes_cooperative_exit(
+    tmp_path, monkeypatch
+) -> None:
+    configured = managed_settings(tmp_path)
+    monkeypatch.setattr(control, "project_root", lambda: tmp_path)
+    alive = {8642: True}
+    clock = [0.0]
+
+    class Process:
+        def __init__(self, _args, **_kwargs) -> None:
+            configured.recorder_pid_path.parent.mkdir(parents=True, exist_ok=True)
+            configured.recorder_pid_path.write_text("8642\n", encoding="ascii")
+
+        def poll(self):
+            return None if alive[8642] else 0
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+        payload = json.loads(configured.recorder_control_path.read_text())
+        if payload["desired"] == "paused":
+            alive[8642] = False
+            configured.recorder_pid_path.unlink(missing_ok=True)
+
+    monkeypatch.setattr(control, "process_alive", lambda pid: alive.get(pid, False))
+    controller = RecorderProcessController(
+        configured,
+        monotonic=lambda: clock[0],
+        sleep=sleep,
+        popen=Process,  # type: ignore[arg-type]
+        start_timeout=0.2,
+        stop_timeout=0.2,
+    )
+
+    with pytest.raises(TimeoutError, match="heartbeat"):
+        controller.start()
+
+    payload = json.loads(configured.recorder_control_path.read_text())
+    assert payload["desired"] == "paused"
+    assert alive[8642] is False
+    assert clock[0] <= 0.300001
 
 
 def test_start_rejects_unchanged_future_dated_heartbeat(tmp_path, monkeypatch) -> None:

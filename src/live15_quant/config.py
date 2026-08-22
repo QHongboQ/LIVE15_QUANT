@@ -66,7 +66,8 @@ class Settings:
     ws_archive_root: Path | None = None
     ws_archive_manifest_path: Path | None = None
     ws_archive_hot_retention_seconds: float = 21_600.0
-    ws_archive_chunk_records: int = 100_000
+    # Keep live archive I/O bursts below the synchronized WS persistence queue budget.
+    ws_archive_chunk_records: int = 10_000
     ws_archive_poll_interval_seconds: float = 2.0
     ws_archive_shadow_chunks: int = 3
     ws_archive_purge_batch_rows: int = 20_000

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import time
 import uuid
@@ -24,6 +25,8 @@ from live15_quant.kalshi_ws import (
     KalshiServerMessage,
     KalshiSubscriptionCommand,
     KalshiWsPayloadError,
+    KalshiWsPayloadIssue,
+    KalshiWsProtocolNotice,
     KalshiWsRuntimeState,
     parse_kalshi_server_message,
     subscribe_command,
@@ -33,6 +36,153 @@ if TYPE_CHECKING:
     from live15_quant.config import Settings
 
 KALSHI_PRODUCTION_WS_PATH = "/trade-api/ws/v2"
+_SAFE_CONTEXT_CHARACTERS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+)
+_SAFE_SCHEMA_KEYS = frozenset(
+    {
+        "type",
+        "id",
+        "sid",
+        "seq",
+        "msg",
+        "channel",
+        "market_ticker",
+        "market_tickers",
+        "market_id",
+        "yes_dollars_fp",
+        "no_dollars_fp",
+        "price_dollars",
+        "yes_bid_dollars",
+        "yes_ask_dollars",
+        "volume_fp",
+        "delta_fp",
+        "side",
+        "ts",
+        "ts_ms",
+        "code",
+    }
+)
+
+
+def _safe_payload_context(payload: object) -> str:
+    """Return only allow-listed market-data identity fields, never raw payload data."""
+
+    if not isinstance(payload, Mapping):
+        return "type=unknown"
+    message = payload.get("msg")
+    message_mapping = message if isinstance(message, Mapping) else {}
+
+    def token(value: object, fallback: str = "unknown") -> str:
+        if not isinstance(value, str) or not 1 <= len(value) <= 128:
+            return fallback
+        return value if set(value) <= _SAFE_CONTEXT_CHARACTERS else fallback
+
+    def integer(value: object) -> str:
+        if isinstance(value, bool):
+            return "unknown"
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            return "unknown"
+        return str(parsed) if parsed >= 0 and str(parsed) == str(value) else "unknown"
+
+    return ",".join(
+        (
+            f"type={token(payload.get('type'))}",
+            f"channel={token(message_mapping.get('channel'))}",
+            f"ticker={token(message_mapping.get('market_ticker'))}",
+            f"sid={integer(payload.get('sid'))}",
+            f"seq={integer(payload.get('seq'))}",
+        )
+    )
+
+
+def _payload_shape(payload: object) -> tuple[tuple[str, ...], str]:
+    """Describe JSON structure without retaining market values or authentication data."""
+
+    if not isinstance(payload, Mapping):
+        keys: tuple[str, ...] = ()
+        shape = type(payload).__name__
+    else:
+        top_names = {key if key in _SAFE_SCHEMA_KEYS else "<other>" for key in payload}
+        top = tuple(sorted(top_names))
+        message = payload.get("msg")
+        msg_keys = ()
+        if isinstance(message, Mapping):
+            msg_names = {
+                key if key in _SAFE_SCHEMA_KEYS else "<other>"
+                for key in message
+                if isinstance(key, str)
+            }
+            msg_keys = tuple(sorted(msg_names))
+        keys = tuple(f"top:{key}" for key in top) + tuple(f"msg:{key}" for key in msg_keys)
+        shape = "|".join(keys) or "mapping"
+    return keys, hashlib.sha256(shape.encode("utf-8")).hexdigest()[:16]
+
+
+def _safe_positive_integer(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed >= 1 and str(parsed) == str(value) else None
+
+
+def _safe_identity(value: object) -> str | None:
+    if not isinstance(value, str) or not 1 <= len(value) <= 128:
+        return None
+    return value if set(value) <= _SAFE_CONTEXT_CHARACTERS else None
+
+
+def _classify_payload_error(
+    payload: object,
+    error: KalshiWsPayloadError,
+    *,
+    connection_id: str,
+    received: datetime,
+    parsed: datetime,
+) -> KalshiWsPayloadIssue | KalshiWsProtocolNotice | None:
+    """Localize one safe market-data failure; return None for global protocol damage."""
+
+    if not isinstance(payload, Mapping):
+        return None
+    kind = _safe_identity(payload.get("type"))
+    message = payload.get("msg")
+    message_mapping = message if isinstance(message, Mapping) else {}
+    keys, shape_hash = _payload_shape(payload)
+    channel = _safe_identity(message_mapping.get("channel"))
+    if kind not in {"orderbook_snapshot", "orderbook_delta", "ticker"}:
+        if payload.get("seq") is None:
+            return KalshiWsProtocolNotice(
+                connection_id=connection_id,
+                message_type=kind or "unknown",
+                channel=channel,
+                socket_received_timestamp=received,
+                parse_timestamp=parsed,
+                payload_shape_hash=shape_hash,
+            )
+    subscription_id = _safe_positive_integer(payload.get("sid"))
+    if subscription_id is None or kind is None:
+        return None
+    reason = str(error)
+    return KalshiWsPayloadIssue(
+        connection_id=connection_id,
+        message_type=kind,
+        channel=channel,
+        subscription_id=subscription_id,
+        sequence=_safe_positive_integer(payload.get("seq")),
+        ticker=_safe_identity(message_mapping.get("market_ticker")),
+        parser_stage="data_payload",
+        reason=reason[:120],
+        schema_keys=keys,
+        payload_shape_hash=shape_hash,
+        affects_orderbook=kind != "ticker",
+        socket_received_timestamp=received,
+        parse_timestamp=parsed,
+    )
 
 
 class KalshiReadOnlyWsError(RuntimeError):
@@ -120,6 +270,9 @@ class KalshiWsDiagnostics:
     reconnects: int = 0
     transport_errors: int = 0
     messages: int = 0
+    payload_issues: int = 0
+    protocol_notices: int = 0
+    protocol_reconnects: int = 0
     connected_at: datetime | None = None
     last_disconnect_at: datetime | None = None
     last_reconnect_duration_seconds: float | None = None
@@ -299,6 +452,7 @@ class KalshiProductionReadOnlyWebSocket:
     async def messages(self, tickers: Sequence[str]) -> AsyncIterator[KalshiServerMessage]:
         self.set_reconnect_tickers(tickers)
         failures = 0
+        consecutive_global_payload_failures = 0
         while not self._closed:
             self.diagnostics.connection_attempts += 1
             self.diagnostics.transport_state = (
@@ -349,18 +503,46 @@ class KalshiProductionReadOnlyWebSocket:
                                 decoded = json.loads(raw, parse_float=Decimal, parse_int=Decimal)
                             except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
                                 raise KalshiWsPayloadError(
-                                    "malformed Kalshi WebSocket JSON"
+                                    "parser_stage=json_decode,reason=malformed_json,"
+                                    "type=unknown,channel=unknown,ticker=unknown,sid=unknown,"
+                                    "seq=unknown,keys=none,shape=unavailable"
                                 ) from None
                             parsed = self._clock()
-                            message = parse_kalshi_server_message(
-                                decoded,
-                                connection_id=connection_id,
-                                socket_received_timestamp=received,
-                                parse_timestamp=parsed,
-                                socket_received_monotonic_ns=received_monotonic_ns,
-                                enqueue_timestamp=enqueued,
-                                enqueue_monotonic_ns=enqueued_monotonic_ns,
-                            )
+                            try:
+                                message = parse_kalshi_server_message(
+                                    decoded,
+                                    connection_id=connection_id,
+                                    socket_received_timestamp=received,
+                                    parse_timestamp=parsed,
+                                    socket_received_monotonic_ns=received_monotonic_ns,
+                                    enqueue_timestamp=enqueued,
+                                    enqueue_monotonic_ns=enqueued_monotonic_ns,
+                                )
+                            except KalshiWsPayloadError as error:
+                                localized = _classify_payload_error(
+                                    decoded,
+                                    error,
+                                    connection_id=connection_id,
+                                    received=received,
+                                    parsed=parsed,
+                                )
+                                if localized is None:
+                                    keys, shape_hash = _payload_shape(decoded)
+                                    key_summary = ",".join(keys[:8]) or "none"
+                                    raise KalshiWsPayloadError(
+                                        f"parser_stage=data_payload,reason={error}; "
+                                        f"{_safe_payload_context(decoded)},keys={key_summary},"
+                                        f"shape={shape_hash}"
+                                    ) from None
+                                if isinstance(localized, KalshiWsPayloadIssue):
+                                    self.diagnostics.payload_issues += 1
+                                else:
+                                    self.diagnostics.protocol_notices += 1
+                                consecutive_global_payload_failures = 0
+                                self.diagnostics.messages += 1
+                                yield localized
+                                continue
+                            consecutive_global_payload_failures = 0
                             self.diagnostics.messages += 1
                             yield message
                     finally:
@@ -369,7 +551,12 @@ class KalshiProductionReadOnlyWebSocket:
             except asyncio.CancelledError:
                 raise
             except KalshiWsPayloadError:
-                raise
+                consecutive_global_payload_failures += 1
+                if consecutive_global_payload_failures >= 3:
+                    raise
+                failures = consecutive_global_payload_failures - 1
+                self.diagnostics.protocol_reconnects += 1
+                self.diagnostics.transport_state = KalshiWsRuntimeState.RECONNECTING
             except (ConnectionClosed, InvalidHandshake, OSError, TimeoutError):
                 if self._closed:
                     return

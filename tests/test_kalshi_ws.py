@@ -26,10 +26,14 @@ from live15_quant.kalshi_ws import (
     KalshiOrderBookDelta,
     KalshiOrderBookSnapshot,
     KalshiSequenceGapError,
+    KalshiSubscribed,
     KalshiSubscriptionRollover,
     KalshiTickerUpdate,
     KalshiUnsynchronizedBookError,
     KalshiWsPayloadError,
+    KalshiWsPayloadIssue,
+    KalshiWsProtocolNotice,
+    KalshiWsRecoveryExhausted,
     parse_kalshi_server_message,
     replay_orderbook_events,
     subscribe_command,
@@ -199,6 +203,16 @@ def test_update_ack_preserves_subscription_sequence_for_replay() -> None:
     assert parsed.market_tickers == (BTC, BTC_NEXT)
 
 
+def test_documented_subscription_control_message_is_dispatched_before_market_fields() -> None:
+    parsed = parse_kalshi_server_message(
+        {"id": 1, "type": "subscribed", "msg": {"channel": "ticker", "sid": 11}},
+        connection_id="connection-1",
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+    assert parsed == KalshiSubscribed(request_id=1, subscription_id=11, channel="ticker")
+
+
 def test_initial_snapshot_and_sequential_delta_reconstruct_exact_depth() -> None:
     coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
     coordinator.accept(snapshot())
@@ -278,6 +292,72 @@ async def test_session_processor_requests_one_snapshot_and_measures_resync() -> 
     assert processor.diagnostics.requests == 1
     assert processor.diagnostics.completed == 1
     assert processor.diagnostics.last_duration_seconds == 0.25
+
+
+@pytest.mark.asyncio
+async def test_malformed_subscription_payload_resnapshots_before_book_recovers() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    sent: list[str] = []
+
+    async def sender(payload: str) -> None:
+        sent.append(payload)
+
+    processor = KalshiAtomicSessionProcessor(coordinator, sender)
+    assert await processor.process(snapshot()) is not None
+    issue = KalshiWsPayloadIssue(
+        connection_id="connection-1",
+        message_type="orderbook_delta",
+        channel=None,
+        subscription_id=2,
+        sequence=11,
+        ticker=BTC,
+        parser_stage="data_payload",
+        reason="malformed Kalshi WebSocket market_id",
+        schema_keys=("top:type", "msg:market_ticker"),
+        payload_shape_hash="0123456789abcdef",
+        affects_orderbook=True,
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+    await processor.recover_payload_issue(issue)
+    with pytest.raises(KalshiUnsynchronizedBookError):
+        coordinator.book(BTC)
+    assert len(sent) == 1
+    assert json.loads(sent[0])["params"]["action"] == "get_snapshot"
+    recovered = await processor.process(snapshot(20))
+    assert recovered is not None
+    assert coordinator.book(BTC).sequence == 20
+
+
+@pytest.mark.asyncio
+async def test_repeated_local_payload_damage_exhausts_bounded_recovery_budget() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+
+    async def sender(_payload: str) -> None:
+        return None
+
+    processor = KalshiAtomicSessionProcessor(coordinator, sender, max_payload_issues=2)
+    issue = KalshiWsPayloadIssue(
+        connection_id="connection-1",
+        message_type="orderbook_delta",
+        channel=None,
+        subscription_id=2,
+        sequence=11,
+        ticker=BTC,
+        parser_stage="data_payload",
+        reason="malformed Kalshi WebSocket market_id",
+        schema_keys=("top:type",),
+        payload_shape_hash="0123456789abcdef",
+        affects_orderbook=True,
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+    await processor.recover_payload_issue(issue)
+    assert await processor.process(snapshot(20)) is not None
+    await processor.recover_payload_issue(issue)
+    assert await processor.process(snapshot(30)) is not None
+    with pytest.raises(KalshiWsRecoveryExhausted, match="recovery budget exhausted"):
+        await processor.recover_payload_issue(issue)
 
 
 def test_ticker_or_market_identity_conflict_fails_loudly() -> None:
@@ -644,6 +724,87 @@ async def test_receive_queue_backpressure_is_lossless_and_bounded(tmp_path: Path
     assert (first.sequence, second.sequence) == (10, 11)
     assert adapter.diagnostics.messages == 2
     assert adapter.diagnostics.receive_queue_high_watermark == 1
+
+
+@pytest.mark.asyncio
+async def test_adapter_payload_error_is_localized_without_raw_payload(
+    tmp_path: Path,
+) -> None:
+    malformed = json.loads(snapshot_payload())
+    del malformed["msg"]["market_id"]
+    malformed["msg"]["private_token"] = "must-never-appear"
+    websocket = _FakeWebSocket([json.dumps(malformed)])
+    adapter = KalshiProductionReadOnlyWebSocket(
+        credentials(tmp_path),
+        connector=lambda *_args, **_kwargs: _FakeConnection(websocket),
+        signer=_FakeSigner(),
+        clock_ms=lambda: 1700000000000,
+        connection_id_factory=lambda: "connection-1",
+        repository_root=Path.cwd(),
+    )
+
+    issue = await anext(adapter.messages((BTC,)))
+    await adapter.close()
+
+    assert isinstance(issue, KalshiWsPayloadIssue)
+    assert issue.message_type == "orderbook_snapshot"
+    assert issue.ticker == BTC
+    assert issue.subscription_id == 2 and issue.sequence == 10
+    assert issue.affects_orderbook is True
+    assert issue.reason == "malformed Kalshi WebSocket market_id"
+    assert "must-never-appear" not in repr(issue)
+    assert "private_token" not in issue.schema_keys
+    assert adapter.diagnostics.payload_issues == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_non_data_message_is_a_benign_typed_notice(tmp_path: Path) -> None:
+    websocket = _FakeWebSocket([json.dumps({"type": "status", "msg": {"state": "ok"}})])
+    adapter = KalshiProductionReadOnlyWebSocket(
+        credentials(tmp_path),
+        connector=lambda *_args, **_kwargs: _FakeConnection(websocket),
+        signer=_FakeSigner(),
+        clock_ms=lambda: 1700000000000,
+        connection_id_factory=lambda: "connection-1",
+        repository_root=Path.cwd(),
+    )
+
+    notice = await anext(adapter.messages((BTC,)))
+    await adapter.close()
+    assert isinstance(notice, KalshiWsProtocolNotice)
+    assert notice.message_type == "status"
+    assert adapter.diagnostics.protocol_notices == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_global_protocol_damage_reconnects_then_fails_loudly(tmp_path: Path) -> None:
+    attempts = 0
+    sleeps: list[float] = []
+
+    def connector(_url: str, **_kwargs: Any) -> _FakeConnection:
+        nonlocal attempts
+        attempts += 1
+        return _FakeConnection(_FakeWebSocket(["not-json"]))
+
+    async def sleeper(delay: float) -> None:
+        sleeps.append(delay)
+
+    adapter = KalshiProductionReadOnlyWebSocket(
+        credentials(tmp_path),
+        connector=connector,
+        signer=_FakeSigner(),
+        clock_ms=lambda: 1700000000000,
+        sleeper=sleeper,
+        connection_id_factory=lambda: f"connection-{attempts}",
+        repository_root=Path.cwd(),
+    )
+
+    with pytest.raises(KalshiWsPayloadError, match="reason=malformed_json"):
+        await anext(adapter.messages((BTC,)))
+    await adapter.close()
+    assert attempts == 3
+    assert adapter.diagnostics.protocol_reconnects == 2
+    assert sleeps == [0.5, 1.0]
 
 
 @pytest.mark.asyncio

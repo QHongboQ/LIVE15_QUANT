@@ -75,6 +75,10 @@ class KalshiUnsynchronizedBookError(RuntimeError):
     """A caller attempted to consume a book that is not synchronized."""
 
 
+class KalshiWsRecoveryExhausted(ConnectionError):
+    """A damaged subscription requires a fresh authenticated connection."""
+
+
 def _aware(value: datetime, field: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field} must be timezone-aware")
@@ -323,6 +327,37 @@ class KalshiWsErrorMessage:
     ticker: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class KalshiWsProtocolNotice:
+    """One non-data server message that is safe to observe but never mutates a book."""
+
+    connection_id: str
+    message_type: str
+    channel: str | None
+    socket_received_timestamp: datetime
+    parse_timestamp: datetime
+    payload_shape_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class KalshiWsPayloadIssue:
+    """Sanitized, localizable payload failure requiring bounded fail-closed recovery."""
+
+    connection_id: str
+    message_type: str
+    channel: str | None
+    subscription_id: int
+    sequence: int | None
+    ticker: str | None
+    parser_stage: str
+    reason: str
+    schema_keys: tuple[str, ...]
+    payload_shape_hash: str
+    affects_orderbook: bool
+    socket_received_timestamp: datetime
+    parse_timestamp: datetime
+
+
 type KalshiOrderBookMessage = KalshiOrderBookSnapshot | KalshiOrderBookDelta
 type KalshiServerMessage = (
     KalshiOrderBookMessage
@@ -330,6 +365,8 @@ type KalshiServerMessage = (
     | KalshiSubscribed
     | KalshiCommandAcknowledged
     | KalshiWsErrorMessage
+    | KalshiWsProtocolNotice
+    | KalshiWsPayloadIssue
 )
 
 
@@ -411,12 +448,12 @@ def parse_kalshi_server_message(
             message=_identity(msg.get("msg"), "error message"),
             ticker=_ticker(msg.get("market_ticker")) if msg.get("market_ticker") else None,
         )
-    if not isinstance(msg, Mapping):
-        raise KalshiWsPayloadError("malformed Kalshi WebSocket data message")
-    subscription_id = _integer(sid, "sid", minimum=1)
-    ticker = _ticker(msg.get("market_ticker"))
-    market_id = _identity(msg.get("market_id"), "market_id")
     if kind == KalshiWsEventKind.SNAPSHOT:
+        if not isinstance(msg, Mapping):
+            raise KalshiWsPayloadError("malformed Kalshi WebSocket data message")
+        subscription_id = _integer(sid, "sid", minimum=1)
+        ticker = _ticker(msg.get("market_ticker"))
+        market_id = _identity(msg.get("market_id"), "market_id")
         return KalshiOrderBookSnapshot(
             connection_id=connection_id,
             subscription_id=subscription_id,
@@ -433,6 +470,11 @@ def parse_kalshi_server_message(
             enqueue_monotonic_ns=enqueue_monotonic_ns,
         )
     if kind == KalshiWsEventKind.DELTA:
+        if not isinstance(msg, Mapping):
+            raise KalshiWsPayloadError("malformed Kalshi WebSocket data message")
+        subscription_id = _integer(sid, "sid", minimum=1)
+        ticker = _ticker(msg.get("market_ticker"))
+        market_id = _identity(msg.get("market_id"), "market_id")
         try:
             side = KalshiBookSide(msg.get("side"))
         except (TypeError, ValueError):
@@ -454,6 +496,11 @@ def parse_kalshi_server_message(
             enqueue_monotonic_ns=enqueue_monotonic_ns,
         )
     if kind == "ticker":
+        if not isinstance(msg, Mapping):
+            raise KalshiWsPayloadError("malformed Kalshi WebSocket data message")
+        subscription_id = _integer(sid, "sid", minimum=1)
+        ticker = _ticker(msg.get("market_ticker"))
+        market_id = _identity(msg.get("market_id"), "market_id")
         source = _source_timestamp(msg)
         if source is None:
             raise KalshiWsPayloadError("Kalshi ticker source timestamp is missing")
@@ -553,6 +600,17 @@ class KalshiAtomicOrderBookCoordinator:
         self._resync_pending = set(self._subscribed)
         self._awaiting_resync_baseline = True
         return self.subscribed_tickers
+
+    def invalidate_payload(self, connection_id: str, subscription_id: int) -> tuple[str, ...]:
+        """Invalidate a subscription after a malformed sequenced frame without faking seq."""
+
+        if connection_id != self.connection_id:
+            raise KalshiBookInvariantError("WebSocket connection identity mismatch")
+        if self._subscription_id is None:
+            self._subscription_id = subscription_id
+        elif subscription_id != self._subscription_id:
+            raise KalshiBookInvariantError("WebSocket subscription identity mismatch")
+        return self._invalidate_all()
 
     def _sequence(
         self,
@@ -702,6 +760,8 @@ class KalshiReadOnlyOrderBookStream(Protocol):
 class KalshiResyncDiagnostics:
     requests: int = 0
     completed: int = 0
+    payload_issues: int = 0
+    payload_recoveries: int = 0
     last_duration_seconds: float | None = None
 
 
@@ -714,17 +774,43 @@ class KalshiAtomicSessionProcessor:
         sender: Callable[[str], Awaitable[None]],
         *,
         first_request_id: int = 1000,
+        max_payload_issues: int = 3,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        if first_request_id < 1:
-            raise ValueError("first_request_id must be positive")
+        if first_request_id < 1 or max_payload_issues < 1:
+            raise ValueError("request identity and payload recovery budget must be positive")
         self._coordinator = coordinator
         self._sender = sender
         self._next_request_id = first_request_id
+        self._max_payload_issues = max_payload_issues
         self._monotonic = monotonic
         self._pending: set[str] = set()
         self._resync_started: float | None = None
         self.diagnostics = KalshiResyncDiagnostics()
+
+    async def recover_payload_issue(self, issue: KalshiWsPayloadIssue) -> None:
+        """Fail closed and request an official full snapshot for one affected subscription."""
+
+        self.diagnostics.payload_issues += 1
+        tickers = self._coordinator.invalidate_payload(issue.connection_id, issue.subscription_id)
+        new_tickers = tuple(ticker for ticker in tickers if ticker not in self._pending)
+        if not new_tickers:
+            return
+        if self.diagnostics.payload_recoveries >= self._max_payload_issues:
+            raise KalshiWsRecoveryExhausted("Kalshi WS payload recovery budget exhausted")
+        command = update_subscription_command(
+            self._next_request_id,
+            issue.subscription_id,
+            "get_snapshot",
+            new_tickers,
+        )
+        self._next_request_id += 1
+        await self._sender(command.payload)
+        self._pending.update(new_tickers)
+        if self._resync_started is None:
+            self._resync_started = self._monotonic()
+        self.diagnostics.requests += 1
+        self.diagnostics.payload_recoveries += 1
 
     async def process(
         self, message: KalshiOrderBookMessage | KalshiCommandAcknowledged

@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
-from collections.abc import Iterator, Sequence
-from datetime import UTC, datetime
+from collections.abc import Callable, Iterator, Sequence
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 
-from live15_quant.gaps import DataGap, GapReason, GapSource
+from live15_quant.gaps import DataGap, GapReason, GapSource, GapStream
 from live15_quant.kalshi_lifecycle import (
     KalshiLifecycle,
     KalshiMarket,
@@ -689,22 +691,50 @@ ON coinbase_ticks(product, received_timestamp, id);
 """
 
 
+@lru_cache(maxsize=1)
+def _expected_schema_objects() -> frozenset[tuple[str, str]]:
+    """Parse the fixed DDL catalogue without replaying it during normal startup."""
+
+    return frozenset(
+        (kind.lower(), name)
+        for kind, name in re.findall(
+            r"CREATE\s+(?:UNIQUE\s+)?(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([A-Za-z_]\w*)",
+            _SCHEMA,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 class RecorderStore:
     """Own a SQLite WAL database and expose insert-only recorder operations."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        startup_phase_observer: Callable[[str, float], None] | None = None,
+    ) -> None:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
+        phase_started = time.perf_counter()
         self._connection = sqlite3.connect(path)
         self._connection.row_factory = sqlite3.Row
         try:
+            if startup_phase_observer is not None:
+                startup_phase_observer("db_open", time.perf_counter() - phase_started)
+            phase_started = time.perf_counter()
             self._connection.execute("PRAGMA journal_mode=WAL")
             self._connection.execute("PRAGMA foreign_keys=ON")
             self._connection.execute("PRAGMA synchronous=NORMAL")
             self._connection.execute("PRAGMA busy_timeout=5000")
             self._connection.execute("PRAGMA wal_autocheckpoint=1000")
             self._connection.execute("PRAGMA journal_size_limit=67108864")
+            if startup_phase_observer is not None:
+                startup_phase_observer("wal_recovery", time.perf_counter() - phase_started)
+            phase_started = time.perf_counter()
             self._initialize_or_migrate_schema()
+            if startup_phase_observer is not None:
+                startup_phase_observer("schema_check", time.perf_counter() - phase_started)
         except Exception:
             self._connection.close()
             raise
@@ -798,20 +828,19 @@ class RecorderStore:
             raise
 
     def _ensure_schema_objects(self) -> None:
-        settlement_counts_exist = self._connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kalshi_settlement_counts'"
-        ).fetchone()
-        try:
-            self._connection.executescript(f"BEGIN IMMEDIATE;\n{_SCHEMA}")
-            if settlement_counts_exist is None:
-                self._connection.execute(
-                    """INSERT INTO kalshi_settlement_counts(asset,count)
-                    SELECT asset,COUNT(*) FROM kalshi_settlements GROUP BY asset"""
-                )
-            self._connection.commit()
-        except Exception:
-            self._connection.rollback()
-            raise
+        actual_objects = frozenset(
+            (str(row[0]), str(row[1]))
+            for row in self._connection.execute(
+                "SELECT type,name FROM sqlite_master "
+                "WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%'"
+            )
+        )
+        missing = _expected_schema_objects() - actual_objects
+        if missing:
+            names = ",".join(sorted(name for _kind, name in missing))
+            raise RecorderStorageError(
+                f"database schema objects are missing ({names}); offline repair is required"
+            )
 
     def _migrate_v1_to_v2(self) -> None:
         """Atomically add diagnostics and relabel unchanged v1 observation rows."""
@@ -1208,15 +1237,39 @@ class RecorderStore:
                 (asset.value,),
             ).fetchone()
         elif source is GapSource.KALSHI_WS:
-            row = self._connection.execute(
-                """SELECT socket_received_timestamp AS received_timestamp
-                FROM kalshi_ws_orderbook_events AS ws
-                WHERE ws.ticker IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM kalshi_market_lifecycle AS market
-                    WHERE market.ticker=ws.ticker AND market.asset=?
-                ) ORDER BY socket_received_timestamp DESC,id DESC LIMIT 1""",
-                (asset.value,),
+            latest_window = self._connection.execute(
+                """SELECT window_end FROM kalshi_market_lifecycle
+                ORDER BY window_end DESC,id DESC LIMIT 1"""
             ).fetchone()
+            if latest_window is None:
+                return None
+            window_end = _parse_timestamp(latest_window["window_end"], "window_end")
+            ticker_rows = self._connection.execute(
+                """SELECT ticker,MAX(window_end) AS latest_window,MAX(id) AS latest_id
+                FROM kalshi_market_lifecycle
+                WHERE window_end>=? AND window_end<=? AND asset=? GROUP BY ticker
+                ORDER BY latest_window DESC,latest_id DESC LIMIT 4""",
+                (
+                    _timestamp(window_end - timedelta(hours=2)),
+                    _timestamp(window_end),
+                    asset.value,
+                ),
+            )
+            candidates = []
+            for ticker_row in ticker_rows:
+                candidate = self._connection.execute(
+                    """SELECT socket_received_timestamp AS received_timestamp
+                    FROM kalshi_ws_orderbook_events WHERE ticker=?
+                    ORDER BY socket_received_timestamp DESC,id DESC LIMIT 1""",
+                    (ticker_row["ticker"],),
+                ).fetchone()
+                if candidate is not None:
+                    candidates.append(candidate)
+            row = (
+                None
+                if not candidates
+                else max(candidates, key=lambda item: str(item["received_timestamp"]))
+            )
         elif source is GapSource.COINBASE:
             row = self._connection.execute(
                 "SELECT received_timestamp FROM coinbase_ticks WHERE product=? "
@@ -1246,9 +1299,36 @@ class RecorderStore:
             else _parse_timestamp(row["received_timestamp"], "received_timestamp")
         )
 
-    def active_data_gaps(self) -> tuple[DataGap, ...]:
+    def active_data_gaps(self, streams: Sequence[GapStream] | None = None) -> tuple[DataGap, ...]:
         """Return the latest append-only OPEN facts not followed by recovery."""
 
+        if streams is not None:
+            active: list[DataGap] = []
+            for stream in streams:
+                rows = tuple(
+                    self._connection.execute(
+                        """SELECT open.* FROM data_gaps AS open
+                        WHERE open.source=? AND open.asset=? AND open.instrument=?
+                          AND open.recovered=0 AND NOT EXISTS (
+                            SELECT 1 FROM data_gaps AS closed
+                            WHERE closed.source=open.source AND closed.asset=open.asset
+                              AND closed.instrument=open.instrument
+                              AND closed.gap_start=open.gap_start AND closed.recovered=1
+                        )
+                        ORDER BY open.gap_start DESC,open.id DESC LIMIT 2""",
+                        (stream.source.value, stream.asset.value, stream.instrument),
+                    )
+                )
+                if len(rows) > 1:
+                    raise RecorderStorageError("multiple active gaps exist for one source stream")
+                if rows:
+                    active.append(self._data_gap(rows[0]))
+            return tuple(
+                sorted(
+                    active,
+                    key=lambda gap: (gap.gap_start, gap.source.value, gap.asset.value),
+                )
+            )
         rows = self._connection.execute(
             """SELECT open.* FROM data_gaps AS open
             WHERE open.recovered=0 AND NOT EXISTS (
@@ -2463,19 +2543,36 @@ class RecorderStore:
             predicates.append("AND current.window_end < ?")
             parameters.append(_timestamp(window_end_before))
         predicate = "\n".join(predicates)
-        rows = self._connection.execute(
-            f"""
-            SELECT current.* FROM kalshi_market_lifecycle AS current
-            WHERE current.id = (
-                SELECT latest.id FROM kalshi_market_lifecycle AS latest
-                WHERE latest.ticker = current.ticker
-                ORDER BY latest.fetched_timestamp DESC, latest.id DESC LIMIT 1
+        if window_end_at_or_after is not None and window_end_before is not None:
+            rows = self._connection.execute(
+                """WITH bounded AS (
+                    SELECT * FROM kalshi_market_lifecycle
+                    WHERE window_end>=? AND window_end<?
+                ), ranked AS (
+                    SELECT bounded.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ticker
+                               ORDER BY fetched_timestamp DESC,id DESC
+                           ) AS recency
+                    FROM bounded
+                )
+                SELECT * FROM ranked WHERE recency=1 ORDER BY ticker ASC""",
+                tuple(parameters),
             )
-            {predicate}
-            ORDER BY current.ticker ASC
-            """,
-            tuple(parameters),
-        )
+        else:
+            rows = self._connection.execute(
+                f"""
+                SELECT current.* FROM kalshi_market_lifecycle AS current
+                WHERE current.id = (
+                    SELECT latest.id FROM kalshi_market_lifecycle AS latest
+                    WHERE latest.ticker = current.ticker
+                    ORDER BY latest.fetched_timestamp DESC, latest.id DESC LIMIT 1
+                )
+                {predicate}
+                ORDER BY current.ticker ASC
+                """,
+                tuple(parameters),
+            )
         return tuple(self._kalshi_market_record(row) for row in rows)
 
     def latest_kalshi_state(self, ticker: str) -> KalshiMarketRecord | None:
@@ -2555,43 +2652,42 @@ class RecorderStore:
         ).fetchone()
         return 0 if row is None else int(row[0])
 
-    def latest_native_cursors(self) -> tuple[dict[Asset, datetime], dict[str, datetime]]:
-        """Recover last persisted quote and underlying receive timestamps."""
+    def latest_native_cursors(
+        self, products: Sequence[str]
+    ) -> tuple[dict[Asset, datetime], dict[str, datetime]]:
+        """Recover cursors with bounded right-edge index lookups, never GROUP BY scans."""
 
-        quote_rows = self._connection.execute(
-            """
-            SELECT asset, MAX(received_timestamp) AS received_timestamp
-            FROM kalshi_prediction_quotes GROUP BY asset
-            """
-        )
-        tick_rows = self._connection.execute(
-            """
-            SELECT product, MAX(received_timestamp) AS received_timestamp
-            FROM coinbase_ticks GROUP BY product
-            """
-        )
-        quotes = {
-            Asset(row["asset"]): _parse_timestamp(row["received_timestamp"], "received_timestamp")
-            for row in quote_rows
-        }
-        ticks = {
-            str(row["product"]): _parse_timestamp(row["received_timestamp"], "received_timestamp")
-            for row in tick_rows
-        }
+        quotes: dict[Asset, datetime] = {}
+        for asset in Asset:
+            row = self._connection.execute(
+                """SELECT received_timestamp FROM kalshi_prediction_quotes
+                WHERE asset=? ORDER BY received_timestamp DESC,id DESC LIMIT 1""",
+                (asset.value,),
+            ).fetchone()
+            if row is not None:
+                quotes[asset] = _parse_timestamp(row["received_timestamp"], "received_timestamp")
+        ticks: dict[str, datetime] = {}
+        for product in products:
+            row = self._connection.execute(
+                """SELECT received_timestamp FROM coinbase_ticks
+                WHERE product=? ORDER BY received_timestamp DESC,id DESC LIMIT 1""",
+                (product,),
+            ).fetchone()
+            if row is not None:
+                ticks[product] = _parse_timestamp(row["received_timestamp"], "received_timestamp")
         return quotes, ticks
 
     def latest_finalized_by_asset(self) -> dict[Asset, KalshiSettlementRecord]:
-        rows = self._connection.execute(
-            """
-            SELECT settlement.* FROM kalshi_settlements AS settlement
-            WHERE settlement.id = (
-                SELECT latest.id FROM kalshi_settlements AS latest
-                WHERE latest.asset = settlement.asset
-                ORDER BY latest.settlement_timestamp DESC, latest.id DESC LIMIT 1
-            )
-            """
-        )
-        return {Asset(row["asset"]): self._kalshi_settlement_record(row) for row in rows}
+        finalized: dict[Asset, KalshiSettlementRecord] = {}
+        for asset in Asset:
+            row = self._connection.execute(
+                """SELECT * FROM kalshi_settlements WHERE asset=?
+                ORDER BY settlement_timestamp DESC,id DESC LIMIT 1""",
+                (asset.value,),
+            ).fetchone()
+            if row is not None:
+                finalized[asset] = self._kalshi_settlement_record(row)
+        return finalized
 
     def settlement_counts_by_asset(self) -> dict[Asset, int]:
         counts = {asset: 0 for asset in Asset}
@@ -3568,7 +3664,7 @@ class RecorderStore:
         return int(row["count"])
 
     def row_counts(self) -> dict[str, int]:
-        """Return bounded health counters for the training source-of-truth tables."""
+        """Return exact full-table counts for offline diagnostics only."""
 
         return {
             table: self.count(table)
@@ -3585,6 +3681,32 @@ class RecorderStore:
                 "data_gaps",
             )
         }
+
+    def bounded_row_count_estimates(self) -> dict[str, int]:
+        """Return O(1) right-edge estimates when no trusted heartbeat baseline exists.
+
+        Deleted IDs make these upper bounds rather than exact counts. Callers must
+        expose that distinction instead of performing COUNT(*) during startup.
+        """
+
+        estimates: dict[str, int] = {}
+        for table in (
+            "kalshi_market_lifecycle",
+            "kalshi_prediction_quotes",
+            "coinbase_ticks",
+            "underlying_observations",
+            "secondary_underlying_observations",
+            "kalshi_ws_orderbook_events",
+            "kalshi_ws_book_checkpoints",
+            "kalshi_settlements",
+            "kalshi_settlement_conflicts",
+            "data_gaps",
+        ):
+            row = self._connection.execute(
+                f"SELECT id FROM {table} ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            estimates[table] = 0 if row is None else int(row["id"])
+        return estimates
 
     def checkpoint(self) -> tuple[int, int, int]:
         """Run a non-blocking passive WAL checkpoint and return SQLite counters."""
@@ -3652,8 +3774,8 @@ class RecorderStore:
     def quick_check(self) -> str:
         """Run SQLite's full structural scan, returning at most one error row.
 
-        This is appropriate at startup or on an offline snapshot, never as a
-        periodic operation on the active recorder event loop.
+        This is appropriate only on an offline snapshot or maintenance copy,
+        never during normal recorder startup or on the active event loop.
         """
 
         row = self._connection.execute("PRAGMA quick_check(1)").fetchone()

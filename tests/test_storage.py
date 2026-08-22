@@ -148,6 +148,92 @@ def test_first_create_append_and_full_decimal_precision(tmp_path) -> None:
     assert saved_quote.yes_bid_depth[0].quantity == Decimal("12.340000")
 
 
+def test_current_schema_check_does_not_replay_complete_ddl(tmp_path) -> None:
+    path = tmp_path / "current.sqlite3"
+    with RecorderStore(path):
+        pass
+
+    with RecorderStore(path) as store:
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+        store._ensure_schema_objects()
+
+    assert not any(statement.lstrip().upper().startswith("CREATE ") for statement in statements)
+    assert not any(
+        statement.lstrip().upper().startswith("BEGIN IMMEDIATE") for statement in statements
+    )
+
+
+def test_missing_current_schema_object_requires_offline_repair_without_online_ddl(
+    tmp_path,
+) -> None:
+    with RecorderStore(tmp_path / "missing-index.sqlite3") as store:
+        store._connection.execute("DROP INDEX idx_coinbase_product_replay")
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+
+        with pytest.raises(RecorderStorageError, match="offline repair"):
+            store._ensure_schema_objects()
+
+    assert not any(statement.lstrip().upper().startswith("CREATE ") for statement in statements)
+    assert not any(statement.lstrip().upper().startswith("BEGIN") for statement in statements)
+
+
+def test_startup_cursor_queries_use_right_edge_indexes_and_fixed_query_count(tmp_path) -> None:
+    with RecorderStore(tmp_path / "startup-query-plan.sqlite3") as store:
+        assert store.append_coinbase(tick()) is True
+        store._connection.execute("UPDATE coinbase_ticks SET id=1000000000000")
+        store._connection.commit()
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+        estimates = store.bounded_row_count_estimates()
+        estimate_queries = [
+            statement
+            for statement in statements
+            if statement.lstrip().upper().startswith("SELECT ID FROM")
+        ]
+
+        plans = {
+            "quote": store._connection.execute(
+                """EXPLAIN QUERY PLAN SELECT received_timestamp
+                FROM kalshi_prediction_quotes WHERE asset=?
+                ORDER BY received_timestamp DESC,id DESC LIMIT 1""",
+                (Asset.BTC.value,),
+            ).fetchall(),
+            "coinbase": store._connection.execute(
+                """EXPLAIN QUERY PLAN SELECT received_timestamp FROM coinbase_ticks
+                WHERE product=? ORDER BY received_timestamp DESC,id DESC LIMIT 1""",
+                ("BTC-USD",),
+            ).fetchall(),
+            "settlement": store._connection.execute(
+                """EXPLAIN QUERY PLAN SELECT * FROM kalshi_settlements WHERE asset=?
+                ORDER BY settlement_timestamp DESC,id DESC LIMIT 1""",
+                (Asset.BTC.value,),
+            ).fetchall(),
+            "ws": store._connection.execute(
+                """EXPLAIN QUERY PLAN SELECT socket_received_timestamp
+                FROM kalshi_ws_orderbook_events WHERE ticker=?
+                ORDER BY socket_received_timestamp DESC,id DESC LIMIT 1""",
+                ("KXBTC15M-TEST",),
+            ).fetchall(),
+            "lifecycle": store._connection.execute(
+                """EXPLAIN QUERY PLAN SELECT ticker FROM kalshi_market_lifecycle
+                WHERE window_end>=? AND window_end<? ORDER BY window_end LIMIT 4""",
+                (NOW.isoformat(), (NOW + timedelta(hours=2)).isoformat()),
+            ).fetchall(),
+        }
+
+    assert estimates["coinbase_ticks"] == 1_000_000_000_000
+    assert len(estimate_queries) == 10
+    assert not any("COUNT(" in statement.upper() for statement in estimate_queries)
+    plan_text = {name: " ".join(str(row[3]) for row in rows) for name, rows in plans.items()}
+    assert "idx_kalshi_native_quote_asset_cursor" in plan_text["quote"]
+    assert "idx_coinbase_product_replay" in plan_text["coinbase"]
+    assert "idx_kalshi_settlement_asset_cursor" in plan_text["settlement"]
+    assert "idx_kalshi_ws_event_ticker" in plan_text["ws"]
+    assert "idx_kalshi_market_followup" in plan_text["lifecycle"]
+
+
 def test_provider_neutral_underlying_is_idempotent_and_decimal_safe(tmp_path) -> None:
     observed = UnderlyingObservation(
         asset=Asset.GOLD,

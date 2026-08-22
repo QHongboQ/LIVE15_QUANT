@@ -156,8 +156,8 @@ def test_multiple_decisions_pooled_and_per_asset_builds(tmp_path) -> None:
         assert settlement_snapshot["counts_by_asset"]["BTC"] == 1
 
 
-def test_schema_v8_backfills_missing_bounded_settlement_summary(tmp_path) -> None:
-    """An early draft v8 database is repaired once at open, never by UI polling."""
+def test_current_schema_missing_summary_requires_explicit_offline_repair(tmp_path) -> None:
+    """Normal startup fails boundedly instead of backfilling with a full-table GROUP BY."""
 
     path = tmp_path / "draft-v8.sqlite3"
     with RecorderStore(path) as source:
@@ -167,8 +167,17 @@ def test_schema_v8_backfills_missing_bounded_settlement_summary(tmp_path) -> Non
     connection.commit()
     connection.close()
 
-    with RecorderStore(path) as reopened:
-        assert reopened.settlement_counts_by_asset()[Asset.BTC] == 1
+    with pytest.raises(RecorderStorageError, match="offline repair"):
+        RecorderStore(path)
+
+    connection = sqlite3.connect(path)
+    assert (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kalshi_settlement_counts'"
+        ).fetchone()
+        is None
+    )
+    connection.close()
 
 
 def test_dataset_builder_uses_pyth_underlying_for_non_coinbase_asset(tmp_path) -> None:

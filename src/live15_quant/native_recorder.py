@@ -10,7 +10,7 @@ import shutil
 import sqlite3
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -49,6 +49,9 @@ from live15_quant.kalshi_ws import (
     KalshiTickerUpdate,
     KalshiUnsynchronizedBookError,
     KalshiWsErrorMessage,
+    KalshiWsPayloadError,
+    KalshiWsPayloadIssue,
+    KalshiWsProtocolNotice,
     KalshiWsRuntimeState,
     SynchronizedKalshiOrderBook,
     update_subscription_command,
@@ -175,6 +178,7 @@ class KalshiNativeHealth:
     database_bytes: int
     wal_bytes: int
     row_counts: dict[str, int]
+    row_counts_complete: bool
     retry_counts: dict[str, int]
     source_failures: dict[str, str]
     stale_sources: tuple[str, ...]
@@ -226,7 +230,7 @@ class KalshiNativeHealth:
 
         status = (
             "storage_error"
-            if self.integrity != "ok"
+            if self.integrity not in {"ok", "not_checked"}
             else "degraded"
             if self.source_failures or self.stale_sources or self.stale_workers
             else "healthy"
@@ -254,6 +258,7 @@ class KalshiNativeHealth:
             "database_bytes": self.database_bytes,
             "wal_bytes": self.wal_bytes,
             "row_counts": self.row_counts,
+            "row_counts_complete": self.row_counts_complete,
             "retry_counts": self.retry_counts,
             "source_failures": self.source_failures,
             "stale_sources": self.stale_sources,
@@ -320,6 +325,7 @@ class _MutableHealth:
     last_finalized: dict[Asset, str] = field(default_factory=dict)
     written_records: int = 0
     row_counts: dict[str, int] = field(default_factory=dict)
+    row_counts_complete: bool = False
     active_settlement_followups: int = 0
     integrity: str = "not_checked"
     robinhood_reference_healthy: bool | None = None
@@ -370,6 +376,11 @@ class KalshiNativeRecorder:
         underlying_factory: Callable[[], UnderlyingSource] | None = None,
         secondary_factories: dict[Asset, Callable[[], BenchmarkSource]] | None = None,
         kalshi_ws_factory: Callable[[], KalshiWsSource] | None = None,
+        initial_row_counts: Mapping[str, int] | None = None,
+        initial_row_counts_complete: bool = False,
+        initial_active_settlement_followups: int | None = None,
+        last_verified_integrity: str | None = None,
+        startup_phase_observer: Callable[[str, float], None] | None = None,
         now: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -377,6 +388,8 @@ class KalshiNativeRecorder:
         self._store = store
         self._now = now or (lambda: datetime.now(UTC))
         self._monotonic = monotonic
+        self._startup_phase_observer = startup_phase_observer
+        self._startup_ws_synchronized_reported = False
         self._owned_clients: list[KalshiOfficialQuoteProvider] = []
         if quotes is None:
             quote_clients = {
@@ -446,11 +459,16 @@ class KalshiNativeRecorder:
         if settings.enable_robinhood_reference and self._robinhood is None:
             self._robinhood = Robinhood15MinuteProvider(settings)
         observed = self._utc_now()
+        phase_started = self._startup_phase_started()
         records = store.latest_kalshi_states(
             window_end_at_or_after=observed - timedelta(minutes=30),
             window_end_before=observed + timedelta(hours=2),
         )
-        quote_cursors, tick_cursors = store.latest_native_cursors()
+        self._mark_startup_phase("lifecycle_recovery", phase_started)
+        phase_started = self._startup_phase_started()
+        quote_cursors, tick_cursors = store.latest_native_cursors(settings.products)
+        self._mark_startup_phase("cursor_recovery", phase_started)
+        phase_started = self._startup_phase_started()
         finalized = store.latest_finalized_by_asset()
         current = {
             record.asset: _market_from_record(record)
@@ -467,15 +485,29 @@ class KalshiNativeRecorder:
             last_finalized={
                 asset: f"{truth.ticker}:{truth.result.value}" for asset, truth in finalized.items()
             },
-            row_counts=store.row_counts(),
-            active_settlement_followups=store.unsettled_kalshi_count(now=observed),
-            integrity=store.quick_check(),
+            row_counts=(
+                store.bounded_row_count_estimates()
+                if initial_row_counts is None
+                else dict(initial_row_counts)
+            ),
+            row_counts_complete=initial_row_counts_complete,
+            active_settlement_followups=(
+                sum(
+                    record.lifecycle in {KalshiLifecycle.CLOSED, KalshiLifecycle.SETTLEMENT_PENDING}
+                    for record in records
+                )
+                if initial_active_settlement_followups is None
+                else initial_active_settlement_followups
+            ),
+            integrity=last_verified_integrity or "not_checked",
         )
+        self._mark_startup_phase("settlement_recovery", phase_started)
         self._stop_event = asyncio.Event()
         self._followup_cursors: dict[Asset, str | None] = {asset: None for asset in Asset}
         self._operation_condition = threading.Condition()
         self._active_operations = 0
         self._reported_stale_sources: set[str] = set()
+        phase_started = self._startup_phase_started()
         self._gap_streams = {
             (stream.source, stream.asset): stream for stream in configured_streams(settings)
         }
@@ -491,9 +523,11 @@ class KalshiNativeRecorder:
         }
         self._active_gaps = {
             (gap.source, gap.asset): gap
-            for gap in store.active_data_gaps()
+            for gap in store.active_data_gaps(tuple(self._gap_streams.values()))
             if (gap.source, gap.asset) in self._gap_streams
         }
+        self._mark_startup_phase("gap_recovery", phase_started)
+        phase_started = self._startup_phase_started()
         self._archive_service: WsArchiveService | None = None
         self._purge_service: WsPurgeService | None = None
         if settings.enable_ws_archive:
@@ -516,6 +550,14 @@ class KalshiNativeRecorder:
                 batch_rows=settings.ws_archive_purge_batch_rows,
             )
             self._health.ws_archive_metrics = manifest.metrics()
+        self._mark_startup_phase("recorder_state_ready", phase_started)
+
+    def _startup_phase_started(self) -> float | None:
+        return self._monotonic() if self._startup_phase_observer is not None else None
+
+    def _mark_startup_phase(self, phase: str, started: float | None) -> None:
+        if self._startup_phase_observer is not None and started is not None:
+            self._startup_phase_observer(phase, max(0.0, self._monotonic() - started))
 
     def _utc_now(self) -> datetime:
         value = self._now()
@@ -633,6 +675,7 @@ class KalshiNativeRecorder:
             database_bytes=database_bytes,
             wal_bytes=wal_bytes,
             row_counts=dict(self._health.row_counts),
+            row_counts_complete=self._health.row_counts_complete,
             retry_counts=dict(self._health.retry_counts),
             source_failures=dict(self._health.source_failures),
             stale_sources=stale_sources,
@@ -928,6 +971,7 @@ class KalshiNativeRecorder:
 
     async def run(self) -> None:
         self._stop_event.clear()
+        phase_started = self._startup_phase_started()
         tasks = [
             asyncio.create_task(self._record_coinbase(), name="coinbase-predictive"),
             asyncio.create_task(self._report_health(), name="kalshi-native-health"),
@@ -972,6 +1016,7 @@ class KalshiNativeRecorder:
                 asyncio.create_task(self._record_robinhood_reference(), name="robinhood-reference")
             )
         stop_task = asyncio.create_task(self._stop_event.wait(), name="recorder-stop")
+        self._mark_startup_phase("worker_startup", phase_started)
         logger.info(
             "Kalshi-native recorder started",
             extra={
@@ -1064,7 +1109,11 @@ class KalshiNativeRecorder:
                 event_type=event_type,
                 source=task.get_name(),
                 error_type=type(error).__name__,
-                message="Recorder worker stopped on a correctness failure",
+                message=(
+                    f"Recorder worker stopped on a correctness failure: {error}"
+                    if isinstance(error, KalshiWsPayloadError)
+                    else "Recorder worker stopped on a correctness failure"
+                ),
             )
         except (RecorderStorageError, ValueError):
             logger.error(
@@ -1765,7 +1814,8 @@ class KalshiNativeRecorder:
         async for message in source.messages(tuple(desired_by_asset.values())):
             if self._stop_event.is_set():
                 return
-            self._source_ok("kalshi_ws")
+            if not isinstance(message, KalshiWsPayloadIssue):
+                self._source_ok("kalshi_ws")
             message_connection = getattr(message, "connection_id", None)
             if isinstance(message_connection, str) and message_connection != connection_id:
                 if connection_id is not None:
@@ -1801,6 +1851,25 @@ class KalshiNativeRecorder:
                 self._worker_advanced("kalshi_ws")
                 await asyncio.sleep(0)
                 continue
+            if isinstance(message, KalshiWsProtocolNotice):
+                self._store.append_recorder_event(
+                    observed_timestamp=message.socket_received_timestamp,
+                    severity=RecorderEventSeverity.INFO,
+                    event_type=RecorderEventType.WS_PROTOCOL_NOTICE,
+                    source="kalshi-ws",
+                    error_type="KalshiWsProtocolNotice",
+                    message=(
+                        "Ignored non-data Kalshi WS message "
+                        f"type={message.message_type} channel={message.channel or 'unknown'} "
+                        f"shape={message.payload_shape_hash}"
+                    ),
+                    dedup_key=(
+                        f"kalshi-ws-notice:{message.message_type}:{message.payload_shape_hash}"
+                    ),
+                )
+                self._worker_advanced("kalshi_ws", message.socket_received_timestamp)
+                await asyncio.sleep(0)
+                continue
             if isinstance(message, KalshiTickerUpdate) and (
                 coordinator is None or processor is None
             ):
@@ -1809,6 +1878,34 @@ class KalshiNativeRecorder:
                 continue
             if coordinator is None or processor is None:
                 raise KalshiReadOnlyWsError("Kalshi WebSocket data preceded connection identity")
+
+            if isinstance(message, KalshiWsPayloadIssue):
+                self._source_failed("kalshi_ws", KalshiWsPayloadError(message.reason))
+                key_summary = ",".join(message.schema_keys[:6]) or "none"
+                self._store.append_recorder_event(
+                    observed_timestamp=message.socket_received_timestamp,
+                    severity=RecorderEventSeverity.WARNING,
+                    event_type=RecorderEventType.WS_PAYLOAD_RECOVERY,
+                    source="kalshi-ws",
+                    error_type="KalshiWsPayloadIssue",
+                    message=(
+                        f"WS payload isolated type={message.message_type} "
+                        f"ticker={message.ticker or 'unknown'} sid={message.subscription_id} "
+                        f"seq={message.sequence or 'unknown'} stage={message.parser_stage} "
+                        f"reason={message.reason} keys={key_summary} "
+                        f"shape={message.payload_shape_hash}"
+                    )[:240],
+                    dedup_key=(
+                        f"kalshi-ws-payload:{message.message_type}:{message.payload_shape_hash}"
+                    ),
+                )
+                if message.affects_orderbook:
+                    await processor.recover_payload_issue(message)
+                    self._mark_kalshi_ws_unsynchronized(GapReason.SOURCE_OUTAGE)
+                    self._health.kalshi_ws_state = KalshiWsRuntimeState.UNSYNCHRONIZED
+                self._worker_advanced("kalshi_ws", message.socket_received_timestamp)
+                await asyncio.sleep(0)
+                continue
 
             latest = {asset: market.ticker for asset, market in self._health.current.items()}
             for asset in tuple(desired_by_asset.keys() - latest.keys()):
@@ -1953,6 +2050,11 @@ class KalshiNativeRecorder:
 
             if latest and len(self._health.kalshi_ws_synchronized) == len(latest):
                 self._health.kalshi_ws_state = KalshiWsRuntimeState.SYNCHRONIZED
+                if not self._startup_ws_synchronized_reported:
+                    self._startup_ws_synchronized_reported = True
+                    self._mark_startup_phase(
+                        "kalshi_ws_synchronized", self._startup_phase_started()
+                    )
             elif processor.diagnostics.requests:
                 self._health.kalshi_ws_state = KalshiWsRuntimeState.UNSYNCHRONIZED
             else:
@@ -1989,8 +2091,9 @@ class KalshiNativeRecorder:
             # PRAGMA quick_check(1) limits error rows, not pages inspected: it is
             # still a full-database scan. Running it synchronously on the recorder
             # event loop can starve every source once the raw database is large.
-            # Integrity is checked at startup and on an offline/read-only snapshot;
-            # the live loop performs only the bounded passive WAL checkpoint.
+            # Full integrity is checked only on an offline/read-only snapshot;
+            # startup reuses that verified result when available. The live loop
+            # performs only the bounded passive WAL checkpoint.
             if await self._wait(self._settings.recorder_checkpoint_interval_seconds):
                 return
 
@@ -2002,8 +2105,36 @@ class KalshiNativeRecorder:
         while not self._stop_event.is_set():
             observed = self._utc_now()
             try:
+                if self._ws_archive_backpressure_active():
+                    self._health.ws_archive_metrics = {
+                        **self._health.ws_archive_metrics,
+                        "enabled": True,
+                        "deferred_for_ws_backpressure": True,
+                    }
+                    self._source_ok(key)
+                    self._worker_advanced(key, observed)
+                    if await self._wait(self._settings.ws_archive_poll_interval_seconds):
+                        return
+                    continue
                 result = await asyncio.to_thread(self._archive_service.run_once, now=observed)
                 manifest_metrics = self._archive_service.manifest.metrics()
+                if self._ws_archive_backpressure_active():
+                    self._health.ws_archive_metrics = {
+                        **self._health.ws_archive_metrics,
+                        **manifest_metrics,
+                        "enabled": True,
+                        "hot_retention_seconds": self._settings.ws_archive_hot_retention_seconds,
+                        "archive_backlog_events": result.backlog_events,
+                        "archive_backlog_capped": result.backlog_events > 0,
+                        "archive_throughput_events_per_second": result.events_per_second,
+                        "archive_elapsed_seconds": result.elapsed_seconds,
+                        "deferred_for_ws_backpressure": True,
+                    }
+                    self._source_ok(key)
+                    self._worker_advanced(key, self._utc_now())
+                    if await self._wait(self._settings.ws_archive_poll_interval_seconds):
+                        return
+                    continue
                 hot_metrics = await asyncio.to_thread(self._archive_service.hot_metrics, observed)
                 disk = shutil.disk_usage(self._store.path.parent)
                 disk_state = quota.classify(
@@ -2013,14 +2144,7 @@ class KalshiNativeRecorder:
                 verified = int(manifest_metrics.get("verified") or 0)
                 purge_result = None
                 shadow_passed = verified >= self._settings.ws_archive_shadow_chunks
-                recorder_core_healthy = (
-                    self._health.fatal_task is None
-                    and self._health.fatal_error_type is None
-                    and (
-                        not self._settings.enable_kalshi_production_websocket
-                        or len(self._health.kalshi_ws_synchronized) == len(KALSHI_15MIN_SERIES)
-                    )
-                )
+                recorder_core_healthy = self._retention_core_healthy()
                 if shadow_passed and recorder_core_healthy:
                     purge_result = await asyncio.to_thread(
                         self._purge_service.run_once, now=observed
@@ -2084,6 +2208,7 @@ class KalshiNativeRecorder:
                     "disk_free_bytes": disk.free,
                     "disk_threshold_state": disk_state.value,
                     "shadow_acceptance_passed": shadow_passed,
+                    "deferred_for_ws_backpressure": False,
                 }
                 if disk_state.value == "fail_safe":
                     raise RecorderStorageError(
@@ -2100,8 +2225,28 @@ class KalshiNativeRecorder:
             if await self._wait(self._settings.ws_archive_poll_interval_seconds):
                 return
 
+    def _ws_archive_backpressure_active(self) -> bool:
+        if self._kalshi_ws is None:
+            return False
+        current_assets = set(self._health.current)
+        if current_assets and not current_assets.issubset(self._health.kalshi_ws_synchronized):
+            return True
+        diagnostics = self._kalshi_ws.diagnostics
+        capacity = int(getattr(diagnostics, "receive_queue_capacity", 0))
+        depth = int(getattr(diagnostics, "receive_queue_depth", 0))
+        return capacity > 0 and depth * 4 >= capacity
+
+    def _retention_core_healthy(self) -> bool:
+        if self._health.fatal_task is not None or self._health.fatal_error_type is not None:
+            return False
+        if not self._settings.enable_kalshi_production_websocket:
+            return True
+        current_assets = set(self._health.current)
+        return bool(current_assets) and current_assets.issubset(self._health.kalshi_ws_synchronized)
+
     async def _report_health(self) -> None:
         self._write_health_file(self.health())
+        self._mark_startup_phase("first_heartbeat", self._startup_phase_started())
         interval = self._settings.recorder_health_interval_seconds
         deadline = self._monotonic() + interval
         while not await self._wait(interval):
