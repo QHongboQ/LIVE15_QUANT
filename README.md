@@ -178,6 +178,24 @@ out-of-sample validation/test）；train-only 资产会明确标记为 coverage 
 同 identity 的冲突文件会 fail loudly，绝不覆盖。每个 future model artifact 必须记录
 `dataset_id → deterministic_build_hash → feature_schema_version → label_schema_version → code_git_sha`。
 
+### Offline Model Zoo v1
+
+`live15-model-zoo --dataset data/datasets/<Dataset-v1-id>` 只读取一个已认证、不可变的
+Dataset v1 JSONL artifact；不会打开 recorder 数据库、连接交易所、改变 retention 或创建任何订单。首版
+固定比较 market-implied probability baseline、train-only regularized logistic regression，以及固定
+seed 的 XGBoost；缺失值只用 train split 的中位数填补，并额外保留每个 feature 的 missing indicator。
+模型候选、Platt calibration 和固定 executable-ask/cost policy 只使用 train/validation evidence；test
+在这些选择冻结后才一次性揭示，绝不随机 row shuffle 或让同一 event 跨 split。Gold、Silver、WTI 若
+Dataset manifest 没有真正 OOS validation/test，会明确标记 `OOS_NOT_ELIGIBLE`，而不是以 0 或随机
+重平衡伪装结果。
+
+输出写入 Git-ignored 的 `data/models/`（或 `--output-root`），以原子 staging/rename 发布 immutable
+model 和 Model Zoo artifacts。每份 manifest 固定 Dataset identity/hash、Dataset code SHA、当前 model
+code SHA/source hash、42-feature order、preprocessing、calibration、validation selection、最终 test
+metrics、成本假设及 artifact hashes。相同输入只验证并复用同一 identity；任何 bytes/manifest 冲突都会
+fail loudly。`NO_CHAMPION` 是合法且预期的结果：它表示没有候选同时通过 frozen validation calibration
+gate 和最终、含成本的 test gate；它不触发交易或参数追逐。
+
 Milestone 7.5 将该路径升级为无需人工盯守的连续采集服务：十个资产逐一隔离发现，rollover 后继续有界追踪 predecessor 到官方 finalized，重启时完全从 SQLite 恢复，并原子输出机器可读 health。长期运行、恢复、容量规划与 Windows restart helper 见 [Continuous training-data recorder](docs/continuous_recorder.md)。
 
 默认 sampling grid 是距结束 14m、12m、10m、8m、5m、3m、2m、1m、30s，可通过 `LIVE15_DATASET_DECISION_OFFSETS_SECONDS` 配置。核心 `SamplingPolicy` 不含固定现实日期、固定 UTC 时刻或固定 grid。每个 event 可以产生多行，但 chronological/expanding/rolling split 都以完整 ticker event 为 group，同一 event 不会跨 train/validation/test。

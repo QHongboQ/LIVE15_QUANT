@@ -466,6 +466,39 @@ def certified_dataset_v1_main(argv: Sequence[str] | None = None) -> None:
     )
 
 
+def model_zoo_main(argv: Sequence[str] | None = None) -> None:
+    """Train the small, immutable offline Model Zoo from an existing Dataset v1 artifact."""
+
+    # Keep optional native ML imports out of recorder and market-data CLI startup paths.
+    from live15_quant.model_zoo import ModelZooConfig, ModelZooV1, load_certified_dataset
+
+    parser = argparse.ArgumentParser(prog="live15-model-zoo")
+    parser.add_argument("--dataset", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, default=Path("data/models"))
+    parser.add_argument("--seed", type=int, default=20260823)
+    arguments = parser.parse_args(argv)
+    dataset = load_certified_dataset(arguments.dataset)
+    summary = ModelZooV1(
+        dataset,
+        arguments.output_root,
+        ModelZooConfig(seed=arguments.seed),
+    ).build()
+    print(
+        json.dumps(
+            {
+                "zoo_id": summary.zoo_id,
+                "dataset_id": summary.dataset_id,
+                "status": summary.status,
+                "champion_model_id": summary.champion_model_id,
+                "model_ids": summary.model_ids,
+                "reused_existing_artifact": summary.reused_existing_artifact,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 def coverage_main(argv: Sequence[str] | None = None) -> None:
     """Build a consistent snapshot and print machine-readable training coverage."""
 

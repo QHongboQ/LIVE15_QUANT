@@ -13,10 +13,13 @@ authors = [{ name = "LIVE15_QUANT contributors" }]
 dependencies = [
     "cryptography==50.0.0",
     "fastapi==0.141.1",
+    "intel-openmp==2026.1.1; sys_platform == 'win32'",
+    "numpy==2.5.2",
     "requests==2.34.2",
     "tzdata==2026.3",
     "uvicorn==0.52.4",
     "websockets==17.0.1",
+    "xgboost==3.4.1",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +40,7 @@ live15-paper = "live15_quant.cli:paper_main"
 live15-kalshi-demo-audit = "live15_quant.cli:kalshi_demo_audit_main"
 live15-dataset = "live15_quant.cli:dataset_main"
 live15-dataset-v1 = "live15_quant.cli:certified_dataset_v1_main"
+live15-model-zoo = "live15_quant.cli:model_zoo_main"
 live15-coverage = "live15_quant.cli:coverage_main"
 live15-status = "live15_quant.cli:status_main"
 live15-readiness = "live15_quant.cli:readiness_main"
