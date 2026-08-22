@@ -142,6 +142,16 @@ def test_duplicate_start_returns_running_without_spawning(tmp_path, monkeypatch)
 def test_start_and_graceful_pause_use_fixed_process_and_bounded_wait(tmp_path, monkeypatch) -> None:
     configured = managed_settings(tmp_path)
     monkeypatch.setattr(control, "project_root", lambda: tmp_path)
+    credential_root = tmp_path / "home" / ".live15_quant" / "credentials"
+    credential_root.mkdir(parents=True)
+    (credential_root / "kalshi-production-readonly-key-id.txt").write_text(
+        "test-key-id\n", encoding="utf-8"
+    )
+    (credential_root / "kalshi-production-readonly.key").write_text(
+        "test-private-key\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(control.Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setenv("LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET", "false")
     alive = {9876: False}
     clock = [0.0]
     captured: dict[str, object] = {}
@@ -184,8 +194,71 @@ def test_start_and_graceful_pause_use_fixed_process_and_bounded_wait(tmp_path, m
     assert captured["kwargs"]["stderr"] is not None  # type: ignore[index]
     assert captured["kwargs"]["creationflags"] == WINDOWS_BACKGROUND_FLAGS  # type: ignore[index]
     assert captured["kwargs"]["env"]["LIVE15_ENABLE_SECONDARY_UNDERLYING"] == "true"  # type: ignore[index]
+    assert captured["kwargs"]["env"]["LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET"] == "true"  # type: ignore[index]
+    assert captured["kwargs"]["env"]["LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH"] == str(
+        credential_root / "kalshi-production-readonly-key-id.txt"
+    )  # type: ignore[index]
+    assert captured["kwargs"]["env"]["LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH"] == str(
+        credential_root / "kalshi-production-readonly.key"
+    )  # type: ignore[index]
     assert controller.pause().state is ManagedRecorderState.PAUSED
     assert controller.status().pid is None
+
+
+def test_managed_explicit_ws_opt_out_preserves_disabled_environment(
+    tmp_path, monkeypatch
+) -> None:
+    configured = managed_settings(tmp_path)
+    monkeypatch.setattr(control, "project_root", lambda: tmp_path)
+    credential_root = tmp_path / "home" / ".live15_quant" / "credentials"
+    credential_root.mkdir(parents=True)
+    (credential_root / "kalshi-production-readonly-key-id.txt").write_text(
+        "test-key-id\n", encoding="utf-8"
+    )
+    (credential_root / "kalshi-production-readonly.key").write_text(
+        "test-private-key\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(control.Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setenv("LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET", "false")
+    monkeypatch.setenv("LIVE15_MANAGED_DISABLE_KALSHI_PRODUCTION_WEBSOCKET", "true")
+    alive = {2469: False}
+    clock = [0.0]
+    captured: dict[str, object] = {}
+
+    class Process:
+        def __init__(self, _args, **kwargs) -> None:
+            captured["kwargs"] = kwargs
+            configured.recorder_pid_path.parent.mkdir(parents=True, exist_ok=True)
+            configured.recorder_pid_path.write_text("2469\n", encoding="ascii")
+            write_control(configured.recorder_control_path, desired="running", state="starting")
+            configured.recorder_health_path.write_text(
+                json.dumps({"observed_at": "2099-01-01T00:00:00+00:00"}), encoding="utf-8"
+            )
+            alive[2469] = True
+
+        def poll(self):
+            return None if alive[2469] else 0
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+        if json.loads(configured.recorder_control_path.read_text())[
+            "desired"
+        ] == "paused":
+            alive[2469] = False
+
+    monkeypatch.setattr(control, "process_alive", lambda pid: alive.get(pid, False))
+    controller = RecorderProcessController(
+        configured,
+        monotonic=lambda: clock[0],
+        sleep=sleep,
+        popen=Process,  # type: ignore[arg-type]
+    )
+
+    assert controller.start().state is ManagedRecorderState.RUNNING
+    child_environment = captured["kwargs"]["env"]  # type: ignore[index]
+    assert child_environment["LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET"] == "false"
+    assert "LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH" not in child_environment
+    assert "LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH" not in child_environment
 
 
 def test_pause_timeout_never_force_kills_process(tmp_path, monkeypatch) -> None:

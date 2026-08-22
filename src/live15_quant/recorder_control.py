@@ -200,13 +200,23 @@ class RecorderProcessController:
             credential_root = Path.home() / ".live15_quant" / "credentials"
             production_key_id = credential_root / "kalshi-production-readonly-key-id.txt"
             production_private_key = credential_root / "kalshi-production-readonly.key"
-            if production_key_id.is_file() and production_private_key.is_file():
-                environment.setdefault("LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET", "true")
-                environment.setdefault(
-                    "LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH", str(production_key_id)
-                )
-                environment.setdefault(
-                    "LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH", str(production_private_key)
+            managed_ws_disabled = environment.get(
+                "LIVE15_MANAGED_DISABLE_KALSHI_PRODUCTION_WEBSOCKET", ""
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if (
+                not managed_ws_disabled
+                and production_key_id.is_file()
+                and production_private_key.is_file()
+            ):
+                # A UI-managed recorder owns the complete public-data collection
+                # profile.  A stale inherited ``false`` must not silently disable
+                # the already configured, read-only production market-data socket.
+                # An explicit managed opt-out remains available for operators that
+                # intentionally want to run the UI without the Production WS.
+                environment["LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET"] = "true"
+                environment["LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH"] = str(production_key_id)
+                environment["LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH"] = str(
+                    production_private_key
                 )
             flags = 0
             if os.name == "nt":
