@@ -273,6 +273,93 @@ def test_controller_state_schema_migration_is_additive_and_order_independent(tmp
     assert {"disk_pressure_state", "disk_deescalation_streak"} <= state_columns
 
 
+def test_legacy_zero_placeholders_migrate_to_unknown_without_advancing_state(tmp_path) -> None:
+    path = tmp_path / "legacy-zero.sqlite3"
+    controller = AdaptiveRetentionController(path, policy(), initial_retention_seconds=21_600)
+    controller.evaluate_once(observation(START))
+    with sqlite3.connect(path) as connection:
+        cached = json.loads(
+            connection.execute(
+                "SELECT last_status_json FROM adaptive_retention_state WHERE singleton=1"
+            ).fetchone()[0]
+        )
+        cached["recovery_sessions_in_window"] = 0
+        cached.pop("hot_access_evidence_samples")
+        cached["recovery_lookback_seconds"] = {"p50": 0.0, "p95": 0.0, "max": 0.0}
+        cached["hot_access_age_seconds"] = {"p50": 0.0, "p95": 0.0, "max": 0.0}
+        connection.execute(
+            """UPDATE adaptive_retention_samples SET
+            recovery_lookback_seconds=0.0,hot_access_age_seconds=0.0,
+            recovery_session_id=NULL,hot_access_evidence_complete=0"""
+        )
+        connection.execute("UPDATE adaptive_retention_meta SET schema_version=3 WHERE singleton=1")
+        connection.execute(
+            "UPDATE adaptive_retention_state SET last_status_json=? WHERE singleton=1",
+            (json.dumps(cached),),
+        )
+        before = connection.execute(
+            """SELECT recommendation_streak,current_retention_seconds
+            FROM adaptive_retention_state WHERE singleton=1"""
+        ).fetchone()
+
+    migrated = AdaptiveRetentionController(path, policy(), initial_retention_seconds=21_600)
+    status = migrated.evaluate_once(
+        observation(START + timedelta(minutes=30)), record_evidence=False
+    )
+
+    assert status.recovery_lookback_p50_seconds is None
+    assert status.recovery_lookback_p95_seconds is None
+    assert status.recovery_lookback_max_seconds is None
+    assert status.hot_access_age_p50_seconds is None
+    assert status.hot_access_age_p95_seconds is None
+    assert status.hot_access_age_max_seconds is None
+    assert status.recovery_sessions_in_window == 0
+    assert status.hot_access_evidence_samples == 0
+    assert status.current_retention_seconds == 21_600
+    with sqlite3.connect(path) as connection:
+        sample = connection.execute(
+            """SELECT recovery_lookback_seconds,hot_access_age_seconds
+            FROM adaptive_retention_samples"""
+        ).fetchone()
+        after = connection.execute(
+            """SELECT recommendation_streak,current_retention_seconds
+            FROM adaptive_retention_state WHERE singleton=1"""
+        ).fetchone()
+        assert sample == (None, None)
+        assert after == before
+
+
+def test_legacy_cached_zero_metrics_project_as_unknown(tmp_path) -> None:
+    path = tmp_path / "legacy-cache.sqlite3"
+    controller = AdaptiveRetentionController(path, policy(), initial_retention_seconds=21_600)
+    status = controller.evaluate_once(
+        observation(
+            START,
+            recovery_lookback_seconds=None,
+            hot_access_age_seconds=None,
+            recovery_session_id=None,
+            hot_access_evidence_complete=False,
+        )
+    )
+    payload = status.as_dict()
+    payload.pop("hot_access_evidence_samples")
+    payload["recovery_lookback_seconds"] = {"p50": 0.0, "p95": 0.0, "max": 0.0}
+    payload["hot_access_age_seconds"] = {"p50": 0.0, "p95": 0.0, "max": 0.0}
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE adaptive_retention_state SET last_status_json=? WHERE singleton=1",
+            (json.dumps(payload),),
+        )
+
+    cached = controller.evaluate_once(
+        observation(START + timedelta(minutes=30)), record_evidence=False
+    )
+
+    assert cached.recovery_lookback_max_seconds is None
+    assert cached.hot_access_age_max_seconds is None
+    assert cached.hot_access_evidence_samples == 0
+
+
 @pytest.mark.parametrize(
     ("changes", "policy_changes"),
     [

@@ -13,7 +13,7 @@ from statistics import median
 from typing import Any
 
 RETENTION_LADDER_SECONDS = (21_600, 14_400, 10_800, 7_200, 3_600)
-ADAPTIVE_RETENTION_SCHEMA_VERSION = 3
+ADAPTIVE_RETENTION_SCHEMA_VERSION = 4
 _DISK_STATE_RANK = {
     "normal": 0,
     "warning": 1,
@@ -255,6 +255,7 @@ class AdaptiveRetentionStatus:
     failed_chunks_in_window: int
     serious_incidents_in_window: int
     recovery_sessions_in_window: int
+    hot_access_evidence_samples: int
     runtime_metrics: RetentionRuntimeMetrics
     simulations: tuple[CandidateSimulation, ...]
     reason: str
@@ -301,6 +302,7 @@ class AdaptiveRetentionStatus:
             "failed_chunks_in_window": self.failed_chunks_in_window,
             "serious_incidents_in_window": self.serious_incidents_in_window,
             "recovery_sessions_in_window": self.recovery_sessions_in_window,
+            "hot_access_evidence_samples": self.hot_access_evidence_samples,
             "runtime_metrics": self.runtime_metrics.as_dict(),
             "simulation_results": {
                 str(item.retention_seconds): item.as_dict() for item in self.simulations
@@ -440,6 +442,7 @@ class AdaptiveRetentionController:
             meta = connection.execute(
                 "SELECT schema_version FROM adaptive_retention_meta WHERE singleton=1"
             ).fetchone()
+            prior_schema_version = 0 if meta is None else int(meta[0])
             if meta is not None and int(meta[0]) > ADAPTIVE_RETENTION_SCHEMA_VERSION:
                 raise AdaptiveRetentionStateError(
                     "adaptive retention state uses an unsupported future schema"
@@ -466,6 +469,20 @@ class AdaptiveRetentionController:
                 connection.execute(
                     "ALTER TABLE adaptive_retention_samples "
                     "ADD COLUMN hot_access_evidence_complete INTEGER NOT NULL DEFAULT 0"
+                )
+            # Older controller versions persisted unknown recovery/HOT-access evidence
+            # as numeric zero. Provenance columns make those placeholders identifiable;
+            # normalize only controller evidence, never raw market truth.
+            if prior_schema_version < 4:
+                connection.execute(
+                    """UPDATE adaptive_retention_samples
+                    SET recovery_lookback_seconds=NULL
+                    WHERE recovery_session_id IS NULL"""
+                )
+                connection.execute(
+                    """UPDATE adaptive_retention_samples
+                    SET hot_access_age_seconds=NULL
+                    WHERE hot_access_evidence_complete=0"""
                 )
             state_columns = {
                 str(row[1])
@@ -772,12 +789,14 @@ class AdaptiveRetentionController:
         recovery = [
             float(row["recovery_lookback_seconds"])
             for row in rows
-            if row["recovery_lookback_seconds"] is not None
+            if row["recovery_session_id"] is not None
+            and row["recovery_lookback_seconds"] is not None
         ]
         accesses = [
             float(row["hot_access_age_seconds"])
             for row in rows
-            if row["hot_access_age_seconds"] is not None
+            if bool(row["hot_access_evidence_complete"])
+            and row["hot_access_age_seconds"] is not None
         ]
         verified_delta, failed_delta = self._counter_deltas(
             rows, "verified_chunks", "failed_chunks"
@@ -936,6 +955,7 @@ class AdaptiveRetentionController:
             failed_chunks_in_window=failed_delta,
             serious_incidents_in_window=incidents,
             recovery_sessions_in_window=len(recovery_sessions),
+            hot_access_evidence_samples=len(accesses),
             runtime_metrics=self._runtime_metrics(observation, stable_disk_state),
             simulations=simulations,
             reason=reason,
@@ -1176,6 +1196,12 @@ class AdaptiveRetentionController:
             "ws_queue_capacity": 0,
             "ws_queue_pressure_percent": None,
         }
+        recovery_sessions = int(payload.get("recovery_sessions_in_window", 0))
+        hot_access_samples = int(payload.get("hot_access_evidence_samples", 0))
+        if recovery_sessions == 0:
+            recovery = {"p50": None, "p95": None, "max": None}
+        if hot_access_samples == 0:
+            access = {"p50": None, "p95": None, "max": None}
         simulations = tuple(
             CandidateSimulation(
                 retention_seconds=int(item["retention_seconds"]),
@@ -1225,7 +1251,8 @@ class AdaptiveRetentionController:
             verified_chunks_in_window=int(payload["verified_chunks_in_window"]),
             failed_chunks_in_window=int(payload["failed_chunks_in_window"]),
             serious_incidents_in_window=int(payload["serious_incidents_in_window"]),
-            recovery_sessions_in_window=int(payload.get("recovery_sessions_in_window", 0)),
+            recovery_sessions_in_window=recovery_sessions,
+            hot_access_evidence_samples=hot_access_samples,
             runtime_metrics=RetentionRuntimeMetrics(
                 physical_database_bytes=int(runtime["physical_database_bytes"]),
                 hot_used_bytes=int(runtime["hot_used_bytes"]),

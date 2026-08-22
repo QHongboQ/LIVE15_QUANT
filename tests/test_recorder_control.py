@@ -214,6 +214,23 @@ def test_pause_timeout_never_force_kills_process(tmp_path, monkeypatch) -> None:
     assert json.loads(configured.recorder_control_path.read_text())["state"] == "stopping"
 
 
+def test_repeated_pause_is_idempotent_and_does_not_rewrite_control_state(
+    tmp_path, monkeypatch
+) -> None:
+    configured = managed_settings(tmp_path)
+    monkeypatch.setattr(control, "project_root", lambda: tmp_path)
+    write_control(configured.recorder_control_path, desired="paused", state="paused")
+    controller = RecorderProcessController(configured)
+    writes: list[tuple[object, ...]] = []
+    monkeypatch.setattr(controller, "_write_control", lambda *args: writes.append(args))
+
+    first = controller.pause()
+    second = controller.pause()
+
+    assert first.state is second.state is ManagedRecorderState.PAUSED
+    assert writes == []
+
+
 def test_start_requires_a_new_recorder_heartbeat(tmp_path, monkeypatch) -> None:
     configured = managed_settings(tmp_path)
     monkeypatch.setattr(control, "project_root", lambda: tmp_path)

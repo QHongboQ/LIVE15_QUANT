@@ -14,6 +14,8 @@ from live15_quant.control_center_models import (
     CoverageResponse,
     HealthResponse,
     MarketResponse,
+    RecorderControlAction,
+    RecorderControlOutcome,
     RecorderControlResponse,
     RecorderEventResponse,
     RecorderState,
@@ -282,9 +284,21 @@ class ControlCenterService:
         if method is None:
             raise ValueError("unsupported recorder action")
         with self._control_lock:
+            before = self.controller.status()
             result = method()
+        already_in_state = (action == "pause" and before.state.value == "paused") or (
+            action in {"start", "resume"} and before.state.value in {"running", "starting"}
+        )
         return RecorderControlResponse(
-            state=RecorderState(result.state.value), message=result.message
+            action=RecorderControlAction(action),
+            outcome=(
+                RecorderControlOutcome.ALREADY_IN_STATE
+                if already_in_state
+                else RecorderControlOutcome.APPLIED
+            ),
+            state=RecorderState(result.state.value),
+            pid=result.pid,
+            message=result.message,
         )
 
     def recorder_events(

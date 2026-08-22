@@ -18,6 +18,17 @@ class RecorderState(StrEnum):
     ERROR = "error"
 
 
+class RecorderControlOutcome(StrEnum):
+    APPLIED = "applied"
+    ALREADY_IN_STATE = "already_in_state"
+
+
+class RecorderControlAction(StrEnum):
+    START = "start"
+    PAUSE = "pause"
+    RESUME = "resume"
+
+
 class Availability(StrEnum):
     AVAILABLE = "available"
     MISSING = "missing"
@@ -222,7 +233,11 @@ class SystemResponse(StrictResponse):
 
 
 class RecorderControlResponse(StrictResponse):
+    action: RecorderControlAction
+    action_succeeded: bool = True
+    outcome: RecorderControlOutcome
     state: RecorderState
+    pid: int | None = None
     message: str
 
 

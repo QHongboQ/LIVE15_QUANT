@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import fastapi.routing
 import httpx
 import pytest
 
@@ -711,6 +712,9 @@ async def test_frontend_polling_is_bounded_and_exposes_only_recorder_controls(
     assert "windowend" in script
     assert "document.hidden" in script
     assert "inflight" in script
+    assert "progress.value = numeric === null" not in script
+    assert "if (numeric !== null && number.isfinite(numeric))" in script
+    assert "check status before retrying" in script
     assert 'credentials: "omit"' in script
     assert 'method: "post"' in script
     assert "start collection" in script
@@ -766,15 +770,73 @@ async def test_recorder_control_routes_are_explicit_and_localhost_only(tmp_path:
     app = create_app(configured, service)
     local = httpx.ASGITransport(app=app, client=("127.0.0.1", 1234))
     async with httpx.AsyncClient(transport=local, base_url="http://127.0.0.1") as client:
-        assert (await client.post("/api/recorder/start")).json()["state"] == "running"
-        assert (await client.post("/api/recorder/pause")).json()["state"] == "paused"
-        assert (await client.post("/api/recorder/resume")).json()["state"] == "running"
+        started = (await client.post("/api/recorder/start")).json()
+        paused = (await client.post("/api/recorder/pause")).json()
+        resumed = (await client.post("/api/recorder/resume")).json()
+        assert started == {
+            "action": "start",
+            "action_succeeded": True,
+            "outcome": "applied",
+            "state": "running",
+            "pid": None,
+            "message": "running",
+        }
+        assert paused["action"] == "pause"
+        assert paused["action_succeeded"] is True
+        assert paused["outcome"] == "applied"
+        assert paused["state"] == "paused"
+        assert resumed["action"] == "resume"
+        assert resumed["state"] == "running"
     assert controller.calls == ["start", "pause", "resume"]
-
     remote = httpx.ASGITransport(app=app, client=("192.0.2.10", 1234))
     async with httpx.AsyncClient(transport=remote, base_url="http://127.0.0.1") as client:
         assert (await client.post("/api/recorder/pause")).status_code == 403
     assert controller.calls == ["start", "pause", "resume"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_pause_returns_typed_idempotent_success(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    controller = FakeRecorderController()
+    controller.current = ManagedRecorderState.PAUSED
+    service = ControlCenterService(configured, clock=lambda: NOW, controller=controller)  # type: ignore[arg-type]
+    app = create_app(configured, service)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 1234))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        first = await client.post("/api/recorder/pause")
+        second = await client.post("/api/recorder/pause")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["outcome"] == "already_in_state"
+    assert second.json()["outcome"] == "already_in_state"
+    assert first.json()["state"] == second.json()["state"] == "paused"
+
+    assert controller.calls == ["pause", "pause"]
+
+
+@pytest.mark.asyncio
+async def test_successful_pause_is_not_revalidated_after_controller_action(
+    tmp_path: Path, monkeypatch
+) -> None:
+    configured = settings(tmp_path)
+    controller = FakeRecorderController()
+    controller.current = ManagedRecorderState.RUNNING
+    service = ControlCenterService(configured, clock=lambda: NOW, controller=controller)  # type: ignore[arg-type]
+    app = create_app(configured, service)
+
+    async def forbidden_post_action_serialization(*_args, **_kwargs):
+        raise AssertionError("FastAPI must not re-serialize a completed recorder action")
+
+    monkeypatch.setattr(fastapi.routing, "serialize_response", forbidden_post_action_serialization)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 1234))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.post("/api/recorder/pause")
+
+    assert response.status_code == 200
+    assert response.json()["action_succeeded"] is True
+    assert response.json()["state"] == "paused"
+    assert controller.calls == ["pause"]
 
 
 @pytest.mark.asyncio

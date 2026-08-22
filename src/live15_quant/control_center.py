@@ -109,7 +109,7 @@ def create_app(
             limit=limit, severity=severity, asset=asset, source=source, since=since
         )
 
-    def control(action: str, request: Request) -> RecorderControlResponse:
+    def control(action: str, request: Request) -> Response:
         client = request.client.host if request.client is not None else ""
         if client not in {"127.0.0.1", "::1", "testclient"}:
             raise HTTPException(status_code=403, detail="recorder control is localhost-only")
@@ -120,22 +120,27 @@ def create_app(
         }:
             raise HTTPException(status_code=403, detail="cross-origin recorder control denied")
         try:
-            return boundary.recorder_action(action)
+            # The process action completes before the HTTP representation is created.
+            # Return a pre-serialized typed receipt so FastAPI cannot perform a second,
+            # post-action response-model conversion that turns a successful Pause into
+            # an ambiguous 500 at the UI boundary.
+            result = boundary.recorder_action(action)
+            return Response(content=result.model_dump_json(), media_type="application/json")
         except TimeoutError as error:
             raise HTTPException(status_code=504, detail=str(error)) from error
         except RuntimeError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.post("/api/recorder/start", response_model=RecorderControlResponse)
-    def recorder_start(request: Request) -> RecorderControlResponse:
+    def recorder_start(request: Request) -> Response:
         return control("start", request)
 
     @app.post("/api/recorder/pause", response_model=RecorderControlResponse)
-    def recorder_pause(request: Request) -> RecorderControlResponse:
+    def recorder_pause(request: Request) -> Response:
         return control("pause", request)
 
     @app.post("/api/recorder/resume", response_model=RecorderControlResponse)
-    def recorder_resume(request: Request) -> RecorderControlResponse:
+    def recorder_resume(request: Request) -> Response:
         return control("resume", request)
 
     return app

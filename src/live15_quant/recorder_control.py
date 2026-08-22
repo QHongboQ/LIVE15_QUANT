@@ -283,7 +283,9 @@ class RecorderProcessController:
 
     def pause(self) -> RecorderControlStatus:
         current = self.status()
-        if current.state in {ManagedRecorderState.PAUSED, ManagedRecorderState.STOPPED}:
+        if current.state is ManagedRecorderState.PAUSED:
+            return current
+        if current.state is ManagedRecorderState.STOPPED:
             self._write_control("paused", ManagedRecorderState.PAUSED, "collection is paused")
             return self.status()
         if current.pid is None:

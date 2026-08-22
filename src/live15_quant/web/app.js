@@ -188,11 +188,26 @@ async function recorderAction(action) {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
-    showNotice(payload.message || `Recorder ${action} completed.`);
+    const outcome = payload.outcome === "already_in_state" ? "already complete" : "completed";
+    showNotice(payload.message || `Recorder ${action} ${outcome}.`);
     lastFetched.delete("health");
     await refresh(true);
   } catch (error) {
-    showNotice(`Recorder control failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    // Never repeat a mutating action merely because its HTTP response was lost. Reconcile
+    // through the read-only health endpoint; the user can then see whether the requested
+    // terminal state was reached without a second Pause/Resume changing control state.
+    lastFetched.delete("health");
+    try {
+      const health = await fetchJson("health", "/api/health", INTERVALS.health, true);
+      const reached = action === "pause"
+        ? ["paused", "stopped"].includes(health?.recorder_state)
+        : ["running", "starting"].includes(health?.recorder_state);
+      showNotice(reached
+        ? `Recorder ${action} completed; the action response was unavailable.`
+        : `Recorder control failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    } catch (_healthError) {
+      showNotice(`Recorder control result unknown: ${error instanceof Error ? error.message : "unknown error"}. Check status before retrying.`);
+    }
   } finally {
     state.controlBusy = false;
     render();
@@ -492,7 +507,7 @@ function ratesPanel(titleText, values) {
     const row = node("div", "bar-row");
     const progress = node("progress", "bar-track");
     progress.max = 1;
-    progress.value = numeric === null || !Number.isFinite(numeric) ? 0 : Math.min(1, numeric);
+    if (numeric !== null && Number.isFinite(numeric)) progress.value = Math.min(1, numeric);
     append(row, node("span", "", name.replaceAll("_", " ")), progress, node("span", "bar-value", numeric === null || !Number.isFinite(numeric) ? "N/A" : `${(numeric * 100).toFixed(1)}%`));
     body.append(row);
   }
