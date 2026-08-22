@@ -165,6 +165,19 @@ Pyth primary 继续只存在 `underlying_observations`，DatasetBuilder 和 `tra
 
 Milestone 7 以 `data/live15.sqlite3` 的 raw recorder 为只读 source of truth，并把可重建训练数据写入独立的 `data/features.sqlite3`。`live15-dataset` 会按 exact ticker/window 将 decision-time metadata、Kalshi quote/orderbook、Coinbase predictive ticks 与 Kalshi 官方 finalized YES/NO label 组合；它不会改写 raw 数据，也不会读取 paper ledger。
 
+`live15-dataset-v1` 创建正式、不可变的 Dataset v1 artifact。命令先以有界、节流的
+SQLite online backup 固定 raw truth 和 WS archive manifest，再只在临时副本上重建 42 个
+certified features；它绝不扫描或写入 active recorder DB。artifact 位于 Git-ignored 的
+`data/datasets/live15-dataset-v1-<deterministic-hash>/`，包含 JSONL rows、event-level
+chronological train/validation/test split 与 manifest。manifest 固定 code SHA、raw/manifest
+content boundaries、feature/label schemas、decision-time/quarantine/session/provider policies、
+event digests、diagnostics 与 artifact hashes。manifest 还记录每个 asset 的
+`asset_validation_eligibility`（train/validation/test event 与 row 计数，以及是否真正具备
+out-of-sample validation/test）；train-only 资产会明确标记为 coverage limitation，不会通过
+随机重平衡补齐。相同事实与配置会复用同一 immutable artifact；
+同 identity 的冲突文件会 fail loudly，绝不覆盖。每个 future model artifact 必须记录
+`dataset_id → deterministic_build_hash → feature_schema_version → label_schema_version → code_git_sha`。
+
 Milestone 7.5 将该路径升级为无需人工盯守的连续采集服务：十个资产逐一隔离发现，rollover 后继续有界追踪 predecessor 到官方 finalized，重启时完全从 SQLite 恢复，并原子输出机器可读 health。长期运行、恢复、容量规划与 Windows restart helper 见 [Continuous training-data recorder](docs/continuous_recorder.md)。
 
 默认 sampling grid 是距结束 14m、12m、10m、8m、5m、3m、2m、1m、30s，可通过 `LIVE15_DATASET_DECISION_OFFSETS_SECONDS` 配置。核心 `SamplingPolicy` 不含固定现实日期、固定 UTC 时刻或固定 grid。每个 event 可以产生多行，但 chronological/expanding/rolling split 都以完整 ticker event 为 group，同一 event 不会跨 train/validation/test。

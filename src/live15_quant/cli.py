@@ -22,6 +22,7 @@ from live15_quant.adaptive_retention import (
     AdaptiveRetentionPolicy,
     write_adaptive_retention_status,
 )
+from live15_quant.certified_dataset import CertifiedDatasetV1Builder, DatasetV1Config
 from live15_quant.config import Settings, load_settings
 from live15_quant.dataset import (
     DatasetBuildConfig,
@@ -388,6 +389,75 @@ def dataset_main() -> None:
                 "rows": summary.rows,
                 "rows_written": summary.rows_written,
                 "skipped_decisions": summary.skipped_decisions,
+                "diagnostics": summary.diagnostics,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def certified_dataset_v1_main(argv: Sequence[str] | None = None) -> None:
+    """Build immutable Dataset v1 from a bounded offline snapshot; never scan the active DB."""
+
+    parser = argparse.ArgumentParser(prog="live15-dataset-v1")
+    parser.add_argument("--output-root", type=Path, default=Path("data/datasets"))
+    parser.add_argument("--snapshot", type=Path)
+    parser.add_argument("--archive-manifest-snapshot", type=Path)
+    arguments = parser.parse_args(argv)
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    policy = SamplingPolicy(
+        tuple(timedelta(seconds=value) for value in settings.dataset_decision_offsets_seconds),
+        quote_max_age=timedelta(seconds=settings.dataset_quote_max_age_seconds),
+        underlying_max_age=timedelta(seconds=settings.dataset_underlying_max_age_seconds),
+    )
+    config = DatasetV1Config(policy)
+    if arguments.snapshot is not None:
+        if arguments.snapshot.resolve() == settings.recorder_data_path.resolve():
+            raise SystemExit(
+                "Dataset v1 refuses the active recorder database; provide an offline snapshot"
+            )
+        summary = CertifiedDatasetV1Builder(
+            arguments.snapshot,
+            arguments.output_root,
+            archive_manifest_snapshot=arguments.archive_manifest_snapshot,
+            snapshot_captured_at=datetime.now(UTC),
+        ).build(config)
+    else:
+        manifest_source = settings.ws_archive_manifest_path or (
+            settings.recorder_data_path.parent / "ws_archive_manifest.sqlite3"
+        )
+        snapshot_parent = arguments.output_root.resolve().parent
+        snapshot_parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".live15-dataset-v1-snapshot-", dir=snapshot_parent
+        ) as directory:
+            root = Path(directory)
+            raw_snapshot = root / "raw.sqlite3"
+            manifest_snapshot = root / "ws-archive-manifest.sqlite3"
+            snapshot_database(
+                settings.recorder_data_path,
+                raw_snapshot,
+                max_seconds=settings.readiness_snapshot_max_seconds,
+            )
+            snapshot_database(manifest_source, manifest_snapshot, max_seconds=60.0)
+            summary = CertifiedDatasetV1Builder(
+                raw_snapshot,
+                arguments.output_root,
+                archive_manifest_snapshot=manifest_snapshot,
+                snapshot_captured_at=datetime.now(UTC),
+            ).build(config)
+    print(
+        json.dumps(
+            {
+                "dataset_id": summary.dataset_id,
+                "deterministic_build_hash": summary.deterministic_build_hash,
+                "events": summary.events,
+                "rows": summary.rows,
+                "split_events": summary.split_events,
+                "split_rows": summary.split_rows,
+                "reused_existing_artifact": summary.reused_existing_artifact,
                 "diagnostics": summary.diagnostics,
             },
             indent=2,
