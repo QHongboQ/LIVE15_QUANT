@@ -127,6 +127,10 @@ function badge(value, label = null) {
   return node("span", `badge state-${normalized}`, label || String(value || "missing"));
 }
 
+function stateLabel(value) {
+  return String(value || "missing").replaceAll("_", " ").toUpperCase();
+}
+
 function metric(label, value, detail = null) {
   const item = node("div", "metric");
   append(item, node("span", "label", label), node("span", "value", value));
@@ -260,7 +264,7 @@ function marketCard(market) {
   const foot = node("div", "card-foot");
   append(foot, node("span", "", `Spread ${predictionPrice(market.spread)}`), node("span", "", `Quote ${age(market.quote_age_seconds)}`));
   const statuses = node("div", "card-status-grid");
-  append(statuses, append(node("div"), node("span", "", `Underlying ${marketPrice(market.underlying_price)}`), badge(market.underlying_status)), append(node("div"), node("span", "", "Settlement follow-up"), badge(market.settlement_followup)));
+  append(statuses, append(node("div"), node("span", "", `Underlying ${marketPrice(market.underlying_price)}`), badge(market.underlying_status, stateLabel(market.underlying_status))), append(node("div"), node("span", "", "Settlement follow-up"), badge(market.settlement_followup)));
   append(card, head, node("span", "ticker", valueOrDash(market.ticker)), target, quotes, foot, statuses);
   return card;
 }
@@ -452,7 +456,7 @@ function renderDetail(route) {
   root.append(books, sectionHead("Underlying & leakage-safe features", "Existing FeatureEngine projection"));
   const featurePanel = node("div", "panel panel-body");
   const underlying = node("div", "metric-grid");
-  append(underlying, metric("Primary", valueOrDash(market.primary_provider || market.underlying_provider)), metric("Primary product", valueOrDash(market.underlying_product)), metric("Primary price", marketPrice(market.underlying_price)), metric("Primary age", age(market.primary_age_seconds ?? market.underlying_age_seconds)), metric("Primary status", market.underlying_status.toUpperCase()));
+  append(underlying, metric("Primary", valueOrDash(market.primary_provider || market.underlying_provider)), metric("Primary product", valueOrDash(market.underlying_product)), metric("Primary price", marketPrice(market.underlying_price)), metric("Primary age", age(market.primary_age_seconds ?? market.underlying_age_seconds)), metric("Primary status", stateLabel(market.underlying_status)));
   if (market.secondary_provider) {
     append(underlying, metric("Secondary", valueOrDash(market.secondary_provider)), metric("Secondary instrument", valueOrDash(market.secondary_instrument)), metric("Secondary price", marketPrice(market.secondary_price)), metric("Secondary bid / ask", `${marketPrice(market.secondary_bid)} / ${marketPrice(market.secondary_ask)}`), metric("Secondary age", age(market.secondary_age_seconds)), metric("Secondary status", market.secondary_status.toUpperCase()), metric("Source clock", market.secondary_clock_skew ? "CLOCK SKEW · cross-clock latency invalid" : "ALIGNED"), metric("Secondary − primary", marketPrice(market.primary_secondary_price_diff)), metric("Age difference", age(market.primary_secondary_age_diff)), metric("Source → receive", market.secondary_source_receive_latency_ms === null ? "N/A" : `${market.secondary_source_receive_latency_ms} ms`), metric("Receive → persist", market.secondary_receive_persist_latency_ms === null ? "N/A" : `${market.secondary_receive_persist_latency_ms} ms`));
   }
@@ -576,7 +580,7 @@ function renderSystem() {
   const head = node("tr");
   ["Asset", "Lifecycle", "Quote", "Quote age", "Underlying", "Underlying age", "Settlement follow-up"].forEach((item) => head.append(node("th", item.includes("age") ? "num" : "", item)));
   const body = node("tbody");
-  markets.forEach((market) => append(body, append(node("tr"), node("td", "", ASSET_LABELS[market.asset]?.[0] || market.asset), append(node("td"), badge(market.lifecycle)), append(node("td"), badge(market.quote_status)), node("td", "num", age(market.quote_age_seconds)), append(node("td"), badge(market.underlying_status)), node("td", "num", age(market.underlying_age_seconds)), append(node("td"), badge(market.settlement_followup)))));
+  markets.forEach((market) => append(body, append(node("tr"), node("td", "", ASSET_LABELS[market.asset]?.[0] || market.asset), append(node("td"), badge(market.lifecycle)), append(node("td"), badge(market.quote_status)), node("td", "num", age(market.quote_age_seconds)), append(node("td"), badge(market.underlying_status, stateLabel(market.underlying_status))), node("td", "num", age(market.underlying_age_seconds)), append(node("td"), badge(market.settlement_followup)))));
   table.append(append(node("thead"), head), body); wrap.append(table); root.append(wrap);
   return root;
 }

@@ -22,6 +22,7 @@ class MissingReason(StrEnum):
     STALE = "stale"
     NOT_ENOUGH_LOOKBACK = "not_enough_lookback"
     SOURCE_UNAVAILABLE = "source_unavailable"
+    MARKET_CLOSED = "market_closed"
     MARKET_SIDE_UNAVAILABLE = "market_side_unavailable"
 
 

@@ -4,7 +4,7 @@ import asyncio
 import json
 import sys
 import tomllib
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -135,6 +135,33 @@ async def test_stale_health_is_explicit_and_secrets_are_whitelisted(tmp_path: Pa
     assert "heartbeat-secret" not in serialized
     assert "heartbeat-private" not in serialized
     assert "heartbeat-signature" not in serialized
+
+
+def test_health_reclassifies_legacy_weekend_stale_as_market_closed(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    saturday = datetime(2026, 8, 22, 4, 0, tzinfo=UTC)
+    friday = datetime(2026, 8, 21, 20, 59, tzinfo=UTC)
+    write_health(
+        configured.recorder_health_path,
+        observed=saturday,
+        status="degraded",
+        stale_sources=["pyth:Gold", "pyth:Silver", "pyth:WTI Oil"],
+        stale_workers=[],
+        last_additional_underlying={
+            "Gold": friday.isoformat(),
+            "Silver": friday.isoformat(),
+            "WTI Oil": friday.isoformat(),
+        },
+    )
+    health = ControlCenterService(configured, clock=lambda: saturday).health()
+
+    assert health.status == "healthy"
+    assert health.stale_sources == []
+    assert set(health.market_closed_sources) == {
+        "pyth:Gold",
+        "pyth:Silver",
+        "pyth:WTI Oil",
+    }
 
 
 @pytest.mark.asyncio
@@ -328,6 +355,38 @@ async def test_pyth_underlying_uses_configured_stale_threshold(tmp_path: Path) -
 
     assert payload["underlying_provider"] == "pyth_hermes"
     assert payload["underlying_status"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_closed_market_retains_last_price_with_non_live_status(tmp_path: Path) -> None:
+    configured = settings(tmp_path, recorder_pyth_stale_seconds=15)
+    market = provider().parse_market(Asset.GOLD, raw_market(Asset.GOLD), NOW)
+    received = datetime(2026, 8, 21, 20, 59, tzinfo=UTC)
+    saturday = datetime(2026, 8, 22, 4, 0, tzinfo=UTC)
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_kalshi_market(market)
+        store.append_underlying(
+            UnderlyingObservation(
+                asset=Asset.GOLD,
+                provider=UnderlyingProvider.PYTH_HERMES,
+                symbol="Metal.XAU/USD",
+                feed_id="a" * 64,
+                price=market.target,
+                source_timestamp=received,
+                received_timestamp=received,
+                confidence=None,
+                provenance="official-test",
+                freshness=FreshnessState.FRESH,
+            )
+        )
+    write_health(configured.recorder_health_path, current_markets={"Gold": market.ticker})
+    service = ControlCenterService(configured, clock=lambda: saturday)
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        payload = (await client.get("/api/markets/Gold")).json()
+
+    assert payload["underlying_price"] == str(market.target)
+    assert payload["underlying_status"] == "market_closed"
 
 
 @pytest.mark.asyncio

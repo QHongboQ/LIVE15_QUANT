@@ -11,6 +11,7 @@ from itertools import pairwise
 
 from live15_quant.config import Settings
 from live15_quant.features import COINBASE_PRODUCT_BY_ASSET
+from live15_quant.market_sessions import MarketDataState, open_intervals_for_asset
 from live15_quant.models import Asset, UnderlyingProvider
 from live15_quant.providers.kalshi import KALSHI_15MIN_SERIES
 from live15_quant.providers.pyth import PYTH_FEEDS
@@ -186,33 +187,39 @@ def detect_gaps(
     for stream in streams:
         timestamps = _received_timestamps(connection, stream, start=start, end=end)
         for previous, current in pairwise(timestamps):
-            duration = timedelta_seconds(current - previous)
-            if duration <= stream.threshold_seconds:
-                continue
-            logical_key = (
-                stream.source.value,
-                stream.asset.value,
-                stream.instrument,
-                previous.astimezone(UTC).isoformat(timespec="microseconds"),
-                current.astimezone(UTC).isoformat(timespec="microseconds"),
+            candidate_intervals = (
+                open_intervals_for_asset(stream.asset, previous, current)
+                if stream.source is GapSource.PYTH
+                else ((previous, current),)
             )
-            if logical_key in existing:
-                continue
-            reason, error_type, incident_id = _classify(events, stream, previous, current)
-            detected.append(
-                DataGap(
-                    source=stream.source,
-                    asset=stream.asset,
-                    instrument=stream.instrument,
-                    gap_start=previous,
-                    gap_end=current,
-                    detected_at=detected_at,
-                    threshold_seconds=stream.threshold_seconds,
-                    reason=reason,
-                    error_type=error_type,
-                    incident_id=incident_id,
+            for gap_start, gap_end in candidate_intervals:
+                duration = timedelta_seconds(gap_end - gap_start)
+                if duration <= stream.threshold_seconds:
+                    continue
+                logical_key = (
+                    stream.source.value,
+                    stream.asset.value,
+                    stream.instrument,
+                    gap_start.astimezone(UTC).isoformat(timespec="microseconds"),
+                    gap_end.astimezone(UTC).isoformat(timespec="microseconds"),
                 )
-            )
+                if logical_key in existing:
+                    continue
+                reason, error_type, incident_id = _classify(events, stream, gap_start, gap_end)
+                detected.append(
+                    DataGap(
+                        source=stream.source,
+                        asset=stream.asset,
+                        instrument=stream.instrument,
+                        gap_start=gap_start,
+                        gap_end=gap_end,
+                        detected_at=detected_at,
+                        threshold_seconds=stream.threshold_seconds,
+                        reason=reason,
+                        error_type=error_type,
+                        incident_id=incident_id,
+                    )
+                )
     return tuple(detected)
 
 
@@ -244,6 +251,7 @@ def inference_readiness(
     source_connected: bool = True,
     synchronized_orderbook: bool = True,
     lookback_complete: bool = True,
+    underlying_state: MarketDataState | None = None,
 ) -> LiveInferenceReadiness:
     """Fail closed without creating strategy or execution behavior."""
 
@@ -258,6 +266,12 @@ def inference_readiness(
     ):
         raise ValueError("inference receive timestamp must be timezone-aware")
     reasons: list[str] = []
+    if underlying_state is MarketDataState.MARKET_CLOSED:
+        reasons.append("market_closed")
+    elif underlying_state is MarketDataState.SOURCE_UNAVAILABLE:
+        reasons.append("source_unavailable")
+    elif underlying_state is MarketDataState.STALE:
+        reasons.append("stale_source")
     if latest_received is None:
         reasons.append("required_observation_missing")
     elif latest_received > checked_at:

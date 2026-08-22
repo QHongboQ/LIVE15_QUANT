@@ -95,6 +95,7 @@ class TrainingDataUnavailableReason(StrEnum):
     STALE_SOURCE = "stale_source"
     INSUFFICIENT_LOOKBACK = "insufficient_lookback"
     SOURCE_UNAVAILABLE = "source_unavailable"
+    MARKET_CLOSED = "market_closed"
     MARKET_SIDE_UNAVAILABLE = "market_side_unavailable"
 
 

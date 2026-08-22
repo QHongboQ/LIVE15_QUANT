@@ -182,6 +182,43 @@ def test_pyth_asset_uses_provider_specific_underlying_without_future_leakage() -
     assert vector.by_name()["underlying_price"].value == observations[-1].price
 
 
+def test_closed_market_underlying_is_not_forward_filled_as_fresh() -> None:
+    decision = datetime(2026, 8, 22, 4, 0, tzinfo=UTC)
+    gold_market = market(
+        asset=Asset.GOLD,
+        series="KXGOLD15M",
+        event_ticker="KXGOLD15M-26AUG220400",
+        ticker="KXGOLD15M-26AUG220400-00",
+        target=Decimal("3388"),
+        window_start=decision - timedelta(minutes=5),
+        window_end=decision + timedelta(minutes=10),
+        fetched_timestamp=decision - timedelta(minutes=5),
+    )
+    prior_close = UnderlyingObservationRecord(
+        row_id=1,
+        schema_version=6,
+        asset=Asset.GOLD,
+        provider=UnderlyingProvider.PYTH_HERMES,
+        symbol="Metal.XAU/USD",
+        feed_id="a" * 64,
+        price=Decimal("3388.10"),
+        source_timestamp=datetime(2026, 8, 21, 20, 59, tzinfo=UTC),
+        received_timestamp=datetime(2026, 8, 21, 20, 59, tzinfo=UTC),
+        confidence=Decimal("0.01"),
+        provenance="official-test",
+        freshness=FreshnessState.FRESH,
+        role=DataRole.PREDICTIVE_MARKET_DATA,
+    )
+    vector = (
+        FeatureEngine(policy())
+        .compute(FeatureInputs(gold_market, (), (), decision, (prior_close,)))
+        .by_name()
+    )
+
+    assert vector["underlying_price"].value is None
+    assert vector["underlying_price"].missing_reason is MissingReason.MARKET_CLOSED
+
+
 def test_future_quote_and_future_tick_are_excluded() -> None:
     engine = FeatureEngine(policy())
     past = FeatureInputs(market(), (quote(),), ticks(), DECISION)

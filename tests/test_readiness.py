@@ -86,6 +86,21 @@ def test_windowed_coverage_preserves_real_gap_and_boundary_outage() -> None:
     assert one_hour.max_continuous_gap_seconds == 1795
 
 
+def test_market_closure_does_not_reduce_source_reliability_coverage() -> None:
+    saturday = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+    windows = _windowed_coverage(
+        iter(()),
+        snapshot_at=saturday,
+        bucket_seconds=5,
+        stale_seconds=15,
+        market_asset=Asset.GOLD,
+    )
+    assert windows["1h"].observations == 0
+    assert windows["1h"].coverage_percent == 100
+    assert windows["1h"].stale_free_coverage_percent == 100
+    assert windows["1h"].max_continuous_gap_seconds == 0
+
+
 def test_quality_reports_gaps_duplicates_order_and_clock_skew_without_repairing() -> None:
     rows = [
         (NOW, NOW + timedelta(milliseconds=10), "one"),

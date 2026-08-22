@@ -6,7 +6,7 @@ import json
 import threading
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from live15_quant.config import Settings
 from live15_quant.control_center_models import (
@@ -21,6 +21,7 @@ from live15_quant.control_center_models import (
     WsArchiveHealth,
 )
 from live15_quant.control_center_store import DashboardReadStore
+from live15_quant.market_sessions import MarketDataState, market_data_state, market_session
 from live15_quant.models import Asset, RecorderEventSeverity
 from live15_quant.recorder_control import RecorderProcessController
 
@@ -70,10 +71,41 @@ class ControlCenterService:
             if observed.tzinfo is None or observed.utcoffset() is None:
                 raise ValueError("health heartbeat timestamp must be timezone-aware")
             observed = observed.astimezone(UTC)
-            age = max(0.0, (self._clock() - observed).total_seconds())
+            checked_at = self._clock()
+            age = max(0.0, (checked_at - observed).total_seconds())
             stale = age > self.settings.ui_heartbeat_stale_seconds
+            source_failures = self._string_map(raw.get("source_failures"))
+            stale_sources = self._string_list(raw.get("stale_sources"))
+            market_closed_sources = self._string_list(raw.get("market_closed_sources"))
+            underlying_states = self._string_map(raw.get("underlying_market_states"))
+            last_underlying = self._datetime_map(raw.get("last_additional_underlying"))
+            for asset in Asset:
+                if market_session(asset) is None:
+                    continue
+                source = f"pyth:{asset.value}"
+                state = market_data_state(
+                    asset,
+                    checked_at=checked_at,
+                    latest_received=last_underlying.get(asset.value),
+                    max_age=timedelta(seconds=self.settings.recorder_pyth_stale_seconds),
+                    source_available=source not in source_failures,
+                )
+                underlying_states[asset.value] = state.value
+                if state is MarketDataState.MARKET_CLOSED:
+                    stale_sources = [value for value in stale_sources if value != source]
+                    if source not in market_closed_sources:
+                        market_closed_sources.append(source)
+            stale_workers = self._string_list(raw.get("stale_workers"))
+            raw_status = str(raw.get("status", "unknown"))
+            if (
+                raw_status == "degraded"
+                and not source_failures
+                and not stale_sources
+                and not stale_workers
+            ):
+                raw_status = "healthy"
             response = HealthResponse(
-                status=str(raw.get("status", "unknown")),
+                status=raw_status,
                 recorder_state=RecorderState.STALE if stale else RecorderState.RUNNING,
                 heartbeat_status=Availability.STALE if stale else Availability.AVAILABLE,
                 heartbeat_age_seconds=age,
@@ -88,11 +120,13 @@ class ControlCenterService:
                 ),
                 last_finalized_settlement=self._string_map(raw.get("last_finalized_settlement")),
                 retry_counts=self._int_map(raw.get("retry_counts")),
-                source_failures=self._string_map(raw.get("source_failures")),
-                stale_sources=self._string_list(raw.get("stale_sources")),
+                source_failures=source_failures,
+                stale_sources=stale_sources,
+                market_closed_sources=market_closed_sources,
+                underlying_market_states=underlying_states,
                 worker_progress=self._datetime_map(raw.get("worker_progress")),
                 worker_progress_age_seconds=self._float_map(raw.get("worker_progress_age_seconds")),
-                stale_workers=self._string_list(raw.get("stale_workers")),
+                stale_workers=stale_workers,
                 event_loop_lag_seconds=self._optional_float(raw.get("event_loop_lag_seconds")),
                 fatal_task=self._optional_string(raw.get("fatal_task")),
                 fatal_error_type=self._optional_string(raw.get("fatal_error_type")),
@@ -185,16 +219,21 @@ class ControlCenterService:
 
     def markets(self) -> list[MarketResponse]:
         health = self.health()
-        return [
-            MarketResponse.model_validate(
-                self.store.asset(asset, self._clock(), health.current_markets.get(asset.value))
+        responses: list[MarketResponse] = []
+        for asset in Asset:
+            payload = self.store.asset(
+                asset, self._clock(), health.current_markets.get(asset.value)
             )
-            for asset in Asset
-        ]
+            if health.underlying_market_states.get(asset.value) == "market_closed":
+                payload["underlying_status"] = "market_closed"
+            responses.append(MarketResponse.model_validate(payload))
+        return responses
 
     def market(self, asset: Asset) -> MarketResponse:
         health = self.health()
         payload = self.store.asset(asset, self._clock(), health.current_markets.get(asset.value))
+        if health.underlying_market_states.get(asset.value) == "market_closed":
+            payload["underlying_status"] = "market_closed"
         payload["previous_events"] = self.store.previous_events(asset)
         return MarketResponse.model_validate(payload)
 

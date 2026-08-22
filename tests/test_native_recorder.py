@@ -1146,6 +1146,42 @@ async def test_archive_failure_isolated_from_core_recorder(
         assert health.fatal_error_type is None
 
 
+def test_normal_market_closure_is_not_reported_as_stale_or_source_failure(tmp_path) -> None:
+    saturday = NOW.replace(day=22, hour=4)
+    last_observations = {
+        Asset.GOLD: NOW.replace(hour=20, minute=59, second=55),
+        Asset.SILVER: NOW.replace(hour=20, minute=59, second=55),
+        Asset.WTI_OIL: NOW.replace(hour=20, minute=44, second=55),
+    }
+    with RecorderStore(tmp_path / "market-closed.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                enable_pyth_underlying=True,
+                enable_ws_archive=False,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: saturday,
+        )
+        for asset in (Asset.GOLD, Asset.SILVER, Asset.WTI_OIL):
+            recorder._health.last_additional_underlying[asset] = last_observations[asset]
+            recorder._gap_last[(GapSource.PYTH, asset)] = last_observations[asset]
+        recorder._open_due_gaps(saturday)
+        health = recorder.health()
+        gap_count = store.count("data_gaps")
+
+    for asset in (Asset.GOLD, Asset.SILVER, Asset.WTI_OIL):
+        assert f"pyth:{asset.value}" in health.market_closed_sources
+        assert f"pyth:{asset.value}" not in health.stale_sources
+        assert f"pyth:{asset.value}" not in health.source_failures
+    assert gap_count == 0
+    assert health.as_dict()["status"] == "degraded"  # Other configured live workers are absent.
+
+
 def test_v3_to_v4_migration_failure_rolls_back(tmp_path) -> None:
     path = tmp_path / "rollback.sqlite3"
     market = provider().parse_market(Asset.BTC, raw_market(), NOW)

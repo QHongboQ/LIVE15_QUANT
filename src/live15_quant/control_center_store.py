@@ -17,6 +17,7 @@ from live15_quant.features import (
     FeatureInputs,
     SamplingPolicy,
 )
+from live15_quant.market_sessions import market_data_state, market_session
 from live15_quant.models import Asset, UnderlyingProvider
 from live15_quant.providers.pyth import PYTH_FEEDS
 from live15_quant.storage import RecorderStorageError, RecorderStore
@@ -162,7 +163,21 @@ class DashboardReadStore:
                 tick_age,
                 self.coinbase_stale_seconds if product is not None else self.pyth_stale_seconds,
             )
-            if product is None and tick is not None:
+            if product is None and market_session(asset) is not None:
+                session_status = market_data_state(
+                    asset,
+                    checked_at=now,
+                    latest_received=tick_received,
+                    max_age=timedelta(seconds=self.pyth_stale_seconds),
+                )
+                underlying_status = session_status.value
+                if (
+                    session_status.value == "healthy"
+                    and tick is not None
+                    and str(tick["freshness"]) == "stale"
+                ):
+                    underlying_status = "stale"
+            elif product is None and tick is not None:
                 recorded_freshness = str(tick["freshness"])
                 if recorded_freshness == "stale":
                     underlying_status = "stale"

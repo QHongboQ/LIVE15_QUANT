@@ -847,6 +847,8 @@ def _gap_quarantine_reason(
 
 def _feature_quarantine_reason(vector: FeatureVector) -> TrainingDataUnavailableReason | None:
     missing = {observation.missing_reason for observation in vector.observations}
+    if MissingReason.MARKET_CLOSED in missing:
+        return TrainingDataUnavailableReason.MARKET_CLOSED
     if MissingReason.STALE in missing:
         return TrainingDataUnavailableReason.STALE_SOURCE
     if MissingReason.SOURCE_UNAVAILABLE in missing:

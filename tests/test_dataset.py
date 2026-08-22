@@ -239,6 +239,70 @@ def test_dataset_builder_uses_pyth_underlying_for_non_coinbase_asset(tmp_path) -
     assert len(row.source_underlying_row_ids) == 22
 
 
+def test_dataset_builder_quarantines_closed_market_underlying_at_row_level(tmp_path) -> None:
+    start = datetime(2026, 8, 22, 4, 0, tzinfo=UTC)  # Saturday metals closure.
+    finalized = provider().parse_market(
+        Asset.GOLD,
+        raw_market(Asset.GOLD, start=start, status="finalized", result="yes"),
+        start + timedelta(minutes=16),
+    )
+    assert finalized.settlement is not None
+    observed = replace(
+        finalized,
+        lifecycle=KalshiLifecycle.OPEN,
+        official_status="active",
+        fetched_timestamp=start + timedelta(seconds=1),
+        determination_result=None,
+        settlement=None,
+    )
+    decision = start + timedelta(minutes=5)
+    with (
+        RecorderStore(tmp_path / "raw.sqlite3") as source,
+        FeatureStore(tmp_path / "features.sqlite3") as destination,
+    ):
+        source.append_kalshi_market(observed)
+        btc_ticker = finalized.ticker.replace(finalized.series, "KXBTC15M", 1)
+        btc_event_ticker = finalized.event_ticker.replace(finalized.series, "KXBTC15M", 1)
+        source.append_kalshi_quote(
+            replace(
+                quote(btc_ticker, btc_event_ticker, decision - timedelta(seconds=1)),
+                asset=Asset.GOLD,
+                series=finalized.series,
+                ticker=finalized.ticker,
+                event_ticker=finalized.event_ticker,
+            )
+        )
+        source.append_underlying(
+            UnderlyingObservation(
+                asset=Asset.GOLD,
+                provider=UnderlyingProvider.PYTH_HERMES,
+                symbol="Metal.XAU/USD",
+                feed_id="a" * 64,
+                price=Decimal("3388.12345678"),
+                source_timestamp=decision - timedelta(seconds=1),
+                received_timestamp=decision - timedelta(seconds=1),
+                confidence=Decimal("0.01"),
+                provenance="official",
+                freshness=FreshnessState.FRESH,
+            )
+        )
+        source.append_kalshi_settlement(finalized.settlement)
+        summary = DatasetBuilder(source, destination).build(
+            DatasetBuildConfig(
+                SamplingPolicy(
+                    (timedelta(minutes=10),),
+                    quote_max_age=timedelta(seconds=30),
+                    underlying_max_age=timedelta(seconds=30),
+                ),
+                assets=(Asset.GOLD,),
+            )
+        )
+
+    assert summary.rows == 0
+    assert summary.skipped_decisions == 1
+    assert summary.diagnostics["trainability_rejections"] == {"market_closed": 1}
+
+
 def test_empty_dataset_diagnostics_report_rates_as_not_applicable() -> None:
     diagnostics = dataset_diagnostics(())
 

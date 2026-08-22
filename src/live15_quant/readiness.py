@@ -20,6 +20,12 @@ from live15_quant.dataset import DatasetBuildConfig, DatasetBuilder, FeatureStor
 from live15_quant.feature_registry import FEATURE_REGISTRY, FeatureFamily
 from live15_quant.features import COINBASE_PRODUCT_BY_ASSET, SamplingPolicy
 from live15_quant.gaps import DataGap, configured_streams, detect_gaps, effective_data_gaps
+from live15_quant.market_sessions import (
+    MarketDataState,
+    market_data_state,
+    market_session,
+    open_intervals_for_asset,
+)
 from live15_quant.models import Asset
 from live15_quant.providers.pyth import PYTH_FEEDS
 from live15_quant.storage import RecorderStore
@@ -72,9 +78,19 @@ def _windowed_coverage(
     snapshot_at: datetime,
     bucket_seconds: float,
     stale_seconds: float,
+    market_asset: Asset | None = None,
 ) -> dict[str, SourceWindowCoverage]:
     if bucket_seconds <= 0 or stale_seconds <= 0:
         raise ValueError("coverage bucket and stale threshold must be positive")
+    received_values = tuple(timestamp.astimezone(UTC) for timestamp in timestamps)
+    if market_asset is not None and market_session(market_asset) is not None:
+        return _session_windowed_coverage(
+            received_values,
+            snapshot_at=snapshot_at,
+            bucket_seconds=bucket_seconds,
+            stale_seconds=stale_seconds,
+            market_asset=market_asset,
+        )
     states = {
         label: {
             "start": snapshot_at - duration,
@@ -89,8 +105,7 @@ def _windowed_coverage(
         for label, duration in _OBSERVABILITY_WINDOWS.items()
     }
     earliest = snapshot_at - max(_OBSERVABILITY_WINDOWS.values())
-    for received in timestamps:
-        received = received.astimezone(UTC)
+    for received in received_values:
         if received < earliest or received > snapshot_at:
             continue
         for state in states.values():
@@ -149,6 +164,62 @@ def _windowed_coverage(
     return result
 
 
+def _session_windowed_coverage(
+    timestamps: tuple[datetime, ...],
+    *,
+    snapshot_at: datetime,
+    bucket_seconds: float,
+    stale_seconds: float,
+    market_asset: Asset,
+) -> dict[str, SourceWindowCoverage]:
+    """Measure source reliability only while the official feed session is open."""
+
+    result: dict[str, SourceWindowCoverage] = {}
+    for label, duration in _OBSERVABILITY_WINDOWS.items():
+        start = snapshot_at - duration
+        intervals = open_intervals_for_asset(market_asset, start, snapshot_at)
+        expected_seconds = sum((end - opened).total_seconds() for opened, end in intervals)
+        points = tuple(value for value in timestamps if start <= value <= snapshot_at)
+        open_points = tuple(
+            value for value in points if any(opened <= value <= end for opened, end in intervals)
+        )
+        expected_buckets: set[int] = set()
+        observed_buckets: set[int] = set()
+        stale_free_seconds = 0.0
+        max_gap = 0.0
+        for opened, end in intervals:
+            first_bucket = int((opened - start).total_seconds() // bucket_seconds)
+            last_bucket = int(max(0.0, (end - start).total_seconds() - 1e-9) // bucket_seconds)
+            expected_buckets.update(range(first_bucket, last_bucket + 1))
+            segment_points = tuple(value for value in open_points if opened <= value <= end)
+            previous = opened
+            for value in segment_points:
+                gap = max(0.0, (value - previous).total_seconds())
+                stale_free_seconds += min(gap, stale_seconds)
+                max_gap = max(max_gap, gap)
+                observed_buckets.add(int((value - start).total_seconds() // bucket_seconds))
+                previous = value
+            tail = max(0.0, (end - previous).total_seconds())
+            stale_free_seconds += min(tail, stale_seconds)
+            max_gap = max(max_gap, tail)
+        if expected_seconds == 0:
+            coverage = 100.0
+            stale_free = 100.0
+            max_gap = 0.0
+        else:
+            coverage = min(100.0, len(observed_buckets) / max(1, len(expected_buckets)) * 100)
+            stale_free = min(100.0, stale_free_seconds / expected_seconds * 100)
+        result[label] = SourceWindowCoverage(
+            observations=len(open_points),
+            coverage_percent=round(coverage, 6),
+            stale_free_coverage_percent=round(stale_free, 6),
+            max_continuous_gap_seconds=max_gap,
+            first_received_timestamp=(open_points[0].isoformat() if open_points else None),
+            last_received_timestamp=(open_points[-1].isoformat() if open_points else None),
+        )
+    return result
+
+
 def build_source_observability(
     connection: sqlite3.Connection,
     settings: Settings,
@@ -157,7 +228,7 @@ def build_source_observability(
 ) -> dict[str, object]:
     """Compute bounded-window metrics on a read-only snapshot, never the active DB."""
 
-    specs: list[tuple[str, str, str, tuple[object, ...], float, float]] = []
+    specs: list[tuple[str, str, str, tuple[object, ...], float, float, Asset | None]] = []
     for asset in Asset:
         specs.append(
             (
@@ -167,6 +238,7 @@ def build_source_observability(
                 (asset.value,),
                 max(1.0, settings.official_quote_poll_interval_seconds),
                 settings.official_quote_max_source_age_seconds,
+                None,
             )
         )
     for asset, product in COINBASE_PRODUCT_BY_ASSET.items():
@@ -178,6 +250,7 @@ def build_source_observability(
                 (product,),
                 5.0,
                 settings.recorder_coinbase_stale_seconds,
+                None,
             )
         )
     for asset in PYTH_FEEDS:
@@ -189,6 +262,7 @@ def build_source_observability(
                 (asset.value, "pyth_hermes"),
                 5.0,
                 settings.recorder_pyth_stale_seconds,
+                asset,
             )
         )
     for asset, provider in (
@@ -203,12 +277,13 @@ def build_source_observability(
                 (asset.value, provider),
                 5.0,
                 settings.recorder_secondary_stale_seconds,
+                None,
             )
         )
 
     earliest = snapshot_at - max(_OBSERVABILITY_WINDOWS.values())
     report: dict[str, object] = {}
-    for name, table, predicate, parameters, bucket, stale in specs:
+    for name, table, predicate, parameters, bucket, stale, market_asset in specs:
         rows = connection.execute(
             f"SELECT received_timestamp FROM {table} WHERE {predicate} "
             "AND received_timestamp>=? AND received_timestamp<=? "
@@ -220,6 +295,7 @@ def build_source_observability(
             snapshot_at=snapshot_at,
             bucket_seconds=bucket,
             stale_seconds=stale,
+            market_asset=market_asset,
         )
         report[name] = {
             "bucket_seconds": bucket,
@@ -695,9 +771,17 @@ def _live_source_ready_by_asset(
         ).fetchone()
         if row is None:
             continue
+        received = _parse(row["received_timestamp"])
+        state = market_data_state(
+            asset,
+            checked_at=snapshot_at,
+            latest_received=received,
+            max_age=timedelta(seconds=max_age_seconds),
+        )
         ready[asset] = (
-            row["freshness"] == "fresh"
-            and _parse(row["received_timestamp"]) >= cutoff
+            state is MarketDataState.HEALTHY
+            and row["freshness"] == "fresh"
+            and received >= cutoff
             and _parse(row["source_timestamp"]) >= cutoff
         )
     return ready

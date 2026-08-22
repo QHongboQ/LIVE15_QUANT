@@ -53,9 +53,15 @@ from live15_quant.kalshi_ws import (
     SynchronizedKalshiOrderBook,
     update_subscription_command,
 )
+from live15_quant.market_sessions import (
+    MarketDataState,
+    market_data_state,
+    open_intervals_for_asset,
+)
 from live15_quant.models import (
     Asset,
     FifteenMinuteContract,
+    FreshnessState,
     KalshiNativeQuote,
     MarketTick,
     RecorderEventSeverity,
@@ -172,6 +178,8 @@ class KalshiNativeHealth:
     retry_counts: dict[str, int]
     source_failures: dict[str, str]
     stale_sources: tuple[str, ...]
+    market_closed_sources: tuple[str, ...]
+    underlying_market_states: dict[Asset, MarketDataState]
     worker_progress: dict[str, datetime]
     stale_workers: tuple[str, ...]
     event_loop_lag_seconds: float
@@ -249,6 +257,10 @@ class KalshiNativeHealth:
             "retry_counts": self.retry_counts,
             "source_failures": self.source_failures,
             "stale_sources": self.stale_sources,
+            "market_closed_sources": self.market_closed_sources,
+            "underlying_market_states": {
+                str(asset): state.value for asset, state in self.underlying_market_states.items()
+            },
             "worker_progress": timestamps(self.worker_progress),
             "worker_progress_age_seconds": ages(self.worker_progress),
             "stale_workers": self.stale_workers,
@@ -296,6 +308,7 @@ class _MutableHealth:
     last_quotes: dict[Asset, datetime] = field(default_factory=dict)
     last_coinbase: dict[str, datetime] = field(default_factory=dict)
     last_additional_underlying: dict[Asset, datetime] = field(default_factory=dict)
+    additional_underlying_freshness: dict[Asset, FreshnessState] = field(default_factory=dict)
     last_secondary_underlying: dict[str, datetime] = field(default_factory=dict)
     secondary_persist_latency_ms: dict[str, str] = field(default_factory=dict)
     secondary_diagnostics: dict[str, int] = field(default_factory=dict)
@@ -523,6 +536,21 @@ class KalshiNativeRecorder:
             is KalshiWsRuntimeState.RECONNECTING
         ):
             ws_state = KalshiWsRuntimeState.RECONNECTING
+        pyth_states: dict[Asset, MarketDataState] = {}
+        for asset in PYTH_FEEDS:
+            state = market_data_state(
+                asset,
+                checked_at=observed,
+                latest_received=self._health.last_additional_underlying.get(asset),
+                max_age=timedelta(seconds=self._settings.recorder_pyth_stale_seconds),
+                source_available=f"pyth:{asset.value}" not in self._health.source_failures,
+            )
+            if (
+                state is MarketDataState.HEALTHY
+                and self._health.additional_underlying_freshness.get(asset) is FreshnessState.STALE
+            ):
+                state = MarketDataState.STALE
+            pyth_states[asset] = state
         stale_sources = tuple(
             sorted(
                 [
@@ -561,13 +589,8 @@ class KalshiNativeRecorder:
                     f"pyth:{asset.value}"
                     for asset in PYTH_FEEDS
                     if self._settings.enable_pyth_underlying
-                    and (
-                        asset not in self._health.last_additional_underlying
-                        or (
-                            observed - self._health.last_additional_underlying[asset]
-                        ).total_seconds()
-                        > self._settings.recorder_pyth_stale_seconds
-                    )
+                    and pyth_states[asset]
+                    in {MarketDataState.STALE, MarketDataState.SOURCE_UNAVAILABLE}
                 ]
                 + [
                     f"secondary:{key}"
@@ -613,6 +636,12 @@ class KalshiNativeRecorder:
             retry_counts=dict(self._health.retry_counts),
             source_failures=dict(self._health.source_failures),
             stale_sources=stale_sources,
+            market_closed_sources=tuple(
+                f"pyth:{asset.value}"
+                for asset, state in pyth_states.items()
+                if self._settings.enable_pyth_underlying and state is MarketDataState.MARKET_CLOSED
+            ),
+            underlying_market_states=pyth_states,
             worker_progress=dict(self._health.worker_progress),
             stale_workers=stale_workers,
             event_loop_lag_seconds=self._health.event_loop_lag_seconds,
@@ -754,52 +783,57 @@ class KalshiNativeRecorder:
         received = received.astimezone(UTC)
         previous = self._gap_last.get((source, asset))
         active = self._active_gaps.get((source, asset))
+        recovered_active_range: tuple[datetime, datetime] | None = None
         if active is not None and received > active.gap_start:
-            recovered = DataGap(
-                source=source,
-                asset=asset,
-                instrument=stream.instrument,
-                gap_start=active.gap_start,
-                gap_end=received,
-                detected_at=self._utc_now(),
-                threshold_seconds=active.threshold_seconds,
-                reason=active.reason,
-                error_type=active.error_type,
-                recovered=True,
-                recorder_session_id=active.recorder_session_id,
-                incident_id=active.incident_id,
-            )
-            if self._store.append_data_gap(recovered):
-                self._wrote("data_gaps")
+            intervals = self._gap_open_intervals(stream, active.gap_start, received)
+            if intervals:
+                gap_start, gap_end = intervals[0]
+                if gap_start == active.gap_start and gap_end > gap_start:
+                    self._recover_gap(active, gap_end)
+                    recovered_active_range = (gap_start, gap_end)
             self._active_gaps.pop((source, asset), None)
-        elif previous is not None and received > previous:
-            duration = timedelta_seconds(received - previous)
-            if duration > stream.threshold_seconds:
-                active = self._open_gap(
+        if previous is not None and received > previous:
+            for gap_start, gap_end in self._gap_open_intervals(stream, previous, received):
+                if recovered_active_range == (gap_start, gap_end):
+                    continue
+                if timedelta_seconds(gap_end - gap_start) <= stream.threshold_seconds:
+                    continue
+                opened = self._open_gap(
                     stream,
-                    previous,
+                    gap_start,
                     source_health_key=source_health_key,
                     detected_at=self._utc_now(),
                 )
-                recovered = DataGap(
-                    source=source,
-                    asset=asset,
-                    instrument=stream.instrument,
-                    gap_start=active.gap_start,
-                    gap_end=received,
-                    detected_at=self._utc_now(),
-                    threshold_seconds=active.threshold_seconds,
-                    reason=active.reason,
-                    error_type=active.error_type,
-                    recovered=True,
-                    recorder_session_id=active.recorder_session_id,
-                    incident_id=active.incident_id,
-                )
-                if self._store.append_data_gap(recovered):
-                    self._wrote("data_gaps")
+                self._recover_gap(opened, gap_end)
                 self._active_gaps.pop((source, asset), None)
         if previous is None or received > previous:
             self._gap_last[(source, asset)] = received
+
+    def _recover_gap(self, active: DataGap, gap_end: datetime) -> None:
+        recovered = DataGap(
+            source=active.source,
+            asset=active.asset,
+            instrument=active.instrument,
+            gap_start=active.gap_start,
+            gap_end=gap_end,
+            detected_at=self._utc_now(),
+            threshold_seconds=active.threshold_seconds,
+            reason=active.reason,
+            error_type=active.error_type,
+            recovered=True,
+            recorder_session_id=active.recorder_session_id,
+            incident_id=active.incident_id,
+        )
+        if self._store.append_data_gap(recovered):
+            self._wrote("data_gaps")
+
+    @staticmethod
+    def _gap_open_intervals(
+        stream: GapStream, start: datetime, end: datetime
+    ) -> tuple[tuple[datetime, datetime], ...]:
+        if stream.source is GapSource.PYTH:
+            return open_intervals_for_asset(stream.asset, start, end)
+        return ((start, end),)
 
     def _open_gap(
         self,
@@ -846,13 +880,27 @@ class KalshiNativeRecorder:
 
         for key, previous in tuple(self._gap_last.items()):
             stream = self._gap_streams[key]
-            if key in self._active_gaps or not self._gap_stream_enabled(stream):
+            active = self._active_gaps.get(key)
+            if active is not None and stream.source is GapSource.PYTH:
+                intervals = self._gap_open_intervals(stream, active.gap_start, observed)
+                if intervals and intervals[0][1] < observed:
+                    self._recover_gap(active, intervals[0][1])
+                    self._active_gaps.pop(key, None)
+                    active = None
+            if active is not None or not self._gap_stream_enabled(stream):
                 continue
-            if timedelta_seconds(observed - previous) <= stream.threshold_seconds:
+            intervals = self._gap_open_intervals(stream, previous, observed)
+            if not intervals:
+                continue
+            gap_start, gap_end = intervals[-1]
+            if (
+                gap_end != observed
+                or timedelta_seconds(gap_end - gap_start) <= stream.threshold_seconds
+            ):
                 continue
             self._open_gap(
                 stream,
-                previous,
+                gap_start,
                 source_health_key=self._gap_source_health_key(stream),
                 detected_at=observed,
             )
@@ -1492,8 +1540,9 @@ class KalshiNativeRecorder:
                     source_health_key=f"pyth:{observation.asset.value}",
                 )
             self._health.last_additional_underlying[observation.asset] = (
-                observation.source_timestamp
+                observation.received_timestamp
             )
+            self._health.additional_underlying_freshness[observation.asset] = observation.freshness
             self._source_ok(f"pyth:{observation.asset.value}")
 
     async def _record_secondary(self, asset: Asset) -> None:

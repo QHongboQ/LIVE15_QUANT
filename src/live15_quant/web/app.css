@@ -120,7 +120,7 @@ h3 { margin-bottom: 4px; font-size: 14px; }
 .state-warning, .state-degraded, .state-paused, .state-upcoming, .state-pending { color: var(--yellow); }
 .state-error, .state-storage_error { color: var(--red); }
 .state-stale { color: var(--purple); }
-.state-missing, .state-unavailable, .state-unsupported, .state-stopped { color: #8193a1; }
+.state-missing, .state-unavailable, .state-unsupported, .state-stopped, .state-market_closed { color: #8193a1; }
 
 .split-grid { display: grid; grid-template-columns: 1.45fr .75fr; gap: 12px; }
 .panel { border: 1px solid var(--line); border-radius: 9px; background: var(--panel); overflow: hidden; }

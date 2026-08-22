@@ -14,6 +14,7 @@ dependencies = [
     "cryptography==50.0.0",
     "fastapi==0.141.1",
     "requests==2.34.2",
+    "tzdata==2026.3",
     "uvicorn==0.52.4",
     "websockets==17.0.1",
 ]

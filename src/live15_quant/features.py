@@ -11,6 +11,7 @@ from types import MappingProxyType
 
 from live15_quant.feature_registry import FEATURE_BY_NAME, MissingReason
 from live15_quant.kalshi_lifecycle import KalshiLifecycle
+from live15_quant.market_sessions import MarketDataState, market_data_state, market_session
 from live15_quant.models import Asset, FreshnessState, UnderlyingProvider
 from live15_quant.records import (
     CoinbaseTickRecord,
@@ -208,7 +209,20 @@ class FeatureEngine:
 
         latest_tick = ticks[-1] if ticks else None
         tick_reason: MissingReason | None = None
-        if product is None and market.asset not in {
+        session = market_session(market.asset)
+        session_state = (
+            market_data_state(
+                market.asset,
+                checked_at=decision,
+                latest_received=(None if latest_tick is None else latest_tick.received_timestamp),
+                max_age=self.policy.underlying_max_age,
+            )
+            if session is not None
+            else None
+        )
+        if session_state is MarketDataState.MARKET_CLOSED:
+            tick_reason = MissingReason.MARKET_CLOSED
+        elif product is None and market.asset not in {
             Asset.GOLD,
             Asset.SILVER,
             Asset.WTI_OIL,
@@ -217,6 +231,10 @@ class FeatureEngine:
         }:
             tick_reason = MissingReason.SOURCE_UNAVAILABLE
         elif latest_tick is None:
+            tick_reason = MissingReason.SOURCE_UNAVAILABLE
+        elif session_state is MarketDataState.STALE:
+            tick_reason = MissingReason.STALE
+        elif session_state is MarketDataState.SOURCE_UNAVAILABLE:
             tick_reason = MissingReason.SOURCE_UNAVAILABLE
         elif latest_tick.freshness is FreshnessState.STALE:
             tick_reason = MissingReason.STALE
@@ -587,6 +605,7 @@ def _realized_volatility(ticks: tuple[_UnderlyingPoint, ...]) -> Decimal | None:
 def _derived_missing(values: Mapping[str, FeatureObservation], *dependencies: str) -> MissingReason:
     reasons = tuple(values[name].missing_reason for name in dependencies)
     priority = (
+        MissingReason.MARKET_CLOSED,
         MissingReason.STALE,
         MissingReason.SOURCE_UNAVAILABLE,
         MissingReason.MARKET_SIDE_UNAVAILABLE,

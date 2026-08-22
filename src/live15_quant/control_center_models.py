@@ -95,6 +95,8 @@ class HealthResponse(StrictResponse):
     retry_counts: dict[str, int] = Field(default_factory=dict)
     source_failures: dict[str, str] = Field(default_factory=dict)
     stale_sources: list[str] = Field(default_factory=list)
+    market_closed_sources: list[str] = Field(default_factory=list)
+    underlying_market_states: dict[str, str] = Field(default_factory=dict)
     worker_progress: dict[str, datetime] = Field(default_factory=dict)
     worker_progress_age_seconds: dict[str, float] = Field(default_factory=dict)
     stale_workers: list[str] = Field(default_factory=list)

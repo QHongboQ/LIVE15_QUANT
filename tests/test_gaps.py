@@ -14,17 +14,22 @@ from live15_quant.gaps import (
     DataGap,
     GapReason,
     GapSource,
+    GapStream,
     InferenceReadinessStatus,
     configured_streams,
     detect_gaps,
     effective_data_gaps,
     inference_readiness,
 )
+from live15_quant.market_sessions import MarketDataState
 from live15_quant.models import (
     Asset,
+    FreshnessState,
     MarketTick,
     RecorderEventSeverity,
     RecorderEventType,
+    UnderlyingObservation,
+    UnderlyingProvider,
 )
 from live15_quant.records import SCHEMA_VERSION
 from live15_quant.storage import DataGapConflictError, RecorderStore
@@ -390,3 +395,47 @@ def test_live_inference_passes_only_with_complete_current_lookback() -> None:
     )
     assert result.status is InferenceReadinessStatus.PASS
     assert result.reasons == ()
+
+
+def test_market_closed_live_inference_fails_closed_without_source_failure() -> None:
+    checked = datetime(2026, 8, 22, 4, 0, tzinfo=UTC)
+    result = inference_readiness(
+        checked_at=checked,
+        required_since=checked - timedelta(minutes=5),
+        latest_received=datetime(2026, 8, 21, 20, 59, tzinfo=UTC),
+        max_age=timedelta(seconds=15),
+        underlying_state=MarketDataState.MARKET_CLOSED,
+    )
+    assert result.status is InferenceReadinessStatus.DATA_UNAVAILABLE
+    assert "market_closed" in result.reasons
+    assert "source_disconnected" not in result.reasons
+
+
+def test_historical_gap_detection_excludes_normal_market_closure(tmp_path) -> None:
+    before_close = datetime(2026, 8, 21, 20, 59, 55, tzinfo=UTC)
+    after_reopen = datetime(2026, 8, 23, 22, 0, 5, tzinfo=UTC)
+    with RecorderStore(tmp_path / "closed.sqlite3") as store:
+        for received in (before_close, after_reopen):
+            store.append_underlying(
+                UnderlyingObservation(
+                    asset=Asset.GOLD,
+                    provider=UnderlyingProvider.PYTH_HERMES,
+                    symbol="Metal.XAU/USD",
+                    feed_id="a" * 64,
+                    price=Decimal("3388"),
+                    source_timestamp=received,
+                    received_timestamp=received,
+                    confidence=None,
+                    provenance="official-test",
+                    freshness=FreshnessState.FRESH,
+                )
+            )
+        gaps = detect_gaps(
+            store._connection,
+            (GapStream(GapSource.PYTH, Asset.GOLD, "Metal.XAU/USD", Decimal("15")),),
+            start=before_close,
+            end=after_reopen,
+            detected_at=after_reopen,
+            immutable_snapshot=True,
+        )
+    assert gaps == ()
