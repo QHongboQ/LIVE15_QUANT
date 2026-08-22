@@ -11,6 +11,7 @@ from live15_quant.market_sessions import (
     parse_official_schedule,
 )
 from live15_quant.models import Asset
+from live15_quant.readiness import _windowed_coverage
 
 
 @pytest.mark.parametrize("asset", (Asset.GOLD, Asset.SILVER))
@@ -133,3 +134,19 @@ def test_official_schedule_parser_rejects_incomplete_or_malformed_metadata() -> 
             "America/New_York;O,O,O,O,O,C,C;0101/C,0101/O",
             verified_years=frozenset({2026}),
         )
+
+
+def test_session_coverage_is_unavailable_until_first_post_reopen_observation() -> None:
+    reopened = datetime(2026, 8, 23, 22, 0, tzinfo=UTC)
+    first = reopened + timedelta(seconds=10)
+    report = _windowed_coverage(
+        iter((first,)),
+        snapshot_at=first,
+        bucket_seconds=5,
+        stale_seconds=15,
+        market_asset=Asset.GOLD,
+    )
+
+    one_hour = report["1h"]
+    assert one_hour.max_continuous_gap_seconds == 10
+    assert one_hour.stale_free_coverage_percent == 0

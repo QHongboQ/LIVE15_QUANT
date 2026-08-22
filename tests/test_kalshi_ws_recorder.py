@@ -175,6 +175,27 @@ class RecoveringProductionWs(FakeProductionWs):
         await asyncio.Event().wait()
 
 
+class InvariantRecoveringProductionWs(FakeProductionWs):
+    """Inject one impossible depth update, then provide official fresh snapshots."""
+
+    async def messages(self, tickers):
+        exact = tuple(tickers)
+        yield KalshiSubscribed(1, 2, "orderbook_delta")
+        for sequence, ticker in enumerate(exact, 1):
+            yield self._snapshot(ticker, sequence, 0)
+        yield replace(
+            self._delta(exact[0], len(exact) + 1),
+            quantity_delta=Decimal("-11"),
+        )
+        assert "get_snapshot" in self._actions()
+        self.gap_observed.set()
+        await self.allow_resync.wait()
+        for offset, ticker in enumerate(exact):
+            yield self._snapshot(ticker, 20 + offset, 2)
+        self.resync_complete.set()
+        await asyncio.Event().wait()
+
+
 @pytest.mark.asyncio
 async def test_recorder_uses_only_synchronized_ws_and_closes_sequence_gap(tmp_path) -> None:
     source = FakeProductionWs()
@@ -232,6 +253,48 @@ async def test_recorder_uses_only_synchronized_ws_and_closes_sequence_gap(tmp_pa
         source.diagnostics.receive_queue_dropped = 1
         with pytest.raises(KalshiUnsynchronizedBookError):
             recorder.synchronized_kalshi_ws_book(current_ticker)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_recorder_isolates_impossible_depth_and_recovers_all_books(tmp_path) -> None:
+    source = InvariantRecoveringProductionWs()
+    discoveries = tuple(discovery_for(asset) for asset in Asset)
+    with RecorderStore(tmp_path / "invariant-recovery.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                enable_kalshi_production_websocket=True,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(discoveries),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            kalshi_ws_factory=lambda: source,
+            now=lambda: NOW,
+        )
+        for item in discoveries:
+            recorder._accept_discovery(item)
+        task = asyncio.create_task(recorder._record_kalshi_ws())
+        await asyncio.wait_for(source.gap_observed.wait(), 1)
+
+        assert not task.done()
+        assert recorder.health().kalshi_ws_connection_state is KalshiWsRuntimeState.UNSYNCHRONIZED
+        assert len(store.active_data_gaps()) == len(Asset)
+        for market in recorder._health.current.values():
+            with pytest.raises(KalshiUnsynchronizedBookError):
+                recorder.synchronized_kalshi_ws_book(market.ticker)
+
+        source.allow_resync.set()
+        await asyncio.wait_for(source.resync_complete.wait(), 1)
+        recorder._flush_kalshi_ws_pending()
+
+        assert not task.done()
+        assert recorder.health().kalshi_ws_connection_state is KalshiWsRuntimeState.SYNCHRONIZED
+        assert not store.active_data_gaps()
+        assert len(recorder.health().kalshi_ws_synchronized_markets) == len(Asset)
+        assert len(tuple(gap for gap in store.replay_data_gaps() if gap.recovered)) == len(Asset)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 

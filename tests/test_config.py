@@ -47,6 +47,14 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.adaptive_retention_max_seconds == 21600
     assert settings.adaptive_retention_state_path is None
     assert settings.adaptive_retention_disk_deescalation_samples == 3
+    assert settings.readiness_snapshot_max_seconds == 300.0
+
+
+def test_readiness_snapshot_budget_is_configurable_and_positive() -> None:
+    settings = load_settings({"LIVE15_READINESS_SNAPSHOT_MAX_SECONDS": "180"})
+    assert settings.readiness_snapshot_max_seconds == 180.0
+    with pytest.raises(ValueError, match="must be positive"):
+        load_settings({"LIVE15_READINESS_SNAPSHOT_MAX_SECONDS": "0"})
 
 
 def test_adaptive_retention_rejects_non_ladder_starting_value() -> None:

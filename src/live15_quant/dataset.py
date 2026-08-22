@@ -309,7 +309,7 @@ class FeatureStore:
             raise FeatureStoreError("dataset source snapshot is malformed")
         return payload
 
-    def append(self, row: TrainingRow) -> bool:
+    def append(self, row: TrainingRow, *, commit: bool = True) -> bool:
         features = {
             item.name: str(item.value) if item.value is not None else None
             for item in row.features.observations
@@ -372,8 +372,19 @@ class FeatureStore:
             """,
             (*payload, content_hash),
         )
-        self._connection.commit()
+        if commit:
+            self._connection.commit()
         return True
+
+    def commit_pending(self) -> None:
+        """Durably publish one bounded batch of deterministic training rows."""
+
+        self._connection.commit()
+
+    def rollback_pending(self) -> None:
+        """Discard only the current incomplete batch after a build failure."""
+
+        self._connection.rollback()
 
     def complete_build(self, build_id: str, diagnostics: dict[str, object]) -> None:
         self._connection.execute(
@@ -585,143 +596,155 @@ class DatasetBuilder:
             if settlement.asset in config.assets
         )
         engine = FeatureEngine(config.sampling_policy)
-        rows_written = skipped = 0
+        rows_written = skipped = pending_rows = 0
         rejection_reasons: Counter[str] = Counter()
         stopped_early = False
-        for settlement in settlements:
-            for decision in config.sampling_policy.decision_times(
-                settlement.window_start, settlement.window_end
-            ):
-                underlying_source = (
-                    GapSource.COINBASE
-                    if settlement.asset in COINBASE_PRODUCT_BY_ASSET
-                    else GapSource.PYTH
-                )
-                gap_reason = _gap_quarantine_reason(
-                    effective_data_gaps(
-                        self._source.replay_data_gaps(
-                            source=GapSource.KALSHI_REST,
-                            asset=settlement.asset,
-                            start=decision - config.sampling_policy.quote_max_age,
-                            end=decision,
-                            max_row_id=table_limits["data_gaps"],
-                        )
-                        + self._source.replay_data_gaps(
-                            source=underlying_source,
-                            asset=settlement.asset,
-                            start=decision
-                            - timedelta(seconds=300)
-                            - config.sampling_policy.underlying_max_age,
-                            end=decision,
-                            max_row_id=table_limits["data_gaps"],
-                        )
+        try:
+            for settlement in settlements:
+                for decision in config.sampling_policy.decision_times(
+                    settlement.window_start, settlement.window_end
+                ):
+                    underlying_source = (
+                        GapSource.COINBASE
+                        if settlement.asset in COINBASE_PRODUCT_BY_ASSET
+                        else GapSource.PYTH
                     )
-                )
-                if gap_reason is not None:
-                    skipped += 1
-                    rejection_reasons[gap_reason.value] += 1
-                    continue
-                try:
-                    joined = self._source.join_training_label(
-                        settlement.ticker,
-                        decision,
-                        market_max_row_id=table_limits["kalshi_market_lifecycle"],
-                        quote_max_row_id=table_limits["kalshi_prediction_quotes"],
-                        settlement_max_row_id=table_limits["kalshi_settlements"],
-                    )
-                except TrainingDataUnavailableError as error:
-                    skipped += 1
-                    rejection_reasons[_training_unavailable_reason(error)] += 1
-                    continue
-                product = COINBASE_PRODUCT_BY_ASSET.get(settlement.asset)
-                ticks = (
-                    tuple(
-                        self._source.replay_coinbase_range(
-                            product,
-                            start=decision
-                            - timedelta(seconds=300)
-                            - config.sampling_policy.underlying_max_age,
-                            end=decision,
-                            max_row_id=table_limits["coinbase_ticks"],
+                    gap_reason = _gap_quarantine_reason(
+                        effective_data_gaps(
+                            self._source.replay_data_gaps(
+                                source=GapSource.KALSHI_REST,
+                                asset=settlement.asset,
+                                start=decision - config.sampling_policy.quote_max_age,
+                                end=decision,
+                                max_row_id=table_limits["data_gaps"],
+                            )
+                            + self._source.replay_data_gaps(
+                                source=underlying_source,
+                                asset=settlement.asset,
+                                start=decision
+                                - timedelta(seconds=300)
+                                - config.sampling_policy.underlying_max_age,
+                                end=decision,
+                                max_row_id=table_limits["data_gaps"],
+                            )
                         )
                     )
-                    if product is not None
-                    else ()
-                )
-                safe_ticks = tuple(
-                    tick
-                    for tick in ticks
-                    if tick.received_timestamp <= decision
-                    and (tick.exchange_timestamp is None or tick.exchange_timestamp <= decision)
-                )
-                underlying = (
-                    tuple(
-                        self._source.replay_underlying_range(
-                            settlement.asset,
-                            UnderlyingProvider.PYTH_HERMES,
-                            start=decision
-                            - timedelta(seconds=300)
-                            - config.sampling_policy.underlying_max_age,
-                            end=decision,
-                            max_row_id=table_limits["underlying_observations"],
+                    if gap_reason is not None:
+                        skipped += 1
+                        rejection_reasons[gap_reason.value] += 1
+                        continue
+                    try:
+                        joined = self._source.join_training_label(
+                            settlement.ticker,
+                            decision,
+                            market_max_row_id=table_limits["kalshi_market_lifecycle"],
+                            quote_max_row_id=table_limits["kalshi_prediction_quotes"],
+                            settlement_max_row_id=table_limits["kalshi_settlements"],
+                        )
+                    except TrainingDataUnavailableError as error:
+                        skipped += 1
+                        rejection_reasons[_training_unavailable_reason(error)] += 1
+                        continue
+                    product = COINBASE_PRODUCT_BY_ASSET.get(settlement.asset)
+                    ticks = (
+                        tuple(
+                            self._source.replay_coinbase_range(
+                                product,
+                                start=decision
+                                - timedelta(seconds=300)
+                                - config.sampling_policy.underlying_max_age,
+                                end=decision,
+                                max_row_id=table_limits["coinbase_ticks"],
+                            )
+                        )
+                        if product is not None
+                        else ()
+                    )
+                    safe_ticks = tuple(
+                        tick
+                        for tick in ticks
+                        if tick.received_timestamp <= decision
+                        and (tick.exchange_timestamp is None or tick.exchange_timestamp <= decision)
+                    )
+                    underlying = (
+                        tuple(
+                            self._source.replay_underlying_range(
+                                settlement.asset,
+                                UnderlyingProvider.PYTH_HERMES,
+                                start=decision
+                                - timedelta(seconds=300)
+                                - config.sampling_policy.underlying_max_age,
+                                end=decision,
+                                max_row_id=table_limits["underlying_observations"],
+                            )
+                        )
+                        if product is None
+                        else ()
+                    )
+                    safe_underlying = tuple(
+                        item
+                        for item in underlying
+                        if item.received_timestamp <= decision and item.source_timestamp <= decision
+                    )
+                    safe_quotes = tuple(
+                        quote
+                        for quote in joined.observations
+                        if quote.received_timestamp <= decision
+                        and (quote.source_timestamp is None or quote.source_timestamp <= decision)
+                    )
+                    vector = engine.compute(
+                        FeatureInputs(
+                            joined.market,
+                            safe_quotes,
+                            safe_ticks,
+                            decision,
+                            safe_underlying,
                         )
                     )
-                    if product is None
-                    else ()
-                )
-                safe_underlying = tuple(
-                    item
-                    for item in underlying
-                    if item.received_timestamp <= decision and item.source_timestamp <= decision
-                )
-                safe_quotes = tuple(
-                    quote
-                    for quote in joined.observations
-                    if quote.received_timestamp <= decision
-                    and (quote.source_timestamp is None or quote.source_timestamp <= decision)
-                )
-                vector = engine.compute(
-                    FeatureInputs(
-                        joined.market,
-                        safe_quotes,
-                        safe_ticks,
-                        decision,
-                        safe_underlying,
+                    feature_reason = _feature_quarantine_reason(vector)
+                    if feature_reason is not None:
+                        skipped += 1
+                        rejection_reasons[feature_reason.value] += 1
+                        continue
+                    eligible_ticks = tuple(tick.row_id for tick in safe_ticks)
+                    eligible_underlying = tuple(item.row_id for item in safe_underlying)
+                    eligible_quotes = tuple(quote.row_id for quote in safe_quotes)
+                    written = self._destination.append(
+                        TrainingRow(
+                            build_id=build_id,
+                            asset=joined.market.asset,
+                            series=joined.market.series,
+                            ticker=joined.ticker,
+                            window_start=joined.market.window_start,
+                            window_end=joined.market.window_end,
+                            decision_timestamp=decision,
+                            time_remaining_seconds=decimal_seconds(
+                                joined.market.window_end - decision
+                            ),
+                            target=joined.market.target,
+                            label=joined.label.result,
+                            features=vector,
+                            source_market_row_id=joined.market.row_id,
+                            source_quote_row_ids=eligible_quotes,
+                            source_tick_row_ids=eligible_ticks,
+                            source_underlying_row_ids=eligible_underlying,
+                        ),
+                        commit=False,
                     )
-                )
-                feature_reason = _feature_quarantine_reason(vector)
-                if feature_reason is not None:
-                    skipped += 1
-                    rejection_reasons[feature_reason.value] += 1
-                    continue
-                eligible_ticks = tuple(tick.row_id for tick in safe_ticks)
-                eligible_underlying = tuple(item.row_id for item in safe_underlying)
-                eligible_quotes = tuple(quote.row_id for quote in safe_quotes)
-                written = self._destination.append(
-                    TrainingRow(
-                        build_id=build_id,
-                        asset=joined.market.asset,
-                        series=joined.market.series,
-                        ticker=joined.ticker,
-                        window_start=joined.market.window_start,
-                        window_end=joined.market.window_end,
-                        decision_timestamp=decision,
-                        time_remaining_seconds=decimal_seconds(joined.market.window_end - decision),
-                        target=joined.market.target,
-                        label=joined.label.result,
-                        features=vector,
-                        source_market_row_id=joined.market.row_id,
-                        source_quote_row_ids=eligible_quotes,
-                        source_tick_row_ids=eligible_ticks,
-                        source_underlying_row_ids=eligible_underlying,
-                    )
-                )
-                rows_written += int(written)
-                if max_new_rows is not None and rows_written >= max_new_rows:
-                    stopped_early = True
+                    rows_written += int(written)
+                    pending_rows += int(written)
+                    if pending_rows >= 256:
+                        self._destination.commit_pending()
+                        pending_rows = 0
+                    if max_new_rows is not None and rows_written >= max_new_rows:
+                        stopped_early = True
+                        break
+                if stopped_early:
                     break
-            if stopped_early:
-                break
+            self._destination.commit_pending()
+        except BaseException:
+            self._destination.rollback_pending()
+            raise
         rows = self._destination.replay(build_id)
         diagnostics = dataset_diagnostics(rows)
         row_tickers = {row.ticker for row in rows}

@@ -2238,14 +2238,19 @@ class RecorderStore:
             quote.role.value,
         )
         content_hash = _fingerprint(state)
-        latest = self._connection.execute(
+        existing = self._connection.execute(
             """
             SELECT content_hash FROM kalshi_prediction_quotes
-            WHERE ticker=? ORDER BY received_timestamp DESC, id DESC LIMIT 1
+            WHERE ticker=? AND received_timestamp=?
+            ORDER BY id LIMIT 1
             """,
-            (quote.ticker,),
+            (quote.ticker, _timestamp(quote.received_timestamp)),
         ).fetchone()
-        if latest is not None and latest["content_hash"] == content_hash:
+        if existing is not None:
+            if existing["content_hash"] != content_hash:
+                raise RecorderStorageError(
+                    "conflicting Kalshi quote fact for ticker receive timestamp"
+                )
             return False
         values: tuple[object, ...] = (
             SCHEMA_VERSION,

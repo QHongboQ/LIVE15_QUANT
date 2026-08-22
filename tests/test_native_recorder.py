@@ -13,7 +13,7 @@ import requests
 
 import live15_quant.cli as cli
 from live15_quant.config import Settings
-from live15_quant.gaps import GapReason, GapSource
+from live15_quant.gaps import GapReason, GapSource, effective_data_gaps
 from live15_quant.kalshi_lifecycle import (
     KalshiDiscovery,
     KalshiLifecycle,
@@ -1531,6 +1531,7 @@ def test_normal_market_closure_is_not_reported_as_stale_or_source_failure(tmp_pa
             Settings(
                 products=("BTC-USD",),
                 enable_pyth_underlying=True,
+                enable_kalshi_production_websocket=True,
                 enable_ws_archive=False,
                 recorder_health_path=tmp_path / "health.json",
             ),
@@ -1538,11 +1539,15 @@ def test_normal_market_closure_is_not_reported_as_stale_or_source_failure(tmp_pa
             discovery=FakeDiscovery(()),
             quotes=FakeQuotes(),
             coinbase_factory=OneTickStream,
+            kalshi_ws_factory=lambda: SimpleNamespace(
+                diagnostics=SimpleNamespace(receive_queue_capacity=8192, receive_queue_depth=0)
+            ),
             now=lambda: saturday,
         )
         for asset in (Asset.GOLD, Asset.SILVER, Asset.WTI_OIL):
             recorder._health.last_additional_underlying[asset] = last_observations[asset]
-            recorder._gap_last[(GapSource.PYTH, asset)] = last_observations[asset]
+            for source in (GapSource.PYTH, GapSource.KALSHI_REST, GapSource.KALSHI_WS):
+                recorder._gap_last[(source, asset)] = last_observations[asset]
         recorder._open_due_gaps(saturday)
         health = recorder.health()
         gap_count = store.count("data_gaps")
@@ -1553,6 +1558,42 @@ def test_normal_market_closure_is_not_reported_as_stale_or_source_failure(tmp_pa
         assert f"pyth:{asset.value}" not in health.source_failures
     assert gap_count == 0
     assert health.as_dict()["status"] == "degraded"  # Other configured live workers are absent.
+
+
+def test_active_commodity_gap_closes_at_session_end_not_sunday_reopen(tmp_path) -> None:
+    friday_before_close = (NOW + timedelta(days=1)).replace(hour=20, minute=59, second=30)
+    saturday = NOW.replace(day=22, hour=4)
+    with RecorderStore(tmp_path / "market-close-active-gap.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                enable_ws_archive=False,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: saturday,
+        )
+        stream = recorder._gap_streams[(GapSource.KALSHI_REST, Asset.GOLD)]
+        recorder._gap_last[(GapSource.KALSHI_REST, Asset.GOLD)] = friday_before_close
+        recorder._open_gap(
+            stream,
+            friday_before_close,
+            source_health_key="kalshi_quote:Gold",
+            detected_at=friday_before_close + timedelta(seconds=10),
+        )
+
+        recorder._open_due_gaps(saturday)
+
+        assert store.active_data_gaps() == ()
+        recovered = effective_data_gaps(store.replay_data_gaps())
+        assert len(recovered) == 1
+        assert recovered[0].recovered
+        assert recovered[0].gap_end == (NOW + timedelta(days=1)).replace(
+            hour=21, minute=0, second=0
+        )
 
 
 def test_v3_to_v4_migration_failure_rolls_back(tmp_path) -> None:

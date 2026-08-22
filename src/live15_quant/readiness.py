@@ -19,7 +19,14 @@ from live15_quant.config import Settings
 from live15_quant.dataset import DatasetBuildConfig, DatasetBuilder, FeatureStore
 from live15_quant.feature_registry import FEATURE_REGISTRY, FeatureFamily
 from live15_quant.features import COINBASE_PRODUCT_BY_ASSET, SamplingPolicy
-from live15_quant.gaps import DataGap, configured_streams, detect_gaps, effective_data_gaps
+from live15_quant.gaps import (
+    DataGap,
+    GapSource,
+    GapStream,
+    configured_streams,
+    detect_gaps,
+    effective_data_gaps,
+)
 from live15_quant.market_sessions import (
     MarketDataState,
     market_data_state,
@@ -70,6 +77,23 @@ _OBSERVABILITY_WINDOWS = {
     "24h": timedelta(hours=24),
     "7d": timedelta(days=7),
 }
+
+
+def _historical_gap_streams(settings: Settings) -> tuple[GapStream, ...]:
+    """Return streams whose complete observations remain in the HOT database.
+
+    Kalshi WS events older than HOT retention are deliberately removed only
+    after verified lossless archival. Re-detecting WS gaps from that partial
+    HOT table would both scan tens of millions of deltas and misclassify normal
+    archive/purge ranges as outages. Its canonical history is the recorder's
+    append-only ``data_gaps`` facts plus the verified archive manifest.
+    """
+
+    return tuple(
+        stream
+        for stream in configured_streams(settings)
+        if stream.source is not GapSource.KALSHI_WS
+    )
 
 
 def _windowed_coverage(
@@ -181,7 +205,7 @@ def _session_windowed_coverage(
         expected_seconds = sum((end - opened).total_seconds() for opened, end in intervals)
         points = tuple(value for value in timestamps if start <= value <= snapshot_at)
         open_points = tuple(
-            value for value in points if any(opened <= value <= end for opened, end in intervals)
+            value for value in points if any(opened <= value < end for opened, end in intervals)
         )
         expected_buckets: set[int] = set()
         observed_buckets: set[int] = set()
@@ -191,9 +215,16 @@ def _session_windowed_coverage(
             first_bucket = int((opened - start).total_seconds() // bucket_seconds)
             last_bucket = int(max(0.0, (end - start).total_seconds() - 1e-9) // bucket_seconds)
             expected_buckets.update(range(first_bucket, last_bucket + 1))
-            segment_points = tuple(value for value in open_points if opened <= value <= end)
-            previous = opened
-            for value in segment_points:
+            segment_points = tuple(value for value in open_points if opened <= value < end)
+            if not segment_points:
+                max_gap = max(max_gap, (end - opened).total_seconds())
+                continue
+            # There is no live value at session open until the first post-open
+            # observation is actually received.
+            max_gap = max(max_gap, (segment_points[0] - opened).total_seconds())
+            previous = segment_points[0]
+            observed_buckets.add(int((previous - start).total_seconds() // bucket_seconds))
+            for value in segment_points[1:]:
                 gap = max(0.0, (value - previous).total_seconds())
                 stale_free_seconds += min(gap, stale_seconds)
                 max_gap = max(max_gap, gap)
@@ -411,7 +442,11 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
         root = Path(directory)
         raw_snapshot = root / "raw.sqlite3"
         feature_store = root / "features.sqlite3"
-        snapshot_database(settings.recorder_data_path, raw_snapshot)
+        snapshot_database(
+            settings.recorder_data_path,
+            raw_snapshot,
+            max_seconds=settings.readiness_snapshot_max_seconds,
+        )
         policy = SamplingPolicy(
             tuple(timedelta(seconds=value) for value in settings.dataset_decision_offsets_seconds),
             quote_max_age=timedelta(seconds=settings.dataset_quote_max_age_seconds),
@@ -420,7 +455,7 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
         with RecorderStore(raw_snapshot) as source, FeatureStore(feature_store) as destination:
             detected_gaps = detect_gaps(
                 source._connection,
-                configured_streams(settings),
+                _historical_gap_streams(settings),
                 start=snapshot_at - _OBSERVABILITY_WINDOWS["7d"],
                 end=snapshot_at,
                 detected_at=snapshot_at,
@@ -446,13 +481,17 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
         connection = sqlite3.connect(raw_snapshot)
         connection.row_factory = sqlite3.Row
         try:
-            quality_by_asset = _source_quality_by_asset(connection)
-            quote_quality_by_asset = _quote_quality_by_asset(connection)
-            live_source_ready = _live_source_ready_by_asset(
+            quality_by_asset = _source_quality_by_asset(connection, snapshot_at=snapshot_at)
+            quote_quality_by_asset = _quote_quality_by_asset(connection, snapshot_at=snapshot_at)
+            live_source_states = _live_source_state_by_asset(
                 connection,
                 snapshot_at=snapshot_at,
                 max_age_seconds=settings.dataset_underlying_max_age_seconds,
             )
+            live_source_ready = {
+                asset: state is MarketDataState.HEALTHY
+                for asset, state in live_source_states.items()
+            }
             quote_counts = {
                 Asset(row["asset"]): int(row["count"])
                 for row in connection.execute(
@@ -487,6 +526,7 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
             trainable=trainable,
             training_rows=rows,
             historical_underlying_rows=historical_underlying_rows,
+            market_closed=live_source_states[asset] is MarketDataState.MARKET_CLOSED,
         )
         assets[asset.value] = {
             "status": status.value,
@@ -501,6 +541,7 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
             "historical_underlying_feature_rows": historical_underlying_rows,
             "historical_underlying_feature_coverage": historical_underlying_coverage,
             "live_underlying_source_ready": live_source_ready[asset],
+            "live_underlying_state": live_source_states[asset].value,
             "source_quality": asdict(source_quality),
             "kalshi_quote_quality": asdict(quote_quality_by_asset.get(asset, empty_quality)),
             "finalized_events": finalized,
@@ -513,7 +554,7 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
                 "rows_per_decision_bucket_by_asset", {}
             ).get(asset.value, {}),
             "active_quality_issues": _quality_issues(source_quality)
-            + ([] if live_source_ready[asset] else ["live underlying is unavailable or stale"])
+            + _live_source_issues(live_source_states[asset])
             + [
                 f"Kalshi quote: {issue}"
                 for issue in _quality_issues(quote_quality_by_asset.get(asset, empty_quality))
@@ -553,7 +594,11 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
         "snapshot_integrity": integrity,
         "source_observability": source_observability,
         "runtime_worker_progress": worker_progress,
-        "data_gaps": _gap_report(persisted_gaps, source_observability),
+        "data_gaps": _gap_report(
+            persisted_gaps,
+            source_observability,
+            snapshot_at=snapshot_at,
+        ),
         "assets": assets,
         "dataset": {
             "build_id": summary.build_id,
@@ -614,21 +659,27 @@ def build_readiness_report(settings: Settings) -> dict[str, object]:
 
 
 def _gap_report(
-    gaps: tuple[DataGap, ...], source_observability: dict[str, object]
+    gaps: tuple[DataGap, ...],
+    source_observability: dict[str, object],
+    *,
+    snapshot_at: datetime,
 ) -> dict[str, object]:
     grouped: dict[str, list[DataGap]] = defaultdict(list)
-    recovered = tuple(gap for gap in gaps if gap.recovered)
-    active = tuple(gap for gap in gaps if not gap.recovered)
+    recovered = tuple(
+        gap for gap in gaps if gap.recovered and _reliability_gap_duration(gap, snapshot_at) > 0
+    )
+    active = tuple(
+        gap for gap in gaps if not gap.recovered and _gap_is_active_during_session(gap, snapshot_at)
+    )
     for gap in recovered:
         grouped[f"{gap.source.value}:{gap.asset.value}"].append(gap)
     streams: dict[str, object] = {}
     for key, values in sorted(grouped.items()):
-        durations = sorted(
-            float(value.duration_seconds) for value in values if value.duration_seconds
-        )
+        durations = sorted(_reliability_gap_duration(value, snapshot_at) for value in values)
         source_name, asset = key.split(":", 1)
         observability_key = {
             "kalshi_rest": f"kalshi_quote:{asset}",
+            "kalshi_ws": f"kalshi_ws:{asset}",
             "coinbase": f"coinbase:{asset}",
             "pyth": f"pyth:{asset}",
             "binance": f"secondary:{asset}",
@@ -662,6 +713,23 @@ def _gap_report(
         "synthetic_fill_policy": "forbidden",
         "deterministic_replay_order": ("gap_start,source,asset,instrument,recovered,gap_end,id"),
     }
+
+
+def _gap_is_active_during_session(gap: DataGap, snapshot_at: datetime) -> bool:
+    calendar = market_session(gap.asset)
+    return calendar is None or calendar.is_open(snapshot_at)
+
+
+def _reliability_gap_duration(gap: DataGap, snapshot_at: datetime) -> float:
+    end = gap.gap_end or snapshot_at
+    return sum(
+        (interval_end - interval_start).total_seconds()
+        for interval_start, interval_end in open_intervals_for_asset(
+            gap.asset,
+            gap.gap_start,
+            end,
+        )
+    )
 
 
 def _ratio_percent(numerator: int, denominator: int) -> float | None:
@@ -710,6 +778,7 @@ def _readiness_status(
     trainable: int,
     training_rows: int,
     historical_underlying_rows: int,
+    market_closed: bool = False,
 ) -> ReadinessStatus:
     """Keep live source availability distinct from historical feature completeness."""
 
@@ -717,12 +786,12 @@ def _readiness_status(
         return ReadinessStatus.SOURCE_MISSING
     if finalized == 0 or trainable == 0:
         return ReadinessStatus.INSUFFICIENT_DATA
-    if (
-        not live_ready
-        or quality.severe_clock_skew_observations
-        or (quality.gap_max_seconds is not None and quality.gap_max_seconds > 60)
+    if quality.severe_clock_skew_observations or (
+        quality.gap_max_seconds is not None and quality.gap_max_seconds > 60
     ):
         return ReadinessStatus.QUALITY_WARNING
+    if not live_ready:
+        return ReadinessStatus.PARTIAL if market_closed else ReadinessStatus.QUALITY_WARNING
     if historical_underlying_rows < training_rows:
         return ReadinessStatus.PARTIAL
     return ReadinessStatus.READY
@@ -736,7 +805,25 @@ def _live_source_ready_by_asset(
 ) -> dict[Asset, bool]:
     """Report live inference availability at snapshot time, not historical existence."""
 
-    ready = {asset: False for asset in Asset}
+    return {
+        asset: state is MarketDataState.HEALTHY
+        for asset, state in _live_source_state_by_asset(
+            connection,
+            snapshot_at=snapshot_at,
+            max_age_seconds=max_age_seconds,
+        ).items()
+    }
+
+
+def _live_source_state_by_asset(
+    connection: sqlite3.Connection,
+    *,
+    snapshot_at: datetime,
+    max_age_seconds: float,
+) -> dict[Asset, MarketDataState]:
+    """Return typed as-of availability without conflating closure and failure."""
+
+    states = {asset: MarketDataState.SOURCE_UNAVAILABLE for asset in Asset}
     cutoff = snapshot_at - timedelta(seconds=max_age_seconds)
     product_assets = {product: asset for asset, product in COINBASE_PRODUCT_BY_ASSET.items()}
     for product, asset in product_assets.items():
@@ -753,7 +840,11 @@ def _live_source_ready_by_asset(
             continue
         received = _parse(row["received_timestamp"])
         source = _parse(row["exchange_timestamp"]) if row["exchange_timestamp"] else received
-        ready[asset] = received >= cutoff and source >= cutoff
+        states[asset] = (
+            MarketDataState.HEALTHY
+            if received >= cutoff and source >= cutoff
+            else MarketDataState.STALE
+        )
     for asset in PYTH_FEEDS:
         row = connection.execute(
             """
@@ -778,13 +869,14 @@ def _live_source_ready_by_asset(
             latest_received=received,
             max_age=timedelta(seconds=max_age_seconds),
         )
-        ready[asset] = (
-            state is MarketDataState.HEALTHY
-            and row["freshness"] == "fresh"
-            and received >= cutoff
-            and _parse(row["source_timestamp"]) >= cutoff
-        )
-    return ready
+        states[asset] = state
+        if state is MarketDataState.HEALTHY and (
+            row["freshness"] != "fresh"
+            or received < cutoff
+            or _parse(row["source_timestamp"]) < cutoff
+        ):
+            states[asset] = MarketDataState.STALE
+    return states
 
 
 def _uses_underlying(name: str, family: FeatureFamily) -> bool:
@@ -797,57 +889,76 @@ def _uses_underlying(name: str, family: FeatureFamily) -> bool:
     }
 
 
-def _source_quality_by_asset(connection: sqlite3.Connection) -> dict[Asset, SourceQuality]:
+def _source_quality_by_asset(
+    connection: sqlite3.Connection, *, snapshot_at: datetime
+) -> dict[Asset, SourceQuality]:
     grouped: dict[Asset, list[tuple[datetime, datetime, str]]] = defaultdict(list)
+    earliest = snapshot_at - _OBSERVABILITY_WINDOWS["7d"]
     product_assets = {product: asset for asset, product in COINBASE_PRODUCT_BY_ASSET.items()}
-    for row in connection.execute(
-        "SELECT product,exchange_timestamp,received_timestamp,price,bid,ask,"
-        "bid_size,ask_size,last_size,volume_24h FROM coinbase_ticks"
-    ):
-        asset = product_assets.get(row["product"])
-        if asset is None:
-            continue
-        received = _parse(row["received_timestamp"])
-        source = _parse(row["exchange_timestamp"]) if row["exchange_timestamp"] else received
-        fingerprint = ":".join(
-            str(row[field])
-            for field in (
-                "exchange_timestamp",
-                "price",
-                "bid",
-                "ask",
-                "bid_size",
-                "ask_size",
-                "last_size",
-                "volume_24h",
+    for product, asset in product_assets.items():
+        for row in connection.execute(
+            "SELECT exchange_timestamp,received_timestamp,price,bid,ask,"
+            "bid_size,ask_size,last_size,volume_24h FROM coinbase_ticks "
+            "WHERE product=? AND received_timestamp>=? AND received_timestamp<=? "
+            "ORDER BY received_timestamp,id",
+            (product, earliest.isoformat(), snapshot_at.isoformat()),
+        ):
+            received = _parse(row["received_timestamp"])
+            source = _parse(row["exchange_timestamp"]) if row["exchange_timestamp"] else received
+            fingerprint = ":".join(
+                str(row[field])
+                for field in (
+                    "exchange_timestamp",
+                    "price",
+                    "bid",
+                    "ask",
+                    "bid_size",
+                    "ask_size",
+                    "last_size",
+                    "volume_24h",
+                )
             )
-        )
-        grouped[asset].append((source, received, fingerprint))
-    for row in connection.execute(
-        "SELECT asset,source_timestamp,received_timestamp,price,confidence "
-        "FROM underlying_observations"
-    ):
-        grouped[Asset(row["asset"])].append(
+            grouped[asset].append((source, received, fingerprint))
+    for asset in PYTH_FEEDS:
+        for row in connection.execute(
+            "SELECT source_timestamp,received_timestamp,price,confidence "
+            "FROM underlying_observations WHERE asset=? AND provider=? "
+            "AND received_timestamp>=? AND received_timestamp<=? "
+            "ORDER BY received_timestamp,id",
             (
-                _parse(row["source_timestamp"]),
-                _parse(row["received_timestamp"]),
-                f"{row['source_timestamp']}:{row['price']}:{row['confidence']}",
+                asset.value,
+                "pyth_hermes",
+                earliest.isoformat(),
+                snapshot_at.isoformat(),
+            ),
+        ):
+            grouped[asset].append(
+                (
+                    _parse(row["source_timestamp"]),
+                    _parse(row["received_timestamp"]),
+                    f"{row['source_timestamp']}:{row['price']}:{row['confidence']}",
+                )
             )
-        )
     return {asset: _quality(rows) for asset, rows in grouped.items()}
 
 
-def _quote_quality_by_asset(connection: sqlite3.Connection) -> dict[Asset, SourceQuality]:
+def _quote_quality_by_asset(
+    connection: sqlite3.Connection, *, snapshot_at: datetime
+) -> dict[Asset, SourceQuality]:
     grouped: dict[Asset, list[tuple[datetime, datetime, str]]] = defaultdict(list)
-    for row in connection.execute(
-        "SELECT asset,source_timestamp,received_timestamp,content_hash "
-        "FROM kalshi_prediction_quotes"
-    ):
-        received = _parse(row["received_timestamp"])
-        source = _parse(row["source_timestamp"]) if row["source_timestamp"] else received
-        grouped[Asset(row["asset"])].append(
-            (source, received, f"{row['source_timestamp']}:{row['content_hash']}")
-        )
+    earliest = snapshot_at - _OBSERVABILITY_WINDOWS["7d"]
+    for asset in Asset:
+        for row in connection.execute(
+            "SELECT source_timestamp,received_timestamp,content_hash "
+            "FROM kalshi_prediction_quotes WHERE asset=? AND received_timestamp>=? "
+            "AND received_timestamp<=? ORDER BY received_timestamp,id",
+            (asset.value, earliest.isoformat(), snapshot_at.isoformat()),
+        ):
+            received = _parse(row["received_timestamp"])
+            source = _parse(row["source_timestamp"]) if row["source_timestamp"] else received
+            grouped[asset].append(
+                (source, received, f"{row['source_timestamp']}:{row['content_hash']}")
+            )
     return {asset: _quality(rows) for asset, rows in grouped.items()}
 
 
@@ -860,6 +971,16 @@ def _quality_issues(quality: SourceQuality) -> list[str]:
     if quality.severe_clock_skew_observations:
         issues.append("source timestamp exceeded local receive time by more than one second")
     return issues
+
+
+def _live_source_issues(state: MarketDataState) -> list[str]:
+    if state is MarketDataState.HEALTHY:
+        return []
+    if state is MarketDataState.MARKET_CLOSED:
+        return ["underlying market is closed; live feature is unavailable"]
+    if state is MarketDataState.STALE:
+        return ["live underlying is stale"]
+    return ["live underlying source is unavailable"]
 
 
 def write_report_atomic(report: dict[str, object], path: Path) -> None:

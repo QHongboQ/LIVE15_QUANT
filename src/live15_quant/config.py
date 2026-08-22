@@ -101,6 +101,7 @@ class Settings:
     dataset_build_interval_seconds: float | None = None
     feature_store_path: Path = Path("data/features.sqlite3")
     readiness_report_path: Path = Path("data/readiness.json")
+    readiness_snapshot_max_seconds: float = 300.0
     dataset_decision_offsets_seconds: tuple[int, ...] = DEFAULT_DATASET_DECISION_OFFSETS_SECONDS
     dataset_quote_max_age_seconds: float = 15.0
     dataset_underlying_max_age_seconds: float = 15.0
@@ -609,6 +610,11 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         ),
         feature_store_path=feature_store_path,
         readiness_report_path=readiness_report_path,
+        readiness_snapshot_max_seconds=_positive_float(
+            source,
+            "LIVE15_READINESS_SNAPSHOT_MAX_SECONDS",
+            defaults.readiness_snapshot_max_seconds,
+        ),
         dataset_decision_offsets_seconds=_decision_offsets(source),
         dataset_quote_max_age_seconds=_positive_float(
             source,

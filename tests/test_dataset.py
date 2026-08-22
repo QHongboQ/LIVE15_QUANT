@@ -127,6 +127,81 @@ def test_dataset_build_is_restartable_reproducible_and_decimal_safe(tmp_path) ->
         assert max(len(row.source_tick_row_ids) for row in replayed) <= 23
 
 
+def test_dataset_builder_batches_commits_and_rolls_back_incomplete_batch(
+    tmp_path, monkeypatch
+) -> None:
+    with (
+        RecorderStore(tmp_path / "raw.sqlite3") as source,
+        FeatureStore(tmp_path / "features.sqlite3") as destination,
+    ):
+        add_event(source, BASE, result="yes")
+        original = destination.append
+        calls = 0
+
+        def fail_second(row, *, commit=True):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("injected build failure")
+            return original(row, commit=commit)
+
+        monkeypatch.setattr(destination, "append", fail_second)
+        with pytest.raises(RuntimeError, match="injected build failure"):
+            DatasetBuilder(source, destination).build(DatasetBuildConfig(sampling()))
+
+        persisted = destination._connection.execute(
+            "SELECT COUNT(*) FROM training_examples"
+        ).fetchone()[0]
+        assert persisted == 0
+
+
+def test_dataset_builder_resumes_after_crash_following_committed_batch(
+    tmp_path, monkeypatch
+) -> None:
+    """A crash preserves completed 256-row batches and retries only the tail."""
+
+    with (
+        RecorderStore(tmp_path / "raw.sqlite3") as source,
+        FeatureStore(tmp_path / "features.sqlite3") as destination,
+    ):
+        for index in range(129):
+            add_event(
+                source,
+                BASE + timedelta(minutes=15 * index),
+                result=("yes" if index % 2 else "no"),
+            )
+        original = destination.append
+        calls = 0
+
+        def fail_after_committed_batch(row, *, commit=True):
+            nonlocal calls
+            calls += 1
+            if calls == 257:
+                raise RuntimeError("injected post-batch crash")
+            return original(row, commit=commit)
+
+        monkeypatch.setattr(destination, "append", fail_after_committed_batch)
+        builder = DatasetBuilder(source, destination)
+        with pytest.raises(RuntimeError, match="post-batch crash"):
+            builder.build(DatasetBuildConfig(sampling()))
+
+        persisted_after_crash = destination._connection.execute(
+            "SELECT COUNT(*) FROM training_examples"
+        ).fetchone()[0]
+        assert persisted_after_crash == 256
+
+        monkeypatch.setattr(destination, "append", original)
+        resumed = builder.build(DatasetBuildConfig(sampling()))
+        repeated = builder.build(DatasetBuildConfig(sampling()))
+
+        assert resumed.complete
+        assert resumed.rows == 258
+        assert resumed.rows_written == 2
+        assert repeated.rows_written == 0
+        assert destination.count_rows(resumed.build_id) == 258
+        assert destination.integrity_check() == "ok"
+
+
 def test_multiple_decisions_pooled_and_per_asset_builds(tmp_path) -> None:
     with (
         RecorderStore(tmp_path / "raw.sqlite3") as source,

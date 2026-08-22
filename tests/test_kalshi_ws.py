@@ -295,6 +295,73 @@ async def test_session_processor_requests_one_snapshot_and_measures_resync() -> 
 
 
 @pytest.mark.asyncio
+async def test_invariant_failure_resnapshots_instead_of_exposing_damaged_book() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    sent: list[str] = []
+
+    async def sender(payload: str) -> None:
+        sent.append(payload)
+
+    processor = KalshiAtomicSessionProcessor(coordinator, sender)
+    assert await processor.process(snapshot()) is not None
+    assert await processor.process(delta(11, quantity=Decimal("-12.01"))) is None
+    with pytest.raises(KalshiUnsynchronizedBookError):
+        coordinator.book(BTC)
+    assert json.loads(sent[-1])["params"]["action"] == "get_snapshot"
+    recovered = replace(
+        snapshot(20),
+        yes_bids=(OrderBookLevel(Decimal("0.50"), Decimal("7")),),
+    )
+    book = await processor.process(recovered)
+    assert book is not None and book.yes_bids[0].quantity == Decimal("7")
+    assert processor.diagnostics.invariant_recoveries == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_invariant_recovery_is_bounded_by_connection_budget() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+
+    async def sender(_payload: str) -> None:
+        return None
+
+    processor = KalshiAtomicSessionProcessor(
+        coordinator,
+        sender,
+        max_payload_issues=1,
+    )
+    await processor.process(snapshot())
+    await processor.process(delta(11, quantity=Decimal("-12.01")))
+    await processor.process(snapshot(20))
+    with pytest.raises(KalshiWsRecoveryExhausted, match="recovery budget exhausted"):
+        await processor.process(delta(21, quantity=Decimal("-12.01")))
+    with pytest.raises(KalshiUnsynchronizedBookError):
+        coordinator.book(BTC)
+
+
+@pytest.mark.asyncio
+async def test_delta_interleaved_with_multi_market_resync_stays_blocked_until_complete() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC, BTC_NEXT))
+    sent: list[str] = []
+
+    async def sender(payload: str) -> None:
+        sent.append(payload)
+
+    processor = KalshiAtomicSessionProcessor(coordinator, sender)
+    await processor.process(snapshot(10))
+    await processor.process(snapshot(11, ticker=BTC_NEXT, market_id="successor-market"))
+    assert await processor.process(delta(13)) is None
+    assert await processor.process(snapshot(20)) is None
+    # Contiguous traffic may arrive before the other market's resnapshot. It is
+    # applied internally but cannot make a partial subscription consumable.
+    assert await processor.process(delta(21)) is None
+    with pytest.raises(KalshiUnsynchronizedBookError):
+        coordinator.book(BTC)
+    completed = await processor.process(snapshot(22, ticker=BTC_NEXT, market_id="successor-market"))
+    assert completed is not None
+    assert coordinator.book(BTC).sequence == 22
+
+
+@pytest.mark.asyncio
 async def test_malformed_subscription_payload_resnapshots_before_book_recovers() -> None:
     coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
     sent: list[str] = []

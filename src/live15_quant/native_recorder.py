@@ -949,9 +949,11 @@ class KalshiNativeRecorder:
     def _gap_open_intervals(
         stream: GapStream, start: datetime, end: datetime
     ) -> tuple[tuple[datetime, datetime], ...]:
-        if stream.source is GapSource.PYTH:
-            return open_intervals_for_asset(stream.asset, start, end)
-        return ((start, end),)
+        # Session semantics belong to the asset, not only to one provider.
+        # When a commodity has no live 15-minute market, Kalshi REST/WS and
+        # its predictive underlying are all intentionally quiet. Treating the
+        # closure as a source outage corrupts reliability and quarantine facts.
+        return open_intervals_for_asset(stream.asset, start, end)
 
     def _open_gap(
         self,
@@ -999,7 +1001,7 @@ class KalshiNativeRecorder:
         for key, previous in tuple(self._gap_last.items()):
             stream = self._gap_streams[key]
             active = self._active_gaps.get(key)
-            if active is not None and stream.source is GapSource.PYTH:
+            if active is not None:
                 intervals = self._gap_open_intervals(stream, active.gap_start, observed)
                 if intervals and intervals[0][1] < observed:
                     self._recover_gap(active, intervals[0][1])

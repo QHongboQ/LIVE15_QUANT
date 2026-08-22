@@ -437,7 +437,7 @@ def test_training_join_has_no_future_or_label_leakage(tmp_path) -> None:
             store.join_training_label(market.ticker, market.window_start - timedelta(seconds=1))
 
 
-def test_native_quote_storage_preserves_precision_deduplicates_and_replays(tmp_path) -> None:
+def test_native_quote_storage_preserves_precision_and_fresh_observation_time(tmp_path) -> None:
     first = quote("KXBTC15M-26AUG201200-00", "KXBTC15M-26AUG201200", NOW)
     precise = replace(
         first,
@@ -448,15 +448,31 @@ def test_native_quote_storage_preserves_precision_deduplicates_and_replays(tmp_p
     with RecorderStore(tmp_path / "native-quotes.sqlite3") as store:
         assert store.append_kalshi_quote(first) is True
         duplicate = replace(first, received_timestamp=NOW + timedelta(seconds=1))
+        assert store.append_kalshi_quote(duplicate) is True
         assert store.append_kalshi_quote(duplicate) is False
         assert store.append_kalshi_quote(precise) is True
         replayed = list(store.replay_kalshi_quotes(first.ticker))
 
     assert [record.received_timestamp for record in replayed] == [
         NOW,
+        NOW + timedelta(seconds=1),
         NOW + timedelta(seconds=2),
     ]
     assert replayed[-1].yes_bid == Decimal("0.500000000000000001")
+
+
+def test_native_quote_storage_rejects_conflicting_same_receive_timestamp(tmp_path) -> None:
+    first = quote("KXBTC15M-26AUG201200-00", "KXBTC15M-26AUG201200", NOW)
+    conflicting = replace(first, yes_bid=Decimal("0.49"))
+
+    with RecorderStore(tmp_path / "native-quote-conflict.sqlite3") as store:
+        assert store.append_kalshi_quote(first) is True
+        with pytest.raises(RecorderStorageError, match="conflicting Kalshi quote fact"):
+            store.append_kalshi_quote(conflicting)
+
+        replayed = list(store.replay_kalshi_quotes(first.ticker))
+        assert len(replayed) == 1
+        assert replayed[0].yes_bid == first.yes_bid
     assert replayed[-1].series == "KXBTC15M"
 
 

@@ -693,6 +693,11 @@ class KalshiAtomicOrderBookCoordinator:
             levels[message.price] = next_quantity
         book.source_timestamp = message.source_timestamp
         book.received_timestamp = message.socket_received_timestamp
+        if self._resync_pending:
+            # A server may interleave deltas for an already-resnapshotted market
+            # with snapshots for the remaining markets. Apply the contiguous
+            # delta, but never expose a partial subscription as synchronized.
+            return None
         return self.book(message.ticker)
 
     def accept_ack(self, message: KalshiCommandAcknowledged) -> None:
@@ -762,6 +767,7 @@ class KalshiResyncDiagnostics:
     completed: int = 0
     payload_issues: int = 0
     payload_recoveries: int = 0
+    invariant_recoveries: int = 0
     last_duration_seconds: float | None = None
 
 
@@ -788,6 +794,10 @@ class KalshiAtomicSessionProcessor:
         self._resync_started: float | None = None
         self.diagnostics = KalshiResyncDiagnostics()
 
+    def _ensure_recovery_budget(self) -> None:
+        if self.diagnostics.requests >= self._max_payload_issues:
+            raise KalshiWsRecoveryExhausted("Kalshi WS recovery budget exhausted")
+
     async def recover_payload_issue(self, issue: KalshiWsPayloadIssue) -> None:
         """Fail closed and request an official full snapshot for one affected subscription."""
 
@@ -796,8 +806,7 @@ class KalshiAtomicSessionProcessor:
         new_tickers = tuple(ticker for ticker in tickers if ticker not in self._pending)
         if not new_tickers:
             return
-        if self.diagnostics.payload_recoveries >= self._max_payload_issues:
-            raise KalshiWsRecoveryExhausted("Kalshi WS payload recovery budget exhausted")
+        self._ensure_recovery_budget()
         command = update_subscription_command(
             self._next_request_id,
             issue.subscription_id,
@@ -812,6 +821,36 @@ class KalshiAtomicSessionProcessor:
         self.diagnostics.requests += 1
         self.diagnostics.payload_recoveries += 1
 
+    async def _recover_invariant(self, message: KalshiOrderBookMessage) -> None:
+        """Invalidate a damaged subscription and request an official baseline.
+
+        Order-book sequence numbers are scoped to the subscription, so even an
+        invariant that names one ticker makes the shared sequence incomplete.
+        The old books remain blocked until every subscribed ticker has received
+        a fresh official snapshot.
+        """
+
+        tickers = self._coordinator.invalidate_payload(
+            message.connection_id, message.subscription_id
+        )
+        new_tickers = tuple(ticker for ticker in tickers if ticker not in self._pending)
+        if not new_tickers:
+            return
+        self._ensure_recovery_budget()
+        command = update_subscription_command(
+            self._next_request_id,
+            message.subscription_id,
+            "get_snapshot",
+            new_tickers,
+        )
+        self._next_request_id += 1
+        await self._sender(command.payload)
+        self._pending.update(new_tickers)
+        if self._resync_started is None:
+            self._resync_started = self._monotonic()
+        self.diagnostics.requests += 1
+        self.diagnostics.invariant_recoveries += 1
+
     async def process(
         self, message: KalshiOrderBookMessage | KalshiCommandAcknowledged
     ) -> SynchronizedKalshiOrderBook | None:
@@ -823,6 +862,7 @@ class KalshiAtomicSessionProcessor:
         except KalshiSequenceGapError as error:
             new_tickers = tuple(ticker for ticker in error.tickers if ticker not in self._pending)
             if new_tickers:
+                self._ensure_recovery_budget()
                 subscription_id = self._coordinator.subscription_id or message.subscription_id
                 command = update_subscription_command(
                     self._next_request_id,
@@ -836,6 +876,9 @@ class KalshiAtomicSessionProcessor:
                 if self._resync_started is None:
                     self._resync_started = self._monotonic()
                 self.diagnostics.requests += 1
+            return None
+        except KalshiBookInvariantError:
+            await self._recover_invariant(message)
             return None
         if isinstance(message, KalshiOrderBookSnapshot) and message.ticker in self._pending:
             self._pending.remove(message.ticker)
