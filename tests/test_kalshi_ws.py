@@ -844,6 +844,36 @@ async def test_unknown_non_data_message_is_a_benign_typed_notice(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_only_parsed_market_data_advances_application_liveness(tmp_path: Path) -> None:
+    """Control traffic must not make a stalled orderbook transport look fresh."""
+
+    websocket = _FakeWebSocket(
+        [
+            json.dumps({"type": "status", "msg": {"state": "ok"}}),
+            snapshot_payload(),
+        ]
+    )
+    adapter = KalshiProductionReadOnlyWebSocket(
+        credentials(tmp_path),
+        connector=lambda *_args, **_kwargs: _FakeConnection(websocket),
+        signer=_FakeSigner(),
+        clock_ms=lambda: 1700000000000,
+        connection_id_factory=lambda: "connection-1",
+        repository_root=Path.cwd(),
+    )
+
+    messages = adapter.messages((BTC,))
+    notice = await anext(messages)
+    assert isinstance(notice, KalshiWsProtocolNotice)
+    assert adapter.diagnostics.last_message_received_at is None
+
+    market_data = await anext(messages)
+    await adapter.close()
+    assert isinstance(market_data, KalshiOrderBookSnapshot)
+    assert adapter.diagnostics.last_message_received_at == market_data.socket_received_timestamp
+
+
+@pytest.mark.asyncio
 async def test_repeated_global_protocol_damage_reconnects_then_fails_loudly(tmp_path: Path) -> None:
     attempts = 0
     sleeps: list[float] = []

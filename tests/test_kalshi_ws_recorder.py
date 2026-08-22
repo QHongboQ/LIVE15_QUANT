@@ -36,7 +36,12 @@ class FakeProductionWs:
         self.resync_complete = asyncio.Event()
         self.gap_observed = asyncio.Event()
         self.allow_resync = asyncio.Event()
-        self.diagnostics = SimpleNamespace(reconnects=0, receive_queue_high_watermark=3)
+        self.diagnostics = SimpleNamespace(
+            reconnects=0,
+            receive_queue_high_watermark=3,
+            last_message_received_at=NOW,
+        )
+        self.reconnect_requests = 0
 
     def set_reconnect_tickers(self, tickers) -> None:
         self.tickers = tuple(tickers)
@@ -46,6 +51,9 @@ class FakeProductionWs:
 
     async def close(self) -> None:
         self.closed = True
+
+    async def request_reconnect(self) -> None:
+        self.reconnect_requests += 1
 
     async def messages(self, tickers):
         exact = tuple(tickers)
@@ -253,6 +261,85 @@ async def test_recorder_uses_only_synchronized_ws_and_closes_sequence_gap(tmp_pa
         source.diagnostics.receive_queue_dropped = 1
         with pytest.raises(KalshiUnsynchronizedBookError):
             recorder.synchronized_kalshi_ws_book(current_ticker)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_transport_stall_invalidates_all_books_and_requests_reconnect(tmp_path) -> None:
+    source = FakeProductionWs()
+    discoveries = tuple(discovery_for(asset) for asset in Asset)
+    observed = NOW + timedelta(seconds=11)
+    with RecorderStore(tmp_path / "transport-stall.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                enable_kalshi_production_websocket=True,
+                kalshi_websocket_stale_seconds=10,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(discoveries),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            kalshi_ws_factory=lambda: source,
+            now=lambda: observed,
+        )
+        for item in discoveries:
+            recorder._accept_discovery(item)
+        task = asyncio.create_task(recorder._record_kalshi_ws())
+        await asyncio.wait_for(source.gap_observed.wait(), 1)
+        source.allow_resync.set()
+        await asyncio.wait_for(source.resync_complete.wait(), 1)
+        source.diagnostics.last_message_received_at = NOW
+
+        assert await recorder._enforce_kalshi_ws_liveness(observed)
+        assert source.reconnect_requests == 1
+        assert recorder.health().kalshi_ws_connection_state is KalshiWsRuntimeState.RECONNECTING
+        # A recovered transport timestamp alone cannot revive a cleared book; an
+        # official fresh snapshot is still required before any consumption.
+        source.diagnostics.last_message_received_at = observed
+        for market in recorder._health.current.values():
+            with pytest.raises(KalshiUnsynchronizedBookError):
+                recorder.synchronized_kalshi_ws_book(market.ticker)
+        assert len(
+            tuple(gap for gap in store.active_data_gaps() if gap.source is GapSource.KALSHI_WS)
+        ) == len(Asset)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_unchanged_book_remains_usable_when_transport_is_fresh(tmp_path) -> None:
+    source = FakeProductionWs()
+    discoveries = tuple(discovery_for(asset) for asset in Asset)
+    observed = NOW + timedelta(seconds=11)
+    with RecorderStore(tmp_path / "quiet-book.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                enable_kalshi_production_websocket=True,
+                kalshi_websocket_stale_seconds=10,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(discoveries),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            kalshi_ws_factory=lambda: source,
+            now=lambda: observed,
+        )
+        for item in discoveries:
+            recorder._accept_discovery(item)
+        task = asyncio.create_task(recorder._record_kalshi_ws())
+        await asyncio.wait_for(source.gap_observed.wait(), 1)
+        source.allow_resync.set()
+        await asyncio.wait_for(source.resync_complete.wait(), 1)
+        source.diagnostics.last_message_received_at = observed
+
+        health = recorder.health()
+        assert health.kalshi_ws_connection_state is KalshiWsRuntimeState.SYNCHRONIZED
+        assert not [value for value in health.stale_sources if value.startswith("kalshi_ws:")]
+        ticker = next(iter(recorder._health.current.values())).ticker
+        assert recorder.synchronized_kalshi_ws_book(ticker).ticker == ticker
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 

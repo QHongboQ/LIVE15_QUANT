@@ -169,6 +169,8 @@ class KalshiWsSource(Protocol):
 
     async def close(self) -> None: ...
 
+    async def request_reconnect(self) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class KalshiNativeHealth:
@@ -653,6 +655,10 @@ class KalshiNativeRecorder:
             is KalshiWsRuntimeState.RECONNECTING
         ):
             ws_state = KalshiWsRuntimeState.RECONNECTING
+        if ws_state is KalshiWsRuntimeState.SYNCHRONIZED and not self._kalshi_ws_transport_fresh(
+            observed
+        ):
+            ws_state = KalshiWsRuntimeState.UNSYNCHRONIZED
         pyth_states: dict[Asset, MarketDataState] = {}
         for asset in PYTH_FEEDS:
             state = market_data_state(
@@ -689,10 +695,8 @@ class KalshiNativeRecorder:
                     for asset in self._health.current
                     if self._settings.enable_kalshi_production_websocket
                     and (
-                        asset not in self._health.kalshi_ws_last_books
-                        or (observed - self._health.kalshi_ws_last_books[asset]).total_seconds()
-                        > self._settings.kalshi_websocket_stale_seconds
-                        or asset not in self._health.kalshi_ws_synchronized
+                        asset not in self._health.kalshi_ws_synchronized
+                        or not self._kalshi_ws_transport_fresh(observed)
                     )
                 ]
                 + [
@@ -1070,6 +1074,9 @@ class KalshiNativeRecorder:
             tasks.append(asyncio.create_task(self._record_kalshi_ws(), name="kalshi-ws"))
             tasks.append(
                 asyncio.create_task(self._flush_kalshi_ws_loop(), name="kalshi-ws-persistence")
+            )
+            tasks.append(
+                asyncio.create_task(self._monitor_kalshi_ws_liveness(), name="kalshi-ws-liveness")
             )
         for asset in KALSHI_15MIN_SERIES:
             tasks.extend(
@@ -1784,9 +1791,46 @@ class KalshiNativeRecorder:
             or transport_state
             in {KalshiWsRuntimeState.CONNECTING, KalshiWsRuntimeState.RECONNECTING}
             or dropped != 0
+            or not self._kalshi_ws_transport_fresh(self._utc_now())
         ):
             raise KalshiUnsynchronizedBookError("Kalshi WS primary is unavailable")
         return coordinator.book(ticker)
+
+    def _kalshi_ws_transport_fresh(self, observed: datetime) -> bool:
+        """Keep a quiet book usable only while the official WS transport is live."""
+
+        source = self._kalshi_ws
+        if source is None:
+            return False
+        diagnostics = getattr(source, "diagnostics", None)
+        if diagnostics is None:
+            return True
+        received = getattr(diagnostics, "last_message_received_at", None)
+        # Deterministic legacy test sources do not expose transport diagnostics.
+        if received is None:
+            return not hasattr(diagnostics, "last_message_received_at")
+        if not isinstance(received, datetime) or received.tzinfo is None:
+            return False
+        age = (observed - received.astimezone(UTC)).total_seconds()
+        return 0 <= age <= self._settings.kalshi_websocket_stale_seconds
+
+    async def _enforce_kalshi_ws_liveness(self, observed: datetime) -> bool:
+        """Fail closed and trigger documented reconnect when the whole transport stalls."""
+
+        if (
+            self._kalshi_ws is None
+            or self._health.kalshi_ws_state is not KalshiWsRuntimeState.SYNCHRONIZED
+            or self._kalshi_ws_transport_fresh(observed)
+        ):
+            return False
+        self._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
+        await self._kalshi_ws.request_reconnect()
+        return True
+
+    async def _monitor_kalshi_ws_liveness(self) -> None:
+        interval = min(1.0, self._settings.kalshi_websocket_stale_seconds / 2)
+        while not await self._wait(interval):
+            await self._enforce_kalshi_ws_liveness(self._utc_now())
 
     def _flush_kalshi_ws_pending(self) -> None:
         if not self._kalshi_ws_pending:

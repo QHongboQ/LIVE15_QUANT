@@ -22,8 +22,11 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from live15_quant.config import KALSHI_PRODUCTION_WEBSOCKET_URL
 from live15_quant.kalshi_ws import (
+    KalshiOrderBookDelta,
+    KalshiOrderBookSnapshot,
     KalshiServerMessage,
     KalshiSubscriptionCommand,
+    KalshiTickerUpdate,
     KalshiWsPayloadError,
     KalshiWsPayloadIssue,
     KalshiWsProtocolNotice,
@@ -275,6 +278,7 @@ class KalshiWsDiagnostics:
     protocol_reconnects: int = 0
     connected_at: datetime | None = None
     last_disconnect_at: datetime | None = None
+    last_message_received_at: datetime | None = None
     last_reconnect_duration_seconds: float | None = None
     receive_queue_high_watermark: int = 0
     receive_queue_capacity: int = 0
@@ -543,6 +547,18 @@ class KalshiProductionReadOnlyWebSocket:
                                 yield localized
                                 continue
                             consecutive_global_payload_failures = 0
+                            if isinstance(
+                                message,
+                                (
+                                    KalshiOrderBookSnapshot,
+                                    KalshiOrderBookDelta,
+                                    KalshiTickerUpdate,
+                                ),
+                            ):
+                                # Only parsed market-data payloads prove the application
+                                # channel is live.  WebSocket ping/pong and subscription or
+                                # status frames must never keep an orderbook fresh.
+                                self.diagnostics.last_message_received_at = received
                             self.diagnostics.messages += 1
                             yield message
                     finally:
@@ -597,5 +613,15 @@ class KalshiProductionReadOnlyWebSocket:
         if active is not None:
             try:
                 await active.close()
-            except (ConnectionClosed, OSError):
+            except (ConnectionClosed, OSError, TimeoutError):
+                return
+
+    async def request_reconnect(self) -> None:
+        """Close only the current socket so ``messages`` performs its bounded reconnect."""
+
+        active = self._active
+        if active is not None:
+            try:
+                await active.close()
+            except (ConnectionClosed, OSError, TimeoutError):
                 return

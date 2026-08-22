@@ -205,9 +205,7 @@ def test_start_and_graceful_pause_use_fixed_process_and_bounded_wait(tmp_path, m
     assert controller.status().pid is None
 
 
-def test_managed_explicit_ws_opt_out_preserves_disabled_environment(
-    tmp_path, monkeypatch
-) -> None:
+def test_managed_explicit_ws_opt_out_preserves_disabled_environment(tmp_path, monkeypatch) -> None:
     configured = managed_settings(tmp_path)
     monkeypatch.setattr(control, "project_root", lambda: tmp_path)
     credential_root = tmp_path / "home" / ".live15_quant" / "credentials"
@@ -241,9 +239,7 @@ def test_managed_explicit_ws_opt_out_preserves_disabled_environment(
 
     def sleep(seconds: float) -> None:
         clock[0] += seconds
-        if json.loads(configured.recorder_control_path.read_text())[
-            "desired"
-        ] == "paused":
+        if json.loads(configured.recorder_control_path.read_text())["desired"] == "paused":
             alive[2469] = False
 
     monkeypatch.setattr(control, "process_alive", lambda pid: alive.get(pid, False))
