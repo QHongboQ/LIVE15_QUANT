@@ -6,12 +6,16 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol, cast
 
+from live15_quant.execution import ExecutionAction
+from live15_quant.fees import KalshiTakerFeeModel
 from live15_quant.providers.kalshi_demo_execution import (
     DemoBookSide,
     DemoOrderRequest,
@@ -21,6 +25,7 @@ from live15_quant.providers.kalshi_demo_execution import (
     KalshiDemoAmbiguousWriteError,
     KalshiDemoExecutionClient,
     KalshiDemoExecutionError,
+    KalshiDemoWriteRejectedError,
 )
 
 
@@ -72,6 +77,25 @@ class DemoRiskReason(StrEnum):
     MARKET_NOT_TRADEABLE = "market_not_tradeable"
     DECISION_STALE = "decision_stale"
     CLOCK_UNCERTAIN = "clock_uncertain"
+    PRE_SUBMIT_DATA_UNAVAILABLE = "pre_submit_data_unavailable"
+    PRICE_MOVED_TOO_FAR = "price_moved_too_far"
+    EDGE_DECAYED_BEFORE_SUBMIT = "edge_decayed_before_submit"
+
+
+class DemoExecutionResultCode(StrEnum):
+    PRE_SUBMIT_ALLOWED = "PRE_SUBMIT_ALLOWED"
+    DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+    PRICE_MOVED_TOO_FAR = "PRICE_MOVED_TOO_FAR"
+    EDGE_DECAYED_BEFORE_SUBMIT = "EDGE_DECAYED_BEFORE_SUBMIT"
+    HTTP_SUCCESS_FILLED = "HTTP_SUCCESS_FILLED"
+    HTTP_SUCCESS_NO_FILL = "HTTP_SUCCESS_NO_FILL"
+    HTTP_4XX = "HTTP_4XX"
+    HTTP_409 = "HTTP_409"
+    HTTP_429 = "HTTP_429"
+    HTTP_5XX = "HTTP_5XX"
+    TRANSPORT_ERROR = "TRANSPORT_ERROR"
+    MALFORMED_ACK = "MALFORMED_ACK"
+    RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
 
 
 class DemoSizingMode(StrEnum):
@@ -211,6 +235,322 @@ class DemoIntent:
             or not self.edge.is_finite()
         ):
             raise ValueError("Demo probability/edge must be finite and probability within [0, 1]")
+
+
+@dataclass(frozen=True, slots=True)
+class DemoSynchronizedQuote:
+    """Latest executable single-book truth read immediately before a Demo submit."""
+
+    ticker: str
+    received_timestamp: datetime
+    synchronized: bool
+    yes_bid: Decimal | None
+    yes_ask: Decimal | None
+    no_bid: Decimal | None
+    no_ask: Decimal | None
+    source: str = "KALSHI_WS_SYNCHRONIZED"
+
+    def __post_init__(self) -> None:
+        if not self.ticker or self.received_timestamp.tzinfo is None:
+            raise ValueError("pre-submit quote identity/timestamp is invalid")
+        if self.received_timestamp.utcoffset() is None:
+            raise ValueError("pre-submit quote timestamp must be timezone-aware")
+        if self.source != "KALSHI_WS_SYNCHRONIZED":
+            raise ValueError("pre-submit execution quotes must come from synchronized Kalshi WS")
+        prices = (self.yes_bid, self.yes_ask, self.no_bid, self.no_ask)
+        if any(
+            value is not None and (not value.is_finite() or not Decimal(0) < value < Decimal(1))
+            for value in prices
+        ):
+            raise ValueError("pre-submit quote prices must be finite and strictly within (0,1)")
+        if self.yes_bid is not None and self.yes_ask is not None:
+            if self.yes_bid > self.yes_ask:
+                raise ValueError("pre-submit YES book is crossed")
+        if self.no_bid is not None and self.no_ask is not None:
+            if self.no_bid > self.no_ask:
+                raise ValueError("pre-submit NO book is crossed")
+        if self.yes_bid is not None and self.no_ask is not None:
+            if self.yes_bid + self.no_ask != Decimal(1):
+                raise ValueError("pre-submit YES bid/NO ask are not complementary")
+        if self.no_bid is not None and self.yes_ask is not None:
+            if self.no_bid + self.yes_ask != Decimal(1):
+                raise ValueError("pre-submit NO bid/YES ask are not complementary")
+
+
+class DemoPreSubmitQuoteSource(Protocol):
+    def latest_quote(self, ticker: str) -> DemoSynchronizedQuote | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DemoPriceEVPolicy:
+    max_quote_age: timedelta = timedelta(seconds=2)
+    max_adverse_price_move: Decimal = Decimal("0.03")
+    safety_margin: Decimal = Decimal("0.005")
+    minimum_required_edge: Decimal = Decimal("0")
+
+    def __post_init__(self) -> None:
+        decimals = (
+            self.max_adverse_price_move,
+            self.safety_margin,
+            self.minimum_required_edge,
+        )
+        if self.max_quote_age <= timedelta(0):
+            raise ValueError("pre-submit quote age must be positive")
+        if any(not value.is_finite() or value < 0 for value in decimals):
+            raise ValueError("pre-submit price/EV policy values must be finite and non-negative")
+        if self.max_adverse_price_move > Decimal("0.25"):
+            raise ValueError("pre-submit adverse move budget is unreasonably large")
+
+
+@dataclass(frozen=True, slots=True)
+class DemoPreSubmitGuardResult:
+    code: DemoExecutionResultCode
+    allowed: bool
+    ticker: str
+    side: DemoBookSide
+    decision_price: Decimal
+    pre_submit_price: Decimal | None
+    submitted_limit: Decimal | None
+    max_acceptable_price: Decimal | None
+    decision_edge: Decimal
+    pre_submit_net_edge: Decimal | None
+    estimated_fee: Decimal | None
+    best_bid: Decimal | None
+    best_ask: Decimal | None
+    spread: Decimal | None
+    quote_timestamp: datetime | None
+    quote_age_seconds: Decimal | None
+    price_source: str | None
+
+    def diagnostics(self) -> dict[str, object]:
+        def decimal(value: Decimal | None) -> str | None:
+            return None if value is None else str(value)
+
+        return {
+            "ticker": self.ticker,
+            "side": self.side.value,
+            "decision_price": str(self.decision_price),
+            "pre_submit_price": decimal(self.pre_submit_price),
+            "submitted_limit": decimal(self.submitted_limit),
+            "max_acceptable_price": decimal(self.max_acceptable_price),
+            "decision_edge": str(self.decision_edge),
+            "pre_submit_net_edge": decimal(self.pre_submit_net_edge),
+            "estimated_fee": decimal(self.estimated_fee),
+            "best_bid": decimal(self.best_bid),
+            "best_ask": decimal(self.best_ask),
+            "spread": decimal(self.spread),
+            "quote_timestamp": (
+                None if self.quote_timestamp is None else _timestamp(self.quote_timestamp)
+            ),
+            "quote_age_seconds": decimal(self.quote_age_seconds),
+            "price_source": self.price_source,
+        }
+
+
+class PreSubmitPriceEVGuard:
+    """Fail closed when a fresh executable quote no longer supports the frozen intent."""
+
+    def __init__(self, policy: DemoPriceEVPolicy | None = None) -> None:
+        self.policy = policy or DemoPriceEVPolicy()
+
+    @staticmethod
+    def _fee(quantity: Decimal, price: Decimal) -> Decimal:
+        model = KalshiTakerFeeModel()
+        computation = model.compute(
+            order_id="pre-submit-quote",
+            quantity=quantity,
+            price=price,
+            action=ExecutionAction.BUY,
+        )
+        model.finish_order("pre-submit-quote")
+        return computation.net_fee / quantity
+
+    def evaluate(
+        self,
+        intent: DemoIntent,
+        quote: DemoSynchronizedQuote | None,
+        *,
+        evaluated_at: datetime,
+    ) -> DemoPreSubmitGuardResult:
+        if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
+            raise ValueError("pre-submit evaluation timestamp must be timezone-aware")
+        unavailable = quote is None or quote.ticker != intent.ticker or not quote.synchronized
+        if quote is None:
+            age = None
+        else:
+            age = Decimal(str((evaluated_at - quote.received_timestamp).total_seconds()))
+            unavailable = (
+                unavailable
+                or age < 0
+                or age > Decimal(str(self.policy.max_quote_age.total_seconds()))
+            )
+        selected_bid = None
+        selected_ask = None
+        submitted_limit = None
+        if quote is not None:
+            if intent.side is DemoBookSide.BID:
+                selected_bid, selected_ask = quote.yes_bid, quote.yes_ask
+                submitted_limit = selected_ask
+            else:
+                selected_bid, selected_ask = quote.no_bid, quote.no_ask
+                submitted_limit = None if selected_ask is None else Decimal(1) - selected_ask
+            unavailable = unavailable or selected_bid is None or selected_ask is None
+        spread = (
+            None if selected_bid is None or selected_ask is None else selected_ask - selected_bid
+        )
+        base = {
+            "ticker": intent.ticker,
+            "side": intent.side,
+            "decision_price": intent.price,
+            "decision_edge": intent.edge,
+            "best_bid": selected_bid,
+            "best_ask": selected_ask,
+            "spread": spread,
+            "quote_timestamp": None if quote is None else quote.received_timestamp,
+            "quote_age_seconds": age,
+            "price_source": None if quote is None else quote.source,
+        }
+        if unavailable or selected_ask is None or submitted_limit is None:
+            return DemoPreSubmitGuardResult(
+                DemoExecutionResultCode.DATA_UNAVAILABLE,
+                False,
+                pre_submit_price=selected_ask,
+                submitted_limit=submitted_limit,
+                max_acceptable_price=None,
+                pre_submit_net_edge=None,
+                estimated_fee=None,
+                **base,
+            )
+        side_probability = (
+            intent.probability
+            if intent.side is DemoBookSide.BID
+            else Decimal(1) - intent.probability
+        )
+        decision_fee = self._fee(intent.count, intent.price)
+        current_fee = self._fee(intent.count, selected_ask)
+        edge_cap = (
+            intent.price
+            + intent.edge
+            - decision_fee
+            - self.policy.safety_margin
+            - self.policy.minimum_required_edge
+        )
+        probability_cap = (
+            side_probability
+            - decision_fee
+            - self.policy.safety_margin
+            - self.policy.minimum_required_edge
+        )
+        move_cap = intent.price + self.policy.max_adverse_price_move
+        max_acceptable = min(edge_cap, probability_cap, move_cap, Decimal("0.9999"))
+        net_edge = side_probability - selected_ask - current_fee - self.policy.safety_margin
+        if selected_ask > max_acceptable:
+            code = DemoExecutionResultCode.PRICE_MOVED_TOO_FAR
+            allowed = False
+        elif net_edge <= self.policy.minimum_required_edge:
+            code = DemoExecutionResultCode.EDGE_DECAYED_BEFORE_SUBMIT
+            allowed = False
+        else:
+            code = DemoExecutionResultCode.PRE_SUBMIT_ALLOWED
+            allowed = True
+        return DemoPreSubmitGuardResult(
+            code,
+            allowed,
+            pre_submit_price=selected_ask,
+            submitted_limit=submitted_limit,
+            max_acceptable_price=max_acceptable,
+            pre_submit_net_edge=net_edge,
+            estimated_fee=current_fee,
+            **base,
+        )
+
+
+class SqliteKalshiWsQuoteSource:
+    """Bounded read of a materialized synchronized WS checkpoint.
+
+    Raw delta rows intentionally do not repeat reconstructed depth. Reading the
+    last raw event as if it were a full book would therefore manufacture an
+    unavailable quote. This source accepts only an explicit full checkpoint,
+    paired with the recorder's current synchronized-market health boundary.
+    The pre-submit age policy still applies, so a sparse or old checkpoint fails
+    closed; latency-sensitive execution should inject a live WS quote source.
+    """
+
+    def __init__(
+        self,
+        raw_path: Path,
+        health_path: Path,
+        *,
+        utc_now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._raw_path = raw_path
+        self._health_path = health_path
+        self._utc_now = utc_now or (lambda: datetime.now(UTC))
+
+    def latest_quote(self, ticker: str) -> DemoSynchronizedQuote | None:
+        try:
+            health = json.loads(self._health_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if (
+            not isinstance(health, dict)
+            or health.get("kalshi_ws_connection_state") != "synchronized"
+        ):
+            return None
+        synchronized = health.get("kalshi_ws_synchronized_markets")
+        if not isinstance(synchronized, dict) or ticker not in synchronized.values():
+            return None
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(
+                f"file:{self._raw_path.resolve().as_posix()}?mode=ro",
+                uri=True,
+                timeout=2,
+            )
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            row = connection.execute(
+                """SELECT ticker,received_timestamp,yes_bids,no_bids,provenance
+                   FROM kalshi_ws_book_checkpoints
+                   WHERE ticker=?
+                   ORDER BY received_timestamp DESC,id DESC LIMIT 1""",
+                (ticker,),
+            ).fetchone()
+        except (OSError, sqlite3.Error):
+            return None
+        finally:
+            if connection is not None:
+                connection.close()
+        if row is None:
+            return None
+        try:
+            if str(row["provenance"]) != "kalshi_ws":
+                return None
+            yes_bids = json.loads(str(row["yes_bids"]))
+            no_bids = json.loads(str(row["no_bids"]))
+            if not isinstance(yes_bids, list) or not isinstance(no_bids, list):
+                return None
+            yes = tuple((Decimal(str(level[0])), Decimal(str(level[1]))) for level in yes_bids)
+            no = tuple((Decimal(str(level[0])), Decimal(str(level[1]))) for level in no_bids)
+            if not yes or not no:
+                return None
+            received = datetime.fromisoformat(str(row["received_timestamp"])).astimezone(UTC)
+            yes_bid = max(price for price, quantity in yes if quantity > 0)
+            no_bid = max(price for price, quantity in no if quantity > 0)
+            quote = DemoSynchronizedQuote(
+                ticker=str(row["ticker"]),
+                received_timestamp=received,
+                synchronized=True,
+                yes_bid=yes_bid,
+                yes_ask=Decimal(1) - no_bid,
+                no_bid=no_bid,
+                no_ask=Decimal(1) - yes_bid,
+            )
+        except (InvalidOperation, IndexError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if self._utc_now() < quote.received_timestamp:
+            return None
+        return quote
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,6 +737,17 @@ CREATE TABLE demo_risk_facts(
     fact_hash TEXT NOT NULL,
     PRIMARY KEY(client_order_id,fact_hash)
 ) STRICT;
+CREATE TABLE demo_execution_diagnostics(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_order_id TEXT NOT NULL REFERENCES demo_intents(client_order_id),
+    result_code TEXT NOT NULL,
+    detail_json TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    fact_hash TEXT NOT NULL,
+    UNIQUE(client_order_id,result_code,fact_hash)
+) STRICT;
+CREATE INDEX demo_execution_diagnostics_latest_idx
+ON demo_execution_diagnostics(client_order_id,id DESC);
 CREATE TABLE demo_order_facts(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_order_id TEXT NOT NULL REFERENCES demo_intents(client_order_id),
@@ -441,6 +792,20 @@ CREATE TABLE demo_settlement_facts(
 INSERT INTO demo_metadata(key,value) VALUES('environment','KALSHI_DEMO');
 """
 
+_MIGRATE_V1_TO_V2 = """
+CREATE TABLE demo_execution_diagnostics(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_order_id TEXT NOT NULL REFERENCES demo_intents(client_order_id),
+    result_code TEXT NOT NULL,
+    detail_json TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    fact_hash TEXT NOT NULL,
+    UNIQUE(client_order_id,result_code,fact_hash)
+) STRICT;
+CREATE INDEX demo_execution_diagnostics_latest_idx
+ON demo_execution_diagnostics(client_order_id,id DESC);
+"""
+
 
 class DemoExecutionStore:
     """Independent append-only Demo ledger; it never shares Paper or recorder storage."""
@@ -459,9 +824,13 @@ class DemoExecutionStore:
                 self._connection.close()
                 raise DemoExecutionError("database is not an empty Demo ledger path")
             self._connection.executescript(
-                "BEGIN IMMEDIATE;" + _SCHEMA + "PRAGMA user_version=1;COMMIT;"
+                "BEGIN IMMEDIATE;" + _SCHEMA + "PRAGMA user_version=2;COMMIT;"
             )
-        elif version != 1:
+        elif version == 1:
+            self._connection.executescript(
+                "BEGIN IMMEDIATE;" + _MIGRATE_V1_TO_V2 + "PRAGMA user_version=2;COMMIT;"
+            )
+        elif version != 2:
             raise DemoExecutionError("unsupported Demo ledger schema version")
         try:
             environment = self._connection.execute(
@@ -597,6 +966,47 @@ class DemoExecutionStore:
                 fact_hash,
             ),
         )
+
+    def append_execution_diagnostic(
+        self,
+        client_order_id: str,
+        result_code: DemoExecutionResultCode,
+        detail: dict[str, object],
+        *,
+        observed_at: datetime | None = None,
+    ) -> None:
+        detail_json = _canonical(detail)
+        fact_hash = _digest({"result_code": result_code.value, "detail": detail})
+        self._connection.execute(
+            """INSERT OR IGNORE INTO demo_execution_diagnostics(
+                   client_order_id,result_code,detail_json,observed_at,fact_hash
+               ) VALUES(?,?,?,?,?)""",
+            (
+                client_order_id,
+                result_code.value,
+                detail_json,
+                _timestamp(observed_at or datetime.now(UTC)),
+                fact_hash,
+            ),
+        )
+
+    def latest_execution_diagnostic(
+        self, client_order_id: str
+    ) -> tuple[DemoExecutionResultCode, dict[str, object]] | None:
+        row = self._connection.execute(
+            """SELECT result_code,detail_json FROM demo_execution_diagnostics
+               WHERE client_order_id=? ORDER BY id DESC LIMIT 1""",
+            (client_order_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            detail = json.loads(str(row[1]))
+        except json.JSONDecodeError:
+            raise DemoExecutionError("Demo execution diagnostic is malformed") from None
+        if not isinstance(detail, dict):
+            raise DemoExecutionError("Demo execution diagnostic is malformed")
+        return DemoExecutionResultCode(str(row[0])), detail
 
     def append_state(
         self,
@@ -834,6 +1244,11 @@ class DemoExecutionStore:
             "settlements": int(
                 self._connection.execute("SELECT COUNT(*) FROM demo_settlement_facts").fetchone()[0]
             ),
+            "execution_diagnostics": int(
+                self._connection.execute(
+                    "SELECT COUNT(*) FROM demo_execution_diagnostics"
+                ).fetchone()[0]
+            ),
         }
 
 
@@ -861,6 +1276,9 @@ class DemoExecutionCoordinator:
         *,
         limits: DemoRiskLimits | None = None,
         sizing: DemoSizingPolicy | None = None,
+        quote_source: DemoPreSubmitQuoteSource | None = None,
+        price_ev_guard: PreSubmitPriceEVGuard | None = None,
+        utc_now: Callable[[], datetime] | None = None,
         writes_enabled: bool = False,
         execution_smoke_approved: bool = False,
     ) -> None:
@@ -868,6 +1286,16 @@ class DemoExecutionCoordinator:
         self._store = store
         self._limits = limits or DemoRiskLimits()
         self._sizing = sizing or DemoSizingPolicy()
+        client_quote_source = getattr(client, "latest_quote", None)
+        self._quote_source = (
+            quote_source
+            if quote_source is not None
+            else cast(DemoPreSubmitQuoteSource, client)
+            if callable(client_quote_source)
+            else None
+        )
+        self._price_ev_guard = price_ev_guard or PreSubmitPriceEVGuard()
+        self._utc_now = utc_now or (lambda: datetime.now(UTC))
         self._writes_enabled = writes_enabled
         self._execution_smoke_approved = execution_smoke_approved
 
@@ -905,6 +1333,16 @@ class DemoExecutionCoordinator:
                 },
                 "writes_enabled": self._writes_enabled,
                 "execution_smoke_approved": self._execution_smoke_approved,
+                "price_ev_guard": {
+                    "max_quote_age_seconds": (
+                        self._price_ev_guard.policy.max_quote_age.total_seconds()
+                    ),
+                    "max_adverse_price_move": str(
+                        self._price_ev_guard.policy.max_adverse_price_move
+                    ),
+                    "safety_margin": str(self._price_ev_guard.policy.safety_margin),
+                    "minimum_required_edge": str(self._price_ev_guard.policy.minimum_required_edge),
+                },
             }
         )
         pre_remote_blockers = {
@@ -925,6 +1363,14 @@ class DemoExecutionCoordinator:
             return self._record_remote(existing)
         current = self._store.latest_state(client_id)
         if current in {
+            DemoLifecycleState.FILLED,
+            DemoLifecycleState.CANCELED,
+            DemoLifecycleState.REJECTED,
+            DemoLifecycleState.SETTLED,
+        }:
+            self._store.append_risk(client_id, risk, effective_context, policy_hash)
+            return DemoReconciliationResult(client_id, current, None, 0)
+        if current in {
             DemoLifecycleState.SUBMITTING,
             DemoLifecycleState.CANCEL_PENDING,
             DemoLifecycleState.RECONCILIATION_REQUIRED,
@@ -938,6 +1384,8 @@ class DemoExecutionCoordinator:
             return DemoReconciliationResult(
                 client_id, DemoLifecycleState.RECONCILIATION_REQUIRED, None, 0
             )
+        guard_result: DemoPreSubmitGuardResult | None = None
+        submit_intent = intent
         try:
             exchange = self._client.exchange_status()
             market = self._client.market(intent.ticker)
@@ -1002,14 +1450,32 @@ class DemoExecutionCoordinator:
                 official_market_status=market.status,
                 official_truth_received_at=official_received_at,
             )
-            risk = evaluate_demo_risk(
+            quote = (
+                None
+                if self._quote_source is None
+                else self._quote_source.latest_quote(intent.ticker)
+            )
+            guard_result = self._price_ev_guard.evaluate(
                 intent,
+                quote,
+                evaluated_at=self._utc_now(),
+            )
+            self._store.append_execution_diagnostic(
+                client_id,
+                guard_result.code,
+                guard_result.diagnostics(),
+            )
+            if guard_result.allowed:
+                assert guard_result.pre_submit_price is not None
+                submit_intent = replace(intent, price=guard_result.pre_submit_price)
+            risk = evaluate_demo_risk(
+                submit_intent,
                 effective_context,
                 self._limits,
                 writes_enabled=self._writes_enabled,
                 execution_smoke_approved=self._execution_smoke_approved,
             )
-            if account.buying_power < intent.count * intent.price:
+            if account.buying_power < submit_intent.count * submit_intent.price:
                 risk = DemoRiskDecision(
                     False,
                     tuple(dict.fromkeys((*risk.reasons, DemoRiskReason.INSUFFICIENT_BUYING_POWER))),
@@ -1027,22 +1493,70 @@ class DemoExecutionCoordinator:
                 )
             if reasons:
                 risk = DemoRiskDecision(False, tuple(dict.fromkeys((*risk.reasons, *reasons))))
+            if not guard_result.allowed:
+                guard_reason = {
+                    DemoExecutionResultCode.DATA_UNAVAILABLE: (
+                        DemoRiskReason.PRE_SUBMIT_DATA_UNAVAILABLE
+                    ),
+                    DemoExecutionResultCode.PRICE_MOVED_TOO_FAR: (
+                        DemoRiskReason.PRICE_MOVED_TOO_FAR
+                    ),
+                    DemoExecutionResultCode.EDGE_DECAYED_BEFORE_SUBMIT: (
+                        DemoRiskReason.EDGE_DECAYED_BEFORE_SUBMIT
+                    ),
+                }[guard_result.code]
+                risk = DemoRiskDecision(
+                    False,
+                    tuple(dict.fromkeys((*risk.reasons, guard_reason))),
+                )
         self._store.append_risk(client_id, risk, effective_context, policy_hash)
         if not risk.allowed:
-            return risk
+            return guard_result if guard_result is not None and not guard_result.allowed else risk
         self._store.append_state(client_id, DemoLifecycleState.INTENT)
         self._store.append_state(client_id, DemoLifecycleState.SUBMITTING)
         try:
+            assert guard_result is not None and guard_result.submitted_limit is not None
             remote = self._client.create_order(
                 DemoOrderRequest(
                     ticker=intent.ticker,
                     client_order_id=client_id,
                     side=intent.side,
                     count=intent.count,
-                    price=intent.price,
+                    price=guard_result.submitted_limit,
                 )
             )
+        except KalshiDemoWriteRejectedError as error:
+            detail = {"reason": "submit_rejected", "reason_code": error.reason_code}
+            self._store.append_execution_diagnostic(
+                client_id,
+                DemoExecutionResultCode.HTTP_4XX,
+                detail,
+            )
+            self._store.append_state(
+                client_id,
+                DemoLifecycleState.REJECTED,
+                detail=detail,
+            )
+            return DemoReconciliationResult(client_id, DemoLifecycleState.REJECTED, None, 0)
         except KalshiDemoAmbiguousWriteError as error:
+            result_code = {
+                "transport_failure": DemoExecutionResultCode.TRANSPORT_ERROR,
+                "http_409": DemoExecutionResultCode.HTTP_409,
+                "http_429": DemoExecutionResultCode.HTTP_429,
+                "malformed_response": DemoExecutionResultCode.MALFORMED_ACK,
+                "compact_ack_invalid": DemoExecutionResultCode.MALFORMED_ACK,
+            }.get(error.reason_code)
+            if result_code is None:
+                result_code = (
+                    DemoExecutionResultCode.HTTP_5XX
+                    if error.reason_code.startswith("http_5")
+                    else DemoExecutionResultCode.RECONCILIATION_REQUIRED
+                )
+            self._store.append_execution_diagnostic(
+                client_id,
+                result_code,
+                {"reason_code": error.reason_code},
+            )
             self._store.append_state(
                 client_id,
                 DemoLifecycleState.RECONCILIATION_REQUIRED,
@@ -1054,6 +1568,28 @@ class DemoExecutionCoordinator:
             return DemoReconciliationResult(
                 client_id, DemoLifecycleState.RECONCILIATION_REQUIRED, None, 0
             )
+        if (
+            remote.client_order_id != client_id
+            or remote.ticker != intent.ticker
+            or remote.initial_count != intent.count
+            or remote.price != guard_result.pre_submit_price
+        ):
+            raise DemoExecutionError("Demo create ACK conflicts with submitted order identity")
+        result_code = (
+            DemoExecutionResultCode.HTTP_SUCCESS_FILLED
+            if remote.filled_count > 0
+            else DemoExecutionResultCode.HTTP_SUCCESS_NO_FILL
+        )
+        self._store.append_execution_diagnostic(
+            client_id,
+            result_code,
+            {
+                "provider_order_id": remote.order_id,
+                "fill_count": str(remote.filled_count),
+                "remaining_count": str(remote.remaining_count),
+                "submitted_limit": str(guard_result.submitted_limit),
+            },
+        )
         return self._record_remote(remote)
 
     def _record_remote(self, remote: DemoRemoteOrder) -> DemoReconciliationResult:

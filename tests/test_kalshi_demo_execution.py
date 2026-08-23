@@ -17,6 +17,7 @@ from live15_quant.providers.kalshi_demo_execution import (
     KalshiDemoAmbiguousWriteError,
     KalshiDemoExecutionClient,
     KalshiDemoExecutionError,
+    KalshiDemoWriteRejectedError,
     authenticated_signature_message,
 )
 
@@ -202,6 +203,38 @@ def test_compact_v2_ioc_partial_fill_preserves_official_fee_truth(tmp_path: Path
     assert result.fees == Decimal("0.005")
 
 
+def test_compact_v2_ask_ack_keeps_acquired_no_cost(tmp_path: Path) -> None:
+    create_url = f"{KALSHI_DEMO_API_BASE_URL}/portfolio/events/orders"
+    client, session, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {
+                    "order_id": "order-ask",
+                    "client_order_id": "client-ask",
+                    "fill_count": "1",
+                    "remaining_count": "0",
+                    "average_fill_price": "0.60",
+                    "average_fee_paid": "0.01",
+                    "ts_ms": 1_700_000_000_124,
+                },
+                create_url,
+                201,
+            )
+        ],
+    )
+
+    result = client.create_order(
+        DemoOrderRequest(
+            "KXBTC15M-TEST", "client-ask", DemoBookSide.ASK, Decimal("1"), Decimal("0.60")
+        )
+    )
+
+    assert result.price == Decimal("0.40")
+    assert session.calls[0][2]["side"] == "ask"  # type: ignore[index]
+    assert session.calls[0][2]["price"] == "0.60"  # type: ignore[index]
+
+
 def test_write_transport_failure_is_ambiguous_and_never_retried(tmp_path: Path) -> None:
     client, session, _ = _client(tmp_path, [requests.Timeout("contains secret")])
 
@@ -246,6 +279,32 @@ def test_inconclusive_write_http_status_requires_reconciliation(
             )
         )
     assert error.value.reason_code == f"http_{status_code}"
+
+
+@pytest.mark.parametrize("status_code", (400, 401, 403, 422))
+def test_conclusive_write_4xx_is_typed_and_never_retried(tmp_path: Path, status_code: int) -> None:
+    client, session, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {"error": "safe rejection"},
+                f"{KALSHI_DEMO_API_BASE_URL}/portfolio/events/orders",
+                status_code,
+            )
+        ],
+    )
+    with pytest.raises(KalshiDemoWriteRejectedError) as error:
+        client.create_order(
+            DemoOrderRequest(
+                "KXBTC15M-TEST",
+                "client-1",
+                DemoBookSide.BID,
+                Decimal("1"),
+                Decimal("0.51"),
+            )
+        )
+    assert error.value.reason_code == "http_4xx"
+    assert len(session.calls) == 1
 
 
 def test_malformed_successful_write_response_requires_reconciliation(tmp_path: Path) -> None:

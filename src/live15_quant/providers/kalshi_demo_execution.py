@@ -53,6 +53,14 @@ class KalshiDemoAmbiguousWriteError(KalshiDemoExecutionError):
         self.reason_code = reason_code
 
 
+class KalshiDemoWriteRejectedError(KalshiDemoExecutionError):
+    """A conclusive Demo 4xx rejection; the request must not be retried unchanged."""
+
+    def __init__(self, message: str, *, reason_code: str = "http_4xx") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
 class DemoBookSide(StrEnum):
     BID = "bid"
     ASK = "ask"
@@ -333,8 +341,16 @@ def _parse_order(value: object) -> DemoRemoteOrder:
     )
     if initial <= 0 or filled < 0 or remaining < 0 or filled + remaining > initial:
         raise KalshiDemoExecutionError("impossible Demo order quantities")
-    side = str(value.get("side", value.get("book_side", "")))
-    price_field = "yes_price_dollars" if side in {"yes", "bid"} else "no_price_dollars"
+    # V2 event orders are quoted on one YES book: bid buys YES, while ask sells
+    # YES (economically buying NO). The portfolio read shape also carries the
+    # legacy outcome-side field, so prefer the explicit V2 book side whenever it
+    # is present. ``DemoRemoteOrder.price`` is the acquired contract's cost,
+    # which is the value needed by exposure and reconciliation logic.
+    book_side = str(value.get("book_side", ""))
+    if book_side not in {"bid", "ask"}:
+        action = str(value.get("action", ""))
+        book_side = "ask" if action == "sell" else "bid"
+    price_field = "yes_price_dollars" if book_side == "bid" else "no_price_dollars"
     price = _decimal(value.get(price_field, value.get("price", 0)), "order price")
     fees = _decimal(
         value.get(
@@ -404,7 +420,7 @@ def _parse_compact_create_ack(
         initial_count=request.count,
         filled_count=filled,
         remaining_count=remaining,
-        price=request.price,
+        price=(request.price if request.side is DemoBookSide.BID else Decimal(1) - request.price),
         fees=fee,
         raw_status=raw_status,
     )
@@ -510,6 +526,11 @@ class KalshiDemoExecutionClient:
                     "Kalshi Demo write response is not conclusive; "
                     "reconcile remote truth before retry",
                     reason_code=f"http_{response.status_code}",
+                )
+            if method in {"POST", "DELETE"}:
+                raise KalshiDemoWriteRejectedError(
+                    f"Kalshi Demo {method} was conclusively rejected",
+                    reason_code="http_4xx",
                 )
             raise KalshiDemoExecutionError(
                 f"Kalshi Demo {method} returned HTTP {response.status_code}"
