@@ -576,6 +576,37 @@ def model_zoo_v2_main(argv: Sequence[str] | None = None) -> None:
     )
 
 
+def model_v3_structured_main(argv: Sequence[str] | None = None) -> None:
+    """Build the immutable train-internal v3 structured development artifact."""
+
+    from live15_quant.model_v3_structured import V3StructuredConfig, V3StructuredDevelopment
+    from live15_quant.model_zoo import load_certified_dataset
+
+    parser = argparse.ArgumentParser(prog="live15-model-v3-structured")
+    parser.add_argument("--dataset", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, default=Path("data/models"))
+    parser.add_argument("--seed", type=int, default=20260823)
+    arguments = parser.parse_args(argv)
+    summary = V3StructuredDevelopment(
+        load_certified_dataset(arguments.dataset),
+        arguments.output_root,
+        V3StructuredConfig(seed=arguments.seed),
+    ).build()
+    print(
+        json.dumps(
+            {
+                "artifact_id": summary.artifact_id,
+                "dataset_id": summary.dataset_id,
+                "status": summary.status,
+                "evidence_status": summary.evidence_status,
+                "reused_existing_artifact": summary.reused_existing_artifact,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 def coverage_main(argv: Sequence[str] | None = None) -> None:
     """Build a consistent snapshot and print machine-readable training coverage."""
 

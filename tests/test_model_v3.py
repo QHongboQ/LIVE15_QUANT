@@ -10,6 +10,7 @@ from live15_quant.model_v3 import (
     DEFAULT_MICROSTRUCTURE_HORIZONS,
     DEFAULT_PATH_HORIZONS,
     DynamicDecisionAction,
+    DynamicDecisionConfig,
     DynamicDecisionContext,
     DynamicDecisionEngine,
     DynamicPosition,
@@ -91,7 +92,9 @@ def test_dynamic_engine_compares_close_with_hold_to_settlement() -> None:
     context = _context(position=position)
     # A current executable bid of 0.60 is worse than terminal EV 0.75, so do not
     # mechanically take profit merely because the position is green.
-    result = DynamicDecisionEngine().evaluate(context)
+    # ADD is intentionally disabled for the first structured v3 generation;
+    # this test exercises the separately explicit future opt-in only.
+    result = DynamicDecisionEngine(DynamicDecisionConfig(allow_add=True)).evaluate(context)
     assert result.action is DynamicDecisionAction.ADD
     near_expiry = DynamicDecisionContext(
         **{
@@ -118,6 +121,14 @@ def test_dynamic_engine_compares_close_with_hold_to_settlement() -> None:
     assert (
         DynamicDecisionEngine().evaluate(near_expiry).action
         is DynamicDecisionAction.HOLD_TO_SETTLEMENT
+    )
+
+
+def test_dynamic_engine_first_generation_never_adds_without_explicit_opt_in() -> None:
+    position = DynamicPosition(ContractOutcome.YES, Decimal("1"), Decimal("0.50"), Decimal("0.10"))
+    assert (
+        DynamicDecisionEngine().evaluate(_context(position=position)).action
+        is DynamicDecisionAction.HOLD
     )
 
 

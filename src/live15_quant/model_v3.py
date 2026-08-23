@@ -14,11 +14,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from live15_quant.execution import ContractOutcome
-from live15_quant.model_zoo import DatasetExample
 from live15_quant.models import Asset
+
+if TYPE_CHECKING:
+    from live15_quant.model_zoo import DatasetExample
 
 DEFAULT_PATH_HORIZONS = (
     timedelta(seconds=30),
@@ -283,6 +285,10 @@ class DynamicDecisionConfig:
     exit_value_margin: Decimal = Decimal("0.01")
     elevated_reversal_risk: Decimal = Decimal("0.65")
     require_short_horizon_confirmation: bool = True
+    # The first structured v3 generation is deliberately entry/exit only.  A
+    # caller must opt in explicitly before a later, separately validated
+    # candidate can increase an existing position.
+    allow_add: bool = False
 
     def __post_init__(self) -> None:
         for value in (self.minimum_entry_edge, self.minimum_add_edge, self.exit_value_margin):
@@ -452,7 +458,8 @@ class DynamicDecisionEngine:
             - context.estimated_entry_fee
         )
         if (
-            add_value >= self.config.minimum_add_edge
+            self.config.allow_add
+            and add_value >= self.config.minimum_add_edge
             and reversal < self.config.elevated_reversal_risk
         ):
             return DynamicDecision(
