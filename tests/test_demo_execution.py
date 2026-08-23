@@ -24,6 +24,7 @@ from live15_quant.demo_execution import (
     DemoSizingMode,
     DemoSizingPolicy,
     DemoSynchronizedQuote,
+    LiveKalshiWsQuoteSource,
     PreSubmitPriceEVGuard,
     SqliteKalshiWsQuoteSource,
     stable_client_order_id,
@@ -597,6 +598,60 @@ def test_sqlite_quote_source_typed_reasons_for_unsync_and_rollover(tmp_path: Pat
     )
     assert source.latest_quote("KXBTC15M-OLD") is None
     assert source.last_unavailable_reason("KXBTC15M-OLD") == "MARKET_ROLLED"
+
+
+def test_live_ws_quote_source_uses_atomic_projection_not_stale_sqlite(tmp_path: Path) -> None:
+    live = tmp_path / "kalshi-live-ws-books.json"
+    live.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "state": "SYNCHRONIZED",
+                "published_at": "2026-08-23T00:00:02.100000+00:00",
+                "transport_received_at": "2026-08-23T00:00:02+00:00",
+                "current_tickers": ["KXBTC15M-TEST"],
+                "books": {
+                    "KXBTC15M-TEST": {
+                        "ticker": "KXBTC15M-TEST",
+                        "subscription_id": 7,
+                        "sequence": 99,
+                        "status": "SYNCHRONIZED",
+                        "provenance": "kalshi_ws",
+                        "book_received_at": "2026-08-22T23:59:40+00:00",
+                        "yes_bids": [["0.50", "2"]],
+                        "no_bids": [["0.49", "3"]],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = LiveKalshiWsQuoteSource(
+        live, utc_now=lambda: datetime(2026, 8, 23, 0, 0, 2, 200000, tzinfo=UTC)
+    )
+    quote = source.latest_quote("KXBTC15M-TEST")
+    assert quote is not None
+    assert quote.source == "LIVE_KALSHI_WS"
+    assert quote.received_timestamp == datetime(2026, 8, 23, 0, 0, 2, tzinfo=UTC)
+    assert quote.book_received_timestamp == datetime(2026, 8, 22, 23, 59, 40, tzinfo=UTC)
+    assert quote.yes_ask == Decimal("0.51")
+    assert quote.subscription_id == 7
+    assert quote.sequence == 99
+    guarded = PreSubmitPriceEVGuard().evaluate(
+        _intent(),
+        quote,
+        evaluated_at=datetime(2026, 8, 23, 0, 0, 2, 200000, tzinfo=UTC),
+    )
+    assert guarded.allowed
+    assert guarded.quote_age_seconds == Decimal("0.2")
+    assert guarded.diagnostics()["price_source"] == "LIVE_KALSHI_WS"
+    assert guarded.diagnostics()["live_book_read_at"] is not None
+
+
+def test_live_ws_quote_source_fails_closed_without_live_projection(tmp_path: Path) -> None:
+    source = LiveKalshiWsQuoteSource(tmp_path / "missing.json")
+    assert source.latest_quote("KXBTC15M-TEST") is None
+    assert source.last_unavailable_reason("KXBTC15M-TEST") == "LIVE_WS_UNAVAILABLE"
 
 
 def test_synchronized_quote_rejects_crossed_or_non_complementary_book() -> None:

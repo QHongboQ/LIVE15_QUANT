@@ -34,7 +34,7 @@ from live15_quant.demo_execution import (
     DemoReconciliationResult,
     DemoRiskContext,
     DemoRiskDecision,
-    SqliteKalshiWsQuoteSource,
+    LiveKalshiWsQuoteSource,
     stable_client_order_id,
 )
 from live15_quant.logging_config import configure_logging
@@ -339,8 +339,8 @@ class DemoFirstFillWorker:
             coordinator=DemoExecutionCoordinator(
                 _PostReservationClient(client, lambda client_id: worker.reserve_post(client_id)),
                 store,
-                quote_source=SqliteKalshiWsQuoteSource(
-                    settings.recorder_data_path, settings.recorder_health_path
+                quote_source=LiveKalshiWsQuoteSource(
+                    settings.recorder_health_path.with_name("kalshi-live-ws-books.json")
                 ),
                 writes_enabled=writes_enabled,
                 execution_smoke_approved=writes_enabled,
@@ -433,6 +433,7 @@ class DemoFirstFillWorker:
             )
             return None
         for intent in intents:
+            candidate_seen_at = self.utc_now().astimezone(UTC)
             self.status.update(
                 {
                     "status": DemoFirstFillStatus.EVALUATING.value,
@@ -442,6 +443,8 @@ class DemoFirstFillWorker:
                         "ticker": intent.ticker,
                         "direction": "BUY_YES" if intent.side is DemoBookSide.BID else "BUY_NO",
                         "decision_timestamp": _timestamp(intent.decision_timestamp),
+                        "decision_created_at": _timestamp(intent.decision_timestamp),
+                        "candidate_seen_at": _timestamp(candidate_seen_at),
                         "decision_price": str(intent.price),
                         "decision_edge": str(intent.edge),
                     },
@@ -457,6 +460,7 @@ class DemoFirstFillWorker:
             book_state = _book_state(reason, diagnostics)
             diagnostics = {
                 **diagnostics,
+                **_latency_diagnostics(intent.decision_timestamp, candidate_seen_at, diagnostics),
                 "typed_skip_reason": reason,
                 "decision_age_seconds": decision_age,
                 "book_state": book_state,
@@ -622,9 +626,46 @@ def _decision_age_seconds(now: datetime, decision_timestamp: datetime) -> str:
 
 
 def _book_state(reason: str, diagnostics: dict[str, object]) -> str:
-    if diagnostics.get("price_source") == "KALSHI_WS_SYNCHRONIZED":
-        return "KALSHI_WS_SYNCHRONIZED"
+    if diagnostics.get("price_source") in {"KALSHI_WS_SYNCHRONIZED", "LIVE_KALSHI_WS"}:
+        return str(diagnostics["price_source"])
     return reason
+
+
+def _latency_diagnostics(
+    decision_created_at: datetime,
+    candidate_seen_at: datetime,
+    diagnostics: dict[str, object],
+) -> dict[str, object]:
+    live_read = _optional_timestamp(diagnostics.get("live_book_read_at"))
+    ready = _optional_timestamp(diagnostics.get("pre_submit_ready_at"))
+    return {
+        "decision_to_candidate_ms": _nonnegative_milliseconds(
+            candidate_seen_at - decision_created_at
+        ),
+        "candidate_to_book_ms": (
+            None if live_read is None else _nonnegative_milliseconds(live_read - candidate_seen_at)
+        ),
+        "total_pre_submit_latency_ms": (
+            None if ready is None else _nonnegative_milliseconds(ready - decision_created_at)
+        ),
+    }
+
+
+def _optional_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _nonnegative_milliseconds(value: timedelta) -> str | None:
+    milliseconds = Decimal(str(value.total_seconds())) * Decimal(1000)
+    return None if milliseconds < 0 else str(milliseconds)
 
 
 def _configure_worker_log(path: Path) -> logging.FileHandler:

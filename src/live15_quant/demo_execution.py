@@ -27,6 +27,7 @@ from live15_quant.providers.kalshi_demo_execution import (
     KalshiDemoExecutionError,
     KalshiDemoWriteRejectedError,
 )
+from live15_quant.runtime_status import RuntimeStatusError, read_json
 
 
 class DemoExecutionError(RuntimeError):
@@ -119,6 +120,8 @@ class DemoDataUnavailableReason(StrEnum):
     CHECKPOINT_MALFORMED = "CHECKPOINT_MALFORMED"
     CHECKPOINT_NOT_READY = "CHECKPOINT_NOT_READY"
     OFFICIAL_TRUTH_UNAVAILABLE = "OFFICIAL_TRUTH_UNAVAILABLE"
+    LIVE_WS_UNAVAILABLE = "LIVE_WS_UNAVAILABLE"
+    LIVE_WS_STATE_MALFORMED = "LIVE_WS_STATE_MALFORMED"
 
 
 class DemoSizingMode(StrEnum):
@@ -272,14 +275,30 @@ class DemoSynchronizedQuote:
     no_bid: Decimal | None
     no_ask: Decimal | None
     source: str = "KALSHI_WS_SYNCHRONIZED"
+    book_received_timestamp: datetime | None = None
+    live_book_read_at: datetime | None = None
+    subscription_id: int | None = None
+    sequence: int | None = None
 
     def __post_init__(self) -> None:
         if not self.ticker or self.received_timestamp.tzinfo is None:
             raise ValueError("pre-submit quote identity/timestamp is invalid")
         if self.received_timestamp.utcoffset() is None:
             raise ValueError("pre-submit quote timestamp must be timezone-aware")
-        if self.source != "KALSHI_WS_SYNCHRONIZED":
+        if self.source not in {"KALSHI_WS_SYNCHRONIZED", "LIVE_KALSHI_WS"}:
             raise ValueError("pre-submit execution quotes must come from synchronized Kalshi WS")
+        for timestamp in (self.book_received_timestamp, self.live_book_read_at):
+            if timestamp is not None and (
+                timestamp.tzinfo is None or timestamp.utcoffset() is None
+            ):
+                raise ValueError("live quote diagnostic timestamps must be timezone-aware")
+        if self.source == "LIVE_KALSHI_WS" and (
+            self.subscription_id is None
+            or self.subscription_id < 1
+            or self.sequence is None
+            or self.sequence < 1
+        ):
+            raise ValueError("live synchronized quote requires positive sid/seq")
         prices = (self.yes_bid, self.yes_ask, self.no_bid, self.no_ask)
         if any(
             value is not None and (not value.is_finite() or not Decimal(0) < value < Decimal(1))
@@ -347,6 +366,11 @@ class DemoPreSubmitGuardResult:
     quote_age_seconds: Decimal | None
     price_source: str | None
     data_unavailable_reason: str | None = None
+    live_book_read_at: datetime | None = None
+    pre_submit_ready_at: datetime | None = None
+    book_received_timestamp: datetime | None = None
+    subscription_id: int | None = None
+    sequence: int | None = None
 
     def diagnostics(self) -> dict[str, object]:
         def decimal(value: Decimal | None) -> str | None:
@@ -371,6 +395,19 @@ class DemoPreSubmitGuardResult:
             "quote_age_seconds": decimal(self.quote_age_seconds),
             "price_source": self.price_source,
             "data_unavailable_reason": self.data_unavailable_reason,
+            "live_book_read_at": (
+                None if self.live_book_read_at is None else _timestamp(self.live_book_read_at)
+            ),
+            "pre_submit_ready_at": (
+                None if self.pre_submit_ready_at is None else _timestamp(self.pre_submit_ready_at)
+            ),
+            "book_received_timestamp": (
+                None
+                if self.book_received_timestamp is None
+                else _timestamp(self.book_received_timestamp)
+            ),
+            "subscription_id": self.subscription_id,
+            "sequence": self.sequence,
         }
 
 
@@ -448,6 +485,11 @@ class PreSubmitPriceEVGuard:
             "quote_timestamp": None if quote is None else quote.received_timestamp,
             "quote_age_seconds": age,
             "price_source": None if quote is None else quote.source,
+            "live_book_read_at": None if quote is None else quote.live_book_read_at,
+            "pre_submit_ready_at": evaluated_at,
+            "book_received_timestamp": (None if quote is None else quote.book_received_timestamp),
+            "subscription_id": None if quote is None else quote.subscription_id,
+            "sequence": None if quote is None else quote.sequence,
         }
         if unavailable or selected_ask is None or submitted_limit is None:
             return DemoPreSubmitGuardResult(
@@ -616,6 +658,127 @@ class SqliteKalshiWsQuoteSource:
             return None
         self._last_reason_by_ticker.pop(ticker, None)
         return quote
+
+
+class LiveKalshiWsQuoteSource:
+    """Read the Recorder-owned atomic live-book projection; never consult SQLite."""
+
+    SCHEMA_VERSION = 1
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        utc_now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._path = path
+        self._utc_now = utc_now or (lambda: datetime.now(UTC))
+        self._last_reason_by_ticker: dict[str, str] = {}
+
+    def _unavailable(self, ticker: str, reason: DemoDataUnavailableReason) -> None:
+        self._last_reason_by_ticker[ticker] = reason.value
+
+    def last_unavailable_reason(self, ticker: str) -> str | None:
+        return self._last_reason_by_ticker.get(ticker)
+
+    def latest_quote(self, ticker: str) -> DemoSynchronizedQuote | None:
+        read_at = self._utc_now().astimezone(UTC)
+        try:
+            payload = read_json(self._path, maximum_bytes=512 * 1024)
+        except RuntimeStatusError:
+            self._unavailable(ticker, DemoDataUnavailableReason.LIVE_WS_UNAVAILABLE)
+            return None
+        if payload is None or payload.get("schema_version") != self.SCHEMA_VERSION:
+            self._unavailable(ticker, DemoDataUnavailableReason.LIVE_WS_UNAVAILABLE)
+            return None
+        if payload.get("state") != "SYNCHRONIZED":
+            self._unavailable(ticker, DemoDataUnavailableReason.BOOK_UNSYNCHRONIZED)
+            return None
+        books = payload.get("books")
+        if not isinstance(books, dict):
+            self._unavailable(ticker, DemoDataUnavailableReason.LIVE_WS_UNAVAILABLE)
+            return None
+        raw = books.get(ticker)
+        if not isinstance(raw, dict):
+            current_tickers = payload.get("current_tickers")
+            self._unavailable(
+                ticker,
+                DemoDataUnavailableReason.MARKET_ROLLED
+                if isinstance(current_tickers, list) and ticker not in current_tickers
+                else DemoDataUnavailableReason.SNAPSHOT_NOT_READY,
+            )
+            return None
+        if raw.get("provenance") != "kalshi_ws" or raw.get("status") != "SYNCHRONIZED":
+            reason = (
+                DemoDataUnavailableReason.BOOK_PROVENANCE_MISMATCH
+                if raw.get("provenance") != "kalshi_ws"
+                else DemoDataUnavailableReason.BOOK_UNSYNCHRONIZED
+            )
+            self._unavailable(ticker, reason)
+            return None
+        try:
+            yes = _projection_levels(raw.get("yes_bids"))
+            no = _projection_levels(raw.get("no_bids"))
+            if not yes or not no:
+                self._unavailable(ticker, DemoDataUnavailableReason.NO_EXECUTABLE_ASK)
+                return None
+            transport_received = _parse_aware_timestamp(payload.get("transport_received_at"))
+            published_at = _parse_aware_timestamp(payload.get("published_at"))
+            book_received = _parse_aware_timestamp(raw.get("book_received_at"))
+            subscription_id = int(raw["subscription_id"])
+            sequence = int(raw["sequence"])
+            yes_bid = max(price for price, quantity in yes if quantity > 0)
+            no_bid = max(price for price, quantity in no if quantity > 0)
+            quote = DemoSynchronizedQuote(
+                ticker=str(raw["ticker"]),
+                received_timestamp=transport_received,
+                synchronized=True,
+                yes_bid=yes_bid,
+                yes_ask=Decimal(1) - no_bid,
+                no_bid=no_bid,
+                no_ask=Decimal(1) - yes_bid,
+                source="LIVE_KALSHI_WS",
+                book_received_timestamp=book_received,
+                live_book_read_at=read_at,
+                subscription_id=subscription_id,
+                sequence=sequence,
+            )
+        except (KeyError, InvalidOperation, TypeError, ValueError):
+            self._unavailable(ticker, DemoDataUnavailableReason.LIVE_WS_STATE_MALFORMED)
+            return None
+        if (
+            quote.ticker != ticker
+            or book_received > transport_received
+            or transport_received > published_at
+            or published_at > read_at
+        ):
+            self._unavailable(ticker, DemoDataUnavailableReason.BOOK_PROVENANCE_MISMATCH)
+            return None
+        self._last_reason_by_ticker.pop(ticker, None)
+        return quote
+
+
+def _projection_levels(value: object) -> tuple[tuple[Decimal, Decimal], ...]:
+    if not isinstance(value, list):
+        raise ValueError("live WS levels must be a list")
+    levels: list[tuple[Decimal, Decimal]] = []
+    for level in value:
+        if not isinstance(level, list) or len(level) != 2:
+            raise ValueError("live WS level shape is invalid")
+        price, quantity = Decimal(str(level[0])), Decimal(str(level[1]))
+        if not price.is_finite() or not quantity.is_finite() or quantity <= 0:
+            raise ValueError("live WS level is invalid")
+        levels.append((price, quantity))
+    return tuple(levels)
+
+
+def _parse_aware_timestamp(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("live WS timestamp is missing")
+    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ValueError("live WS timestamp must be timezone-aware")
+    return timestamp.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1531,6 +1694,7 @@ class DemoExecutionCoordinator:
                 evaluated_at=self._utc_now(),
                 data_unavailable_reason=unavailable_reason,
             )
+            guard_result = replace(guard_result, pre_submit_ready_at=self._utc_now())
             self._store.append_execution_diagnostic(
                 client_id,
                 guard_result.code,

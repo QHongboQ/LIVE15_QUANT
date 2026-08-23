@@ -29,6 +29,7 @@ from live15_quant.demo_first_fill import (
     DemoFirstFillWorker,
     _configure_worker_log,
     _initial_status,
+    _latency_diagnostics,
 )
 from live15_quant.providers.kalshi_demo_execution import DemoBookSide
 
@@ -215,3 +216,21 @@ def test_status_write_exhaustion_is_logged_and_worker_continues(
         worker._write_status()
     assert "STATUS_WRITE_FAILED" in caplog.text
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_pre_submit_latency_diagnostics_are_monotonic() -> None:
+    decision = datetime(2026, 8, 24, 0, 0, 0, tzinfo=UTC)
+    candidate = datetime(2026, 8, 24, 0, 0, 0, 100000, tzinfo=UTC)
+    diagnostics = _latency_diagnostics(
+        decision,
+        candidate,
+        {
+            "live_book_read_at": "2026-08-24T00:00:00.125000+00:00",
+            "pre_submit_ready_at": "2026-08-24T00:00:00.150000+00:00",
+        },
+    )
+    assert diagnostics == {
+        "decision_to_candidate_ms": "100.0",
+        "candidate_to_book_ms": "25.000",
+        "total_pre_submit_latency_ms": "150.00",
+    }

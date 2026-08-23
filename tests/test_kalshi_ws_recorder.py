@@ -288,6 +288,19 @@ async def test_recorder_uses_only_synchronized_ws_and_closes_sequence_gap(tmp_pa
         assert len(recovered) == len(Asset)
         for market in recorder._health.current.values():
             assert recorder.synchronized_kalshi_ws_book(market.ticker).ticker == market.ticker
+        projection = recorder._kalshi_ws_live_projection()
+        assert projection["state"] == "SYNCHRONIZED"
+        assert projection["transport_received_at"] is not None
+        books = projection["books"]
+        assert isinstance(books, dict)
+        assert len(books) == len(Asset)
+        projected = books[current_ticker]
+        assert projected["status"] == "SYNCHRONIZED"
+        assert projected["provenance"] == "kalshi_ws"
+        assert int(projected["subscription_id"]) > 0
+        assert int(projected["sequence"]) > 0
+        assert projected["yes_bids"]
+        assert projected["no_bids"]
         source.diagnostics.transport_state = KalshiWsRuntimeState.RECONNECTING
         with pytest.raises(KalshiUnsynchronizedBookError):
             recorder.synchronized_kalshi_ws_book(current_ticker)

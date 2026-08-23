@@ -107,6 +107,7 @@ from live15_quant.providers.pyth import (
 )
 from live15_quant.providers.robinhood_15min import Robinhood15MinuteProvider
 from live15_quant.records import KalshiMarketRecord
+from live15_quant.runtime_status import atomic_json
 from live15_quant.secondary import secondary_from_benchmark_tick
 from live15_quant.storage import (
     MarketIdentityConflictError,
@@ -124,6 +125,8 @@ from live15_quant.ws_retention import (
 )
 
 logger = logging.getLogger(__name__)
+
+_LIVE_WS_PROJECTION_DEPTH = 16
 
 
 def _next_pyth_batch(iterator: Iterator[PythUpdateBatch]) -> PythUpdateBatch | None:
@@ -1078,6 +1081,11 @@ class KalshiNativeRecorder:
         if self._kalshi_ws is not None:
             tasks.append(asyncio.create_task(self._record_kalshi_ws(), name="kalshi-ws"))
             tasks.append(
+                asyncio.create_task(
+                    self._publish_kalshi_ws_live_books(), name="kalshi-ws-live-projection"
+                )
+            )
+            tasks.append(
                 asyncio.create_task(self._flush_kalshi_ws_loop(), name="kalshi-ws-persistence")
             )
             tasks.append(
@@ -1869,6 +1877,82 @@ class KalshiNativeRecorder:
         while not await self._wait(0.025):
             self._flush_kalshi_ws_pending()
             self._worker_advanced("kalshi_ws_persistence")
+
+    def _kalshi_ws_live_projection(self) -> dict[str, object]:
+        """One immutable cross-process snapshot of current synchronized books."""
+
+        observed = self._utc_now().astimezone(UTC)
+        transport_received = self._health.worker_progress.get("kalshi_ws")
+        transport_age = (
+            None if transport_received is None else timedelta_seconds(observed - transport_received)
+        )
+        transport_fresh = transport_age is not None and Decimal(0) <= transport_age <= Decimal(
+            str(self._settings.kalshi_websocket_stale_seconds)
+        )
+        synchronized = (
+            self._health.kalshi_ws_state is KalshiWsRuntimeState.SYNCHRONIZED and transport_fresh
+        )
+        books: dict[str, object] = {}
+        if synchronized:
+            for asset, book in sorted(
+                self._kalshi_ws_books.items(), key=lambda item: item[0].value
+            ):
+                if self._health.kalshi_ws_synchronized.get(asset) != book.ticker:
+                    continue
+                books[book.ticker] = {
+                    "ticker": book.ticker,
+                    "asset": asset.value,
+                    "connection_id": book.connection_id,
+                    "subscription_id": book.subscription_id,
+                    "sequence": book.sequence,
+                    "status": book.status.value.upper(),
+                    "provenance": book.provenance,
+                    "source_timestamp": (
+                        None if book.source_timestamp is None else book.source_timestamp.isoformat()
+                    ),
+                    "book_received_at": book.received_timestamp.isoformat(),
+                    "yes_bids": [
+                        [str(level.price), str(level.quantity)]
+                        for level in sorted(
+                            book.yes_bids, key=lambda level: level.price, reverse=True
+                        )[:_LIVE_WS_PROJECTION_DEPTH]
+                    ],
+                    "no_bids": [
+                        [str(level.price), str(level.quantity)]
+                        for level in sorted(
+                            book.no_bids, key=lambda level: level.price, reverse=True
+                        )[:_LIVE_WS_PROJECTION_DEPTH]
+                    ],
+                }
+        return {
+            "schema_version": 1,
+            "state": "SYNCHRONIZED" if synchronized else "UNSYNCHRONIZED",
+            "published_at": observed.isoformat(),
+            "transport_received_at": (
+                None if transport_received is None else transport_received.isoformat()
+            ),
+            "current_tickers": sorted(market.ticker for market in self._health.current.values()),
+            "books": books,
+        }
+
+    async def _publish_kalshi_ws_live_books(self) -> None:
+        """Publish coalesced live books without blocking the recorder event loop."""
+
+        path = self._settings.recorder_health_path.with_name("kalshi-live-ws-books.json")
+        while not self._stop_event.is_set():
+            payload = self._kalshi_ws_live_projection()
+            try:
+                await asyncio.to_thread(atomic_json, path, payload)
+            except OSError as error:
+                logger.warning(
+                    "Kalshi live-book projection write failed",
+                    extra={
+                        "event": "kalshi_ws_live_projection_write_failed",
+                        "error_type": type(error).__name__,
+                    },
+                )
+            if await self._wait(0.2):
+                return
 
     def _mark_kalshi_ws_unsynchronized(self, reason: GapReason) -> None:
         self._health.kalshi_ws_state = (
