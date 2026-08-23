@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -442,6 +444,28 @@ def test_response_lost_after_submit_never_blindly_retries(tmp_path: Path) -> Non
         assert first.state is DemoLifecycleState.RECONCILIATION_REQUIRED  # type: ignore[union-attr]
         assert second.state is DemoLifecycleState.RECONCILIATION_REQUIRED  # type: ignore[union-attr]
         assert client.create_calls == 1
+
+
+def test_ambiguous_submit_persists_safe_typed_reason(tmp_path: Path) -> None:
+    intent = _intent()
+    client = FakeClient()
+    client.raise_submit = True
+    path = tmp_path / "demo.sqlite3"
+    with DemoExecutionStore(path) as store:
+        DemoExecutionCoordinator(
+            client, store, writes_enabled=True, execution_smoke_approved=True
+        ).submit(intent, _safe_context())
+    connection = sqlite3.connect(path)
+    try:
+        detail = connection.execute(
+            "SELECT detail_json FROM demo_order_facts ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert json.loads(detail) == {
+        "reason": "submit_outcome_ambiguous",
+        "reason_code": "write_outcome_ambiguous",
+    }
 
 
 def test_partial_fill_and_duplicate_fill_poll_are_restart_safe(tmp_path: Path) -> None:

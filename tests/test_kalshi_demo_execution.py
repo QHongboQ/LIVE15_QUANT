@@ -218,6 +218,7 @@ def test_write_transport_failure_is_ambiguous_and_never_retried(tmp_path: Path) 
 
     assert len(session.calls) == 1
     assert "secret" not in str(error.value)
+    assert error.value.reason_code == "transport_failure"
 
 
 @pytest.mark.parametrize("status_code", (409, 429, 500))
@@ -234,7 +235,7 @@ def test_inconclusive_write_http_status_requires_reconciliation(
             )
         ],
     )
-    with pytest.raises(KalshiDemoAmbiguousWriteError, match="reconcile"):
+    with pytest.raises(KalshiDemoAmbiguousWriteError, match="reconcile") as error:
         client.create_order(
             DemoOrderRequest(
                 "KXBTC15M-TEST",
@@ -244,6 +245,7 @@ def test_inconclusive_write_http_status_requires_reconciliation(
                 Decimal("0.51"),
             )
         )
+    assert error.value.reason_code == f"http_{status_code}"
 
 
 def test_malformed_successful_write_response_requires_reconciliation(tmp_path: Path) -> None:

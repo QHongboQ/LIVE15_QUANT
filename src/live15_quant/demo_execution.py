@@ -1042,11 +1042,14 @@ class DemoExecutionCoordinator:
                     price=intent.price,
                 )
             )
-        except KalshiDemoAmbiguousWriteError:
+        except KalshiDemoAmbiguousWriteError as error:
             self._store.append_state(
                 client_id,
                 DemoLifecycleState.RECONCILIATION_REQUIRED,
-                detail={"reason": "submit_response_lost"},
+                detail={
+                    "reason": "submit_outcome_ambiguous",
+                    "reason_code": error.reason_code,
+                },
             )
             return DemoReconciliationResult(
                 client_id, DemoLifecycleState.RECONCILIATION_REQUIRED, None, 0
@@ -1148,12 +1151,15 @@ class DemoExecutionCoordinator:
         )
         try:
             self._client.cancel_order(provider_order_id)
-        except KalshiDemoAmbiguousWriteError:
+        except KalshiDemoAmbiguousWriteError as error:
             self._store.append_state(
                 client_order_id,
                 DemoLifecycleState.RECONCILIATION_REQUIRED,
                 provider_order_id=provider_order_id,
-                detail={"reason": "cancel_response_lost"},
+                detail={
+                    "reason": "cancel_outcome_ambiguous",
+                    "reason_code": error.reason_code,
+                },
             )
             return DemoReconciliationResult(
                 client_order_id,

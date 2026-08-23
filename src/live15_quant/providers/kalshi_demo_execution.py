@@ -48,6 +48,10 @@ class KalshiDemoExecutionError(RuntimeError):
 class KalshiDemoAmbiguousWriteError(KalshiDemoExecutionError):
     """A write may have reached Demo and must be reconciled before any retry."""
 
+    def __init__(self, message: str, *, reason_code: str = "write_outcome_ambiguous") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
 
 class DemoBookSide(StrEnum):
     BID = "bid"
@@ -492,7 +496,8 @@ class KalshiDemoExecutionClient:
         except requests.RequestException:
             if method in {"POST", "DELETE"}:
                 raise KalshiDemoAmbiguousWriteError(
-                    "Kalshi Demo write outcome is unknown; reconcile remote truth before retry"
+                    "Kalshi Demo write outcome is unknown; reconcile remote truth before retry",
+                    reason_code="transport_failure",
                 ) from None
             raise KalshiDemoExecutionError("Kalshi Demo read failed") from None
         if 300 <= response.status_code < 400:
@@ -503,7 +508,8 @@ class KalshiDemoExecutionClient:
             if method in {"POST", "DELETE"} and response.status_code not in {400, 401, 403, 422}:
                 raise KalshiDemoAmbiguousWriteError(
                     "Kalshi Demo write response is not conclusive; "
-                    "reconcile remote truth before retry"
+                    "reconcile remote truth before retry",
+                    reason_code=f"http_{response.status_code}",
                 )
             raise KalshiDemoExecutionError(
                 f"Kalshi Demo {method} returned HTTP {response.status_code}"
@@ -513,7 +519,8 @@ class KalshiDemoExecutionClient:
         except KalshiDemoExecutionError:
             if method in {"POST", "DELETE"}:
                 raise KalshiDemoAmbiguousWriteError(
-                    "Kalshi Demo write response is malformed; reconcile remote truth before retry"
+                    "Kalshi Demo write response is malformed; reconcile remote truth before retry",
+                    reason_code="malformed_response",
                 ) from None
             raise
 
@@ -684,7 +691,8 @@ class KalshiDemoExecutionClient:
             return _parse_compact_create_ack(value, request)
         except KalshiDemoExecutionError:
             raise KalshiDemoAmbiguousWriteError(
-                "Kalshi Demo order ACK could not be interpreted; reconcile before retry"
+                "Kalshi Demo order ACK could not be interpreted; reconcile before retry",
+                reason_code="compact_ack_invalid",
             ) from None
 
     def cancel_order(self, order_id: str) -> Mapping[str, Any]:
