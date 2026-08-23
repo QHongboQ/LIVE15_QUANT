@@ -281,6 +281,17 @@ class ForwardShadowStore:
             raise ForwardShadowError("forward ledger start timestamp is missing")
         return _parse_timestamp(row["value"])
 
+    def contains(self, model_id: str, opportunity_id: str) -> bool:
+        """Return whether an immutable opportunity was already committed."""
+
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM forward_decisions WHERE model_id=? AND opportunity_id=? LIMIT 1",
+                (model_id, opportunity_id),
+            ).fetchone()
+            is not None
+        )
+
     def append(self, payload: dict[str, object]) -> bool:
         model_id = str(payload["model_id"])
         opportunity_id = str(payload["opportunity_id"])
@@ -1377,6 +1388,8 @@ class ForwardShadowRuntime:
     def _process(self, snapshot: LiveFeatureSnapshot) -> None:
         for candidate in self.candidates:
             model_id, threshold = candidate.model_id, candidate.threshold
+            if self.store.contains(model_id, snapshot.opportunity_id):
+                continue
             try:
                 payload = self._payload(model_id, threshold, snapshot)
             except PaperExecutionError as error:

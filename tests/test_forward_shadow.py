@@ -277,6 +277,10 @@ def test_paper_intent_conflict_is_quarantined_after_restart(tmp_path) -> None:
             self.payloads.append(payload)
             return True
 
+        @staticmethod
+        def contains(_model_id: str, _opportunity_id: str) -> bool:
+            return False
+
     runtime = object.__new__(ForwardShadowRuntime)
     runtime.candidates = (
         SimpleNamespace(model_id="logistic_l2_identity", threshold=Decimal("0.10")),
@@ -292,6 +296,24 @@ def test_paper_intent_conflict_is_quarantined_after_restart(tmp_path) -> None:
     assert runtime.store.payloads[0]["action"] == "hold"
     assert runtime.store.payloads[0]["data_status"] == "data_unavailable"
     assert runtime.store.payloads[0]["data_reason"] == "paper_decision_conflict"
+
+
+def test_committed_forward_opportunity_is_not_recomputed() -> None:
+    from live15_quant.forward_shadow import ForwardShadowRuntime
+
+    class Store:
+        @staticmethod
+        def contains(_model_id: str, _opportunity_id: str) -> bool:
+            return True
+
+    runtime = object.__new__(ForwardShadowRuntime)
+    runtime.candidates = (
+        SimpleNamespace(model_id="logistic_l2_identity", threshold=Decimal("0.10")),
+    )
+    runtime.store = Store()
+    runtime._payload = lambda *_args: pytest.fail("committed opportunity was recomputed")
+
+    runtime._process(_ready_snapshot(Asset.BTC, datetime(2026, 8, 23, tzinfo=UTC)))
 
 
 def test_forward_ledger_rejects_storage_role_collision(tmp_path) -> None:
