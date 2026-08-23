@@ -41,6 +41,7 @@ from live15_quant.demo_execution import (
     DemoRiskContext,
     SqliteKalshiWsQuoteSource,
 )
+from live15_quant.demo_first_fill import main as demo_first_fill_runtime_main
 from live15_quant.features import SamplingPolicy
 from live15_quant.forward_shadow import ForwardShadowRuntime
 from live15_quant.kalshi_lifecycle import KalshiNativeMarketProvider
@@ -517,6 +518,12 @@ def demo_diagnostic_watch_main(argv: Sequence[str] | None = None) -> None:
                         return
                 time.sleep(arguments.poll_seconds)
     print(json.dumps({"status": "NO_SAFE_DEMO_DIAGNOSTIC_OPPORTUNITY"}, sort_keys=True))
+
+
+def demo_first_fill_main(argv: Sequence[str] | None = None) -> None:
+    """Run the persistent, Demo-only single-POST first-fill certification worker."""
+
+    demo_first_fill_runtime_main(argv)
 
 
 def _build_dataset(settings: Settings, *, source_path: Path | None = None) -> DatasetBuildSummary:

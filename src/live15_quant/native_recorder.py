@@ -461,6 +461,7 @@ class KalshiNativeRecorder:
                 else KalshiProductionReadOnlyWebSocket.from_settings(settings)
             )
         self._kalshi_ws_coordinator: KalshiAtomicOrderBookCoordinator | None = None
+        self._kalshi_ws_waiting_since_monotonic: float | None = None
         self._kalshi_ws_books: dict[Asset, SynchronizedKalshiOrderBook] = {}
         # One compact as-of book per configured forward decision bucket is enough
         # for frozen-paper inference.  Keep only the current ticker's offsets in
@@ -1819,15 +1820,27 @@ class KalshiNativeRecorder:
         return 0 <= age <= self._settings.kalshi_websocket_stale_seconds
 
     async def _enforce_kalshi_ws_liveness(self, observed: datetime) -> bool:
-        """Fail closed and trigger documented reconnect when the whole transport stalls."""
+        """Fail closed when transport or the initial snapshot set stops progressing."""
 
-        if (
-            self._kalshi_ws is None
-            or self._health.kalshi_ws_state is not KalshiWsRuntimeState.SYNCHRONIZED
-            or self._kalshi_ws_transport_fresh(observed)
-        ):
+        if self._kalshi_ws is None:
+            return False
+        state = self._health.kalshi_ws_state
+        transport_stale = (
+            state is KalshiWsRuntimeState.SYNCHRONIZED
+            and not self._kalshi_ws_transport_fresh(observed)
+        )
+        snapshot_stalled = (
+            state in {KalshiWsRuntimeState.WAITING_SNAPSHOT, KalshiWsRuntimeState.UNSYNCHRONIZED}
+            and self._kalshi_ws_waiting_since_monotonic is not None
+            and self._monotonic() - self._kalshi_ws_waiting_since_monotonic
+            > self._settings.kalshi_websocket_stale_seconds
+        )
+        if not transport_stale and not snapshot_stalled:
             return False
         self._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
+        # One reconnect request is enough.  The next connection establishes a
+        # new monotonic snapshot deadline; do not busy-loop while close drains.
+        self._kalshi_ws_waiting_since_monotonic = None
         await self._kalshi_ws.request_reconnect()
         return True
 
@@ -1999,6 +2012,7 @@ class KalshiNativeRecorder:
                 pending_removals.clear()
                 pending_delete_requests.clear()
                 self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+                self._kalshi_ws_waiting_since_monotonic = self._monotonic()
             if isinstance(message, KalshiWsErrorMessage):
                 raise KalshiReadOnlyWsError(
                     f"official Kalshi WebSocket command failed with code {message.code}"
@@ -2094,6 +2108,8 @@ class KalshiNativeRecorder:
                         predecessor if predecessor in coordinator.subscribed_tickers else ""
                     )
                     self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+                    if self._kalshi_ws_waiting_since_monotonic is None:
+                        self._kalshi_ws_waiting_since_monotonic = self._monotonic()
                     self._health.kalshi_ws_synchronized.pop(asset, None)
                     self._kalshi_ws_books.pop(asset, None)
                     gap_key = (GapSource.KALSHI_WS, asset)
@@ -2209,6 +2225,7 @@ class KalshiNativeRecorder:
 
             if latest and len(self._health.kalshi_ws_synchronized) == len(latest):
                 self._health.kalshi_ws_state = KalshiWsRuntimeState.SYNCHRONIZED
+                self._kalshi_ws_waiting_since_monotonic = None
                 if not self._startup_ws_synchronized_reported:
                     self._startup_ws_synchronized_reported = True
                     self._mark_startup_phase(

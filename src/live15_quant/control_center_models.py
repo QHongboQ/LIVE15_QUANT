@@ -219,6 +219,17 @@ class CoverageResponse(StrictResponse):
     per_asset: dict[str, AssetCoverage]
 
 
+class RuntimeComponentResponse(StrictResponse):
+    status: str
+    pid: int | None = None
+    started_at: datetime | None = None
+    last_heartbeat: datetime | None = None
+    heartbeat_age_seconds: float | None = None
+    last_error: str | None = None
+    process_alive: bool = False
+    expected_mode: str | None = None
+
+
 class SystemResponse(StrictResponse):
     service: str = "LIVE15 Control Center"
     api_mode: str = "read_only_data_with_bounded_recorder_control"
@@ -230,6 +241,7 @@ class SystemResponse(StrictResponse):
     trading_endpoints: bool = False
     credential_endpoints: bool = False
     recorder_control_actions: tuple[str, ...] = ("start", "pause", "resume")
+    runtime_components: dict[str, RuntimeComponentResponse] = Field(default_factory=dict)
 
 
 class RecorderControlResponse(StrictResponse):

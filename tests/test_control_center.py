@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import tomllib
 from datetime import UTC, datetime, timedelta
@@ -184,6 +185,68 @@ async def test_health_exposes_bounded_worker_progress_and_event_loop_lag(tmp_pat
     assert payload["worker_progress_age_seconds"]["coinbase"] == 0.25
     assert payload["stale_workers"] == ["kalshi_quote:BTC"]
     assert payload["event_loop_lag_seconds"] == 0.015
+
+
+def test_health_ignores_new_internal_archive_fields_without_hiding_known_truth(
+    tmp_path: Path,
+) -> None:
+    configured = settings(tmp_path)
+    write_health(
+        configured.recorder_health_path,
+        NOW,
+        status="healthy",
+        database_bytes=8192,
+        wal_bytes=4096,
+        written_records=123,
+        ws_archive={
+            "enabled": True,
+            "verified": 7,
+            "adaptive_retention": {"controller_mode": "INSUFFICIENT_EVIDENCE"},
+            "raw_ws_growth_bytes_per_day": 1234.5,
+        },
+    )
+
+    health = ControlCenterService(configured, clock=lambda: NOW).health()
+
+    assert health.status == "healthy"
+    assert health.heartbeat_status == "available"
+    assert health.database_bytes == 8192
+    assert health.wal_bytes == 4096
+    assert health.written_records == 123
+    assert health.ws_archive.enabled is True
+    assert health.ws_archive.verified == 7
+
+
+def test_system_exposes_live_supervisor_component_truth(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "runtime-supervisor-status.json").write_text(
+        json.dumps(
+            {
+                "components": {
+                    "paper_forward": {
+                        "status": "RUNNING",
+                        "pid": os.getpid(),
+                        "started_at": NOW.isoformat(),
+                        "last_heartbeat": NOW.isoformat(),
+                        "last_error": None,
+                        "process_alive": True,
+                        "expected_mode": "PAPER_SHADOW_LOCAL_ONLY",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    system = ControlCenterService(configured, clock=lambda: NOW).system()
+
+    component = system.runtime_components["paper_forward"]
+    assert component.status == "RUNNING"
+    assert component.pid == os.getpid()
+    assert component.process_alive is True
+    assert component.heartbeat_age_seconds == 0
 
 
 @pytest.mark.asyncio

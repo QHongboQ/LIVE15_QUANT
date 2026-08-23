@@ -19,13 +19,15 @@ from live15_quant.control_center_models import (
     RecorderControlResponse,
     RecorderEventResponse,
     RecorderState,
+    RuntimeComponentResponse,
     SystemResponse,
     WsArchiveHealth,
 )
 from live15_quant.control_center_store import DashboardReadStore
 from live15_quant.market_sessions import MarketDataState, market_data_state, market_session
 from live15_quant.models import Asset, RecorderEventSeverity
-from live15_quant.recorder_control import RecorderProcessController
+from live15_quant.recorder_control import RecorderProcessController, process_alive
+from live15_quant.runtime_status import RuntimeStatusError, read_json
 
 
 class ControlCenterService:
@@ -182,11 +184,7 @@ class ControlCenterService:
                 kalshi_rest_fallback_status=str(
                     raw.get("kalshi_rest_fallback_status", "unavailable")
                 ),
-                ws_archive=(
-                    WsArchiveHealth.model_validate(raw["ws_archive"])
-                    if isinstance(raw.get("ws_archive"), dict)
-                    else WsArchiveHealth()
-                ),
+                ws_archive=self._ws_archive_health(raw.get("ws_archive")),
             )
             return self._apply_managed_state(response)
         except FileNotFoundError:
@@ -270,7 +268,39 @@ class ControlCenterService:
                 if self.settings.feature_store_path.is_file()
                 else Availability.UNAVAILABLE
             ),
+            runtime_components=self._runtime_components(),
         )
+
+    def _runtime_components(self) -> dict[str, RuntimeComponentResponse]:
+        data_parent = self.settings.recorder_data_path.resolve().parent
+        root = data_parent.parent if data_parent.name.lower() == "data" else data_parent
+        try:
+            supervisor = read_json(root / "runtime" / "runtime-supervisor-status.json")
+        except RuntimeStatusError:
+            return {}
+        raw_components = supervisor.get("components") if supervisor else None
+        if not isinstance(raw_components, dict):
+            return {}
+        result: dict[str, RuntimeComponentResponse] = {}
+        checked_at = self._clock().astimezone(UTC)
+        for name, raw in raw_components.items():
+            if not isinstance(name, str) or not isinstance(raw, dict):
+                continue
+            pid = self._optional_int(raw.get("pid"))
+            started = self._optional_aware_datetime(raw.get("started_at"))
+            heartbeat = self._optional_aware_datetime(raw.get("last_heartbeat"))
+            age = max(0.0, (checked_at - heartbeat).total_seconds()) if heartbeat else None
+            result[name] = RuntimeComponentResponse(
+                status=str(raw.get("status", "UNKNOWN")),
+                pid=pid,
+                started_at=started,
+                last_heartbeat=heartbeat,
+                heartbeat_age_seconds=age,
+                last_error=self._optional_string(raw.get("last_error")),
+                process_alive=pid is not None and process_alive(pid),
+                expected_mode=self._optional_string(raw.get("expected_mode")),
+            )
+        return result
 
     def recorder_action(self, action: str) -> RecorderControlResponse:
         if self.controller is None:
@@ -375,6 +405,18 @@ class ControlCenterService:
         return value if isinstance(value, str) else None
 
     @staticmethod
+    def _optional_aware_datetime(value: object) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(UTC)
+
+    @staticmethod
     def _string_map(value: object, *, optional: bool = False) -> dict[str, str | None]:
         if not isinstance(value, dict):
             return {}
@@ -397,3 +439,20 @@ class ControlCenterService:
     @staticmethod
     def _string_list(value: object) -> list[str]:
         return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+    @staticmethod
+    def _ws_archive_health(value: object) -> WsArchiveHealth:
+        """Project an evolving recorder heartbeat onto the stable public API schema.
+
+        Recorder-internal archive/adaptive metrics intentionally evolve faster than
+        the Control Center response. Unknown fields are not malformed heartbeat
+        facts; they are excluded by this explicit allowlist and never reach the UI.
+        Known fields remain strictly validated by ``WsArchiveHealth``.
+        """
+
+        if not isinstance(value, dict):
+            return WsArchiveHealth()
+        allowed = WsArchiveHealth.model_fields
+        return WsArchiveHealth.model_validate(
+            {key: item for key, item in value.items() if key in allowed}
+        )

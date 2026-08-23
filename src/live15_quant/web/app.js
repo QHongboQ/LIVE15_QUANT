@@ -589,7 +589,13 @@ function renderSystem() {
   if (!retryEntries.length && !failureEntries.length) sourceBody.append(emptyState("✓ No active failures", "No retry or source-failure state reported."));
   retryEntries.forEach(([source, count]) => sourceBody.append(append(node("div", "book-row"), node("span", "", source), node("span", "", `${count} retries`))));
   failureEntries.forEach(([source, reason]) => sourceBody.append(append(node("div", "warning-item"), node("span", "icon", "◆"), node("span", "", `${source}: ${reason}`))));
-  sources.append(sourceBody); append(detail, heartbeat, sources); root.append(detail, sectionHead("Per-asset freshness", "Quote and predictive underlying are independent roles"));
+  sources.append(sourceBody); append(detail, heartbeat, sources); root.append(detail);
+  const runtimeComponents = Object.entries(system.runtime_components || {});
+  root.append(sectionHead("Runtime components", "Supervisor-owned process and heartbeat truth"));
+  const runtimeGrid = node("div", "metric-grid");
+  if (!runtimeComponents.length) runtimeGrid.append(emptyState("Supervisor status unavailable", "Runtime components have not been adopted by the supervisor yet."));
+  runtimeComponents.forEach(([name, component]) => runtimeGrid.append(metric(name.replaceAll("_", " ").toUpperCase(), stateLabel(component.status), `PID ${valueOrDash(component.pid)} · heartbeat ${age(component.heartbeat_age_seconds)}`)));
+  root.append(runtimeGrid, sectionHead("Per-asset freshness", "Quote and predictive underlying are independent roles"));
   const wrap = node("div", "table-wrap");
   const table = node("table");
   const head = node("tr");

@@ -343,6 +343,49 @@ async def test_transport_stall_invalidates_all_books_and_requests_reconnect(tmp_
 
 
 @pytest.mark.asyncio
+async def test_partial_initial_snapshot_set_has_bounded_reconnect(tmp_path) -> None:
+    source = FakeProductionWs()
+    discoveries = tuple(discovery_for(asset) for asset in Asset)
+    clock = [100.0]
+    with RecorderStore(tmp_path / "partial-snapshot-stall.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                enable_kalshi_production_websocket=True,
+                kalshi_websocket_stale_seconds=10,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(discoveries),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            kalshi_ws_factory=lambda: source,
+            now=lambda: NOW,
+            monotonic=lambda: clock[0],
+        )
+        for item in discoveries:
+            recorder._accept_discovery(item)
+        recorder._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+        recorder._health.kalshi_ws_synchronized[Asset.BTC] = discoveries[0].current.ticker
+        recorder._kalshi_ws_waiting_since_monotonic = clock[0]
+        source.diagnostics.last_message_received_at = NOW
+
+        clock[0] += 9.0
+        assert not await recorder._enforce_kalshi_ws_liveness(NOW)
+        assert source.reconnect_requests == 0
+
+        clock[0] += 2.0
+        assert await recorder._enforce_kalshi_ws_liveness(NOW)
+        assert source.reconnect_requests == 1
+        assert recorder.health().kalshi_ws_connection_state is KalshiWsRuntimeState.RECONNECTING
+        assert not recorder._health.kalshi_ws_synchronized
+
+        # A close in progress cannot trigger another request every monitor tick.
+        clock[0] += 60.0
+        assert not await recorder._enforce_kalshi_ws_liveness(NOW)
+        assert source.reconnect_requests == 1
+
+
+@pytest.mark.asyncio
 async def test_unchanged_book_remains_usable_when_transport_is_fresh(tmp_path) -> None:
     source = FakeProductionWs()
     discoveries = tuple(discovery_for(asset) for asset in Asset)
