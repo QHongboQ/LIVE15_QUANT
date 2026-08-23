@@ -103,6 +103,24 @@ class DemoExecutionResultCode(StrEnum):
     RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
 
 
+class DemoDataUnavailableReason(StrEnum):
+    """Stable, non-sensitive reasons for a fail-closed pre-submit data gate."""
+
+    BOOK_UNSYNCHRONIZED = "BOOK_UNSYNCHRONIZED"
+    SNAPSHOT_NOT_READY = "SNAPSHOT_NOT_READY"
+    QUOTE_STALE = "QUOTE_STALE"
+    NO_EXECUTABLE_ASK = "NO_EXECUTABLE_ASK"
+    NO_EXECUTABLE_BID = "NO_EXECUTABLE_BID"
+    MARKET_INACTIVE = "MARKET_INACTIVE"
+    MARKET_ROLLED = "MARKET_ROLLED"
+    DECISION_STALE = "DECISION_STALE"
+    BOOK_PROVENANCE_MISMATCH = "BOOK_PROVENANCE_MISMATCH"
+    HEALTH_UNAVAILABLE = "HEALTH_UNAVAILABLE"
+    CHECKPOINT_MALFORMED = "CHECKPOINT_MALFORMED"
+    CHECKPOINT_NOT_READY = "CHECKPOINT_NOT_READY"
+    OFFICIAL_TRUTH_UNAVAILABLE = "OFFICIAL_TRUTH_UNAVAILABLE"
+
+
 class DemoSizingMode(StrEnum):
     FIXED = "fixed"
     BOUNDED_EQUITY_FUTURE = "bounded_equity_future"
@@ -285,6 +303,8 @@ class DemoSynchronizedQuote:
 class DemoPreSubmitQuoteSource(Protocol):
     def latest_quote(self, ticker: str) -> DemoSynchronizedQuote | None: ...
 
+    def last_unavailable_reason(self, ticker: str) -> str | None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class DemoPriceEVPolicy:
@@ -326,6 +346,7 @@ class DemoPreSubmitGuardResult:
     quote_timestamp: datetime | None
     quote_age_seconds: Decimal | None
     price_source: str | None
+    data_unavailable_reason: str | None = None
 
     def diagnostics(self) -> dict[str, object]:
         def decimal(value: Decimal | None) -> str | None:
@@ -349,6 +370,7 @@ class DemoPreSubmitGuardResult:
             ),
             "quote_age_seconds": decimal(self.quote_age_seconds),
             "price_source": self.price_source,
+            "data_unavailable_reason": self.data_unavailable_reason,
         }
 
 
@@ -376,10 +398,16 @@ class PreSubmitPriceEVGuard:
         quote: DemoSynchronizedQuote | None,
         *,
         evaluated_at: datetime,
+        data_unavailable_reason: str | None = None,
     ) -> DemoPreSubmitGuardResult:
         if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
             raise ValueError("pre-submit evaluation timestamp must be timezone-aware")
         unavailable = quote is None or quote.ticker != intent.ticker or not quote.synchronized
+        unavailable_reason = data_unavailable_reason
+        if quote is not None and quote.ticker != intent.ticker:
+            unavailable_reason = DemoDataUnavailableReason.BOOK_PROVENANCE_MISMATCH.value
+        elif quote is not None and not quote.synchronized:
+            unavailable_reason = DemoDataUnavailableReason.BOOK_UNSYNCHRONIZED.value
         if quote is None:
             age = None
         else:
@@ -389,6 +417,8 @@ class PreSubmitPriceEVGuard:
                 or age < 0
                 or age > Decimal(str(self.policy.max_quote_age.total_seconds()))
             )
+            if age < 0 or age > Decimal(str(self.policy.max_quote_age.total_seconds())):
+                unavailable_reason = DemoDataUnavailableReason.QUOTE_STALE.value
         selected_bid = None
         selected_ask = None
         submitted_limit = None
@@ -400,6 +430,10 @@ class PreSubmitPriceEVGuard:
                 selected_bid, selected_ask = quote.no_bid, quote.no_ask
                 submitted_limit = None if selected_ask is None else Decimal(1) - selected_ask
             unavailable = unavailable or selected_bid is None or selected_ask is None
+            if selected_ask is None:
+                unavailable_reason = DemoDataUnavailableReason.NO_EXECUTABLE_ASK.value
+            elif selected_bid is None:
+                unavailable_reason = DemoDataUnavailableReason.NO_EXECUTABLE_BID.value
         spread = (
             None if selected_bid is None or selected_ask is None else selected_ask - selected_bid
         )
@@ -425,6 +459,9 @@ class PreSubmitPriceEVGuard:
                 pre_submit_net_edge=None,
                 estimated_fee=None,
                 **base,
+                data_unavailable_reason=(
+                    unavailable_reason or DemoDataUnavailableReason.SNAPSHOT_NOT_READY.value
+                ),
             )
         side_probability = (
             intent.probability
@@ -491,19 +528,35 @@ class SqliteKalshiWsQuoteSource:
         self._raw_path = raw_path
         self._health_path = health_path
         self._utc_now = utc_now or (lambda: datetime.now(UTC))
+        self._last_reason_by_ticker: dict[str, str] = {}
+
+    def _unavailable(self, ticker: str, reason: DemoDataUnavailableReason) -> None:
+        self._last_reason_by_ticker[ticker] = reason.value
+
+    def last_unavailable_reason(self, ticker: str) -> str | None:
+        return self._last_reason_by_ticker.get(ticker)
 
     def latest_quote(self, ticker: str) -> DemoSynchronizedQuote | None:
         try:
             health = json.loads(self._health_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            self._unavailable(ticker, DemoDataUnavailableReason.HEALTH_UNAVAILABLE)
             return None
         if (
             not isinstance(health, dict)
             or health.get("kalshi_ws_connection_state") != "synchronized"
         ):
+            self._unavailable(ticker, DemoDataUnavailableReason.BOOK_UNSYNCHRONIZED)
             return None
         synchronized = health.get("kalshi_ws_synchronized_markets")
         if not isinstance(synchronized, dict) or ticker not in synchronized.values():
+            current = health.get("current_markets")
+            self._unavailable(
+                ticker,
+                DemoDataUnavailableReason.MARKET_ROLLED
+                if isinstance(current, dict) and ticker not in current.values()
+                else DemoDataUnavailableReason.SNAPSHOT_NOT_READY,
+            )
             return None
         connection: sqlite3.Connection | None = None
         try:
@@ -522,14 +575,17 @@ class SqliteKalshiWsQuoteSource:
                 (ticker,),
             ).fetchone()
         except (OSError, sqlite3.Error):
+            self._unavailable(ticker, DemoDataUnavailableReason.CHECKPOINT_NOT_READY)
             return None
         finally:
             if connection is not None:
                 connection.close()
         if row is None:
+            self._unavailable(ticker, DemoDataUnavailableReason.SNAPSHOT_NOT_READY)
             return None
         try:
             if str(row["provenance"]) != "kalshi_ws":
+                self._unavailable(ticker, DemoDataUnavailableReason.BOOK_PROVENANCE_MISMATCH)
                 return None
             yes_bids = json.loads(str(row["yes_bids"]))
             no_bids = json.loads(str(row["no_bids"]))
@@ -538,6 +594,7 @@ class SqliteKalshiWsQuoteSource:
             yes = tuple((Decimal(str(level[0])), Decimal(str(level[1]))) for level in yes_bids)
             no = tuple((Decimal(str(level[0])), Decimal(str(level[1]))) for level in no_bids)
             if not yes or not no:
+                self._unavailable(ticker, DemoDataUnavailableReason.CHECKPOINT_MALFORMED)
                 return None
             received = datetime.fromisoformat(str(row["received_timestamp"])).astimezone(UTC)
             yes_bid = max(price for price, quantity in yes if quantity > 0)
@@ -552,9 +609,12 @@ class SqliteKalshiWsQuoteSource:
                 no_ask=Decimal(1) - yes_bid,
             )
         except (InvalidOperation, IndexError, TypeError, ValueError, json.JSONDecodeError):
+            self._unavailable(ticker, DemoDataUnavailableReason.CHECKPOINT_MALFORMED)
             return None
         if self._utc_now() < quote.received_timestamp:
+            self._unavailable(ticker, DemoDataUnavailableReason.QUOTE_STALE)
             return None
+        self._last_reason_by_ticker.pop(ticker, None)
         return quote
 
 
@@ -1460,10 +1520,16 @@ class DemoExecutionCoordinator:
                 if self._quote_source is None
                 else self._quote_source.latest_quote(intent.ticker)
             )
+            unavailable_reason = None
+            if quote is None and self._quote_source is not None:
+                reason_reader = getattr(self._quote_source, "last_unavailable_reason", None)
+                if callable(reason_reader):
+                    unavailable_reason = reason_reader(intent.ticker)
             guard_result = self._price_ev_guard.evaluate(
                 intent,
                 quote,
                 evaluated_at=self._utc_now(),
+                data_unavailable_reason=unavailable_reason,
             )
             self._store.append_execution_diagnostic(
                 client_id,

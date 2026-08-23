@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import live15_quant.demo_first_fill as demo_first_fill_module
 from live15_quant.demo_execution import (
     DemoIntent,
     DemoIntentPurpose,
@@ -92,7 +93,12 @@ def test_guard_blocked_candidate_keeps_worker_alive(tmp_path) -> None:
     worker = _worker(tmp_path, Coordinator(), lambda _settings: (_intent(),))
     assert worker.run_once() is None
     assert worker.status["status"] == DemoFirstFillStatus.GUARD_BLOCKED.value
-    assert worker.status["last_skip_reason"] == "pre_submit_data_unavailable"
+    assert worker.status["last_skip_reason"] == "SNAPSHOT_NOT_READY"
+    candidate = worker.status["last_candidate"]
+    assert isinstance(candidate, dict)
+    assert candidate["typed_skip_reason"] == "SNAPSHOT_NOT_READY"
+    assert candidate["book_state"] == "SNAPSHOT_NOT_READY"
+    assert "decision_age_seconds" in candidate
     assert worker.status["post_count"] == 0
 
 
@@ -171,3 +177,41 @@ def test_worker_log_never_receives_secret_values(tmp_path, monkeypatch) -> None:
     configured_key_id = os.environ.get("LIVE15_KALSHI_DEMO_API_KEY_ID")
     if configured_key_id:
         assert configured_key_id not in content
+
+
+def test_status_store_retries_transient_replace_and_cleans_temp(tmp_path, monkeypatch) -> None:
+    store = DemoFirstFillStatusStore(tmp_path / "status.json", retry_sleep=lambda _delay: None)
+    value = _initial_status(datetime(2026, 8, 24, tzinfo=UTC))
+    original = demo_first_fill_module.os.replace
+    attempts = 0
+
+    def flaky(source, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("sharing violation")
+        return original(source, destination)
+
+    monkeypatch.setattr(demo_first_fill_module.os, "replace", flaky)
+    store.write(value)
+    assert attempts == 3
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_status_write_exhaustion_is_logged_and_worker_continues(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    store = DemoFirstFillStatusStore(
+        tmp_path / "status.json", replace_retries=2, retry_sleep=lambda _delay: None
+    )
+
+    def always_locked(*_args):
+        raise PermissionError("sharing violation")
+
+    monkeypatch.setattr(demo_first_fill_module.os, "replace", always_locked)
+    worker = _worker(tmp_path, object(), lambda _settings: ())
+    worker.status_store = store
+    with caplog.at_level("ERROR"):
+        worker._write_status()
+    assert "STATUS_WRITE_FAILED" in caplog.text
+    assert not list(tmp_path.glob(".*.tmp"))

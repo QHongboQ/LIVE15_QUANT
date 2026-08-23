@@ -25,6 +25,7 @@ from typing import Any, Protocol
 
 from live15_quant.config import Settings, load_settings
 from live15_quant.demo_execution import (
+    DemoDataUnavailableReason,
     DemoExecutionCoordinator,
     DemoExecutionStore,
     DemoIntent,
@@ -46,6 +47,10 @@ logger = logging.getLogger(__name__)
 
 class DemoFirstFillError(RuntimeError):
     """A first-fill worker invariant could not be established safely."""
+
+
+class DemoStatusWriteError(DemoFirstFillError):
+    """Status observability failed after bounded OS-level retries."""
 
 
 class DemoFirstFillAlreadyRunning(DemoFirstFillError):
@@ -154,8 +159,18 @@ class DemoFirstFillStatusStore:
         }
     )
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        replace_retries: int = 4,
+        retry_sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.path = path
+        if replace_retries < 1:
+            raise ValueError("replace_retries must be positive")
+        self.replace_retries = replace_retries
+        self.retry_sleep = retry_sleep
 
     def read(self) -> dict[str, object] | None:
         if not self.path.exists():
@@ -182,7 +197,18 @@ class DemoFirstFillStatusStore:
                 json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
                 encoding="utf-8",
             )
-            os.replace(temporary, self.path)
+            last_error: PermissionError | None = None
+            for attempt in range(self.replace_retries):
+                try:
+                    os.replace(temporary, self.path)
+                    last_error = None
+                    break
+                except PermissionError as error:
+                    last_error = error
+                    if attempt + 1 < self.replace_retries:
+                        self.retry_sleep(0.05 * (attempt + 1))
+            if last_error is not None:
+                raise DemoStatusWriteError("STATUS_WRITE_FAILED") from last_error
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -427,6 +453,14 @@ class DemoFirstFillWorker:
             if isinstance(result, DemoReconciliationResult):
                 return self._reconcile_after_post(intent, result)
             reason, diagnostics = _skip_detail(result)
+            decision_age = _decision_age_seconds(now, intent.decision_timestamp)
+            book_state = _book_state(reason, diagnostics)
+            diagnostics = {
+                **diagnostics,
+                "typed_skip_reason": reason,
+                "decision_age_seconds": decision_age,
+                "book_state": book_state,
+            }
             self.status.update(
                 {
                     "status": DemoFirstFillStatus.GUARD_BLOCKED.value,
@@ -436,8 +470,21 @@ class DemoFirstFillWorker:
             )
             self._write_status()
             self.logger.info(
-                "Demo first-fill candidate skipped",
-                extra={"event": "demo_first_fill_skipped", "reason": reason},
+                "Demo first-fill candidate skipped model=%s ticker=%s direction=%s reason=%s "
+                "quote_age_seconds=%s book_state=%s decision_age_seconds=%s",
+                intent.model_id,
+                intent.ticker,
+                "BUY_YES" if intent.side is DemoBookSide.BID else "BUY_NO",
+                reason,
+                diagnostics.get("quote_age_seconds"),
+                book_state,
+                decision_age,
+                extra={
+                    "event": "demo_first_fill_skipped",
+                    "reason": reason,
+                    "model_id": intent.model_id,
+                    "ticker": intent.ticker,
+                },
             )
         return None
 
@@ -502,7 +549,19 @@ class DemoFirstFillWorker:
         )
 
     def _write_status(self) -> None:
-        self.status_store.write(self.status)
+        try:
+            self.status_store.write(self.status)
+        except DemoStatusWriteError as error:
+            # Status is observability only; a locked file must not terminate
+            # the execution worker or obscure the original failure.
+            self.logger.error(
+                "Demo first-fill status write failed error_type=%s",
+                str(error),
+                extra={
+                    "event": "demo_first_fill_status_write_failed",
+                    "error_type": str(error),
+                },
+            )
 
 
 def _initial_status(started_at: datetime) -> dict[str, object]:
@@ -537,8 +596,35 @@ def _skip_detail(
     result: DemoRiskDecision | DemoPreSubmitGuardResult,
 ) -> tuple[str, dict[str, object]]:
     if isinstance(result, DemoPreSubmitGuardResult):
-        return result.code.value, result.diagnostics()
-    return ",".join(reason.value for reason in result.reasons), {}
+        diagnostics = result.diagnostics()
+        if result.code.value == "DATA_UNAVAILABLE":
+            return (
+                str(
+                    result.data_unavailable_reason
+                    or DemoDataUnavailableReason.SNAPSHOT_NOT_READY.value
+                ),
+                diagnostics,
+            )
+        return result.code.value, diagnostics
+    mapping = {
+        "decision_stale": DemoDataUnavailableReason.DECISION_STALE.value,
+        "market_not_tradeable": DemoDataUnavailableReason.MARKET_INACTIVE.value,
+        "exchange_unavailable": "EXCHANGE_INACTIVE",
+        "pre_submit_data_unavailable": DemoDataUnavailableReason.SNAPSHOT_NOT_READY.value,
+        "official_truth_unavailable": DemoDataUnavailableReason.OFFICIAL_TRUTH_UNAVAILABLE.value,
+    }
+    reasons = [mapping.get(reason.value, reason.value) for reason in result.reasons]
+    return ",".join(reasons), {}
+
+
+def _decision_age_seconds(now: datetime, decision_timestamp: datetime) -> str:
+    return str(Decimal(str((now - decision_timestamp).total_seconds())))
+
+
+def _book_state(reason: str, diagnostics: dict[str, object]) -> str:
+    if diagnostics.get("price_source") == "KALSHI_WS_SYNCHRONIZED":
+        return "KALSHI_WS_SYNCHRONIZED"
+    return reason
 
 
 def _configure_worker_log(path: Path) -> logging.FileHandler:

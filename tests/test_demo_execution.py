@@ -564,6 +564,39 @@ def test_sqlite_quote_source_requires_current_synchronized_ws_checkpoint(tmp_pat
             "UPDATE kalshi_ws_book_checkpoints SET provenance='kalshi_rest' WHERE id=1"
         )
     assert source.latest_quote("KXBTC15M-TEST") is None
+    assert source.last_unavailable_reason("KXBTC15M-TEST") == "BOOK_PROVENANCE_MISMATCH"
+
+
+def test_sqlite_quote_source_typed_reasons_for_unsync_and_rollover(tmp_path: Path) -> None:
+    raw = tmp_path / "raw.sqlite3"
+    health = tmp_path / "health.json"
+    with sqlite3.connect(raw) as connection:
+        connection.execute(
+            """CREATE TABLE kalshi_ws_book_checkpoints(
+                   id INTEGER PRIMARY KEY,
+                   ticker TEXT,
+                   received_timestamp TEXT,
+                   yes_bids TEXT,
+                   no_bids TEXT,
+                   provenance TEXT
+               )"""
+        )
+    source = SqliteKalshiWsQuoteSource(raw, health)
+    health.write_text(json.dumps({"kalshi_ws_connection_state": "reconnecting"}), encoding="utf-8")
+    assert source.latest_quote("KXBTC15M-OLD") is None
+    assert source.last_unavailable_reason("KXBTC15M-OLD") == "BOOK_UNSYNCHRONIZED"
+    health.write_text(
+        json.dumps(
+            {
+                "kalshi_ws_connection_state": "synchronized",
+                "kalshi_ws_synchronized_markets": {"BTC": "KXBTC15M-NEW"},
+                "current_markets": {"BTC": "KXBTC15M-NEW"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert source.latest_quote("KXBTC15M-OLD") is None
+    assert source.last_unavailable_reason("KXBTC15M-OLD") == "MARKET_ROLLED"
 
 
 def test_synchronized_quote_rejects_crossed_or_non_complementary_book() -> None:
