@@ -357,6 +357,55 @@ def _parse_order(value: object) -> DemoRemoteOrder:
     )
 
 
+def _parse_compact_create_ack(
+    value: Mapping[str, Any], request: DemoOrderRequest
+) -> DemoRemoteOrder:
+    """Parse documented V2 create truth without inventing a follow-up order state.
+
+    For IOC/FOK, the V2 response's fill/remaining counts are the official final result;
+    an entirely unfilled IOC may not remain queryable through the open-order collection.
+    """
+
+    order_id = value.get("order_id")
+    client_order_id = value.get("client_order_id", request.client_order_id)
+    if (
+        not isinstance(order_id, str)
+        or not order_id
+        or not isinstance(client_order_id, str)
+        or client_order_id != request.client_order_id
+    ):
+        raise KalshiDemoExecutionError("malformed Demo create-order response identity")
+    filled = _decimal(value.get("fill_count"), "create fill_count")
+    remaining = _decimal(value.get("remaining_count"), "create remaining_count")
+    if filled < 0 or remaining < 0 or filled + remaining != request.count:
+        raise KalshiDemoExecutionError("impossible Demo create-order quantities")
+    average_fee = value.get("average_fee_paid")
+    if filled > 0 and average_fee is None:
+        raise KalshiDemoExecutionError("malformed Demo create-order fee")
+    fee = Decimal(0) if average_fee is None else _decimal(average_fee, "average fee") * filled
+    if request.time_in_force in {
+        DemoTimeInForce.IMMEDIATE_OR_CANCEL,
+        DemoTimeInForce.FILL_OR_KILL,
+    }:
+        state = DemoRemoteOrderState.FILLED if remaining == 0 else DemoRemoteOrderState.CANCELED
+        raw_status = f"{request.time_in_force.value}_complete"
+    else:
+        state = DemoRemoteOrderState.PARTIALLY_FILLED if filled > 0 else DemoRemoteOrderState.OPEN
+        raw_status = "create_ack_open"
+    return DemoRemoteOrder(
+        order_id=order_id,
+        client_order_id=client_order_id,
+        ticker=request.ticker,
+        state=state,
+        initial_count=request.count,
+        filled_count=filled,
+        remaining_count=remaining,
+        price=request.price,
+        fees=fee,
+        raw_status=raw_status,
+    )
+
+
 class KalshiDemoExecutionClient:
     """Fixed-host official Demo client with no production fallback and no write retry."""
 
@@ -629,16 +678,13 @@ class KalshiDemoExecutionClient:
             field in value for field in ("client_order_id", "ticker", "status", "initial_count_fp")
         ):
             return _parse_order(value)
-        order_id = value.get("order_id") if isinstance(value, Mapping) else None
-        if not isinstance(order_id, str) or not order_id:
+        if not isinstance(value, Mapping):
             raise KalshiDemoExecutionError("malformed Demo create-order response")
-        # The V2 create response is intentionally compact.  Query official remote order
-        # truth before exposing a lifecycle state instead of inferring one from the ACK.
         try:
-            return self.order(order_id)
+            return _parse_compact_create_ack(value, request)
         except KalshiDemoExecutionError:
             raise KalshiDemoAmbiguousWriteError(
-                "Kalshi Demo order ACK could not be reconciled; reconcile before retry"
+                "Kalshi Demo order ACK could not be interpreted; reconcile before retry"
             ) from None
 
     def cancel_order(self, order_id: str) -> Mapping[str, Any]:

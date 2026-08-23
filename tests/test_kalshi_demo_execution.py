@@ -140,18 +140,22 @@ def test_demo_client_is_fixed_to_demo_and_builds_documented_v2_order(tmp_path: P
     assert signer.messages == [b"1700000000123POST/trade-api/v2/portfolio/events/orders"]
 
 
-def test_compact_v2_create_ack_is_followed_by_remote_truth_query(tmp_path: Path) -> None:
+def test_compact_v2_ioc_create_ack_is_official_final_truth(tmp_path: Path) -> None:
     create_url = f"{KALSHI_DEMO_API_BASE_URL}/portfolio/events/orders"
-    order_url = f"{KALSHI_DEMO_API_BASE_URL}/portfolio/orders/order-1"
     client, session, _ = _client(
         tmp_path,
         [
             FakeResponse(
-                {"order_id": "order-1", "fill_count": "0", "remaining_count": "1"},
+                {
+                    "order_id": "order-1",
+                    "client_order_id": "client-1",
+                    "fill_count": "0",
+                    "remaining_count": "1",
+                    "ts_ms": 1_700_000_000_124,
+                },
                 create_url,
                 201,
             ),
-            FakeResponse({"order": _order()}, order_url),
         ],
     )
     result = client.create_order(
@@ -159,11 +163,43 @@ def test_compact_v2_create_ack_is_followed_by_remote_truth_query(tmp_path: Path)
             "KXBTC15M-TEST", "client-1", DemoBookSide.BID, Decimal("1"), Decimal("0.51")
         )
     )
-    assert result.state.value == "open"
-    assert [(method, url) for method, url, _ in session.calls] == [
-        ("POST", create_url),
-        ("GET", order_url),
-    ]
+    assert result.state.value == "canceled"
+    assert result.filled_count == 0
+    assert result.remaining_count == 1
+    assert [(method, url) for method, url, _ in session.calls] == [("POST", create_url)]
+
+
+def test_compact_v2_ioc_partial_fill_preserves_official_fee_truth(tmp_path: Path) -> None:
+    create_url = f"{KALSHI_DEMO_API_BASE_URL}/portfolio/events/orders"
+    client, _, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {
+                    "order_id": "order-1",
+                    "client_order_id": "client-1",
+                    "fill_count": "0.25",
+                    "remaining_count": "0.75",
+                    "average_fill_price": "0.50",
+                    "average_fee_paid": "0.02",
+                    "ts_ms": 1_700_000_000_124,
+                },
+                create_url,
+                201,
+            )
+        ],
+    )
+
+    result = client.create_order(
+        DemoOrderRequest(
+            "KXBTC15M-TEST", "client-1", DemoBookSide.BID, Decimal("1"), Decimal("0.51")
+        )
+    )
+
+    assert result.state.value == "canceled"
+    assert result.filled_count == Decimal("0.25")
+    assert result.remaining_count == Decimal("0.75")
+    assert result.fees == Decimal("0.005")
 
 
 def test_write_transport_failure_is_ambiguous_and_never_retried(tmp_path: Path) -> None:
