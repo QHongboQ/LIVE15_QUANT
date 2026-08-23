@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -111,7 +112,7 @@ def test_demo_audit_reads_only_allowlisted_resources(tmp_path: Path) -> None:
 
     assert result.environment == "demo"
     assert result.authenticated is True
-    assert str(result.balance_dollars) == "12.3400"
+    assert result.balance_dollars == Decimal("12.34")
     assert result.portfolio_value_cents == 1250
     assert result.sample_market_tickers == ("KXBTC15M-EXAMPLE",)
     assert result.capabilities.documented_create_order_v2 is True

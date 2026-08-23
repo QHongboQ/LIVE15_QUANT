@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -75,6 +76,7 @@ def _client(tmp_path: Path, responses: list[object]):
         session=session,
         signer=signer,
         clock_ms=lambda: 1_700_000_000_123,
+        utc_now=lambda: datetime(2026, 8, 23, tzinfo=UTC),
         repository_root=Path.cwd(),
     )
     return client, session, signer
@@ -321,3 +323,49 @@ def test_demo_balance_and_positions_preserve_decimal_remote_truth(tmp_path: Path
     assert balance.portfolio_value == Decimal("12.5")
     assert position.realized_pnl == Decimal("0.123456")
     assert position.quantity == Decimal("1.00")
+
+
+def test_official_exchange_and_market_reads_are_typed_and_demo_only(tmp_path: Path) -> None:
+    client, session, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {
+                    "exchange_active": True,
+                    "trading_active": True,
+                    "exchange_estimated_resume_time": None,
+                },
+                f"{KALSHI_DEMO_API_BASE_URL}/exchange/status",
+            ),
+            FakeResponse(
+                {
+                    "market": {
+                        "ticker": "KXBTC15M-TEST",
+                        "status": "active",
+                        "result": None,
+                        "close_time": "2026-08-23T00:15:00Z",
+                    }
+                },
+                f"{KALSHI_DEMO_API_BASE_URL}/markets/KXBTC15M-TEST",
+            ),
+        ],
+    )
+
+    exchange = client.exchange_status()
+    market = client.market("KXBTC15M-TEST")
+
+    assert exchange.exchange_active is True
+    assert exchange.trading_active is True
+    assert exchange.received_at.isoformat() == "2026-08-23T00:00:00+00:00"
+    assert market.ticker == "KXBTC15M-TEST"
+    assert market.status == "active"
+    assert market.close_time is not None
+    assert market.close_time.isoformat() == "2026-08-23T00:15:00+00:00"
+    assert all(call[1].startswith(KALSHI_DEMO_API_BASE_URL) for call in session.calls)
+
+
+def test_market_read_blocks_path_traversal_before_network(tmp_path: Path) -> None:
+    client, session, _ = _client(tmp_path, [])
+    with pytest.raises(KalshiDemoExecutionError, match="ticker"):
+        client.market("../../portfolio/balance")
+    assert session.calls == []

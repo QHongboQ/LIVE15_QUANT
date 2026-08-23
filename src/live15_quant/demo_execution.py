@@ -6,8 +6,8 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
@@ -20,6 +20,7 @@ from live15_quant.providers.kalshi_demo_execution import (
     DemoRemoteOrderState,
     KalshiDemoAmbiguousWriteError,
     KalshiDemoExecutionClient,
+    KalshiDemoExecutionError,
 )
 
 
@@ -62,9 +63,15 @@ class DemoRiskReason(StrEnum):
     MAX_TOTAL_EXPOSURE = "max_total_exposure"
     MAX_CONCURRENT_POSITIONS = "max_concurrent_positions"
     MAX_DAILY_LOSS = "max_daily_loss"
+    INSUFFICIENT_BUYING_POWER = "insufficient_buying_power"
     RECONCILIATION_UNCERTAIN = "reconciliation_uncertain"
     FIXED_SIZING_POLICY = "fixed_sizing_policy"
     REMOTE_RISK_STATE_UNKNOWN = "remote_risk_state_unknown"
+    OFFICIAL_TRUTH_UNAVAILABLE = "official_truth_unavailable"
+    EXCHANGE_UNAVAILABLE = "exchange_unavailable"
+    MARKET_NOT_TRADEABLE = "market_not_tradeable"
+    DECISION_STALE = "decision_stale"
+    CLOCK_UNCERTAIN = "clock_uncertain"
 
 
 class DemoSizingMode(StrEnum):
@@ -133,6 +140,12 @@ class DemoRiskContext:
     positions_state_known: bool = False
     open_orders_state_known: bool = False
     daily_pnl_known: bool = False
+    official_buying_power: Decimal | None = None
+    official_exchange_active: bool | None = None
+    official_trading_active: bool | None = None
+    official_market_ticker: str | None = None
+    official_market_status: str | None = None
+    official_truth_received_at: datetime | None = None
 
     def __post_init__(self) -> None:
         values = (self.event_exposure, self.total_exposure, self.daily_realized_pnl)
@@ -140,6 +153,15 @@ class DemoRiskContext:
             raise ValueError("Demo risk context values must be finite")
         if self.event_exposure < 0 or self.total_exposure < 0 or self.open_positions < 0:
             raise ValueError("Demo exposure/position context must be non-negative")
+        if self.official_buying_power is not None and (
+            not self.official_buying_power.is_finite() or self.official_buying_power < 0
+        ):
+            raise ValueError("Demo official buying power must be finite and non-negative")
+        if self.official_truth_received_at is not None and (
+            self.official_truth_received_at.tzinfo is None
+            or self.official_truth_received_at.utcoffset() is None
+        ):
+            raise ValueError("Demo official truth timestamp must be timezone-aware")
 
 
 @dataclass(frozen=True, slots=True)
@@ -538,6 +560,20 @@ class DemoExecutionStore:
             "positions_state_known": context.positions_state_known,
             "open_orders_state_known": context.open_orders_state_known,
             "daily_pnl_known": context.daily_pnl_known,
+            "official_buying_power": (
+                None
+                if context.official_buying_power is None
+                else str(context.official_buying_power)
+            ),
+            "official_exchange_active": context.official_exchange_active,
+            "official_trading_active": context.official_trading_active,
+            "official_market_ticker": context.official_market_ticker,
+            "official_market_status": context.official_market_status,
+            "official_truth_received_at": (
+                None
+                if context.official_truth_received_at is None
+                else _timestamp(context.official_truth_received_at)
+            ),
         }
         context_hash = _digest(context_payload)
         reasons_json = _canonical([reason.value for reason in decision.reasons])
@@ -816,6 +852,8 @@ def _local_state(order: DemoRemoteOrder) -> DemoLifecycleState:
 class DemoExecutionCoordinator:
     """Separate model intent, hard risk, remote execution, and append-only reconciliation."""
 
+    _MAX_DECISION_AGE = timedelta(seconds=30)
+
     def __init__(
         self,
         client: KalshiDemoExecutionClient,
@@ -837,9 +875,10 @@ class DemoExecutionCoordinator:
         self, intent: DemoIntent, context: DemoRiskContext
     ) -> DemoRiskDecision | DemoReconciliationResult:
         client_id = self._store.append_intent(intent)
+        effective_context = context
         risk = evaluate_demo_risk(
             intent,
-            context,
+            effective_context,
             self._limits,
             writes_enabled=self._writes_enabled,
             execution_smoke_approved=self._execution_smoke_approved,
@@ -868,11 +907,21 @@ class DemoExecutionCoordinator:
                 "execution_smoke_approved": self._execution_smoke_approved,
             }
         )
-        self._store.append_risk(client_id, risk, context, policy_hash)
-        if not risk.allowed:
+        pre_remote_blockers = {
+            DemoRiskReason.WRITES_DISABLED,
+            DemoRiskReason.EXPLICIT_SMOKE_APPROVAL_REQUIRED,
+            DemoRiskReason.SMOKE_ONLY,
+            DemoRiskReason.KILL_SWITCH,
+            DemoRiskReason.MAX_ORDER_SIZE,
+            DemoRiskReason.MAX_ORDER_NOTIONAL,
+            DemoRiskReason.FIXED_SIZING_POLICY,
+        }
+        if any(reason in pre_remote_blockers for reason in risk.reasons):
+            self._store.append_risk(client_id, risk, effective_context, policy_hash)
             return risk
         existing = self._client.find_order_by_client_id(client_id)
         if existing is not None:
+            self._store.append_risk(client_id, risk, effective_context, policy_hash)
             return self._record_remote(existing)
         current = self._store.latest_state(client_id)
         if current in {
@@ -880,6 +929,7 @@ class DemoExecutionCoordinator:
             DemoLifecycleState.CANCEL_PENDING,
             DemoLifecycleState.RECONCILIATION_REQUIRED,
         }:
+            self._store.append_risk(client_id, risk, effective_context, policy_hash)
             self._store.append_state(
                 client_id,
                 DemoLifecycleState.RECONCILIATION_REQUIRED,
@@ -888,6 +938,98 @@ class DemoExecutionCoordinator:
             return DemoReconciliationResult(
                 client_id, DemoLifecycleState.RECONCILIATION_REQUIRED, None, 0
             )
+        try:
+            exchange = self._client.exchange_status()
+            market = self._client.market(intent.ticker)
+            account = self._client.balance()
+            positions = self._client.positions()
+            remote_orders = self._client.orders()
+            self._client.fills()
+        except KalshiDemoExecutionError:
+            risk = DemoRiskDecision(False, (DemoRiskReason.OFFICIAL_TRUTH_UNAVAILABLE,))
+        else:
+            if market.ticker != intent.ticker:
+                raise DemoExecutionError(
+                    "official Demo market identity conflicts with immutable intent"
+                )
+            reasons: list[DemoRiskReason] = []
+            if not exchange.exchange_active or not exchange.trading_active:
+                reasons.append(DemoRiskReason.EXCHANGE_UNAVAILABLE)
+            if (
+                market.status.lower() != "active"
+                or market.result not in {None, ""}
+                or (market.close_time is not None and market.close_time <= market.received_at)
+            ):
+                reasons.append(DemoRiskReason.MARKET_NOT_TRADEABLE)
+            open_orders = tuple(
+                order
+                for order in remote_orders
+                if order.state in {DemoRemoteOrderState.OPEN, DemoRemoteOrderState.PARTIALLY_FILLED}
+            )
+            remote_uncertain = any(
+                order.state is DemoRemoteOrderState.RECONCILIATION_REQUIRED
+                for order in remote_orders
+            )
+            position_exposure = sum((position.exposure for position in positions), Decimal(0))
+            order_exposure = sum(
+                (order.remaining_count * order.price for order in open_orders), Decimal(0)
+            )
+            event_exposure = sum(
+                (position.exposure for position in positions if position.ticker == intent.ticker),
+                Decimal(0),
+            ) + sum(
+                (
+                    order.remaining_count * order.price
+                    for order in open_orders
+                    if order.ticker == intent.ticker
+                ),
+                Decimal(0),
+            )
+            official_received_at = max(exchange.received_at, market.received_at)
+            effective_context = replace(
+                context,
+                event_exposure=event_exposure,
+                total_exposure=position_exposure + order_exposure,
+                open_positions=sum(position.quantity != 0 for position in positions),
+                reconciliation_certain=context.reconciliation_certain and not remote_uncertain,
+                account_state_known=True,
+                positions_state_known=True,
+                open_orders_state_known=True,
+                official_buying_power=account.buying_power,
+                official_exchange_active=exchange.exchange_active,
+                official_trading_active=exchange.trading_active,
+                official_market_ticker=market.ticker,
+                official_market_status=market.status,
+                official_truth_received_at=official_received_at,
+            )
+            risk = evaluate_demo_risk(
+                intent,
+                effective_context,
+                self._limits,
+                writes_enabled=self._writes_enabled,
+                execution_smoke_approved=self._execution_smoke_approved,
+            )
+            if account.buying_power < intent.count * intent.price:
+                risk = DemoRiskDecision(
+                    False,
+                    tuple(dict.fromkeys((*risk.reasons, DemoRiskReason.INSUFFICIENT_BUYING_POWER))),
+                )
+            truth_age = official_received_at - intent.decision_timestamp
+            if truth_age < timedelta(0):
+                risk = DemoRiskDecision(
+                    False,
+                    tuple(dict.fromkeys((*risk.reasons, DemoRiskReason.CLOCK_UNCERTAIN))),
+                )
+            elif truth_age > self._MAX_DECISION_AGE:
+                risk = DemoRiskDecision(
+                    False,
+                    tuple(dict.fromkeys((*risk.reasons, DemoRiskReason.DECISION_STALE))),
+                )
+            if reasons:
+                risk = DemoRiskDecision(False, tuple(dict.fromkeys((*risk.reasons, *reasons))))
+        self._store.append_risk(client_id, risk, effective_context, policy_hash)
+        if not risk.allowed:
+            return risk
         self._store.append_state(client_id, DemoLifecycleState.INTENT)
         self._store.append_state(client_id, DemoLifecycleState.SUBMITTING)
         try:

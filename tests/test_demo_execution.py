@@ -21,7 +21,10 @@ from live15_quant.demo_execution import (
     stable_client_order_id,
 )
 from live15_quant.providers.kalshi_demo_execution import (
+    DemoAccountSnapshot,
     DemoBookSide,
+    DemoExchangeStatus,
+    DemoMarketTruth,
     DemoRemoteFill,
     DemoRemoteOrder,
     DemoRemoteOrderState,
@@ -71,12 +74,38 @@ def _remote(intent: DemoIntent, state: DemoRemoteOrderState = DemoRemoteOrderSta
 class FakeClient:
     def __init__(self) -> None:
         self.remote: DemoRemoteOrder | None = None
+        self.create_response: DemoRemoteOrder | None = None
         self.create_calls = 0
         self.cancel_calls = 0
         self.raise_submit = False
         self.raise_cancel = False
         self.remote_fills: tuple[DemoRemoteFill, ...] = ()
         self.remote_positions: tuple[DemoRemotePosition, ...] = ()
+        self.exchange = DemoExchangeStatus(
+            True, True, None, datetime(2026, 8, 23, 0, 0, 1, tzinfo=UTC)
+        )
+        self.market_truth = DemoMarketTruth(
+            "KXBTC15M-TEST",
+            "active",
+            None,
+            datetime(2026, 8, 23, 0, 15, tzinfo=UTC),
+            datetime(2026, 8, 23, 0, 0, 1, tzinfo=UTC),
+        )
+        self.exchange_status_calls = 0
+        self.market_calls = 0
+        self.account = DemoAccountSnapshot(Decimal("100"), Decimal(0), 1_700_000_000)
+
+    def exchange_status(self):
+        self.exchange_status_calls += 1
+        return self.exchange
+
+    def market(self, ticker: str):
+        self.market_calls += 1
+        assert ticker == "KXBTC15M-TEST"
+        return self.market_truth
+
+    def balance(self):
+        return self.account
 
     def find_order_by_client_id(self, client_order_id: str):
         if self.remote is not None and self.remote.client_order_id == client_order_id:
@@ -87,12 +116,14 @@ class FakeClient:
         self.create_calls += 1
         if self.raise_submit:
             raise KalshiDemoAmbiguousWriteError("ambiguous")
-        assert self.remote is not None
-        assert request.client_order_id == self.remote.client_order_id
-        return self.remote
+        result = self.create_response or self.remote
+        assert result is not None
+        assert request.client_order_id == result.client_order_id
+        return result
 
     def fills(self, *, order_id: str | None = None):
-        assert order_id == "remote-1"
+        if order_id is not None:
+            assert order_id == "remote-1"
         return self.remote_fills
 
     def order(self, order_id: str):
@@ -149,7 +180,6 @@ def test_demo_writes_default_disabled_and_hard_risk_cannot_be_bypassed(tmp_path:
 def test_unknown_remote_risk_state_and_disabled_cancel_fail_closed(tmp_path: Path) -> None:
     intent = _intent()
     client = FakeClient()
-    client.remote = _remote(intent)
     with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
         coordinator = DemoExecutionCoordinator(client, store)
         blocked = coordinator.submit(intent, _safe_context(account_state_known=False))
@@ -263,6 +293,139 @@ def test_submit_is_idempotent_and_reconciles_existing_remote_order(tmp_path: Pat
         assert second == first
         assert client.create_calls == 0
         assert store.counts()["intents"] == 1
+        assert client.exchange_status_calls == 0
+        assert client.market_calls == 0
+
+
+def test_official_exchange_and_market_truth_gate_new_submit(tmp_path: Path) -> None:
+    intent = _intent()
+    client = FakeClient()
+    client.exchange = DemoExchangeStatus(
+        True, False, "2026-08-23T01:00:00Z", datetime(2026, 8, 23, tzinfo=UTC)
+    )
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        coordinator = DemoExecutionCoordinator(
+            client, store, writes_enabled=True, execution_smoke_approved=True
+        )
+        result = coordinator.submit(intent, _safe_context())
+
+    assert result.allowed is False  # type: ignore[union-attr]
+    assert result.reasons == (DemoRiskReason.EXCHANGE_UNAVAILABLE,)  # type: ignore[union-attr]
+    assert client.create_calls == 0
+
+
+def test_official_truth_is_checked_immediately_before_new_submit(tmp_path: Path) -> None:
+    intent = _intent()
+    client = FakeClient()
+    client.create_response = _remote(intent)
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        result = DemoExecutionCoordinator(
+            client, store, writes_enabled=True, execution_smoke_approved=True
+        ).submit(intent, _safe_context())
+
+    assert result.state is DemoLifecycleState.OPEN  # type: ignore[union-attr]
+    assert client.exchange_status_calls == 1
+    assert client.market_calls == 1
+    assert client.create_calls == 1
+
+
+def test_remote_account_truth_overrides_stale_local_exposure(tmp_path: Path) -> None:
+    intent = _intent()
+    client = FakeClient()
+    client.create_response = _remote(intent)
+    stale_local = _safe_context(
+        event_exposure=Decimal("2"),
+        total_exposure=Decimal("5"),
+        open_positions=3,
+        account_state_known=False,
+        positions_state_known=False,
+        open_orders_state_known=False,
+    )
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        result = DemoExecutionCoordinator(
+            client, store, writes_enabled=True, execution_smoke_approved=True
+        ).submit(intent, stale_local)
+
+    assert result.state is DemoLifecycleState.OPEN  # type: ignore[union-attr]
+    assert client.create_calls == 1
+
+
+def test_remote_exposure_and_buying_power_fail_closed(tmp_path: Path) -> None:
+    intent = _intent()
+    client = FakeClient()
+    client.remote_positions = (
+        DemoRemotePosition(
+            intent.ticker,
+            Decimal("1"),
+            Decimal("1.8"),
+            Decimal(0),
+            Decimal(0),
+            0,
+            "2026-08-23T00:00:00Z",
+        ),
+    )
+    client.account = DemoAccountSnapshot(Decimal("0.25"), Decimal("1.8"), 1_700_000_000)
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        result = DemoExecutionCoordinator(
+            client, store, writes_enabled=True, execution_smoke_approved=True
+        ).submit(intent, _safe_context())
+
+    assert result.allowed is False  # type: ignore[union-attr]
+    assert DemoRiskReason.MAX_EVENT_EXPOSURE in result.reasons  # type: ignore[union-attr]
+    assert DemoRiskReason.INSUFFICIENT_BUYING_POWER in result.reasons  # type: ignore[union-attr]
+    assert client.create_calls == 0
+
+
+def test_future_official_response_cannot_execute_a_past_decision(tmp_path: Path) -> None:
+    intent = _intent(decision_timestamp=datetime(2026, 8, 22, 23, 58, tzinfo=UTC))
+    client = FakeClient()
+    client.create_response = _remote(intent)
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        result = DemoExecutionCoordinator(
+            client, store, writes_enabled=True, execution_smoke_approved=True
+        ).submit(intent, _safe_context())
+
+    assert result.allowed is False  # type: ignore[union-attr]
+    assert DemoRiskReason.DECISION_STALE in result.reasons  # type: ignore[union-attr]
+    assert client.create_calls == 0
+
+
+def test_official_market_truth_overrides_stale_local_assumption(tmp_path: Path) -> None:
+    intent = _intent()
+    client = FakeClient()
+    client.market_truth = DemoMarketTruth(
+        intent.ticker,
+        "closed",
+        "yes",
+        datetime(2026, 8, 22, 23, 59, tzinfo=UTC),
+        datetime(2026, 8, 23, tzinfo=UTC),
+    )
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        result = DemoExecutionCoordinator(
+            client, store, writes_enabled=True, execution_smoke_approved=True
+        ).submit(intent, _safe_context())
+
+    assert result.allowed is False  # type: ignore[union-attr]
+    assert result.reasons == (DemoRiskReason.MARKET_NOT_TRADEABLE,)  # type: ignore[union-attr]
+    assert client.create_calls == 0
+
+
+def test_official_market_identity_conflict_fails_loud(tmp_path: Path) -> None:
+    intent = _intent()
+    client = FakeClient()
+    client.market_truth = DemoMarketTruth(
+        "KXETH15M-OTHER",
+        "active",
+        None,
+        datetime(2026, 8, 23, 0, 15, tzinfo=UTC),
+        datetime(2026, 8, 23, tzinfo=UTC),
+    )
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        with pytest.raises(DemoExecutionError, match="market identity"):
+            DemoExecutionCoordinator(
+                client, store, writes_enabled=True, execution_smoke_approved=True
+            ).submit(intent, _safe_context())
+    assert client.create_calls == 0
 
 
 def test_response_lost_after_submit_never_blindly_retries(tmp_path: Path) -> None:

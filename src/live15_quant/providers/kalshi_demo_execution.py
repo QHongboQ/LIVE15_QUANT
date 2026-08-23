@@ -8,9 +8,11 @@ credentials or authenticated response bodies in exceptions.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
@@ -27,9 +29,16 @@ from live15_quant.providers.kalshi_demo import (
 )
 
 _ALLOWED_READ_PATHS = frozenset(
-    {"/portfolio/balance", "/portfolio/positions", "/portfolio/orders", "/portfolio/fills"}
+    {
+        "/exchange/status",
+        "/portfolio/balance",
+        "/portfolio/positions",
+        "/portfolio/orders",
+        "/portfolio/fills",
+    }
 )
 _CREATE_ORDER_PATH = "/portfolio/events/orders"
+_TICKER_PATTERN = re.compile(r"[A-Z0-9][A-Z0-9.-]{0,199}")
 
 
 class KalshiDemoExecutionError(RuntimeError):
@@ -173,6 +182,43 @@ class DemoAccountSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class DemoExchangeStatus:
+    """Official Demo exchange availability observed immediately before execution."""
+
+    exchange_active: bool
+    trading_active: bool
+    estimated_resume_time: str | None
+    received_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.received_at.tzinfo is None or self.received_at.utcoffset() is None:
+            raise ValueError("Demo exchange status receive timestamp must be timezone-aware")
+
+
+@dataclass(frozen=True, slots=True)
+class DemoMarketTruth:
+    """Official Demo market identity/lifecycle truth for an execution-time gate."""
+
+    ticker: str
+    status: str
+    result: str | None
+    close_time: datetime | None
+    received_at: datetime
+
+    def __post_init__(self) -> None:
+        if not _TICKER_PATTERN.fullmatch(self.ticker):
+            raise ValueError("Demo market ticker is malformed")
+        if not self.status:
+            raise ValueError("Demo market status must not be empty")
+        if self.received_at.tzinfo is None or self.received_at.utcoffset() is None:
+            raise ValueError("Demo market receive timestamp must be timezone-aware")
+        if self.close_time is not None and (
+            self.close_time.tzinfo is None or self.close_time.utcoffset() is None
+        ):
+            raise ValueError("Demo market close timestamp must be timezone-aware")
+
+
+@dataclass(frozen=True, slots=True)
 class DemoRemotePosition:
     ticker: str
     quantity: Decimal
@@ -231,6 +277,20 @@ def _object(response: HttpResponse) -> Mapping[str, Any]:
     if not isinstance(payload, Mapping):
         raise KalshiDemoExecutionError("Kalshi Demo payload must be an object")
     return payload
+
+
+def _timestamp_or_none(value: object, field: str) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise KalshiDemoExecutionError(f"malformed Demo {field}")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise KalshiDemoExecutionError(f"malformed Demo {field}") from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise KalshiDemoExecutionError(f"malformed Demo {field}")
+    return parsed.astimezone(UTC)
 
 
 def _complete_page(payload: Mapping[str, Any], field: str) -> list[Any]:
@@ -308,6 +368,7 @@ class KalshiDemoExecutionClient:
         session: DemoSession | None = None,
         signer: RequestSigner | None = None,
         clock_ms: Callable[[], int] | None = None,
+        utc_now: Callable[[], datetime] | None = None,
         repository_root: Path | None = None,
     ) -> None:
         credentials.validate(repository_root or Path.cwd())
@@ -317,6 +378,7 @@ class KalshiDemoExecutionClient:
         self._session = self._owned_session or session
         self._signer = signer or FileRsaPssSigner(credentials.private_key_path)
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
+        self._utc_now = utc_now or (lambda: datetime.now(UTC))
 
     def close(self) -> None:
         if self._owned_session is not None:
@@ -338,6 +400,12 @@ class KalshiDemoExecutionClient:
     ) -> Mapping[str, Any]:
         method = method.upper()
         allowed = path in _ALLOWED_READ_PATHS and method == "GET"
+        allowed = allowed or (
+            path.startswith("/markets/")
+            and path.count("/") == 2
+            and bool(_TICKER_PATTERN.fullmatch(path.removeprefix("/markets/")))
+            and method == "GET"
+        )
         allowed = allowed or (path == _CREATE_ORDER_PATH and method == "POST")
         allowed = allowed or (
             path.startswith("/portfolio/events/orders/")
@@ -408,6 +476,52 @@ class KalshiDemoExecutionClient:
         if updated != updated.to_integral_value():
             raise KalshiDemoExecutionError("malformed Demo updated_ts")
         return DemoAccountSnapshot(balance, portfolio_value, int(updated))
+
+    def exchange_status(self) -> DemoExchangeStatus:
+        """Read official exchange/trading availability; never infer it locally."""
+
+        value = self._request("GET", "/exchange/status")
+        exchange_active = value.get("exchange_active")
+        trading_active = value.get("trading_active")
+        resume = value.get("exchange_estimated_resume_time")
+        if not isinstance(exchange_active, bool) or not isinstance(trading_active, bool):
+            raise KalshiDemoExecutionError("malformed Demo exchange status")
+        if resume is not None and not isinstance(resume, str):
+            raise KalshiDemoExecutionError("malformed Demo exchange resume time")
+        return DemoExchangeStatus(
+            exchange_active=exchange_active,
+            trading_active=trading_active,
+            estimated_resume_time=resume,
+            received_at=self._utc_now(),
+        )
+
+    def market(self, ticker: str) -> DemoMarketTruth:
+        """Read exact official market identity/lifecycle truth for a pre-trade gate."""
+
+        if not _TICKER_PATTERN.fullmatch(ticker):
+            raise KalshiDemoExecutionError("malformed Demo market ticker")
+        wrapper = self._request("GET", f"/markets/{ticker}")
+        value = wrapper.get("market")
+        if not isinstance(value, Mapping):
+            raise KalshiDemoExecutionError("malformed Demo market payload")
+        remote_ticker = value.get("ticker")
+        status = value.get("status")
+        result = value.get("result")
+        if (
+            not isinstance(remote_ticker, str)
+            or not _TICKER_PATTERN.fullmatch(remote_ticker)
+            or not isinstance(status, str)
+            or not status
+            or (result is not None and not isinstance(result, str))
+        ):
+            raise KalshiDemoExecutionError("malformed Demo market truth")
+        return DemoMarketTruth(
+            ticker=remote_ticker,
+            status=status,
+            result=result,
+            close_time=_timestamp_or_none(value.get("close_time"), "market close_time"),
+            received_at=self._utc_now(),
+        )
 
     def positions(self) -> tuple[DemoRemotePosition, ...]:
         values = _complete_page(

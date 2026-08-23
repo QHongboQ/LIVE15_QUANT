@@ -270,7 +270,12 @@ class KalshiDemoReadOnlyClient:
         """Perform only documented authenticated reads; never create, amend, or cancel orders."""
 
         balance = self._get("/portfolio/balance")
-        balance_dollars = _decimal(balance.get("balance_dollars"), "balance_dollars")
+        # Official V2 ``balance`` is available buying power in integer cents.
+        # Retain the historical dollars field only as an explicit compatibility path.
+        if "balance" in balance:
+            balance_dollars = _decimal(balance.get("balance"), "balance") / Decimal(100)
+        else:
+            balance_dollars = _decimal(balance.get("balance_dollars"), "balance_dollars")
         portfolio_value_cents = _integer(balance.get("portfolio_value"), "portfolio_value")
         markets = _list(
             self._get("/markets", {"status": "open", "limit": 10}),
