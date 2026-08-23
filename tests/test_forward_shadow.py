@@ -27,7 +27,7 @@ from live15_quant.models import (
     Venue,
 )
 from live15_quant.paper import PaperPortfolio
-from live15_quant.paper_execution import KalshiPaperExecutionProvider
+from live15_quant.paper_execution import KalshiPaperExecutionProvider, PaperExecutionError
 from live15_quant.paper_storage import PaperStore
 from live15_quant.risk import HardRiskLimits, ImmutableHardRiskLayer
 
@@ -255,6 +255,36 @@ def test_three_forward_candidates_use_isolated_paper_portfolios_and_no_pyramidin
     finally:
         for store in stores:
             store.close()
+
+
+def test_paper_intent_conflict_is_quarantined_after_restart(tmp_path) -> None:
+    """A paper commit may precede its forward-ledger commit; retries must not re-order."""
+
+    from live15_quant.forward_shadow import ForwardShadowRuntime
+
+    class Store:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        def append(self, payload: dict[str, object]) -> bool:
+            self.payloads.append(payload)
+            return True
+
+    runtime = object.__new__(ForwardShadowRuntime)
+    runtime.candidates = (
+        SimpleNamespace(model_id="logistic_l2_identity", threshold=Decimal("0.10")),
+    )
+    runtime.models = SimpleNamespace(artifact_hash="m" * 64)
+    runtime.dataset = SimpleNamespace(dataset_id="dataset")
+    runtime.store = Store()
+    runtime._payload = lambda *_args: (_ for _ in ()).throw(
+        PaperExecutionError("decision ID conflicts with persisted immutable intent")
+    )
+
+    runtime._process(_ready_snapshot(Asset.BTC, datetime(2026, 8, 23, tzinfo=UTC)))
+    assert runtime.store.payloads[0]["action"] == "hold"
+    assert runtime.store.payloads[0]["data_status"] == "data_unavailable"
+    assert runtime.store.payloads[0]["data_reason"] == "paper_decision_conflict"
 
 
 def test_forward_ledger_rejects_storage_role_collision(tmp_path) -> None:

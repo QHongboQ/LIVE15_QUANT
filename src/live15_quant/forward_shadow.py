@@ -50,7 +50,7 @@ from live15_quant.models import (
     Venue,
 )
 from live15_quant.paper import PaperDecisionType, StrategyDecision
-from live15_quant.paper_execution import KalshiPaperExecutionProvider
+from live15_quant.paper_execution import KalshiPaperExecutionProvider, PaperExecutionError
 from live15_quant.paper_storage import PaperStore
 from live15_quant.records import KalshiNativeQuoteRecord
 from live15_quant.risk import HardRiskLimits, ImmutableHardRiskLayer
@@ -1364,9 +1364,44 @@ class ForwardShadowRuntime:
     def _process(self, snapshot: LiveFeatureSnapshot) -> None:
         for candidate in self.candidates:
             model_id, threshold = candidate.model_id, candidate.threshold
-            payload = self._payload(model_id, threshold, snapshot)
+            try:
+                payload = self._payload(model_id, threshold, snapshot)
+            except PaperExecutionError as error:
+                # A crash can leave the isolated PaperStore committed while the
+                # forward ledger transaction is still pending.  Recomputing the
+                # same opportunity after restart may produce a different action
+                # because the live quote moved; never submit a second intent or
+                # kill the shadow worker.  Quarantine the opportunity instead.
+                if "immutable intent" not in str(error):
+                    raise
+                payload = self._paper_conflict_payload(model_id, snapshot)
             if self.store.append(payload):
                 continue
+
+    def _paper_conflict_payload(
+        self, model_id: str, snapshot: LiveFeatureSnapshot
+    ) -> dict[str, object]:
+        """Persist a restart conflict as DATA_UNAVAILABLE, never as a new order."""
+
+        return {
+            "model_id": model_id,
+            "opportunity_id": snapshot.opportunity_id,
+            "decision_timestamp": _timestamp(snapshot.decision_timestamp),
+            "bucket_seconds": int(
+                (snapshot.window_end - snapshot.decision_timestamp).total_seconds()
+            ),
+            "asset": snapshot.asset.value,
+            "ticker": snapshot.ticker,
+            "feature_hash": snapshot.feature_hash,
+            "action": "hold",
+            "data_status": "data_unavailable",
+            "data_reason": "paper_decision_conflict",
+            "risk_allowed": None,
+            "risk_reasons": '["paper_decision_conflict"]',
+            "model_artifact_hash": self.models.artifact_hash,
+            "dataset_id": self.dataset.dataset_id,
+            "created_at": _timestamp(datetime.now(UTC)),
+        }
 
     def _payload(
         self, model_id: str, threshold: Decimal, snapshot: LiveFeatureSnapshot
