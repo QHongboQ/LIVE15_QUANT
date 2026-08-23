@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -262,6 +263,47 @@ def test_three_forward_candidates_use_isolated_paper_portfolios_and_no_pyramidin
     finally:
         for store in stores:
             store.close()
+
+
+def test_one_sided_executable_book_is_data_unavailable_hold(tmp_path) -> None:
+    """A legal transient one-sided book must not terminate the Paper worker."""
+
+    from live15_quant.forward_shadow import ForwardShadowRuntime
+
+    class Models:
+        artifact_hash = "model-hash"
+
+        @staticmethod
+        def predict(_model_id: str, _row: object) -> Decimal:
+            pytest.fail("prediction must not run without both executable sides")
+
+    runtime = object.__new__(ForwardShadowRuntime)
+    runtime.settings = SimpleNamespace(forward_shadow_order_quantity=Decimal("1"))
+    runtime.models = Models()
+    runtime.dataset = SimpleNamespace(dataset_id="dataset")
+    store = PaperStore(
+        tmp_path / "one-sided.sqlite3", account_id="paper", starting_cash=Decimal("100")
+    )
+    try:
+        runtime.executions = {
+            FORWARD_CANDIDATES[0][0]: KalshiPaperExecutionProvider(
+                store=store,
+                account_id="paper",
+                starting_cash=Decimal("100"),
+                risk=ImmutableHardRiskLayer(
+                    HardRiskLimits(Decimal("10"), Decimal("10"), Decimal("20"), Decimal("50"), 3)
+                ),
+            )
+        }
+        snapshot = _ready_snapshot(Asset.BTC, datetime(2026, 8, 23, tzinfo=UTC))
+        snapshot = replace(snapshot, quote=replace(snapshot.quote, no_ask=None))
+        payload = runtime._payload(FORWARD_CANDIDATES[0][0], FORWARD_CANDIDATES[0][1], snapshot)
+        assert payload["data_status"] == "data_unavailable"
+        assert payload["data_reason"] == "market_side_unavailable"
+        assert payload["action"] == "hold"
+        assert payload["risk_reasons"] == '["data_unavailable"]'
+    finally:
+        store.close()
 
 
 def test_paper_intent_conflict_is_quarantined_after_restart(tmp_path) -> None:

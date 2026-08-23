@@ -1448,7 +1448,12 @@ class ForwardShadowRuntime:
             "dataset_id": self.dataset.dataset_id,
             "created_at": _timestamp(datetime.now(UTC)),
         }
-        if snapshot.data_status != "ready" or snapshot.quote is None:
+        if (
+            snapshot.data_status != "ready"
+            or snapshot.quote is None
+            or snapshot.quote.yes_ask is None
+            or snapshot.quote.no_ask is None
+        ):
             decision = StrategyDecision(
                 decision_id=_decision_id(model_id, snapshot.opportunity_id),
                 signal_timestamp=snapshot.decision_timestamp,
@@ -1463,6 +1468,12 @@ class ForwardShadowRuntime:
             result = self.executions[model_id].execute(decision, None)
             return {
                 **base,
+                "data_status": "data_unavailable",
+                "data_reason": (
+                    snapshot.data_reason
+                    if snapshot.data_status != "ready"
+                    else "market_side_unavailable"
+                ),
                 "action": "hold",
                 "risk_allowed": None,
                 "risk_reasons": '["data_unavailable"]',
@@ -1474,7 +1485,10 @@ class ForwardShadowRuntime:
             }
         probability = self.models.predict(model_id, self._example(snapshot))
         quote = snapshot.quote
-        assert quote.yes_ask is not None and quote.no_ask is not None
+        # The guard above establishes both executable sides.  Do not turn a
+        # legitimate transient one-sided book into a worker-fatal assertion.
+        if quote.yes_ask is None or quote.no_ask is None:  # pragma: no cover
+            raise PaperExecutionError("executable market side disappeared")
         yes_edge, no_edge = probability - quote.yes_ask, Decimal(1) - probability - quote.no_ask
         existing_position = self.executions[model_id].get_position(snapshot.ticker, snapshot.ticker)
         if snapshot.asset not in PAPER_ELIGIBLE_ASSETS:
