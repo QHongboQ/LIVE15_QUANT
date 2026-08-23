@@ -72,6 +72,13 @@ def test_forward_ledger_start_and_idempotent_immutable_decisions(tmp_path) -> No
         conflicting["data_reason"] = "other"
         with pytest.raises(ForwardShadowError, match="idempotency"):
             store.append(conflicting)
+        quarantine = _payload(decision_timestamp=timestamp)
+        quarantine["opportunity_id"] = "quarantine-opportunity"
+        quarantine["data_reason"] = "paper_decision_conflict"
+        assert store.append(quarantine)
+        changed_quarantine = dict(quarantine)
+        changed_quarantine["feature_hash"] = "g" * 64
+        assert not store.append(changed_quarantine)
 
 
 def test_forward_ledger_rejects_pre_start_decision(tmp_path) -> None:

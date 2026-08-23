@@ -289,11 +289,17 @@ class ForwardShadowStore:
         immutable = {key: value for key, value in payload.items() if key != "created_at"}
         fact_hash = _hash(immutable)
         existing = self._connection.execute(
-            "SELECT fact_hash FROM forward_decisions WHERE model_id=? AND opportunity_id=?",
+            "SELECT fact_hash,data_reason FROM forward_decisions "
+            "WHERE model_id=? AND opportunity_id=?",
             (model_id, opportunity_id),
         ).fetchone()
         if existing is not None:
             if str(existing["fact_hash"]) != fact_hash:
+                if (
+                    existing["data_reason"] == "paper_decision_conflict"
+                    and payload.get("data_reason") == "paper_decision_conflict"
+                ):
+                    return False
                 raise ForwardShadowError(
                     "forward idempotency key conflicts with immutable decision fact"
                 )
@@ -301,11 +307,18 @@ class ForwardShadowStore:
         try:
             self._connection.execute("BEGIN IMMEDIATE")
             concurrent = self._connection.execute(
-                "SELECT fact_hash FROM forward_decisions WHERE model_id=? AND opportunity_id=?",
+                "SELECT fact_hash,data_reason FROM forward_decisions "
+                "WHERE model_id=? AND opportunity_id=?",
                 (model_id, opportunity_id),
             ).fetchone()
             if concurrent is not None:
                 if str(concurrent["fact_hash"]) != fact_hash:
+                    if (
+                        concurrent["data_reason"] == "paper_decision_conflict"
+                        and payload.get("data_reason") == "paper_decision_conflict"
+                    ):
+                        self._connection.rollback()
+                        return False
                     raise ForwardShadowError(
                         "forward idempotency key conflicts with immutable decision fact"
                     )
