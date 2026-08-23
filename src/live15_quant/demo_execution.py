@@ -90,6 +90,11 @@ class DemoExecutionResultCode(StrEnum):
     HTTP_SUCCESS_FILLED = "HTTP_SUCCESS_FILLED"
     HTTP_SUCCESS_NO_FILL = "HTTP_SUCCESS_NO_FILL"
     HTTP_4XX = "HTTP_4XX"
+    HTTP_400 = "HTTP_400"
+    HTTP_401 = "HTTP_401"
+    HTTP_403 = "HTTP_403"
+    HTTP_404 = "HTTP_404"
+    HTTP_422 = "HTTP_422"
     HTTP_409 = "HTTP_409"
     HTTP_429 = "HTTP_429"
     HTTP_5XX = "HTTP_5XX"
@@ -1526,10 +1531,20 @@ class DemoExecutionCoordinator:
                 )
             )
         except KalshiDemoWriteRejectedError as error:
-            detail = {"reason": "submit_rejected", "reason_code": error.reason_code}
+            detail = {
+                "reason": "submit_rejected",
+                "reason_code": error.reason_code,
+                **error.diagnostic,
+            }
             self._store.append_execution_diagnostic(
                 client_id,
-                DemoExecutionResultCode.HTTP_4XX,
+                {
+                    "http_400": DemoExecutionResultCode.HTTP_400,
+                    "http_401": DemoExecutionResultCode.HTTP_401,
+                    "http_403": DemoExecutionResultCode.HTTP_403,
+                    "http_404": DemoExecutionResultCode.HTTP_404,
+                    "http_422": DemoExecutionResultCode.HTTP_422,
+                }.get(error.reason_code, DemoExecutionResultCode.HTTP_4XX),
                 detail,
             )
             self._store.append_state(
@@ -1540,6 +1555,7 @@ class DemoExecutionCoordinator:
             return DemoReconciliationResult(client_id, DemoLifecycleState.REJECTED, None, 0)
         except KalshiDemoAmbiguousWriteError as error:
             result_code = {
+                "http_404": DemoExecutionResultCode.HTTP_404,
                 "transport_failure": DemoExecutionResultCode.TRANSPORT_ERROR,
                 "http_409": DemoExecutionResultCode.HTTP_409,
                 "http_429": DemoExecutionResultCode.HTTP_429,
@@ -1555,7 +1571,7 @@ class DemoExecutionCoordinator:
             self._store.append_execution_diagnostic(
                 client_id,
                 result_code,
-                {"reason_code": error.reason_code},
+                {"reason_code": error.reason_code, **error.diagnostic},
             )
             self._store.append_state(
                 client_id,
@@ -1563,6 +1579,7 @@ class DemoExecutionCoordinator:
                 detail={
                     "reason": "submit_outcome_ambiguous",
                     "reason_code": error.reason_code,
+                    **error.diagnostic,
                 },
             )
             return DemoReconciliationResult(

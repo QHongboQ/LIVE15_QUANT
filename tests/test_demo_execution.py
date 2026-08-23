@@ -757,7 +757,18 @@ def test_submit_ambiguity_has_typed_non_sensitive_diagnostic(
 def test_conclusive_submit_rejection_is_typed_and_not_retried(tmp_path: Path) -> None:
     intent = _intent()
     client = FakeClient()
-    client.submit_error = KalshiDemoWriteRejectedError("safe", reason_code="http_4xx")
+    client.submit_error = KalshiDemoWriteRejectedError(
+        "safe",
+        reason_code="http_404",
+        diagnostic={
+            "http_status": 404,
+            "provider_error_code": "market_not_found",
+            "sanitized_provider_message": "safe diagnostic",
+            "request_method": "POST",
+            "request_path": "/trade-api/v2/portfolio/events/orders",
+            "environment": "DEMO",
+        },
+    )
     with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
         coordinator = DemoExecutionCoordinator(
             client,
@@ -772,7 +783,17 @@ def test_conclusive_submit_rejection_is_typed_and_not_retried(tmp_path: Path) ->
     assert second.state is DemoLifecycleState.REJECTED  # type: ignore[union-attr]
     assert client.create_calls == 1
     assert diagnostic is not None
-    assert diagnostic[0] is DemoExecutionResultCode.HTTP_4XX
+    assert diagnostic[0] is DemoExecutionResultCode.HTTP_404
+    assert diagnostic[1] == {
+        "environment": "DEMO",
+        "http_status": 404,
+        "provider_error_code": "market_not_found",
+        "reason": "submit_rejected",
+        "reason_code": "http_404",
+        "request_method": "POST",
+        "request_path": "/trade-api/v2/portfolio/events/orders",
+        "sanitized_provider_message": "safe diagnostic",
+    }
 
 
 def test_partial_fill_and_duplicate_fill_poll_are_restart_safe(tmp_path: Path) -> None:

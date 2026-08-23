@@ -21,6 +21,10 @@ from urllib3.util.retry import Retry
 
 from live15_quant.config import KALSHI_DEMO_API_BASE_URL, KALSHI_DEMO_WEBSOCKET_URL, Settings
 
+_DEFAULT_DEMO_CREDENTIAL_DIR = Path(r"C:\Users\1\.live15_quant\credentials")
+_DEFAULT_DEMO_KEY_ID_FILE = _DEFAULT_DEMO_CREDENTIAL_DIR / "kalshi-demo-api-key-id.txt"
+_DEFAULT_DEMO_PRIVATE_KEY = _DEFAULT_DEMO_CREDENTIAL_DIR / "kalshi-demo-private.key"
+
 _GET_PATHS = frozenset(
     {
         "/portfolio/balance",
@@ -34,6 +38,10 @@ _GET_PATHS = frozenset(
 
 class KalshiDemoAuditError(RuntimeError):
     """Raised when the safe Demo connectivity audit cannot be completed."""
+
+
+class KalshiDemoCredentialUnavailable(KalshiDemoAuditError):
+    """Raised when explicitly Demo-only credentials cannot be resolved safely."""
 
 
 class HttpResponse(Protocol):
@@ -79,6 +87,46 @@ class KalshiDemoCredentials:
             raise KalshiDemoAuditError("Kalshi Demo private key must be a .key or .pem file")
         if not key_path.is_file():
             raise KalshiDemoAuditError("Kalshi Demo private key file does not exist")
+
+
+def resolve_kalshi_demo_credentials(settings: Settings) -> KalshiDemoCredentials:
+    """Resolve only the Demo credential pair, never scanning or falling back to Production."""
+
+    key_id_file = settings.kalshi_demo_api_key_id_file
+    private_key_path = settings.kalshi_demo_private_key_path
+    if key_id_file is not None:
+        try:
+            api_key_id = key_id_file.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise KalshiDemoCredentialUnavailable("DEMO_CREDENTIAL_UNAVAILABLE") from error
+    elif settings.kalshi_demo_api_key_id is not None:
+        api_key_id = settings.kalshi_demo_api_key_id.strip()
+    else:
+        try:
+            api_key_id = _DEFAULT_DEMO_KEY_ID_FILE.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise KalshiDemoCredentialUnavailable("DEMO_CREDENTIAL_UNAVAILABLE") from error
+    if private_key_path is None:
+        private_key_path = _DEFAULT_DEMO_PRIVATE_KEY
+    production_paths = {
+        path.resolve()
+        for path in (
+            settings.kalshi_production_private_key_path,
+            settings.kalshi_production_api_key_id_path,
+        )
+        if path is not None
+    }
+    if (
+        private_key_path.resolve() in production_paths
+        or "production" in private_key_path.name.lower()
+    ):
+        raise KalshiDemoCredentialUnavailable("DEMO_CREDENTIAL_UNAVAILABLE")
+    credentials = KalshiDemoCredentials(api_key_id=api_key_id, private_key_path=private_key_path)
+    try:
+        credentials.validate(Path.cwd())
+    except KalshiDemoAuditError as error:
+        raise KalshiDemoCredentialUnavailable("DEMO_CREDENTIAL_UNAVAILABLE") from error
+    return credentials
 
 
 @dataclass(frozen=True, slots=True)

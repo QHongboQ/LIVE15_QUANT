@@ -36,6 +36,7 @@ class Settings:
     enable_robinhood_reference: bool = False
     kalshi_public_api_base_url: str = KALSHI_PUBLIC_API_BASE_URL
     kalshi_demo_api_key_id: str | None = field(default=None, repr=False)
+    kalshi_demo_api_key_id_file: Path | None = field(default=None, repr=False)
     kalshi_demo_private_key_path: Path | None = field(default=None, repr=False)
     enable_kalshi_production_websocket: bool = False
     kalshi_production_api_key_id_path: Path | None = field(default=None, repr=False)
@@ -384,6 +385,11 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         ),
         kalshi_public_api_base_url=KALSHI_PUBLIC_API_BASE_URL,
         kalshi_demo_api_key_id=source.get("LIVE15_KALSHI_DEMO_API_KEY_ID") or None,
+        kalshi_demo_api_key_id_file=(
+            Path(source["LIVE15_KALSHI_DEMO_API_KEY_ID_FILE"])
+            if source.get("LIVE15_KALSHI_DEMO_API_KEY_ID_FILE")
+            else None
+        ),
         kalshi_demo_private_key_path=(
             Path(source["LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH"])
             if source.get("LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH")

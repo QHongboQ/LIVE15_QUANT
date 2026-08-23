@@ -48,17 +48,31 @@ class KalshiDemoExecutionError(RuntimeError):
 class KalshiDemoAmbiguousWriteError(KalshiDemoExecutionError):
     """A write may have reached Demo and must be reconciled before any retry."""
 
-    def __init__(self, message: str, *, reason_code: str = "write_outcome_ambiguous") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str = "write_outcome_ambiguous",
+        diagnostic: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason_code = reason_code
+        self.diagnostic = dict(diagnostic or {})
 
 
 class KalshiDemoWriteRejectedError(KalshiDemoExecutionError):
     """A conclusive Demo 4xx rejection; the request must not be retried unchanged."""
 
-    def __init__(self, message: str, *, reason_code: str = "http_4xx") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str = "http_4xx",
+        diagnostic: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason_code = reason_code
+        self.diagnostic = dict(diagnostic or {})
 
 
 class DemoBookSide(StrEnum):
@@ -291,6 +305,35 @@ def _object(response: HttpResponse) -> Mapping[str, Any]:
     return payload
 
 
+def _sanitized_http_diagnostic(
+    response: HttpResponse, *, method: str, path: str
+) -> dict[str, object]:
+    """Extract only bounded, non-sensitive provider error fields."""
+
+    detail: dict[str, object] = {
+        "http_status": int(response.status_code),
+        "request_method": method,
+        "request_path": path,
+        "environment": "DEMO",
+    }
+    try:
+        payload = json.loads(response.text)
+    except (json.JSONDecodeError, TypeError):
+        return detail
+    if not isinstance(payload, Mapping):
+        return detail
+    code = payload.get("code")
+    message = payload.get("message")
+    provider_detail = payload.get("details")
+    if isinstance(code, str) and code:
+        detail["provider_error_code"] = code[:256]
+    if isinstance(message, str) and message:
+        detail["sanitized_provider_message"] = message[:512]
+    if isinstance(provider_detail, str) and provider_detail:
+        detail["sanitized_provider_detail"] = provider_detail[:512]
+    return detail
+
+
 def _timestamp_or_none(value: object, field: str) -> datetime | None:
     if value is None:
         return None
@@ -521,16 +564,21 @@ class KalshiDemoExecutionClient:
         if not response.url.startswith(f"{KALSHI_DEMO_API_BASE_URL}/"):
             raise KalshiDemoExecutionError("Kalshi Demo response came from an unexpected endpoint")
         if not 200 <= response.status_code < 300:
+            diagnostic = _sanitized_http_diagnostic(
+                response, method=method, path=urlsplit(url).path
+            )
             if method in {"POST", "DELETE"} and response.status_code not in {400, 401, 403, 422}:
                 raise KalshiDemoAmbiguousWriteError(
                     "Kalshi Demo write response is not conclusive; "
                     "reconcile remote truth before retry",
                     reason_code=f"http_{response.status_code}",
+                    diagnostic=diagnostic,
                 )
             if method in {"POST", "DELETE"}:
                 raise KalshiDemoWriteRejectedError(
                     f"Kalshi Demo {method} was conclusively rejected",
-                    reason_code="http_4xx",
+                    reason_code=f"http_{response.status_code}",
+                    diagnostic=diagnostic,
                 )
             raise KalshiDemoExecutionError(
                 f"Kalshi Demo {method} returned HTTP {response.status_code}"

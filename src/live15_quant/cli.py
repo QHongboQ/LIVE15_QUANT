@@ -7,11 +7,13 @@ import asyncio
 import json
 import logging
 import shutil
+import sqlite3
 import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import requests
@@ -30,6 +32,15 @@ from live15_quant.dataset import (
     DatasetBuildSummary,
     FeatureStore,
 )
+from live15_quant.demo_execution import (
+    DemoExecutionCoordinator,
+    DemoExecutionStore,
+    DemoIntent,
+    DemoIntentPurpose,
+    DemoReconciliationResult,
+    DemoRiskContext,
+    SqliteKalshiWsQuoteSource,
+)
 from live15_quant.features import SamplingPolicy
 from live15_quant.forward_shadow import ForwardShadowRuntime
 from live15_quant.kalshi_lifecycle import KalshiNativeMarketProvider
@@ -46,9 +57,10 @@ from live15_quant.providers.coinbase import (
 )
 from live15_quant.providers.kalshi import KALSHI_15MIN_SERIES, KalshiOfficialQuoteProvider
 from live15_quant.providers.kalshi_demo import (
-    KalshiDemoCredentials,
     KalshiDemoReadOnlyClient,
+    resolve_kalshi_demo_credentials,
 )
+from live15_quant.providers.kalshi_demo_execution import DemoBookSide, KalshiDemoExecutionClient
 from live15_quant.providers.low_latency import (
     BenchmarkSource,
     BinanceBnbBenchmarkSource,
@@ -372,16 +384,10 @@ def kalshi_demo_audit_main() -> None:
 
     settings = load_settings()
     configure_logging(settings.log_level)
-    if settings.kalshi_demo_api_key_id is None or settings.kalshi_demo_private_key_path is None:
-        raise SystemExit(
-            "Kalshi Demo credentials are not configured. Create a Demo API key, keep its "
-            "private key outside the repository, then set LIVE15_KALSHI_DEMO_API_KEY_ID and "
-            "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH."
-        )
-    credentials = KalshiDemoCredentials(
-        api_key_id=settings.kalshi_demo_api_key_id,
-        private_key_path=settings.kalshi_demo_private_key_path,
-    )
+    try:
+        credentials = resolve_kalshi_demo_credentials(settings)
+    except Exception as error:
+        raise SystemExit("DEMO_CREDENTIAL_UNAVAILABLE") from error
     with KalshiDemoReadOnlyClient(settings, credentials) as client:
         result = client.audit()
     logger.info(
@@ -398,6 +404,119 @@ def kalshi_demo_audit_main() -> None:
             "write_operations_available_in_client": False,
         },
     )
+
+
+def _recent_forward_demo_intents(settings: Settings, *, now: datetime) -> tuple[DemoIntent, ...]:
+    """Read a bounded set of fresh, genuine forward-model signals for Demo smoke only."""
+
+    cutoff = now - timedelta(seconds=30)
+    connection = sqlite3.connect(
+        f"file:{settings.forward_shadow_data_path.resolve().as_posix()}?mode=ro",
+        uri=True,
+        timeout=2,
+    )
+    try:
+        rows = connection.execute(
+            """SELECT model_id,opportunity_id,decision_timestamp,ticker,prediction,
+                      yes_ask,no_ask,yes_edge,no_edge,action,model_artifact_hash
+               FROM forward_decisions
+               WHERE action IN ('buy_yes','buy_no')
+               ORDER BY id DESC LIMIT 64"""
+        ).fetchall()
+    finally:
+        connection.close()
+    intents: list[DemoIntent] = []
+    for row in rows:
+        try:
+            decision_timestamp = datetime.fromisoformat(str(row[2]).replace("Z", "+00:00"))
+            if decision_timestamp.tzinfo is None or decision_timestamp < cutoff:
+                continue
+            action = str(row[9])
+            side = DemoBookSide.BID if action == "buy_yes" else DemoBookSide.ASK
+            price = Decimal(str(row[5] if side is DemoBookSide.BID else row[6]))
+            edge = Decimal(str(row[7] if side is DemoBookSide.BID else row[8]))
+            probability = Decimal(str(row[4]))
+            if price <= 0 or edge <= 0:
+                continue
+            intents.append(
+                DemoIntent(
+                    model_id=str(row[0]),
+                    model_artifact_hash=str(row[10]),
+                    decision_id=f"demo-diagnostic:{row[0]}:{row[1]}",
+                    event_id=str(row[3]),
+                    opportunity_id=str(row[1]),
+                    ticker=str(row[3]),
+                    side=side,
+                    count=Decimal("1"),
+                    price=price,
+                    probability=probability,
+                    edge=edge,
+                    decision_timestamp=decision_timestamp.astimezone(UTC),
+                    purpose=DemoIntentPurpose.EXECUTION_SMOKE,
+                )
+            )
+        except (TypeError, ValueError, ArithmeticError):
+            continue
+    return tuple(intents)
+
+
+def demo_diagnostic_watch_main(argv: Sequence[str] | None = None) -> None:
+    """Bounded, one-POST Demo-only watch using fresh frozen-model signals only."""
+
+    parser = argparse.ArgumentParser(prog="live15-demo-diagnostic-watch")
+    parser.add_argument("--duration-seconds", type=int, default=900)
+    parser.add_argument("--poll-seconds", type=int, default=5)
+    parser.add_argument("--approved-diagnostic-post", action="store_true")
+    arguments = parser.parse_args(argv)
+    if not arguments.approved_diagnostic_post:
+        raise SystemExit("EXPLICIT_DIAGNOSTIC_POST_APPROVAL_REQUIRED")
+    if not 1 <= arguments.duration_seconds <= 900 or not 1 <= arguments.poll_seconds <= 60:
+        raise SystemExit("duration must be 1..900 seconds and poll interval must be 1..60 seconds")
+    settings = load_settings()
+    try:
+        credentials = resolve_kalshi_demo_credentials(settings)
+    except Exception as error:
+        raise SystemExit("DEMO_CREDENTIAL_UNAVAILABLE") from error
+    source = SqliteKalshiWsQuoteSource(settings.recorder_data_path, settings.recorder_health_path)
+    deadline = time.monotonic() + arguments.duration_seconds
+    with KalshiDemoExecutionClient(settings, credentials, repository_root=Path.cwd()) as client:
+        with DemoExecutionStore(Path("data/demo-execution.sqlite3")) as store:
+            coordinator = DemoExecutionCoordinator(
+                client,
+                store,
+                quote_source=source,
+                writes_enabled=True,
+                execution_smoke_approved=True,
+            )
+            while time.monotonic() < deadline:
+                for intent in _recent_forward_demo_intents(settings, now=datetime.now(UTC)):
+                    result = coordinator.submit(
+                        intent,
+                        DemoRiskContext(
+                            event_exposure=Decimal(0),
+                            total_exposure=Decimal(0),
+                            open_positions=0,
+                            daily_realized_pnl=Decimal(0),
+                            kill_switch=False,
+                        ),
+                    )
+                    if isinstance(result, DemoReconciliationResult):
+                        print(
+                            json.dumps(
+                                {
+                                    "status": "DEMO_POST_ATTEMPTED",
+                                    "ticker": intent.ticker,
+                                    "model_id": intent.model_id,
+                                    "state": result.state.value,
+                                    "provider_order_id": result.provider_order_id,
+                                    "inserted_fills": result.inserted_fills,
+                                },
+                                sort_keys=True,
+                            )
+                        )
+                        return
+                time.sleep(arguments.poll_seconds)
+    print(json.dumps({"status": "NO_SAFE_DEMO_DIAGNOSTIC_OPPORTUNITY"}, sort_keys=True))
 
 
 def _build_dataset(settings: Settings, *, source_path: Path | None = None) -> DatasetBuildSummary:

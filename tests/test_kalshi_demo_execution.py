@@ -254,7 +254,7 @@ def test_write_transport_failure_is_ambiguous_and_never_retried(tmp_path: Path) 
     assert error.value.reason_code == "transport_failure"
 
 
-@pytest.mark.parametrize("status_code", (409, 429, 500))
+@pytest.mark.parametrize("status_code", (404, 409, 429, 500))
 def test_inconclusive_write_http_status_requires_reconciliation(
     tmp_path: Path, status_code: int
 ) -> None:
@@ -279,6 +279,12 @@ def test_inconclusive_write_http_status_requires_reconciliation(
             )
         )
     assert error.value.reason_code == f"http_{status_code}"
+    assert error.value.diagnostic == {
+        "http_status": status_code,
+        "request_method": "POST",
+        "request_path": "/trade-api/v2/portfolio/events/orders",
+        "environment": "DEMO",
+    }
 
 
 @pytest.mark.parametrize("status_code", (400, 401, 403, 422))
@@ -303,8 +309,75 @@ def test_conclusive_write_4xx_is_typed_and_never_retried(tmp_path: Path, status_
                 Decimal("0.51"),
             )
         )
-    assert error.value.reason_code == "http_4xx"
+    assert error.value.reason_code == f"http_{status_code}"
+    assert error.value.diagnostic["http_status"] == status_code
+    assert error.value.diagnostic["request_path"] == "/trade-api/v2/portfolio/events/orders"
     assert len(session.calls) == 1
+
+
+def test_http_error_extracts_only_whitelisted_provider_fields(tmp_path: Path) -> None:
+    client, _, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {
+                    "code": "market_not_found",
+                    "message": "safe diagnostic",
+                    "details": "safe detail",
+                    "api_key": "must-not-persist",
+                    "signature": "must-not-persist",
+                },
+                f"{KALSHI_DEMO_API_BASE_URL}/portfolio/events/orders",
+                404,
+            )
+        ],
+    )
+    with pytest.raises(KalshiDemoAmbiguousWriteError) as error:
+        client.create_order(
+            DemoOrderRequest(
+                "KXBTC15M-TEST", "client-1", DemoBookSide.BID, Decimal("1"), Decimal("0.51")
+            )
+        )
+    assert error.value.diagnostic == {
+        "http_status": 404,
+        "provider_error_code": "market_not_found",
+        "sanitized_provider_message": "safe diagnostic",
+        "sanitized_provider_detail": "safe detail",
+        "request_method": "POST",
+        "request_path": "/trade-api/v2/portfolio/events/orders",
+        "environment": "DEMO",
+    }
+    assert "must-not-persist" not in json.dumps(error.value.diagnostic)
+
+
+def test_malformed_http_error_does_not_persist_raw_body(tmp_path: Path) -> None:
+    client, _, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {"ignored": "placeholder"},
+                f"{KALSHI_DEMO_API_BASE_URL}/portfolio/events/orders",
+                404,
+            )
+        ],
+    )
+    # Simulate a non-JSON provider response containing credential-like material.
+    response = client._session.responses[0]  # type: ignore[attr-defined]
+    response.text = "not-json secret-signature private-key"
+    with pytest.raises(KalshiDemoAmbiguousWriteError) as error:
+        client.create_order(
+            DemoOrderRequest(
+                "KXBTC15M-TEST", "client-1", DemoBookSide.BID, Decimal("1"), Decimal("0.51")
+            )
+        )
+    assert "secret-signature" not in json.dumps(error.value.diagnostic)
+    assert "private-key" not in json.dumps(error.value.diagnostic)
+    assert set(error.value.diagnostic) == {
+        "http_status",
+        "request_method",
+        "request_path",
+        "environment",
+    }
 
 
 def test_malformed_successful_write_response_requires_reconciliation(tmp_path: Path) -> None:

@@ -11,8 +11,10 @@ from live15_quant.config import KALSHI_DEMO_API_BASE_URL, Settings
 from live15_quant.providers.kalshi_demo import (
     KalshiDemoAuditError,
     KalshiDemoCredentials,
+    KalshiDemoCredentialUnavailable,
     KalshiDemoReadOnlyClient,
     canonical_signature_message,
+    resolve_kalshi_demo_credentials,
 )
 
 
@@ -103,6 +105,56 @@ def test_credentials_hide_values_and_require_external_absolute_key(tmp_path: Pat
         credentials.validate(Path.cwd())
     with pytest.raises(KalshiDemoAuditError, match="absolute"):
         KalshiDemoCredentials("id", Path("relative.key")).validate()
+
+
+def test_demo_credential_resolver_prefers_id_file_and_never_uses_production(tmp_path: Path) -> None:
+    id_path = tmp_path / "demo-id.txt"
+    id_path.write_text("demo-file-id\n", encoding="utf-8")
+    demo_key = tmp_path / "kalshi-demo-private.key"
+    demo_key.touch()
+    production_key = tmp_path / "kalshi-production-readonly.key"
+    production_key.touch()
+    credentials = resolve_kalshi_demo_credentials(
+        Settings(
+            kalshi_demo_api_key_id="legacy-value-must-not-win",
+            kalshi_demo_api_key_id_file=id_path,
+            kalshi_demo_private_key_path=demo_key,
+            kalshi_production_private_key_path=production_key,
+        )
+    )
+    assert credentials.api_key_id == "demo-file-id"
+    assert credentials.private_key_path == demo_key
+    with pytest.raises(KalshiDemoCredentialUnavailable, match="DEMO_CREDENTIAL_UNAVAILABLE"):
+        resolve_kalshi_demo_credentials(
+            Settings(
+                kalshi_demo_api_key_id_file=id_path,
+                kalshi_demo_private_key_path=production_key,
+                kalshi_production_private_key_path=production_key,
+            )
+        )
+
+
+def test_demo_credential_resolver_default_fallback_and_missing_file_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import live15_quant.providers.kalshi_demo as module
+
+    id_path = tmp_path / "kalshi-demo-api-key-id.txt"
+    id_path.write_text("demo-default-id", encoding="utf-8")
+    key_path = tmp_path / "kalshi-demo-private.key"
+    key_path.touch()
+    monkeypatch.setattr(module, "_DEFAULT_DEMO_KEY_ID_FILE", id_path)
+    monkeypatch.setattr(module, "_DEFAULT_DEMO_PRIVATE_KEY", key_path)
+    credentials = resolve_kalshi_demo_credentials(Settings())
+    assert credentials.api_key_id == "demo-default-id"
+    assert credentials.private_key_path == key_path
+    with pytest.raises(KalshiDemoCredentialUnavailable, match="DEMO_CREDENTIAL_UNAVAILABLE"):
+        resolve_kalshi_demo_credentials(
+            Settings(
+                kalshi_demo_api_key_id_file=tmp_path / "missing.txt",
+                kalshi_demo_private_key_path=key_path,
+            )
+        )
 
 
 def test_demo_audit_reads_only_allowlisted_resources(tmp_path: Path) -> None:

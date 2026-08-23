@@ -25,6 +25,7 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.recorder_pid_path == Path("data/recorder.pid")
     assert settings.log_level == "INFO"
     assert settings.kalshi_demo_api_key_id is None
+    assert settings.kalshi_demo_api_key_id_file is None
     assert settings.kalshi_demo_private_key_path is None
     assert settings.enable_kalshi_production_websocket is False
     assert settings.kalshi_production_api_key_id_path is None
@@ -154,6 +155,7 @@ def test_load_settings_normalizes_environment_values() -> None:
     assert settings.dataset_build_interval_seconds == 3600
     assert settings.robinhood_15min_url == ROBINHOOD_15MIN_PUBLIC_URL
     assert settings.kalshi_demo_api_key_id == "demo-key-id"
+    assert settings.kalshi_demo_api_key_id_file is None
     assert settings.kalshi_demo_private_key_path == Path("C:/safe/kalshi-demo.key")
     assert settings.enable_kalshi_production_websocket is True
     assert settings.kalshi_production_api_key_id_path == Path("C:/safe/kalshi-prod-id.txt")
