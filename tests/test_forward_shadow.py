@@ -126,6 +126,144 @@ def test_forward_metrics_count_only_officially_settled_predictions(tmp_path) -> 
         assert metric["gross_pnl"] == "0.30"
 
 
+def test_reconciliation_ignores_rejected_attempts_and_settles_only_filled_decision(
+    tmp_path,
+) -> None:
+    """Zero-fill/rejected attempts never need a settlement fact."""
+
+    lineage = {"dataset_id": "d", "model_artifact_hash": "h", "model_zoo_v2": "z"}
+    with ForwardShadowStore(tmp_path / "forward.sqlite3", lineage=lineage) as store:
+        timestamp = store.started_at.isoformat()
+        for suffix in ("rejected-one", "rejected-two"):
+            payload = _payload(decision_timestamp=timestamp)
+            payload.update(
+                {
+                    "opportunity_id": suffix,
+                    "action": "buy_yes",
+                    "paper_order_id": f"paper-{suffix}",
+                    "fill_state": "rejected",
+                    "filled_quantity": "0",
+                }
+            )
+            assert store.append(payload)
+        assert store.pending_tickers() == ()
+
+        filled = _payload(decision_timestamp=timestamp)
+        filled.update(
+            {
+                "opportunity_id": "filled",
+                "action": "buy_yes",
+                "paper_order_id": "paper-filled",
+                "fill_state": "filled",
+                "filled_quantity": "1",
+            }
+        )
+        assert store.append(filled)
+        assert store.pending_tickers() == ("KXBTC15M-example",)
+        assert [
+            row["opportunity_id"] for row in store.decisions_for_ticker("KXBTC15M-example")
+        ] == ["filled"]
+
+
+def test_ambiguous_legacy_filled_decisions_are_quarantined_without_stopping_other_tickers(
+    tmp_path,
+) -> None:
+    """One legacy ambiguous event must not terminate the forward loop."""
+
+    import sqlite3
+
+    from live15_quant.forward_shadow import ForwardShadowRuntime
+
+    lineage = {"dataset_id": "d", "model_artifact_hash": "h", "model_zoo_v2": "z"}
+    forward_path = tmp_path / "forward.sqlite3"
+    raw_path = tmp_path / "raw.sqlite3"
+    connection = sqlite3.connect(raw_path)
+    connection.execute(
+        "CREATE TABLE kalshi_settlements("
+        "id INTEGER PRIMARY KEY,ticker TEXT,result TEXT,settlement_timestamp TEXT)"
+    )
+    now = datetime(2026, 8, 23, tzinfo=UTC)
+    connection.executemany(
+        "INSERT INTO kalshi_settlements(ticker,result,settlement_timestamp) VALUES (?,?,?)",
+        (("ambiguous", "yes", now.isoformat()), ("safe", "no", now.isoformat())),
+    )
+    connection.commit()
+    connection.close()
+
+    class Execution:
+        def __init__(self) -> None:
+            self.settled: set[str] = set()
+
+        def settle_event(
+            self, *, event_id: str, outcome_yes: bool, settlement_timestamp: datetime
+        ) -> bool:
+            assert settlement_timestamp == now
+            self.settled.add(event_id)
+            return True
+
+        def settlement_record(self, event_id: str):
+            if event_id not in self.settled:
+                return None
+            return SimpleNamespace(realized_pnl=Decimal("0.25"))
+
+    with ForwardShadowStore(forward_path, lineage=lineage) as store:
+        timestamp = store.started_at.isoformat()
+        for opportunity_id in ("ambiguous-a", "ambiguous-b"):
+            payload = _payload(decision_timestamp=timestamp)
+            payload.update(
+                {
+                    "opportunity_id": opportunity_id,
+                    "ticker": "ambiguous",
+                    "action": "buy_yes",
+                    "paper_order_id": f"paper-{opportunity_id}",
+                    "fill_state": "filled",
+                    "filled_quantity": "1",
+                }
+            )
+            assert store.append(payload)
+        safe = _payload(decision_timestamp=timestamp)
+        safe.update(
+            {
+                "model_id": "xgboost_pooled_identity",
+                "opportunity_id": "safe-filled",
+                "ticker": "safe",
+                "action": "buy_no",
+                "paper_order_id": "paper-safe",
+                "fill_state": "partially_filled",
+                "filled_quantity": "0.5",
+            }
+        )
+        assert store.append(safe)
+
+        runtime = object.__new__(ForwardShadowRuntime)
+        runtime.settings = SimpleNamespace(recorder_data_path=raw_path)
+        runtime.store = store
+        safe_execution = Execution()
+        runtime.executions = {
+            "logistic_l2_identity": Execution(),
+            "xgboost_pooled_identity": safe_execution,
+        }
+        runtime._settle(now)
+
+        assert safe_execution.settled == {"safe"}
+        assert store.pending_tickers() == ()
+        assert (
+            store._connection.execute(
+                "SELECT reason FROM forward_reconciliation_issues"
+            ).fetchone()["reason"]
+            == "ambiguous_multiple_filled_decisions"
+        )
+        assert (
+            store._connection.execute("SELECT opportunity_id FROM forward_settlements").fetchone()[
+                "opportunity_id"
+            ]
+            == "safe-filled"
+        )
+        # Replaying the same official settlement is deterministic and does not
+        # rewrite the quarantined historical decisions.
+        runtime._settle(now)
+
+
 def test_append_only_gap_projection_blocks_only_required_recent_intervals(tmp_path) -> None:
     import sqlite3
 

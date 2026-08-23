@@ -239,6 +239,17 @@ class ForwardShadowStore:
                     FOREIGN KEY(model_id,opportunity_id)
                     REFERENCES forward_decisions(model_id,opportunity_id)
                 ) STRICT;
+                CREATE TABLE forward_reconciliation_issues (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    decision_identity_digest TEXT NOT NULL,
+                    detected_at TEXT NOT NULL,
+                    UNIQUE(model_id,ticker,reason,decision_identity_digest)
+                ) STRICT;
+                CREATE INDEX idx_forward_reconciliation_issues_pending
+                ON forward_reconciliation_issues(model_id,ticker,reason);
                 """
             )
             metadata = {"schema_version": FORWARD_VERSION, **lineage}
@@ -271,6 +282,24 @@ class ForwardShadowStore:
                 metadata[key] = value
             if metadata.get(key) != value:
                 raise ForwardShadowError("forward ledger lineage conflicts with frozen candidate")
+        # This is an additive, append-only compatibility extension.  Existing
+        # decision and settlement facts retain their original identity and hash.
+        self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS forward_reconciliation_issues (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_id TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                decision_identity_digest TEXT NOT NULL,
+                detected_at TEXT NOT NULL,
+                UNIQUE(model_id,ticker,reason,decision_identity_digest)
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS idx_forward_reconciliation_issues_pending
+            ON forward_reconciliation_issues(model_id,ticker,reason);
+            """
+        )
+        self._connection.commit()
 
     @property
     def started_at(self) -> datetime:
@@ -381,10 +410,18 @@ class ForwardShadowStore:
     def pending_tickers(self) -> tuple[str, ...]:
         rows = self._connection.execute(
             """SELECT DISTINCT ticker FROM forward_decisions AS d
-            WHERE d.paper_order_id IS NOT NULL AND NOT EXISTS(
+            WHERE d.paper_order_id IS NOT NULL
+              AND d.fill_state IN ('partially_filled','filled')
+              AND CAST(d.filled_quantity AS REAL)>0
+              AND NOT EXISTS(
               SELECT 1 FROM forward_settlements AS s
               WHERE s.model_id=d.model_id AND s.opportunity_id=d.opportunity_id
-            ) ORDER BY ticker"""
+              )
+              AND NOT EXISTS(
+                SELECT 1 FROM forward_reconciliation_issues AS i
+                WHERE i.model_id=d.model_id AND i.ticker=d.ticker
+                  AND i.reason='ambiguous_multiple_filled_decisions'
+              ) ORDER BY ticker"""
         )
         return tuple(str(row["ticker"]) for row in rows)
 
@@ -392,13 +429,70 @@ class ForwardShadowStore:
         return tuple(
             self._connection.execute(
                 """SELECT * FROM forward_decisions AS d WHERE ticker=?
-                AND paper_order_id IS NOT NULL AND NOT EXISTS(
+                AND paper_order_id IS NOT NULL
+                AND fill_state IN ('partially_filled','filled')
+                AND CAST(filled_quantity AS REAL)>0
+                AND NOT EXISTS(
                   SELECT 1 FROM forward_settlements AS s
                   WHERE s.model_id=d.model_id AND s.opportunity_id=d.opportunity_id
+                )
+                AND NOT EXISTS(
+                  SELECT 1 FROM forward_reconciliation_issues AS i
+                  WHERE i.model_id=d.model_id AND i.ticker=d.ticker
+                    AND i.reason='ambiguous_multiple_filled_decisions'
                 ) ORDER BY id""",
                 (ticker,),
             )
         )
+
+    def quarantine_ambiguous_settlement(
+        self, *, model_id: str, ticker: str, opportunity_ids: Iterable[str], detected_at: datetime
+    ) -> bool:
+        """Append a deterministic legacy-ambiguity fact without rewriting decisions.
+
+        A model can have many zero-fill or rejected attempts for one event.  Only
+        multiple *filled* decisions are genuinely ambiguous because a single
+        event-level Paper settlement cannot assign its realized PnL to them.
+        """
+
+        identities = tuple(sorted(str(item) for item in opportunity_ids))
+        if len(identities) < 2 or len(set(identities)) != len(identities):
+            raise ForwardShadowError("ambiguous settlement quarantine requires distinct decisions")
+        digest = _hash(
+            {
+                "model_id": model_id,
+                "ticker": ticker,
+                "reason": "ambiguous_multiple_filled_decisions",
+                "opportunity_ids": identities,
+            }
+        )
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            existing = self._connection.execute(
+                """SELECT 1 FROM forward_reconciliation_issues
+                WHERE model_id=? AND ticker=? AND reason=? AND decision_identity_digest=?""",
+                (model_id, ticker, "ambiguous_multiple_filled_decisions", digest),
+            ).fetchone()
+            if existing is not None:
+                self._connection.rollback()
+                return False
+            self._connection.execute(
+                """INSERT INTO forward_reconciliation_issues(
+                model_id,ticker,reason,decision_identity_digest,detected_at
+                ) VALUES (?,?,?,?,?)""",
+                (
+                    model_id,
+                    ticker,
+                    "ambiguous_multiple_filled_decisions",
+                    digest,
+                    _timestamp(detected_at),
+                ),
+            )
+            self._connection.commit()
+            return True
+        except Exception:
+            self._connection.rollback()
+            raise
 
     def append_settlement(
         self,
@@ -1588,10 +1682,17 @@ class ForwardShadowRuntime:
                     decisions_by_model.setdefault(str(decision["model_id"]), []).append(decision)
                 for model_id, decisions in decisions_by_model.items():
                     if len(decisions) != 1:
-                        raise ForwardShadowError(
-                            "multiple unsettled paper orders violate the one-model/event "
-                            "forward policy"
+                        # Historical duplicate filled facts cannot be assigned a
+                        # single event-level Paper settlement without inventing
+                        # PnL attribution.  Preserve them and isolate this one
+                        # model/event; other models and tickers keep advancing.
+                        self.store.quarantine_ambiguous_settlement(
+                            model_id=model_id,
+                            ticker=ticker,
+                            opportunity_ids=(str(item["opportunity_id"]) for item in decisions),
+                            detected_at=now,
                         )
+                        continue
                     decision = decisions[0]
                     inserted = self.executions[model_id].settle_event(
                         event_id=ticker, outcome_yes=outcome_yes, settlement_timestamp=timestamp
