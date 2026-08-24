@@ -39,6 +39,13 @@ _ALLOWED_READ_PATHS = frozenset(
     }
 )
 _CREATE_ORDER_PATH = "/portfolio/events/orders"
+KALSHI_SHARED_DEMO_API_BASE_URL = "https://demo-api.kalshi.co/trade-api/v2"
+_OFFICIAL_DEMO_API_BASE_URLS = frozenset(
+    {
+        KALSHI_DEMO_API_BASE_URL,
+        KALSHI_SHARED_DEMO_API_BASE_URL,
+    }
+)
 _TICKER_PATTERN = re.compile(r"[A-Z0-9][A-Z0-9.-]{0,199}")
 _SENSITIVE_PROVIDER_VALUE = re.compile(
     r"(?i)\b(authorization|signature|api[_ -]?key|private[_ -]?key|cookie)\b"
@@ -345,7 +352,7 @@ def _object(response: HttpResponse) -> Mapping[str, Any]:
 
 
 def _sanitized_http_diagnostic(
-    response: HttpResponse, *, method: str, path: str
+    response: HttpResponse, *, method: str, path: str, request_host: str
 ) -> dict[str, object]:
     """Extract only bounded, non-sensitive provider error fields."""
 
@@ -356,6 +363,7 @@ def _sanitized_http_diagnostic(
         "content_type": content_type,
         "request_method": method,
         "request_path": path,
+        "request_host": request_host,
         "environment": "DEMO",
     }
     try:
@@ -368,9 +376,14 @@ def _sanitized_http_diagnostic(
     if not isinstance(payload, Mapping):
         detail["sanitized_response_classification"] = "json_non_object"
         return detail
-    code = payload.get("code")
-    message = payload.get("message")
-    provider_detail = payload.get("details")
+    # Kalshi error examples use top-level fields, while some gateways wrap the
+    # same safe shape in ``error``.  Accept only that one documented-style
+    # nesting level; never retain an arbitrary raw response object.
+    error_payload = payload.get("error")
+    fields = error_payload if isinstance(error_payload, Mapping) else payload
+    code = fields.get("code")
+    message = fields.get("message")
+    provider_detail = fields.get("details")
     if isinstance(code, str) and code:
         detail["provider_error_code"] = _sanitized_provider_text(code, 256)
     if isinstance(message, str) and message:
@@ -570,10 +583,16 @@ class KalshiDemoExecutionClient:
         clock_ms: Callable[[], int] | None = None,
         utc_now: Callable[[], datetime] | None = None,
         repository_root: Path | None = None,
+        base_url: str = KALSHI_DEMO_API_BASE_URL,
     ) -> None:
+        if base_url not in _OFFICIAL_DEMO_API_BASE_URLS:
+            raise KalshiDemoExecutionError(
+                "Demo execution base URL is outside the official Demo allowlist"
+            )
         credentials.validate(repository_root or Path.cwd())
         self._settings = settings
         self._credentials = credentials
+        self._base_url = base_url
         self._owned_session = requests.Session() if session is None else None
         self._session = self._owned_session or session
         self._signer = signer or FileRsaPssSigner(credentials.private_key_path)
@@ -617,7 +636,7 @@ class KalshiDemoExecutionClient:
         )
         if not allowed:
             raise KalshiDemoExecutionError("endpoint is outside the Demo execution allowlist")
-        url = f"{KALSHI_DEMO_API_BASE_URL}{path}"
+        url = f"{self._base_url}{path}"
         timestamp = str(self._clock_ms())
         signature_path = urlsplit(url).path
         signature = self._signer.sign(
@@ -662,14 +681,17 @@ class KalshiDemoExecutionClient:
             raise KalshiDemoExecutionError(
                 "Kalshi Demo request attempted a redirect", reason_code="redirect"
             )
-        if not response.url.startswith(f"{KALSHI_DEMO_API_BASE_URL}/"):
+        if not response.url.startswith(f"{self._base_url}/"):
             raise KalshiDemoExecutionError(
                 "Kalshi Demo response came from an unexpected endpoint",
                 reason_code="endpoint_mismatch",
             )
         if not 200 <= response.status_code < 300:
             diagnostic = _sanitized_http_diagnostic(
-                response, method=method, path=urlsplit(url).path
+                response,
+                method=method,
+                path=urlsplit(url).path,
+                request_host=urlsplit(self._base_url).netloc,
             )
             if method in {"POST", "DELETE"} and response.status_code not in {400, 401, 403, 422}:
                 raise KalshiDemoAmbiguousWriteError(
@@ -917,6 +939,17 @@ class KalshiDemoExecutionClient:
                 "Kalshi Demo order ACK could not be interpreted; reconcile before retry",
                 reason_code="compact_ack_invalid",
             ) from None
+
+    @property
+    def execution_transport_metadata(self) -> Mapping[str, str]:
+        """Return only non-secret, allowlisted transport provenance."""
+
+        return {
+            "environment": "DEMO",
+            "request_host": urlsplit(self._base_url).netloc,
+            "request_path": f"/trade-api/v2{_CREATE_ORDER_PATH}",
+            "create_order_api": "V2",
+        }
 
     def cancel_order(self, order_id: str) -> Mapping[str, Any]:
         return self._request("DELETE", f"/portfolio/events/orders/{order_id}")

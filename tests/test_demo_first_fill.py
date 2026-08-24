@@ -91,6 +91,22 @@ def test_real_demo_write_requires_explicit_user_launch_source() -> None:
         _launch_policy_error(DemoFirstFillLaunchSource.CODEX_DRY_RUN, execute_approved=False)
         is None
     )
+    assert (
+        _launch_policy_error(
+            DemoFirstFillLaunchSource.CODEX_BOUNDED_DIAGNOSTIC,
+            execute_approved=False,
+            diagnostic_write_once=True,
+        )
+        is None
+    )
+    assert (
+        _launch_policy_error(
+            DemoFirstFillLaunchSource.UNKNOWN,
+            execute_approved=False,
+            diagnostic_write_once=True,
+        )
+        == "DIAGNOSTIC_DEMO_WRITE_REQUIRES_BOUNDED_CODEX_LAUNCH"
+    )
 
 
 def test_status_persists_explicit_launch_provenance() -> None:
@@ -307,13 +323,92 @@ def test_single_post_reservation_stops_worker_and_prevents_second_attempt(tmp_pa
 
     coordinator = Coordinator()
     worker = _worker(tmp_path, coordinator, lambda _settings: (_intent(),))
-    assert worker.run_once() == "DEMO_ENTRY_EXECUTION_PATH_CERTIFIED"
+    worker.remote_reconciliation_reader = lambda: {
+        "remote_buying_power_before": "100",
+        "remote_buying_power": "99.50",
+        "remote_position_count": 1,
+        "remote_open_order_count": 0,
+        "remote_fill_count": 1,
+    }
+    assert worker.run_once() == "DEMO_FIRST_REAL_FILL_CERTIFIED"
     assert worker.status["post_count"] == 1
     assert worker.status["fill_count"] == 1
     assert worker.status["status"] == DemoFirstFillStatus.FILLED.value
     with pytest.raises(DemoFirstFillError, match="already reserved"):
         worker.reserve_post("second")
     assert coordinator.calls == 1
+
+
+def test_remote_terminal_no_effect_opens_new_attempt_but_never_reposts_same_decision(
+    tmp_path,
+) -> None:
+    worker: DemoFirstFillWorker
+
+    class Coordinator:
+        calls = 0
+
+        def submit(self, intent: DemoIntent, _context):
+            self.calls += 1
+            worker.reserve_post(stable_client_order_id(intent))
+            return DemoReconciliationResult(
+                stable_client_order_id(intent),
+                DemoLifecycleState.RECONCILIATION_REQUIRED,
+                None,
+                0,
+            )
+
+        def reconcile_positions(self) -> int:
+            return 0
+
+    coordinator = Coordinator()
+    worker = _worker(tmp_path, coordinator, lambda _settings: (_intent(),))
+    worker.continue_until_fill = True
+    worker.attempt_history_path = tmp_path / "attempts.jsonl"
+    worker.remote_reconciliation_reader = lambda: {
+        "remote_buying_power_before": "100",
+        "remote_buying_power": "100",
+        "remote_position_count": 0,
+        "remote_open_order_count": 0,
+        "remote_fill_count": 0,
+    }
+    attempted: set[str] = set()
+    worker.candidate_already_attempted = lambda client_id: client_id in attempted
+    old_attempt_id = worker.status["first_fill_attempt_id"]
+
+    assert worker.run_once() is None
+    attempted.add(stable_client_order_id(_intent()))
+    assert worker.status["first_fill_attempt_id"] != old_attempt_id
+    assert worker.status["post_count"] == 0
+    assert worker.status["previous_attempt_final_state"] == "NO_REMOTE_EFFECT"
+    assert len((tmp_path / "attempts.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    assert worker.run_once() is None
+    assert coordinator.calls == 1
+
+
+def test_uncertain_remote_effect_stops_multi_attempt_worker(tmp_path) -> None:
+    class Coordinator:
+        def reconcile_positions(self) -> int:
+            return 0
+
+    worker = _worker(tmp_path, Coordinator(), lambda _settings: ())
+    worker.continue_until_fill = True
+    worker.remote_reconciliation_reader = lambda: {
+        "remote_buying_power_before": "100",
+        "remote_buying_power": "100",
+        "remote_position_count": 0,
+        "remote_open_order_count": 1,
+        "remote_fill_count": 0,
+    }
+
+    result = worker._reconcile_after_post(
+        _intent(),
+        DemoReconciliationResult(
+            stable_client_order_id(_intent()), DemoLifecycleState.RECONCILIATION_REQUIRED, None, 0
+        ),
+    )
+
+    assert result == "RECONCILIATION_REQUIRED"
+    assert worker.status["final_state"] == "RECONCILIATION_REQUIRED"
 
 
 def test_reconciliation_uses_buying_power_snapshot_field(tmp_path) -> None:
@@ -387,6 +482,53 @@ def test_post_reconciliation_persists_no_remote_effect_for_real_coordinator(tmp_
     assert diagnostic is not None
     assert diagnostic[0] is DemoExecutionResultCode.NO_REMOTE_EFFECT
     assert diagnostic[1]["source"] == "official_demo_get_only_reconciliation"
+    store.close()
+
+
+def test_provider_user_not_found_404_stops_instead_of_opening_another_attempt(
+    tmp_path,
+) -> None:
+    class Client:
+        def positions(self):
+            return ()
+
+    intent = _intent()
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    client_order_id = store.append_intent(intent)
+    store.append_execution_diagnostic(
+        client_order_id,
+        DemoExecutionResultCode.HTTP_404,
+        {
+            "provider_error_code": "user_not_found",
+            "sanitized_provider_message": "user not found",
+            "request_host": "demo-api.kalshi.co",
+            "request_path": "/trade-api/v2/portfolio/events/orders",
+        },
+    )
+    coordinator = DemoExecutionCoordinator(
+        Client(), store, writes_enabled=True, execution_smoke_approved=True
+    )
+    worker = _worker(tmp_path, coordinator, lambda _settings: ())
+    worker.continue_until_fill = True
+    worker.remote_reconciliation_reader = lambda: {
+        "remote_buying_power_before": "100",
+        "remote_buying_power": "100",
+        "remote_position_count": 0,
+        "remote_open_order_count": 0,
+        "remote_fill_count": 0,
+    }
+
+    result = worker._reconcile_after_post(
+        intent,
+        DemoReconciliationResult(
+            client_order_id, DemoLifecycleState.RECONCILIATION_REQUIRED, None, 0
+        ),
+    )
+
+    assert result == "DEMO_FIRST_REAL_FILL_BLOCKED_BY_PROVIDER"
+    assert worker.status["provider_error_code"] == "user_not_found"
+    assert worker.status["request_host"] == "demo-api.kalshi.co"
+    assert store.latest_execution_diagnostic(client_order_id)[0] is DemoExecutionResultCode.HTTP_404
     store.close()
 
 

@@ -40,7 +40,11 @@ from live15_quant.demo_execution import (
 )
 from live15_quant.logging_config import configure_logging
 from live15_quant.providers.kalshi_demo import resolve_kalshi_demo_credentials
-from live15_quant.providers.kalshi_demo_execution import DemoBookSide, KalshiDemoExecutionClient
+from live15_quant.providers.kalshi_demo_execution import (
+    KALSHI_SHARED_DEMO_API_BASE_URL,
+    DemoBookSide,
+    KalshiDemoExecutionClient,
+)
 from live15_quant.recorder_control import process_alive
 
 logger = logging.getLogger(__name__)
@@ -95,6 +99,7 @@ class DemoFirstFillLaunchSource(StrEnum):
 
     USER_CMD = "USER_CMD"
     CODEX_DRY_RUN = "CODEX_DRY_RUN"
+    CODEX_BOUNDED_DIAGNOSTIC = "CODEX_BOUNDED_DIAGNOSTIC"
     SUPERVISOR = "SUPERVISOR"
     UNKNOWN = "UNKNOWN"
 
@@ -378,6 +383,12 @@ class _PostReservationClient:
     def __init__(self, delegate: KalshiDemoExecutionClient, reserve: Callable[[str], None]) -> None:
         self._delegate = delegate
         self._reserve = reserve
+        self.last_buying_power: Decimal | None = None
+
+    def balance(self):
+        snapshot = self._delegate.balance()
+        self.last_buying_power = snapshot.buying_power
+        return snapshot
 
     def create_order(self, request: object):
         client_order_id = getattr(request, "client_order_id", None)
@@ -418,6 +429,9 @@ class DemoFirstFillWorker:
     post_reserved: bool = False
     remote_reconciliation_reader: Callable[[], dict[str, object]] | None = None
     stop_requested: Callable[[], bool] = lambda: False
+    attempt_history_path: Path | None = None
+    continue_until_fill: bool = False
+    candidate_already_attempted: Callable[[str], bool] = lambda _client_id: False
 
     @classmethod
     def create(
@@ -427,15 +441,25 @@ class DemoFirstFillWorker:
         *,
         writes_enabled: bool,
         launch_provenance: DemoFirstFillLaunchProvenance | None = None,
+        continue_until_fill: bool = False,
+        demo_base_url: str | None = None,
     ) -> tuple[DemoFirstFillWorker, Any]:
         credentials = resolve_kalshi_demo_credentials(settings)
-        client = KalshiDemoExecutionClient(settings, credentials, repository_root=Path.cwd())
+        client = KalshiDemoExecutionClient(
+            settings,
+            credentials,
+            repository_root=Path.cwd(),
+            **({"base_url": demo_base_url} if demo_base_url is not None else {}),
+        )
+        reservation_client = _PostReservationClient(
+            client, lambda client_id: worker.reserve_post(client_id)
+        )
         store = DemoExecutionStore(paths.demo_store_path)
         status_store = DemoFirstFillStatusStore(paths.status_path)
         existing = status_store.read()
         started = datetime.now(UTC)
         if existing is not None and int(existing["post_count"]) >= 1:
-            if not _reconciled_no_remote_effect(existing, store):
+            if not _reconciled_terminal_no_fill(existing, store):
                 store.close()
                 client.close()
                 raise DemoFirstFillError(
@@ -452,7 +476,7 @@ class DemoFirstFillWorker:
         worker = cls(
             settings=settings,
             coordinator=DemoExecutionCoordinator(
-                _PostReservationClient(client, lambda client_id: worker.reserve_post(client_id)),
+                reservation_client,
                 store,
                 quote_source=LiveKalshiWsQuoteSource(
                     settings.recorder_health_path.with_name("kalshi-live-ws-books.json")
@@ -471,10 +495,18 @@ class DemoFirstFillWorker:
             stop_requested=lambda: paths.stop_path.exists(),
             remote_reconciliation_reader=lambda: {
                 **_remote_account_reconciliation(client),
+                "remote_buying_power_before": (
+                    None
+                    if reservation_client.last_buying_power is None
+                    else str(reservation_client.last_buying_power)
+                ),
                 "remote_position_count": len(client.positions()),
                 "remote_open_order_count": len(client.open_orders()),
                 "remote_fill_count": len(client.fills()),
             },
+            attempt_history_path=paths.attempt_history_path,
+            continue_until_fill=continue_until_fill,
+            candidate_already_attempted=lambda client_id: store.latest_state(client_id) is not None,
         )
         # The closure above resolves after assignment, before any submit can occur.
         return worker, (client, store)
@@ -555,6 +587,9 @@ class DemoFirstFillWorker:
                 )
             return None
         for intent in intents:
+            client_order_id = stable_client_order_id(intent)
+            if self.candidate_already_attempted(client_order_id):
+                continue
             candidate_seen_at = self.utc_now().astimezone(UTC)
             self.status.update(
                 {
@@ -630,7 +665,9 @@ class DemoFirstFillWorker:
         elapsed = (now - self.last_heartbeat_at).total_seconds()
         return elapsed >= self.heartbeat_log_seconds
 
-    def _reconcile_after_post(self, intent: DemoIntent, result: DemoReconciliationResult) -> str:
+    def _reconcile_after_post(
+        self, intent: DemoIntent, result: DemoReconciliationResult
+    ) -> str | None:
         self.status["status"] = DemoFirstFillStatus.RECONCILING.value
         self._write_status()
         # These are official Demo GETs only.  The coordinator has already
@@ -641,53 +678,137 @@ class DemoFirstFillWorker:
             if self.remote_reconciliation_reader is not None
             else {}
         )
-        fill_count = int(result.inserted_fills)
+        inserted_fill_count = int(result.inserted_fills)
         code = None
+        provider_diagnostic: dict[str, object] = {}
         if isinstance(self.coordinator, DemoExecutionCoordinator):
             diagnostic = self.coordinator._store.latest_execution_diagnostic(
                 stable_client_order_id(intent)
             )
             if diagnostic is not None:
                 code = diagnostic[0].value
+                provider_diagnostic = diagnostic[1]
+        remote_fill_count = int(remote_counts.get("remote_fill_count", 0) or 0)
+        remote_position_count = int(remote_counts.get("remote_position_count", 0) or 0)
+        remote_open_order_count = int(remote_counts.get("remote_open_order_count", 0) or 0)
         remote_effect = any(
             int(remote_counts.get(key, 0) or 0) > 0
             for key in ("remote_position_count", "remote_open_order_count", "remote_fill_count")
         )
-        if not remote_effect and fill_count == 0:
-            self._append_no_remote_effect_fact(intent, remote_counts)
-        final = (
-            "DEMO_ENTRY_EXECUTION_PATH_CERTIFIED"
-            if fill_count > 0
-            else "DEMO_POST_COMPLETED"
-            if remote_effect
-            else "NO_REMOTE_EFFECT"
+        before = remote_counts.get("remote_buying_power_before")
+        after = remote_counts.get("remote_buying_power")
+        balance_changed = (
+            isinstance(before, str) and isinstance(after, str) and Decimal(before) != Decimal(after)
         )
+        fill_certified = (
+            inserted_fill_count > 0
+            and remote_fill_count > 0
+            and remote_position_count > 0
+            and result.provider_order_id is not None
+            and balance_changed
+        )
+        provider_blocker = code == DemoExecutionResultCode.HTTP_404.value and isinstance(
+            provider_diagnostic.get("provider_error_code"), str
+        )
+        if provider_blocker:
+            final = "DEMO_FIRST_REAL_FILL_BLOCKED_BY_PROVIDER"
+        elif inserted_fill_count > 0 and not fill_certified:
+            final = "RECONCILIATION_REQUIRED"
+        elif not remote_effect and inserted_fill_count == 0:
+            if code == DemoExecutionResultCode.HTTP_SUCCESS_NO_FILL.value:
+                final = "CONFIRMED_NO_FILL"
+            else:
+                self._append_no_remote_effect_fact(intent, remote_counts)
+                final = "NO_REMOTE_EFFECT"
+        elif remote_open_order_count > 0 and inserted_fill_count == 0:
+            final = "RECONCILIATION_REQUIRED"
+        elif fill_certified:
+            final = "DEMO_FIRST_REAL_FILL_CERTIFIED"
+        else:
+            final = "RECONCILIATION_REQUIRED"
         self.status.update(
             {
                 "status": (
                     DemoFirstFillStatus.FILLED.value
-                    if fill_count > 0
+                    if fill_certified
                     else DemoFirstFillStatus.STOPPED.value
                 ),
-                "fill_count": fill_count,
+                "fill_count": remote_fill_count,
                 "last_http_result": code,
                 "last_error": None,
                 "final_state": final,
                 "reconciled_positions": reconciled_positions,
                 "provider_order_id": result.provider_order_id,
+                "balance_changed": balance_changed,
+                "provider_error_code": provider_diagnostic.get("provider_error_code"),
+                "provider_error_message": provider_diagnostic.get("sanitized_provider_message"),
+                "request_host": provider_diagnostic.get("request_host"),
+                "request_path": provider_diagnostic.get("request_path"),
                 **remote_counts,
             }
         )
         self._write_status()
+        if self.continue_until_fill and final in {
+            "NO_REMOTE_EFFECT",
+            "CONFIRMED_NO_FILL",
+            "HTTP_SUCCESS_NO_FILL",
+        }:
+            self._start_next_attempt(final)
+            return None
         self.logger.info(
-            "Demo first-fill worker stopped after its sole POST",
+            "Demo first-fill worker stopped after terminal POST outcome",
             extra={
                 "event": "demo_first_fill_complete",
                 "final_state": final,
-                "fill_count": fill_count,
+                "fill_count": remote_fill_count,
             },
         )
         return final
+
+    def _start_next_attempt(self, prior_final_state: str) -> None:
+        """Archive a remote-terminal attempt, then open a fresh one in-process."""
+
+        now = self.utc_now().astimezone(UTC)
+        history_path = self.attempt_history_path or self.status_store.path.with_name(
+            "demo_first_fill_attempts.jsonl"
+        )
+        previous = dict(self.status)
+        self.status_store.archive_terminal_attempt(
+            previous, history_path=history_path, archived_at=now
+        )
+        provenance = DemoFirstFillLaunchProvenance(
+            source=DemoFirstFillLaunchSource(
+                str(previous.get("launch_source", DemoFirstFillLaunchSource.UNKNOWN.value))
+            ),
+            launcher_name=str(previous.get("launcher_name", "live15-demo-first-fill")),
+            parent_pid=int(previous.get("parent_pid", os.getppid())),
+            parent_process=(
+                str(previous["parent_process"])
+                if previous.get("parent_process") is not None
+                else None
+            ),
+        )
+        next_status = _initial_status(now, launch_provenance=provenance)
+        next_status.update(
+            {
+                "status": DemoFirstFillStatus.WAITING_SIGNAL.value,
+                "execution_mode": previous.get("execution_mode"),
+                "previous_attempt_id": previous["first_fill_attempt_id"],
+                "previous_attempt_final_state": prior_final_state,
+            }
+        )
+        self.status.clear()
+        self.status.update(next_status)
+        self.post_reserved = False
+        self.last_heartbeat_at = now
+        self._write_status()
+        self.logger.info(
+            "Demo first-fill opened a new attempt after remote-terminal no-fill",
+            extra={
+                "event": "demo_first_fill_attempt_advanced",
+                "prior_final_state": prior_final_state,
+            },
+        )
 
     def _append_no_remote_effect_fact(
         self, intent: DemoIntent, remote_counts: dict[str, object]
@@ -781,6 +902,27 @@ def _reconciled_no_remote_effect(existing: dict[str, object], store: DemoExecuti
         detail.get("typed_reason") == "NO_REMOTE_EFFECT"
         and detail.get("source") == "official_demo_get_only_reconciliation"
         and zero_counts
+    )
+
+
+def _reconciled_terminal_no_fill(existing: dict[str, object], store: DemoExecutionStore) -> bool:
+    """Release a new attempt only after immutable, remote-terminal no-fill evidence."""
+
+    if _reconciled_no_remote_effect(existing, store):
+        return True
+    candidate = existing.get("last_candidate")
+    client_order_id = candidate.get("client_order_id") if isinstance(candidate, dict) else None
+    if not isinstance(client_order_id, str) or not client_order_id:
+        return False
+    diagnostic = store.latest_execution_diagnostic(client_order_id)
+    if diagnostic is None or diagnostic[0] is not DemoExecutionResultCode.HTTP_SUCCESS_NO_FILL:
+        return False
+    detail = diagnostic[1]
+    provider_order_id = detail.get("provider_order_id")
+    return (
+        isinstance(provider_order_id, str)
+        and bool(provider_order_id)
+        and str(detail.get("fill_count")) in {"0", "0.0", "0.00"}
     )
 
 
@@ -913,12 +1055,17 @@ def _configure_worker_log(path: Path) -> logging.FileHandler:
 
 
 def _launch_policy_error(
-    source: DemoFirstFillLaunchSource, *, execute_approved: bool
+    source: DemoFirstFillLaunchSource,
+    *,
+    execute_approved: bool,
+    diagnostic_write_once: bool = False,
 ) -> str | None:
     """Keep Demo write authority local, explicit, and independent of chat history."""
 
     if execute_approved and source is not DemoFirstFillLaunchSource.USER_CMD:
         return "REAL_DEMO_WRITE_REQUIRES_USER_LAUNCH"
+    if diagnostic_write_once and source is not DemoFirstFillLaunchSource.CODEX_BOUNDED_DIAGNOSTIC:
+        return "DIAGNOSTIC_DEMO_WRITE_REQUIRES_BOUNDED_CODEX_LAUNCH"
     return None
 
 
@@ -937,6 +1084,11 @@ def main(argv: Iterable[str] | None = None) -> None:
         action="store_true",
         help="request graceful stop of a running first-fill worker",
     )
+    actions.add_argument(
+        "--diagnostic-write-once",
+        action="store_true",
+        help="enable one bounded Codex-owned Demo POST diagnostic; never persistent",
+    )
     parser.add_argument(
         "--launch-source",
         choices=tuple(source.value for source in DemoFirstFillLaunchSource),
@@ -948,9 +1100,25 @@ def main(argv: Iterable[str] | None = None) -> None:
         default="live15-demo-first-fill",
         help="non-secret local launcher label for status and audit logs",
     )
+    parser.add_argument(
+        "--demo-host",
+        choices=("external", "shared"),
+        default="external",
+        help="select an explicitly allowlisted official Demo API host",
+    )
+    parser.add_argument(
+        "--max-runtime-seconds",
+        type=int,
+        default=900,
+        help="hard bound for a Codex diagnostic launch (1..900 seconds)",
+    )
     arguments = parser.parse_args(tuple(sys.argv[1:] if argv is None else argv))
     source = DemoFirstFillLaunchSource(arguments.launch_source)
-    policy_error = _launch_policy_error(source, execute_approved=arguments.execute_approved)
+    policy_error = _launch_policy_error(
+        source,
+        execute_approved=arguments.execute_approved,
+        diagnostic_write_once=arguments.diagnostic_write_once,
+    )
     if policy_error is not None:
         print(json.dumps({"status": policy_error}, sort_keys=True))
         return
@@ -1001,23 +1169,43 @@ def main(argv: Iterable[str] | None = None) -> None:
     resources: Any = None
     try:
         paths.stop_path.unlink(missing_ok=True)
+        writes_enabled = arguments.execute_approved or arguments.diagnostic_write_once
+        if arguments.diagnostic_write_once and not 1 <= arguments.max_runtime_seconds <= 900:
+            print(json.dumps({"status": "DIAGNOSTIC_RUNTIME_BOUND_INVALID"}, sort_keys=True))
+            return
+        deadline = (
+            datetime.now(UTC) + timedelta(seconds=arguments.max_runtime_seconds)
+            if arguments.diagnostic_write_once
+            else None
+        )
         worker, resources = DemoFirstFillWorker.create(
             settings,
             paths,
-            writes_enabled=arguments.execute_approved,
+            writes_enabled=writes_enabled,
+            continue_until_fill=arguments.execute_approved,
+            demo_base_url=(
+                KALSHI_SHARED_DEMO_API_BASE_URL if arguments.demo_host == "shared" else None
+            ),
             launch_provenance=DemoFirstFillLaunchProvenance(
                 source=source,
                 launcher_name=str(arguments.launcher_name)[:128],
                 parent_pid=os.getppid(),
             ),
         )
+        if deadline is not None:
+            worker.stop_requested = lambda: datetime.now(UTC) >= deadline
         worker.status.update(
             {
                 "status": DemoFirstFillStatus.STARTING.value,
                 "last_heartbeat": _timestamp(started),
-                "execution_mode": "DEMO_WRITE_ENABLED_ONCE"
-                if arguments.execute_approved
-                else "DRY_RUN_WRITE_DISABLED",
+                "execution_mode": (
+                    "DEMO_WRITE_ENABLED_UNTIL_FIRST_FILL"
+                    if arguments.execute_approved
+                    else "DEMO_BOUNDED_DIAGNOSTIC_WRITE_ONCE"
+                    if arguments.diagnostic_write_once
+                    else "DRY_RUN_WRITE_DISABLED"
+                ),
+                "demo_host": arguments.demo_host,
             }
         )
         worker._write_status()

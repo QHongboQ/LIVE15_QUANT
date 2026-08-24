@@ -91,6 +91,24 @@ def _client(tmp_path: Path, responses: list[object]):
     return client, session, signer
 
 
+def _shared_client(tmp_path: Path, responses: list[object]):
+    key = tmp_path / "demo.key"
+    key.touch()
+    session = FakeSession(responses)
+    signer = FakeSigner()
+    client = KalshiDemoExecutionClient(
+        Settings(),
+        KalshiDemoCredentials("demo-key", key),
+        session=session,
+        signer=signer,
+        clock_ms=lambda: 1_700_000_000_123,
+        utc_now=lambda: datetime(2026, 8, 23, tzinfo=UTC),
+        repository_root=Path.cwd(),
+        base_url="https://demo-api.kalshi.co/trade-api/v2",
+    )
+    return client, session, signer
+
+
 def _order(*, status: str = "resting", fill: str = "0", remaining: str = "1"):
     return {
         "order_id": "order-1",
@@ -147,6 +165,55 @@ def test_demo_client_is_fixed_to_demo_and_builds_documented_v2_order(tmp_path: P
         "cancel_order_on_pause": True,
     }
     assert signer.messages == [b"1700000000123POST/trade-api/v2/portfolio/events/orders"]
+
+
+def test_official_shared_demo_host_uses_identical_v2_path_and_signature(tmp_path: Path) -> None:
+    base = "https://demo-api.kalshi.co/trade-api/v2"
+    client, session, signer = _shared_client(
+        tmp_path,
+        [
+            FakeResponse(
+                {
+                    "order_id": "order-1",
+                    "client_order_id": "client-1",
+                    "fill_count": "0",
+                    "remaining_count": "1",
+                    "ts_ms": 1_700_000_000_124,
+                },
+                f"{base}/portfolio/events/orders",
+                201,
+            )
+        ],
+    )
+
+    client.create_order(
+        DemoOrderRequest(
+            "KXBTC15M-TEST", "client-1", DemoBookSide.BID, Decimal("1"), Decimal("0.51")
+        )
+    )
+
+    assert session.calls[0][1] == f"{base}/portfolio/events/orders"
+    assert signer.messages == [b"1700000000123POST/trade-api/v2/portfolio/events/orders"]
+    assert client.execution_transport_metadata == {
+        "environment": "DEMO",
+        "request_host": "demo-api.kalshi.co",
+        "request_path": "/trade-api/v2/portfolio/events/orders",
+        "create_order_api": "V2",
+    }
+
+
+def test_execution_client_rejects_non_demo_base_url(tmp_path: Path) -> None:
+    key = tmp_path / "demo.key"
+    key.touch()
+    with pytest.raises(KalshiDemoExecutionError, match="official Demo allowlist"):
+        KalshiDemoExecutionClient(
+            Settings(),
+            KalshiDemoCredentials("demo-key", key),
+            session=FakeSession([]),
+            signer=FakeSigner(),
+            repository_root=Path.cwd(),
+            base_url=KALSHI_PUBLIC_API_BASE_URL,
+        )
 
 
 def test_compact_v2_ioc_create_ack_is_official_final_truth(tmp_path: Path) -> None:
@@ -286,15 +353,16 @@ def test_inconclusive_write_http_status_requires_reconciliation(
                 Decimal("0.51"),
             )
         )
-        assert error.value.reason_code == f"http_{status_code}"
-        assert error.value.diagnostic == {
-            "http_status": status_code,
-            "content_type": "application/json",
-            "request_method": "POST",
-            "request_path": "/trade-api/v2/portfolio/events/orders",
-            "environment": "DEMO",
-            "sanitized_response_classification": "json_error_fields_absent",
-        }
+    assert error.value.reason_code == f"http_{status_code}"
+    assert error.value.diagnostic == {
+        "http_status": status_code,
+        "content_type": "application/json",
+        "request_method": "POST",
+        "request_path": "/trade-api/v2/portfolio/events/orders",
+        "request_host": "external-api.demo.kalshi.co",
+        "environment": "DEMO",
+        "sanitized_response_classification": "json_error_fields_absent",
+    }
 
 
 @pytest.mark.parametrize("status_code", (400, 401, 403, 422))
@@ -356,6 +424,7 @@ def test_http_error_extracts_only_whitelisted_provider_fields(tmp_path: Path) ->
         "sanitized_provider_detail": "safe detail",
         "request_method": "POST",
         "request_path": "/trade-api/v2/portfolio/events/orders",
+        "request_host": "external-api.demo.kalshi.co",
         "environment": "DEMO",
     }
     assert "must-not-persist" not in json.dumps(error.value.diagnostic)
@@ -388,6 +457,7 @@ def test_malformed_http_error_does_not_persist_raw_body(tmp_path: Path) -> None:
         "content_type",
         "request_method",
         "request_path",
+        "request_host",
         "environment",
         "sanitized_response_classification",
     }
@@ -418,6 +488,47 @@ def test_html_http_error_records_only_content_type_and_classification(tmp_path: 
     assert error.value.diagnostic["sanitized_response_classification"] == "non_json_html"
     assert "secret-signature" not in json.dumps(error.value.diagnostic)
     assert "private-key" not in json.dumps(error.value.diagnostic)
+
+
+def test_nested_provider_error_extracts_only_whitelisted_fields(tmp_path: Path) -> None:
+    client, _, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {
+                    "error": {
+                        "code": "write_not_available",
+                        "message": "Demo write unavailable",
+                        "details": "contact support",
+                        "signature": "must-not-persist",
+                    },
+                    "authorization": "must-not-persist",
+                },
+                f"{KALSHI_DEMO_API_BASE_URL}/portfolio/events/orders",
+                404,
+            )
+        ],
+    )
+
+    with pytest.raises(KalshiDemoAmbiguousWriteError) as error:
+        client.create_order(
+            DemoOrderRequest(
+                "KXBTC15M-TEST", "client-1", DemoBookSide.BID, Decimal("1"), Decimal("0.51")
+            )
+        )
+
+    assert error.value.diagnostic == {
+        "http_status": 404,
+        "content_type": "application/json",
+        "provider_error_code": "write_not_available",
+        "sanitized_provider_message": "Demo write unavailable",
+        "sanitized_provider_detail": "contact support",
+        "request_method": "POST",
+        "request_path": "/trade-api/v2/portfolio/events/orders",
+        "request_host": "external-api.demo.kalshi.co",
+        "environment": "DEMO",
+    }
+    assert "must-not-persist" not in json.dumps(error.value.diagnostic)
 
 
 def test_http_error_redacts_credential_like_provider_fields(tmp_path: Path) -> None:
