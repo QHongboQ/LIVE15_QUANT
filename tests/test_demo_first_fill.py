@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -81,6 +81,80 @@ def test_no_signal_keeps_worker_waiting_and_status_is_atomic(tmp_path) -> None:
     assert status is not None
     assert status["status"] == DemoFirstFillStatus.WAITING_SIGNAL.value
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_no_signal_scans_at_quarter_second_cadence_but_logs_heartbeat_every_five_seconds(
+    tmp_path,
+) -> None:
+    class Coordinator:
+        def reconcile_positions(self) -> int:
+            return 0
+
+    current = datetime(2026, 8, 24, tzinfo=UTC)
+    worker = _worker(tmp_path, Coordinator(), lambda _settings: ())
+    worker.utc_now = lambda: current
+    worker.signal_scan_seconds = 0.25
+    worker.heartbeat_log_seconds = 5.0
+    waiting_messages: list[str] = []
+
+    class Logger:
+        def info(self, message: str, **_kwargs) -> None:
+            waiting_messages.append(message)
+
+    worker.logger = Logger()
+    assert worker.run_once() is None
+    current = current.replace(microsecond=250000)
+    assert worker.run_once() is None
+    current = current.replace(second=4, microsecond=999999)
+    assert worker.run_once() is None
+    current = current.replace(second=5, microsecond=0)
+    assert worker.run_once() is None
+    assert waiting_messages == [
+        "Demo first-fill waiting for fresh actionable signal",
+        "Demo first-fill waiting for fresh actionable signal",
+    ]
+    assert worker.status["last_heartbeat"] == "2026-08-24T00:00:05.000000+00:00"
+
+
+def test_actionable_signal_is_evaluated_on_next_scan_without_waiting_for_heartbeat(
+    tmp_path,
+) -> None:
+    class Coordinator:
+        calls = 0
+
+        def submit(self, *_args):
+            self.calls += 1
+            return DemoRiskDecision(False, (DemoRiskReason.PRE_SUBMIT_DATA_UNAVAILABLE,))
+
+        def reconcile_positions(self) -> int:
+            return 0
+
+    current = datetime(2026, 8, 24, tzinfo=UTC)
+    coordinator = Coordinator()
+    scan_count = 0
+
+    def reader(_settings):
+        nonlocal scan_count
+        scan_count += 1
+        return () if scan_count == 1 else (_intent(),)
+
+    worker = _worker(tmp_path, coordinator, reader)
+    worker.utc_now = lambda: current
+    worker.signal_scan_seconds = 0.25
+    worker.heartbeat_log_seconds = 5.0
+    sleeps: list[float] = []
+
+    def bounded_sleep(seconds: float) -> None:
+        nonlocal current
+        sleeps.append(seconds)
+        current += timedelta(seconds=seconds)
+
+    worker.sleep = bounded_sleep
+    worker.stop_requested = lambda: coordinator.calls == 1
+    assert worker.run_forever() == "USER_STOP_REQUESTED"
+    assert coordinator.calls == 1
+    assert sleeps == [0.25, 0.25]
+    assert current == datetime(2026, 8, 24, 0, 0, 0, 500000, tzinfo=UTC)
 
 
 def test_guard_blocked_candidate_keeps_worker_alive(tmp_path) -> None:

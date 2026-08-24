@@ -312,7 +312,11 @@ class DemoFirstFillWorker:
     logger: logging.Logger
     utc_now: Callable[[], datetime]
     sleep: Callable[[float], None]
-    poll_seconds: float = 5.0
+    # Candidate scanning is deliberately independent from observability.  A
+    # fresh forward signal must not wait for the next human-facing heartbeat.
+    signal_scan_seconds: float = 0.25
+    heartbeat_log_seconds: float = 5.0
+    last_heartbeat_at: datetime | None = None
     post_reserved: bool = False
     remote_reconciliation_reader: Callable[[], dict[str, object]] | None = None
     stop_requested: Callable[[], bool] = lambda: False
@@ -393,7 +397,10 @@ class DemoFirstFillWorker:
                 final = self.run_once()
                 if final is not None:
                     return final
-                self.sleep(self.poll_seconds)
+                # Bounded polling is intentional: the forward ledger is a
+                # separate process/database and has no cross-process wakeup
+                # primitive.  Keep it low-cost without a busy loop.
+                self.sleep(self.signal_scan_seconds)
         except KeyboardInterrupt:
             self._stop("USER_STOPPED")
             return "USER_STOPPED"
@@ -417,20 +424,24 @@ class DemoFirstFillWorker:
         if self.stop_requested():
             self._stop("USER_STOP_REQUESTED")
             return "USER_STOP_REQUESTED"
-        self.status.update(
-            {
-                "status": DemoFirstFillStatus.WAITING_SIGNAL.value,
-                "last_heartbeat": _timestamp(now),
-                "last_error": None,
-            }
-        )
-        self._write_status()
+        heartbeat_due = self._heartbeat_due(now)
+        if heartbeat_due:
+            self.status.update(
+                {
+                    "status": DemoFirstFillStatus.WAITING_SIGNAL.value,
+                    "last_heartbeat": _timestamp(now),
+                    "last_error": None,
+                }
+            )
+            self._write_status()
+            self.last_heartbeat_at = now
         intents = self.candidate_reader(self.settings)
         if not intents:
-            self.logger.info(
-                "Demo first-fill waiting for fresh actionable signal",
-                extra={"event": "demo_first_fill_waiting"},
-            )
+            if heartbeat_due:
+                self.logger.info(
+                    "Demo first-fill waiting for fresh actionable signal",
+                    extra={"event": "demo_first_fill_waiting"},
+                )
             return None
         for intent in intents:
             candidate_seen_at = self.utc_now().astimezone(UTC)
@@ -491,6 +502,20 @@ class DemoFirstFillWorker:
                 },
             )
         return None
+
+    def _heartbeat_due(self, now: datetime) -> bool:
+        """Rate-limit heartbeat writes/logs without rate-limiting signal scans."""
+
+        if self.signal_scan_seconds <= 0:
+            raise DemoFirstFillError("signal scan interval must be positive")
+        if self.heartbeat_log_seconds <= 0:
+            raise DemoFirstFillError("heartbeat log interval must be positive")
+        if self.last_heartbeat_at is None:
+            return True
+        # A clock rollback must not create a log/write storm.  Wait for the
+        # persisted monotonic direction to catch up instead.
+        elapsed = (now - self.last_heartbeat_at).total_seconds()
+        return elapsed >= self.heartbeat_log_seconds
 
     def _reconcile_after_post(self, intent: DemoIntent, result: DemoReconciliationResult) -> str:
         self.status["status"] = DemoFirstFillStatus.RECONCILING.value
