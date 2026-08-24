@@ -177,6 +177,43 @@ def test_guard_blocked_candidate_keeps_worker_alive(tmp_path) -> None:
     assert worker.status["post_count"] == 0
 
 
+def test_typed_remote_risk_failure_is_recorded_and_worker_continues(tmp_path) -> None:
+    class Coordinator:
+        calls = 0
+
+        def submit(self, *_args):
+            self.calls += 1
+            return DemoRiskDecision(
+                False,
+                (DemoRiskReason.DEMO_BALANCE_UNAVAILABLE,),
+                {
+                    "remote_risk_start_at": "2026-08-24T00:00:00.000000+00:00",
+                    "remote_risk_end_at": "2026-08-24T00:00:00.250000+00:00",
+                    "remote_risk_latency_ms": "250.000",
+                },
+            )
+
+        def reconcile_positions(self) -> int:
+            return 0
+
+    coordinator = Coordinator()
+    reads = 0
+
+    def reader(_settings):
+        nonlocal reads
+        reads += 1
+        return (_intent(),) if reads == 1 else ()
+
+    worker = _worker(tmp_path, coordinator, reader)
+    assert worker.run_once() is None
+    candidate = worker.status["last_candidate"]
+    assert isinstance(candidate, dict)
+    assert candidate["typed_skip_reason"] == "demo_balance_unavailable"
+    assert candidate["remote_risk_latency_ms"] == "250.000"
+    assert worker.run_once() is None
+    assert coordinator.calls == 1
+
+
 def test_stop_request_ends_worker_without_submitting(tmp_path) -> None:
     class Coordinator:
         def submit(self, *_args):

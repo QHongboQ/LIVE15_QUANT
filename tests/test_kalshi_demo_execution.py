@@ -495,6 +495,45 @@ def test_demo_balance_and_positions_preserve_decimal_remote_truth(tmp_path: Path
     assert position.quantity == Decimal("1.00")
 
 
+def test_demo_same_day_settlements_preserve_mixed_units_for_daily_loss(tmp_path: Path) -> None:
+    client, session, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {
+                    "settlements": [
+                        {
+                            "ticker": "KXBTC15M-TEST",
+                            "revenue": 100,
+                            "yes_total_cost_dollars": "0.5100",
+                            "no_total_cost_dollars": "0.0000",
+                            "fee_cost": "0.0100",
+                            "settled_time": "2026-08-23T00:01:00Z",
+                        }
+                    ]
+                },
+                f"{KALSHI_DEMO_API_BASE_URL}/portfolio/settlements",
+            )
+        ],
+    )
+    settlements = client.settlements(
+        min_timestamp=datetime(2026, 8, 23, tzinfo=UTC),
+        max_timestamp=datetime(2026, 8, 23, 1, tzinfo=UTC),
+    )
+    assert len(session.calls) == 1
+    assert session.calls[0][0] == "GET"
+    assert session.calls[0][1].endswith("/portfolio/settlements")
+    assert settlements[0].realized_pnl == Decimal("0.4800")
+
+
+def test_demo_read_timeout_is_typed_for_remote_risk_fail_closed(tmp_path: Path) -> None:
+    client, _, _ = _client(tmp_path, [requests.Timeout("secret")])
+    with pytest.raises(KalshiDemoExecutionError) as error:
+        client.balance()
+    assert error.value.reason_code == "timeout"
+    assert "secret" not in str(error.value)
+
+
 def test_official_exchange_and_market_reads_are_typed_and_demo_only(tmp_path: Path) -> None:
     client, session, _ = _client(
         tmp_path,

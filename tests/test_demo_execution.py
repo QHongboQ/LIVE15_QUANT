@@ -18,7 +18,9 @@ from live15_quant.demo_execution import (
     DemoIntentPurpose,
     DemoLifecycleState,
     DemoPriceEVPolicy,
+    DemoReconciliationResult,
     DemoRiskContext,
+    DemoRiskDecision,
     DemoRiskLimits,
     DemoRiskReason,
     DemoSizingMode,
@@ -39,6 +41,7 @@ from live15_quant.providers.kalshi_demo_execution import (
     DemoRemoteOrderState,
     DemoRemotePosition,
     KalshiDemoAmbiguousWriteError,
+    KalshiDemoExecutionError,
     KalshiDemoWriteRejectedError,
 )
 
@@ -98,6 +101,7 @@ class FakeClient:
         self.raise_cancel = False
         self.remote_fills: tuple[DemoRemoteFill, ...] = ()
         self.remote_positions: tuple[DemoRemotePosition, ...] = ()
+        self.remote_settlements = ()
         self.exchange = DemoExchangeStatus(
             True, True, None, datetime(2026, 8, 23, 0, 0, 1, tzinfo=UTC)
         )
@@ -177,6 +181,11 @@ class FakeClient:
     def orders(self):
         return () if self.remote is None else (self.remote,)
 
+    def settlements(self, *, min_timestamp, max_timestamp):
+        assert min_timestamp.tzinfo is not None
+        assert max_timestamp.tzinfo is not None
+        return self.remote_settlements
+
 
 def _safe_context(**changes: object) -> DemoRiskContext:
     values: dict[str, object] = {
@@ -255,6 +264,132 @@ def test_unknown_remote_risk_state_and_disabled_cancel_fail_closed(tmp_path: Pat
         decision = enabled.submit(intent, _safe_context(kill_switch=True))
         assert DemoRiskReason.KILL_SWITCH in decision.reasons  # type: ignore[union-attr]
         assert client.create_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("stage", "reason"),
+    [
+        ("balance", DemoRiskReason.DEMO_BALANCE_UNAVAILABLE),
+        ("positions", DemoRiskReason.DEMO_POSITIONS_UNAVAILABLE),
+        ("orders", DemoRiskReason.DEMO_ORDERS_UNAVAILABLE),
+        ("fills", DemoRiskReason.DEMO_FILLS_UNAVAILABLE),
+        ("settlements", DemoRiskReason.DEMO_DAILY_PNL_UNAVAILABLE),
+    ],
+)
+def test_remote_risk_refresh_reports_the_unavailable_official_component(
+    tmp_path: Path, stage: str, reason: DemoRiskReason
+) -> None:
+    intent = _intent()
+    client = FakeClient()
+
+    def unavailable(*_args, **_kwargs):
+        raise KalshiDemoExecutionError("read failed")
+
+    setattr(client, stage, unavailable)
+    now = datetime(2026, 8, 23, 0, 0, 2, tzinfo=UTC)
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        result = DemoExecutionCoordinator(
+            client,
+            store,
+            quote_source=FixedQuoteSource(_quote()),
+            utc_now=lambda: now,
+            writes_enabled=True,
+            execution_smoke_approved=True,
+        ).submit(intent, _safe_context())
+        diagnostic = store.latest_execution_diagnostic(stable_client_order_id(intent))
+    assert isinstance(result, DemoRiskDecision)
+    assert result.reasons == (reason,)
+    assert result.diagnostics["remote_risk_start_at"]
+    assert result.diagnostics["remote_risk_end_at"]
+    assert result.diagnostics["remote_risk_latency_ms"] == "0.000"
+    assert diagnostic is not None
+    assert diagnostic[0] is DemoExecutionResultCode.DATA_UNAVAILABLE
+    assert diagnostic[1]["typed_reason"] == reason.value
+    assert client.create_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("error_code", "reason"),
+    [
+        ("timeout", DemoRiskReason.DEMO_REMOTE_TIMEOUT),
+        ("transport_error", DemoRiskReason.DEMO_REMOTE_TRANSPORT_ERROR),
+        ("http_401", DemoRiskReason.DEMO_AUTH_UNAVAILABLE),
+        ("http_500", DemoRiskReason.DEMO_REMOTE_HTTP_ERROR),
+    ],
+)
+def test_remote_risk_transport_failures_are_typed_and_fail_closed(
+    tmp_path: Path, error_code: str, reason: DemoRiskReason
+) -> None:
+    intent = _intent()
+    client = FakeClient()
+
+    def unavailable():
+        raise KalshiDemoExecutionError("safe failure", reason_code=error_code)
+
+    client.balance = unavailable
+    now = datetime(2026, 8, 23, 0, 0, 2, tzinfo=UTC)
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        result = DemoExecutionCoordinator(
+            client,
+            store,
+            quote_source=FixedQuoteSource(_quote()),
+            utc_now=lambda: now,
+            writes_enabled=True,
+            execution_smoke_approved=True,
+        ).submit(intent, _safe_context())
+    assert isinstance(result, DemoRiskDecision)
+    assert result.reasons == (reason,)
+    assert client.create_calls == 0
+
+
+def test_remote_truth_refresh_overrides_unknown_local_context_and_records_latency(
+    tmp_path: Path,
+) -> None:
+    intent = _intent()
+    client = FakeClient()
+    client.create_response = _remote(intent, DemoRemoteOrderState.FILLED)
+    now = datetime(2026, 8, 23, 0, 0, 2, tzinfo=UTC)
+    stale_local = DemoRiskContext(
+        event_exposure=Decimal("99"),
+        total_exposure=Decimal("99"),
+        open_positions=99,
+        daily_realized_pnl=Decimal("-99"),
+        reconciliation_certain=True,
+        kill_switch=False,
+    )
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        result = DemoExecutionCoordinator(
+            client,
+            store,
+            quote_source=FixedQuoteSource(_quote()),
+            utc_now=lambda: now,
+            writes_enabled=True,
+            execution_smoke_approved=True,
+        ).submit(intent, stale_local)
+    assert isinstance(result, DemoReconciliationResult)
+    assert client.create_calls == 1
+
+
+def test_remote_reconciliation_required_fails_closed_without_a_create(tmp_path: Path) -> None:
+    intent = _intent()
+    client = FakeClient()
+    client.remote = _remote(
+        _intent(opportunity_id="unrelated-opportunity"),
+        DemoRemoteOrderState.RECONCILIATION_REQUIRED,
+    )
+    now = datetime(2026, 8, 23, 0, 0, 2, tzinfo=UTC)
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        result = DemoExecutionCoordinator(
+            client,
+            store,
+            quote_source=FixedQuoteSource(_quote()),
+            utc_now=lambda: now,
+            writes_enabled=True,
+            execution_smoke_approved=True,
+        ).submit(intent, _safe_context())
+    assert isinstance(result, DemoRiskDecision)
+    assert DemoRiskReason.DEMO_REMOTE_RECONCILIATION_REQUIRED in result.reasons
+    assert client.create_calls == 0
 
 
 @pytest.mark.parametrize(

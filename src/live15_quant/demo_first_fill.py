@@ -486,7 +486,8 @@ class DemoFirstFillWorker:
             self._write_status()
             self.logger.info(
                 "Demo first-fill candidate skipped model=%s ticker=%s direction=%s reason=%s "
-                "quote_age_seconds=%s book_state=%s decision_age_seconds=%s",
+                "quote_age_seconds=%s book_state=%s decision_age_seconds=%s "
+                "remote_risk_latency_ms=%s",
                 intent.model_id,
                 intent.ticker,
                 "BUY_YES" if intent.side is DemoBookSide.BID else "BUY_NO",
@@ -494,6 +495,7 @@ class DemoFirstFillWorker:
                 diagnostics.get("quote_age_seconds"),
                 book_state,
                 decision_age,
+                diagnostics.get("remote_risk_latency_ms"),
                 extra={
                     "event": "demo_first_fill_skipped",
                     "reason": reason,
@@ -643,7 +645,7 @@ def _skip_detail(
         "official_truth_unavailable": DemoDataUnavailableReason.OFFICIAL_TRUTH_UNAVAILABLE.value,
     }
     reasons = [mapping.get(reason.value, reason.value) for reason in result.reasons]
-    return ",".join(reasons), {}
+    return ",".join(reasons), dict(result.diagnostics)
 
 
 def _decision_age_seconds(now: datetime, decision_timestamp: datetime) -> str:

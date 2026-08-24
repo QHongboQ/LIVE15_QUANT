@@ -35,6 +35,7 @@ _ALLOWED_READ_PATHS = frozenset(
         "/portfolio/positions",
         "/portfolio/orders",
         "/portfolio/fills",
+        "/portfolio/settlements",
     }
 )
 _CREATE_ORDER_PATH = "/portfolio/events/orders"
@@ -43,6 +44,10 @@ _TICKER_PATTERN = re.compile(r"[A-Z0-9][A-Z0-9.-]{0,199}")
 
 class KalshiDemoExecutionError(RuntimeError):
     """Safe, typed Demo execution failure."""
+
+    def __init__(self, message: str, *, reason_code: str = "remote_error") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 class KalshiDemoAmbiguousWriteError(KalshiDemoExecutionError):
@@ -267,6 +272,35 @@ class DemoRemotePosition:
             or self.resting_orders < 0
         ):
             raise ValueError("Demo position values are impossible")
+
+
+@dataclass(frozen=True, slots=True)
+class DemoRemoteSettlement:
+    """Official same-day settlement fact used for the Demo daily-loss gate."""
+
+    ticker: str
+    settled_at: datetime
+    revenue: Decimal
+    yes_total_cost: Decimal
+    no_total_cost: Decimal
+    fee: Decimal
+
+    def __post_init__(self) -> None:
+        if not self.ticker or self.settled_at.tzinfo is None or self.settled_at.utcoffset() is None:
+            raise ValueError("Demo settlement identity/timestamp must be valid")
+        if any(
+            not value.is_finite()
+            for value in (self.revenue, self.yes_total_cost, self.no_total_cost, self.fee)
+        ) or any(
+            value < 0 for value in (self.revenue, self.yes_total_cost, self.no_total_cost, self.fee)
+        ):
+            raise ValueError("Demo settlement values are impossible")
+
+    @property
+    def realized_pnl(self) -> Decimal:
+        # Kalshi's settlement `revenue` is integer cents; the total-cost and
+        # fee fields are fixed-point dollars.  Never mix those units.
+        return self.revenue / Decimal(100) - self.yes_total_cost - self.no_total_cost - self.fee
 
 
 def authenticated_signature_message(timestamp_ms: str, method: str, path: str) -> bytes:
@@ -552,17 +586,33 @@ class KalshiDemoExecutionClient:
                 },
                 allow_redirects=False,
             )
+        except requests.Timeout:
+            if method in {"POST", "DELETE"}:
+                raise KalshiDemoAmbiguousWriteError(
+                    "Kalshi Demo write outcome is unknown; reconcile remote truth before retry",
+                    reason_code="transport_failure",
+                ) from None
+            raise KalshiDemoExecutionError(
+                "Kalshi Demo read timed out", reason_code="timeout"
+            ) from None
         except requests.RequestException:
             if method in {"POST", "DELETE"}:
                 raise KalshiDemoAmbiguousWriteError(
                     "Kalshi Demo write outcome is unknown; reconcile remote truth before retry",
                     reason_code="transport_failure",
                 ) from None
-            raise KalshiDemoExecutionError("Kalshi Demo read failed") from None
+            raise KalshiDemoExecutionError(
+                "Kalshi Demo read failed", reason_code="transport_error"
+            ) from None
         if 300 <= response.status_code < 400:
-            raise KalshiDemoExecutionError("Kalshi Demo request attempted a redirect")
+            raise KalshiDemoExecutionError(
+                "Kalshi Demo request attempted a redirect", reason_code="redirect"
+            )
         if not response.url.startswith(f"{KALSHI_DEMO_API_BASE_URL}/"):
-            raise KalshiDemoExecutionError("Kalshi Demo response came from an unexpected endpoint")
+            raise KalshiDemoExecutionError(
+                "Kalshi Demo response came from an unexpected endpoint",
+                reason_code="endpoint_mismatch",
+            )
         if not 200 <= response.status_code < 300:
             diagnostic = _sanitized_http_diagnostic(
                 response, method=method, path=urlsplit(url).path
@@ -581,7 +631,8 @@ class KalshiDemoExecutionClient:
                     diagnostic=diagnostic,
                 )
             raise KalshiDemoExecutionError(
-                f"Kalshi Demo {method} returned HTTP {response.status_code}"
+                f"Kalshi Demo {method} returned HTTP {response.status_code}",
+                reason_code=f"http_{response.status_code}",
             )
         try:
             return _object(response)
@@ -733,6 +784,55 @@ class KalshiDemoExecutionClient:
                 )
             )
         return tuple(result)
+
+    def settlements(
+        self, *, min_timestamp: datetime, max_timestamp: datetime
+    ) -> tuple[DemoRemoteSettlement, ...]:
+        """Read complete official settlements in a bounded UTC time range."""
+
+        if (
+            min_timestamp.tzinfo is None
+            or min_timestamp.utcoffset() is None
+            or max_timestamp.tzinfo is None
+            or max_timestamp.utcoffset() is None
+            or min_timestamp >= max_timestamp
+        ):
+            raise ValueError("Demo settlement range must be increasing and timezone-aware")
+        values = _complete_page(
+            self._request(
+                "GET",
+                "/portfolio/settlements",
+                params={
+                    "limit": 1000,
+                    "min_ts": int(min_timestamp.astimezone(UTC).timestamp()),
+                    "max_ts": int(max_timestamp.astimezone(UTC).timestamp()),
+                },
+            ),
+            "settlements",
+        )
+        settlements: list[DemoRemoteSettlement] = []
+        for value in values:
+            if not isinstance(value, Mapping):
+                raise KalshiDemoExecutionError("malformed Demo settlement")
+            ticker = value.get("ticker")
+            settled_at = _timestamp_or_none(value.get("settled_time"), "settlement time")
+            if not isinstance(ticker, str) or not ticker or settled_at is None:
+                raise KalshiDemoExecutionError("malformed Demo settlement identity")
+            settlements.append(
+                DemoRemoteSettlement(
+                    ticker=ticker,
+                    settled_at=settled_at,
+                    revenue=_decimal(value.get("revenue"), "settlement revenue"),
+                    yes_total_cost=_decimal(
+                        value.get("yes_total_cost_dollars"), "settlement yes total cost"
+                    ),
+                    no_total_cost=_decimal(
+                        value.get("no_total_cost_dollars"), "settlement no total cost"
+                    ),
+                    fee=_decimal(value.get("fee_cost", 0), "settlement fee"),
+                )
+            )
+        return tuple(settlements)
 
     def create_order(self, request: DemoOrderRequest) -> DemoRemoteOrder:
         payload = self._request(

@@ -6,8 +6,8 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -73,6 +73,16 @@ class DemoRiskReason(StrEnum):
     RECONCILIATION_UNCERTAIN = "reconciliation_uncertain"
     FIXED_SIZING_POLICY = "fixed_sizing_policy"
     REMOTE_RISK_STATE_UNKNOWN = "remote_risk_state_unknown"
+    DEMO_BALANCE_UNAVAILABLE = "demo_balance_unavailable"
+    DEMO_POSITIONS_UNAVAILABLE = "demo_positions_unavailable"
+    DEMO_ORDERS_UNAVAILABLE = "demo_orders_unavailable"
+    DEMO_FILLS_UNAVAILABLE = "demo_fills_unavailable"
+    DEMO_DAILY_PNL_UNAVAILABLE = "demo_daily_pnl_unavailable"
+    DEMO_AUTH_UNAVAILABLE = "demo_auth_unavailable"
+    DEMO_REMOTE_TIMEOUT = "demo_remote_timeout"
+    DEMO_REMOTE_TRANSPORT_ERROR = "demo_remote_transport_error"
+    DEMO_REMOTE_HTTP_ERROR = "demo_remote_http_error"
+    DEMO_REMOTE_RECONCILIATION_REQUIRED = "demo_remote_reconciliation_required"
     OFFICIAL_TRUTH_UNAVAILABLE = "official_truth_unavailable"
     EXCHANGE_UNAVAILABLE = "exchange_unavailable"
     MARKET_NOT_TRADEABLE = "market_not_tradeable"
@@ -196,6 +206,8 @@ class DemoRiskContext:
     official_market_ticker: str | None = None
     official_market_status: str | None = None
     official_truth_received_at: datetime | None = None
+    remote_risk_start_at: datetime | None = None
+    remote_risk_end_at: datetime | None = None
 
     def __post_init__(self) -> None:
         values = (self.event_exposure, self.total_exposure, self.daily_realized_pnl)
@@ -212,6 +224,15 @@ class DemoRiskContext:
             or self.official_truth_received_at.utcoffset() is None
         ):
             raise ValueError("Demo official truth timestamp must be timezone-aware")
+        for value in (self.remote_risk_start_at, self.remote_risk_end_at):
+            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+                raise ValueError("Demo remote-risk timestamp must be timezone-aware")
+        if (
+            self.remote_risk_start_at is not None
+            and self.remote_risk_end_at is not None
+            and self.remote_risk_end_at < self.remote_risk_start_at
+        ):
+            raise ValueError("Demo remote-risk timestamps are not monotonic")
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,6 +392,9 @@ class DemoPreSubmitGuardResult:
     book_received_timestamp: datetime | None = None
     subscription_id: int | None = None
     sequence: int | None = None
+    remote_risk_start_at: datetime | None = None
+    remote_risk_end_at: datetime | None = None
+    remote_risk_latency_ms: str | None = None
 
     def diagnostics(self) -> dict[str, object]:
         def decimal(value: Decimal | None) -> str | None:
@@ -408,6 +432,13 @@ class DemoPreSubmitGuardResult:
             ),
             "subscription_id": self.subscription_id,
             "sequence": self.sequence,
+            "remote_risk_start_at": (
+                None if self.remote_risk_start_at is None else _timestamp(self.remote_risk_start_at)
+            ),
+            "remote_risk_end_at": (
+                None if self.remote_risk_end_at is None else _timestamp(self.remote_risk_end_at)
+            ),
+            "remote_risk_latency_ms": self.remote_risk_latency_ms,
         }
 
 
@@ -785,6 +816,7 @@ def _parse_aware_timestamp(value: object) -> datetime:
 class DemoRiskDecision:
     allowed: bool
     reasons: tuple[DemoRiskReason, ...]
+    diagnostics: Mapping[str, object] = field(default_factory=dict, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -811,6 +843,43 @@ def stable_client_order_id(intent: DemoIntent) -> str:
 
 def _timestamp(value: datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def _utc_day_start(value: datetime) -> datetime:
+    normalized = value.astimezone(UTC)
+    return datetime(normalized.year, normalized.month, normalized.day, tzinfo=UTC)
+
+
+def _remote_risk_diagnostics(started_at: datetime, ended_at: datetime) -> dict[str, str]:
+    latency = (ended_at - started_at).total_seconds() * 1000
+    if latency < 0:
+        raise DemoExecutionError("remote-risk clock moved backwards")
+    return {
+        "remote_risk_start_at": _timestamp(started_at),
+        "remote_risk_end_at": _timestamp(ended_at),
+        "remote_risk_latency_ms": f"{latency:.3f}",
+    }
+
+
+def _remote_risk_failure_reason(stage: str, error: KalshiDemoExecutionError) -> DemoRiskReason:
+    """Expose a stable, safe failure reason without exposing provider bodies."""
+
+    code = error.reason_code
+    if code in {"http_401", "http_403"}:
+        return DemoRiskReason.DEMO_AUTH_UNAVAILABLE
+    if code == "timeout":
+        return DemoRiskReason.DEMO_REMOTE_TIMEOUT
+    if code == "transport_error":
+        return DemoRiskReason.DEMO_REMOTE_TRANSPORT_ERROR
+    if code.startswith("http_"):
+        return DemoRiskReason.DEMO_REMOTE_HTTP_ERROR
+    return {
+        "balance": DemoRiskReason.DEMO_BALANCE_UNAVAILABLE,
+        "positions": DemoRiskReason.DEMO_POSITIONS_UNAVAILABLE,
+        "orders": DemoRiskReason.DEMO_ORDERS_UNAVAILABLE,
+        "fills": DemoRiskReason.DEMO_FILLS_UNAVAILABLE,
+        "settlements": DemoRiskReason.DEMO_DAILY_PNL_UNAVAILABLE,
+    }.get(stage, DemoRiskReason.OFFICIAL_TRUTH_UNAVAILABLE)
 
 
 def _canonical(value: object) -> str:
@@ -1170,6 +1239,16 @@ class DemoExecutionStore:
                 None
                 if context.official_truth_received_at is None
                 else _timestamp(context.official_truth_received_at)
+            ),
+            "remote_risk_start_at": (
+                None
+                if context.remote_risk_start_at is None
+                else _timestamp(context.remote_risk_start_at)
+            ),
+            "remote_risk_end_at": (
+                None
+                if context.remote_risk_end_at is None
+                else _timestamp(context.remote_risk_end_at)
             ),
         }
         context_hash = _digest(context_payload)
@@ -1614,16 +1693,55 @@ class DemoExecutionCoordinator:
             )
         guard_result: DemoPreSubmitGuardResult | None = None
         submit_intent = intent
+        remote_risk_started_at = self._utc_now()
+        utc_day_start = _utc_day_start(remote_risk_started_at)
+        remote_stage = "exchange"
         try:
             exchange = self._client.exchange_status()
+            remote_stage = "market"
             market = self._client.market(intent.ticker)
+            remote_stage = "balance"
             account = self._client.balance()
+            remote_stage = "positions"
             positions = self._client.positions()
+            remote_stage = "orders"
             remote_orders = self._client.orders()
+            remote_stage = "fills"
             self._client.fills()
-        except KalshiDemoExecutionError:
-            risk = DemoRiskDecision(False, (DemoRiskReason.OFFICIAL_TRUTH_UNAVAILABLE,))
+            remote_stage = "settlements"
+            settlements = self._client.settlements(
+                # The API's min_ts is strictly "after" its bound.  Include
+                # one extra second and filter exact timestamps locally so a
+                # settlement at UTC midnight cannot be silently omitted.
+                min_timestamp=utc_day_start - timedelta(seconds=1),
+                max_timestamp=self._utc_now(),
+            )
+        except KalshiDemoExecutionError as error:
+            remote_risk_ended_at = self._utc_now()
+            remote_failure_reason = _remote_risk_failure_reason(remote_stage, error)
+            remote_diagnostics = _remote_risk_diagnostics(
+                remote_risk_started_at, remote_risk_ended_at
+            )
+            effective_context = replace(
+                context,
+                remote_risk_start_at=remote_risk_started_at,
+                remote_risk_end_at=remote_risk_ended_at,
+            )
+            risk = DemoRiskDecision(
+                False,
+                (remote_failure_reason,),
+                remote_diagnostics,
+            )
+            self._store.append_execution_diagnostic(
+                client_id,
+                DemoExecutionResultCode.DATA_UNAVAILABLE,
+                {"typed_reason": remote_failure_reason.value, **remote_diagnostics},
+            )
         else:
+            remote_risk_ended_at = self._utc_now()
+            remote_diagnostics = _remote_risk_diagnostics(
+                remote_risk_started_at, remote_risk_ended_at
+            )
             if market.ticker != intent.ticker:
                 raise DemoExecutionError(
                     "official Demo market identity conflicts with immutable intent"
@@ -1661,6 +1779,14 @@ class DemoExecutionCoordinator:
                 ),
                 Decimal(0),
             )
+            daily_realized_pnl = sum(
+                (
+                    settlement.realized_pnl
+                    for settlement in settlements
+                    if utc_day_start <= settlement.settled_at <= remote_risk_ended_at
+                ),
+                Decimal(0),
+            )
             official_received_at = max(exchange.received_at, market.received_at)
             effective_context = replace(
                 context,
@@ -1671,12 +1797,16 @@ class DemoExecutionCoordinator:
                 account_state_known=True,
                 positions_state_known=True,
                 open_orders_state_known=True,
+                daily_realized_pnl=daily_realized_pnl,
+                daily_pnl_known=True,
                 official_buying_power=account.buying_power,
                 official_exchange_active=exchange.exchange_active,
                 official_trading_active=exchange.trading_active,
                 official_market_ticker=market.ticker,
                 official_market_status=market.status,
                 official_truth_received_at=official_received_at,
+                remote_risk_start_at=remote_risk_started_at,
+                remote_risk_end_at=remote_risk_ended_at,
             )
             quote = (
                 None
@@ -1694,7 +1824,13 @@ class DemoExecutionCoordinator:
                 evaluated_at=self._utc_now(),
                 data_unavailable_reason=unavailable_reason,
             )
-            guard_result = replace(guard_result, pre_submit_ready_at=self._utc_now())
+            guard_result = replace(
+                guard_result,
+                pre_submit_ready_at=self._utc_now(),
+                remote_risk_start_at=remote_risk_started_at,
+                remote_risk_end_at=remote_risk_ended_at,
+                remote_risk_latency_ms=remote_diagnostics["remote_risk_latency_ms"],
+            )
             self._store.append_execution_diagnostic(
                 client_id,
                 guard_result.code,
@@ -1710,6 +1846,15 @@ class DemoExecutionCoordinator:
                 writes_enabled=self._writes_enabled,
                 execution_smoke_approved=self._execution_smoke_approved,
             )
+            if remote_uncertain:
+                risk = DemoRiskDecision(
+                    False,
+                    tuple(
+                        dict.fromkeys(
+                            (*risk.reasons, DemoRiskReason.DEMO_REMOTE_RECONCILIATION_REQUIRED)
+                        )
+                    ),
+                )
             if account.buying_power < submit_intent.count * submit_intent.price:
                 risk = DemoRiskDecision(
                     False,
@@ -1744,6 +1889,7 @@ class DemoExecutionCoordinator:
                     False,
                     tuple(dict.fromkeys((*risk.reasons, guard_reason))),
                 )
+            risk = replace(risk, diagnostics=remote_diagnostics)
         self._store.append_risk(client_id, risk, effective_context, policy_hash)
         if not risk.allowed:
             return guard_result if guard_result is not None and not guard_result.allowed else risk
