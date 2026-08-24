@@ -225,16 +225,26 @@ class RecorderProcessController:
                 # recorder isolated from Ctrl+C delivered while the UI shuts down.
                 flags = WINDOWS_BACKGROUND_FLAGS
             launched_at = datetime.now(UTC)
-            process = self._popen(
-                [sys.executable, "-m", "live15_quant.managed_recorder"],
-                cwd=project_root(),
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-                creationflags=flags,
-            )
+            logs = project_root() / "logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            # A managed startup must preserve its traceback locally.  Dropping
+            # stderr made a typed fatal health field impossible to diagnose after
+            # the child had exited.  The recorder never logs credentials; this
+            # file is operational diagnostics only.
+            with (
+                (logs / "managed_recorder.log").open("ab") as stdout,
+                (logs / "managed_recorder.error.log").open("ab") as stderr,
+            ):
+                process = self._popen(
+                    [sys.executable, "-m", "live15_quant.managed_recorder"],
+                    cwd=project_root(),
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout,
+                    stderr=stderr,
+                    close_fds=True,
+                    creationflags=flags,
+                )
             deadline = self._monotonic() + self.start_timeout
             while self._monotonic() < deadline:
                 status = self.status()

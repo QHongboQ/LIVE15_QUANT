@@ -88,6 +88,12 @@ class DataGapConflictError(RecorderStorageError):
     """Raised when one logical gap is presented with contradictory facts."""
 
 
+# Startup may only inspect a fixed, indexed recovery window per configured
+# stream.  A larger unresolved backlog is an explicit operator-facing failure,
+# never an unbounded scan or a silent loss of gap facts.
+_MAX_ACTIVE_GAPS_PER_STREAM = 1_024
+
+
 class TrainingDataUnavailableReason(StrEnum):
     OFFICIAL_SETTLEMENT_UNAVAILABLE = "official_settlement_unavailable"
     MISSING_DECISION_TIME_METADATA = "missing_decision_time_metadata"
@@ -1300,7 +1306,15 @@ class RecorderStore:
         )
 
     def active_data_gaps(self, streams: Sequence[GapStream] | None = None) -> tuple[DataGap, ...]:
-        """Return the latest append-only OPEN facts not followed by recovery."""
+        """Return bounded append-only OPEN facts not followed by recovery.
+
+        More than one historical OPEN fact can legitimately remain for a stream
+        after repeated interrupted recoveries.  They are distinct immutable
+        facts, not a conflict to collapse or overwrite.  Callers must recover
+        each fact from a later real observation.  The per-stream cap keeps
+        startup recovery bounded and fails loudly if an operator intervention is
+        required.
+        """
 
         if streams is not None:
             active: list[DataGap] = []
@@ -1315,14 +1329,18 @@ class RecorderStore:
                               AND closed.instrument=open.instrument
                               AND closed.gap_start=open.gap_start AND closed.recovered=1
                         )
-                        ORDER BY open.gap_start DESC,open.id DESC LIMIT 2""",
-                        (stream.source.value, stream.asset.value, stream.instrument),
+                        ORDER BY open.gap_start DESC,open.id DESC LIMIT ?""",
+                        (
+                            stream.source.value,
+                            stream.asset.value,
+                            stream.instrument,
+                            _MAX_ACTIVE_GAPS_PER_STREAM + 1,
+                        ),
                     )
                 )
-                if len(rows) > 1:
-                    raise RecorderStorageError("multiple active gaps exist for one source stream")
-                if rows:
-                    active.append(self._data_gap(rows[0]))
+                if len(rows) > _MAX_ACTIVE_GAPS_PER_STREAM:
+                    raise RecorderStorageError("active gap recovery backlog exceeds bounded limit")
+                active.extend(self._data_gap(row) for row in rows)
             return tuple(
                 sorted(
                     active,

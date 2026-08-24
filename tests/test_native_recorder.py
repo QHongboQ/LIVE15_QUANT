@@ -13,7 +13,7 @@ import requests
 
 import live15_quant.cli as cli
 from live15_quant.config import Settings
-from live15_quant.gaps import GapReason, GapSource, effective_data_gaps
+from live15_quant.gaps import DataGap, GapReason, GapSource, effective_data_gaps
 from live15_quant.kalshi_lifecycle import (
     KalshiDiscovery,
     KalshiLifecycle,
@@ -1170,6 +1170,66 @@ def test_restart_recovers_persisted_active_gap_without_duplicate_open(tmp_path) 
         restarted._open_due_gaps(NOW + timedelta(seconds=5))
         assert recovered.count("data_gaps") == 1
         assert len(recovered.active_data_gaps()) == 1
+
+
+def test_restart_recovers_all_distinct_active_gap_facts_after_real_observation(tmp_path) -> None:
+    """Interrupted recovery facts stay append-only and do not block the recorder."""
+
+    path = tmp_path / "multiple-active-gaps.sqlite3"
+    settings = Settings(
+        products=("BTC-USD",),
+        recorder_coinbase_stale_seconds=15,
+        recorder_health_path=tmp_path / "health.json",
+    )
+    first = DataGap(
+        source=GapSource.COINBASE,
+        asset=Asset.BTC,
+        instrument="BTC-USD",
+        gap_start=NOW - timedelta(seconds=90),
+        gap_end=None,
+        detected_at=NOW - timedelta(seconds=75),
+        threshold_seconds=Decimal("15"),
+        reason=GapReason.RESTART,
+        recovered=False,
+        recorder_session_id="first-session",
+    )
+    second = DataGap(
+        source=GapSource.COINBASE,
+        asset=Asset.BTC,
+        instrument="BTC-USD",
+        gap_start=NOW - timedelta(seconds=45),
+        gap_end=None,
+        detected_at=NOW - timedelta(seconds=30),
+        threshold_seconds=Decimal("15"),
+        reason=GapReason.SOURCE_OUTAGE,
+        recovered=False,
+        recorder_session_id="second-session",
+    )
+    with RecorderStore(path) as store:
+        store.append_data_gaps((first, second))
+        recorder = KalshiNativeRecorder(
+            settings,
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        assert len(store.active_data_gaps()) == 2
+
+        recorder._observe_gap(
+            GapSource.COINBASE,
+            Asset.BTC,
+            NOW,
+            source_health_key="coinbase",
+        )
+
+        assert store.active_data_gaps() == ()
+        facts = effective_data_gaps(store.replay_data_gaps())
+        assert [(fact.gap_start, fact.recovered) for fact in facts] == [
+            (first.gap_start, True),
+            (second.gap_start, True),
+        ]
 
 
 @pytest.mark.asyncio

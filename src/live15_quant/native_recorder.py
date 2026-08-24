@@ -557,11 +557,13 @@ class KalshiNativeRecorder:
             if self._hot_ws_access_evidence_complete
             else None
         )
-        self._active_gaps = {
-            (gap.source, gap.asset): gap
-            for gap in store.active_data_gaps(tuple(self._gap_streams.values()))
-            if (gap.source, gap.asset) in self._gap_streams
-        }
+        self._active_gaps: dict[tuple[GapSource, Asset], list[DataGap]] = {}
+        for gap in store.active_data_gaps(tuple(self._gap_streams.values())):
+            key = (gap.source, gap.asset)
+            if key in self._gap_streams:
+                self._active_gaps.setdefault(key, []).append(gap)
+        for gaps in self._active_gaps.values():
+            gaps.sort(key=lambda gap: (gap.gap_start, gap.detected_at))
         self._mark_startup_phase("gap_recovery", phase_started)
         phase_started = self._startup_phase_started()
         self._archive_service: WsArchiveService | None = None
@@ -912,19 +914,33 @@ class KalshiNativeRecorder:
         stream = self._gap_streams[(source, asset)]
         received = received.astimezone(UTC)
         previous = self._gap_last.get((source, asset))
-        active = self._active_gaps.get((source, asset))
-        recovered_active_range: tuple[datetime, datetime] | None = None
-        if active is not None and received > active.gap_start:
+        key = (source, asset)
+        recovered_active_ranges: set[tuple[datetime, datetime]] = set()
+        unresolved: list[DataGap] = []
+        for active in self._active_gaps.get(key, ()):
+            if received <= active.gap_start:
+                unresolved.append(active)
+                continue
             intervals = self._gap_open_intervals(stream, active.gap_start, received)
-            if intervals:
-                gap_start, gap_end = intervals[0]
-                if gap_start == active.gap_start and gap_end > gap_start:
-                    self._recover_gap(active, gap_end)
-                    recovered_active_range = (gap_start, gap_end)
-            self._active_gaps.pop((source, asset), None)
+            if not intervals:
+                # A closed market cannot supply the real observation needed to
+                # close this fact.  Keep it fail-closed rather than inventing an
+                # endpoint.
+                unresolved.append(active)
+                continue
+            gap_start, gap_end = intervals[0]
+            if gap_start != active.gap_start or gap_end <= gap_start:
+                unresolved.append(active)
+                continue
+            self._recover_gap(active, gap_end)
+            recovered_active_ranges.add((gap_start, gap_end))
+        if unresolved:
+            self._active_gaps[key] = unresolved
+        else:
+            self._active_gaps.pop(key, None)
         if previous is not None and received > previous:
             for gap_start, gap_end in self._gap_open_intervals(stream, previous, received):
-                if recovered_active_range == (gap_start, gap_end):
+                if (gap_start, gap_end) in recovered_active_ranges:
                     continue
                 if timedelta_seconds(gap_end - gap_start) <= stream.threshold_seconds:
                     continue
@@ -935,7 +951,13 @@ class KalshiNativeRecorder:
                     detected_at=self._utc_now(),
                 )
                 self._recover_gap(opened, gap_end)
-                self._active_gaps.pop((source, asset), None)
+                remaining = [
+                    active for active in self._active_gaps.get(key, ()) if active != opened
+                ]
+                if remaining:
+                    self._active_gaps[key] = remaining
+                else:
+                    self._active_gaps.pop(key, None)
         if previous is None or received > previous:
             self._gap_last[(source, asset)] = received
 
@@ -1004,7 +1026,11 @@ class KalshiNativeRecorder:
         )
         if self._store.append_data_gap(active):
             self._wrote("data_gaps")
-        self._active_gaps[(stream.source, stream.asset)] = active
+        key = (stream.source, stream.asset)
+        active_gaps = self._active_gaps.setdefault(key, [])
+        if active not in active_gaps:
+            active_gaps.append(active)
+            active_gaps.sort(key=lambda gap: (gap.gap_start, gap.detected_at))
         return active
 
     def _open_due_gaps(self, observed: datetime) -> None:
@@ -1012,14 +1038,18 @@ class KalshiNativeRecorder:
 
         for key, previous in tuple(self._gap_last.items()):
             stream = self._gap_streams[key]
-            active = self._active_gaps.get(key)
-            if active is not None:
+            unresolved: list[DataGap] = []
+            for active in self._active_gaps.get(key, ()):
                 intervals = self._gap_open_intervals(stream, active.gap_start, observed)
                 if intervals and intervals[0][1] < observed:
                     self._recover_gap(active, intervals[0][1])
-                    self._active_gaps.pop(key, None)
-                    active = None
-            if active is not None or not self._gap_stream_enabled(stream):
+                else:
+                    unresolved.append(active)
+            if unresolved:
+                self._active_gaps[key] = unresolved
+            else:
+                self._active_gaps.pop(key, None)
+            if unresolved or not self._gap_stream_enabled(stream):
                 continue
             intervals = self._gap_open_intervals(stream, previous, observed)
             if not intervals:
@@ -1965,7 +1995,7 @@ class KalshiNativeRecorder:
         detected = self._utc_now()
         for asset in self._health.current:
             key = (GapSource.KALSHI_WS, asset)
-            if key in self._active_gaps:
+            if self._active_gaps.get(key):
                 continue
             start = self._gap_last.get(key, self._health.kalshi_ws_last_books.get(asset, detected))
             self._open_gap(
@@ -2169,7 +2199,7 @@ class KalshiNativeRecorder:
                 self._health.kalshi_ws_synchronized.pop(asset, None)
                 self._kalshi_ws_books.pop(asset, None)
                 gap_key = (GapSource.KALSHI_WS, asset)
-                if gap_key not in self._active_gaps:
+                if not self._active_gaps.get(gap_key):
                     observed = self._utc_now()
                     self._open_gap(
                         self._gap_streams[gap_key],
@@ -2197,7 +2227,7 @@ class KalshiNativeRecorder:
                     self._health.kalshi_ws_synchronized.pop(asset, None)
                     self._kalshi_ws_books.pop(asset, None)
                     gap_key = (GapSource.KALSHI_WS, asset)
-                    if gap_key not in self._active_gaps:
+                    if not self._active_gaps.get(gap_key):
                         observed = self._utc_now()
                         self._open_gap(
                             self._gap_streams[gap_key],
@@ -2445,7 +2475,7 @@ class KalshiNativeRecorder:
                         ws_resyncs=int(getattr(diagnostics, "resyncs", 0)),
                         ws_reconnects=int(getattr(diagnostics, "reconnects", 0)),
                         data_gap_incidents=int(self._health.row_counts.get("data_gaps", 0)),
-                        unresolved_data_gaps=len(self._active_gaps),
+                        unresolved_data_gaps=sum(len(gaps) for gaps in self._active_gaps.values()),
                         archive_or_replay_failure=int(manifest_metrics.get("failed") or 0) > 0,
                         serious_runtime_incident=(
                             self._health.fatal_task is not None

@@ -192,6 +192,8 @@ def test_start_and_graceful_pause_use_fixed_process_and_bounded_wait(tmp_path, m
     assert captured["kwargs"]["stdin"] is not None  # type: ignore[index]
     assert captured["kwargs"]["stdout"] is not None  # type: ignore[index]
     assert captured["kwargs"]["stderr"] is not None  # type: ignore[index]
+    assert Path(captured["kwargs"]["stdout"].name).name == "managed_recorder.log"  # type: ignore[index,union-attr]
+    assert Path(captured["kwargs"]["stderr"].name).name == "managed_recorder.error.log"  # type: ignore[index,union-attr]
     assert captured["kwargs"]["creationflags"] == WINDOWS_BACKGROUND_FLAGS  # type: ignore[index]
     assert captured["kwargs"]["env"]["LIVE15_ENABLE_SECONDARY_UNDERLYING"] == "true"  # type: ignore[index]
     assert captured["kwargs"]["env"]["LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET"] == "true"  # type: ignore[index]
