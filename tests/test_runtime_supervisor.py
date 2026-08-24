@@ -20,6 +20,7 @@ from live15_quant.runtime_status import (
     read_json,
 )
 from live15_quant.runtime_supervisor import RuntimeSupervisor
+from live15_quant.shadow_execution import DEMO_REAL_WRITE_FROZEN_PROVIDER_BLOCKER
 
 NOW = datetime(2026, 8, 24, tzinfo=UTC)
 
@@ -111,6 +112,38 @@ def test_supervisor_starts_control_center_then_paper_after_healthy_recorder(
     status = read_json(tmp_path / "runtime" / "runtime-supervisor-status.json")
     assert status is not None
     assert status["expected_mode"] == "RUNTIME_SUPERVISOR_NO_TRADING"
+
+
+def test_first_fill_projection_freezes_stale_real_write_mode(tmp_path: Path) -> None:
+    def popen(command, **_kwargs):
+        return FakeProcess(command)
+
+    supervisor = RuntimeSupervisor(
+        configured(tmp_path),
+        root=tmp_path,
+        controller=FakeController(),
+        popen=popen,
+    )
+    status_path = tmp_path / "runtime" / "demo_first_fill_status.json"
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(
+        json.dumps(
+            {
+                "status": "STOPPED",
+                "pid": 0,
+                "execution_mode": "DEMO_WRITE_ENABLED_UNTIL_FIRST_FILL",
+                "post_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    component = supervisor._first_fill_status()
+
+    assert component["status"] == "STOPPED"
+    assert component["expected_mode"] == DEMO_REAL_WRITE_FROZEN_PROVIDER_BLOCKER
+    assert component["demo_real_write_state"] == DEMO_REAL_WRITE_FROZEN_PROVIDER_BLOCKER
+    assert component["historical_execution_mode"] == "DEMO_WRITE_ENABLED_UNTIL_FIRST_FILL"
 
 
 def test_paper_waits_for_healthy_recorder(tmp_path: Path) -> None:

@@ -32,6 +32,7 @@ from live15_quant.runtime_status import (
     read_json,
     utc_timestamp,
 )
+from live15_quant.shadow_execution import DEMO_REAL_WRITE_FROZEN_PROVIDER_BLOCKER
 
 logger = logging.getLogger(__name__)
 
@@ -429,9 +430,16 @@ class RuntimeSupervisor:
             "heartbeat_age_seconds": max(0.0, age) if age is not None else None,
             "last_error": payload.get("last_error") if payload else None,
             "process_alive": pid > 0 and process_alive(pid),
-            "expected_mode": str(payload.get("execution_mode", "DRY_RUN_WRITE_DISABLED"))
-            if payload
-            else "DISABLED_WRITE_DISABLED",
+            # The persisted First-Fill status may describe a historical user
+            # launch.  It must not imply current Demo-write availability after
+            # the independently verified provider-side write blocker.
+            "expected_mode": DEMO_REAL_WRITE_FROZEN_PROVIDER_BLOCKER,
+            "historical_execution_mode": (
+                str(payload.get("execution_mode", "DRY_RUN_WRITE_DISABLED"))
+                if payload
+                else "DISABLED_WRITE_DISABLED"
+            ),
+            "demo_real_write_state": DEMO_REAL_WRITE_FROZEN_PROVIDER_BLOCKER,
             "status_path": str(path.resolve()),
             "receipt_path": str((self.runtime / "demo_first_fill_worker.lock").resolve()),
             "log_path": str((self.logs / "demo_first_fill_worker.log").resolve()),
