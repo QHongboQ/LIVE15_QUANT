@@ -18,6 +18,7 @@ from live15_quant.runtime_status import (
     read_json,
     utc_timestamp,
 )
+from live15_quant.shadow_execution import DEMO_REAL_WRITE_FROZEN_PROVIDER_BLOCKER
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ def main() -> None:
         expected_mode="PAPER_SHADOW_LOCAL_ONLY",
         working_directory=root,
         log_path=log_path,
+        extra={"demo_real_write_state": DEMO_REAL_WRITE_FROZEN_PROVIDER_BLOCKER},
     )
     atomic_json(status_path, status)
     try:

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from live15_quant.demo_execution import DemoSynchronizedQuote
 from live15_quant.execution import ContractOutcome
 from live15_quant.forward_shadow import (
     FORWARD_CANDIDATES,
@@ -31,6 +32,7 @@ from live15_quant.paper import PaperPortfolio
 from live15_quant.paper_execution import KalshiPaperExecutionProvider, PaperExecutionError
 from live15_quant.paper_storage import PaperStore
 from live15_quant.risk import HardRiskLimits, ImmutableHardRiskLayer
+from live15_quant.shadow_execution import ShadowExitAction
 
 
 def _payload(
@@ -124,6 +126,74 @@ def test_forward_metrics_count_only_officially_settled_predictions(tmp_path) -> 
         assert metric["brier"] == pytest.approx(0.09)
         assert metric["net_pnl"] == "0.28"
         assert metric["gross_pnl"] == "0.30"
+
+
+def test_dynamic_exit_candidates_are_append_only_and_do_not_change_forward_baseline(
+    tmp_path,
+) -> None:
+    with ForwardShadowStore(
+        tmp_path / "forward.sqlite3",
+        lineage={"dataset_id": "d", "model_artifact_hash": "h", "model_zoo_v2": "z"},
+    ) as store:
+        timestamp = store.started_at
+        assert store.append_dynamic_exit_candidate(
+            model_id="logistic_l2_identity",
+            opportunity_id="open-position",
+            ticker="KXBTC15M-example",
+            observed_at=timestamp,
+            action=ShadowExitAction.TAKE_PROFIT,
+            reason="executable_take_profit",
+            executable_bid=Decimal("0.75"),
+            close_now_ev=Decimal("0.75"),
+            hold_ev=Decimal("0.70"),
+            mark_change=Decimal("0.05"),
+            quote_source="kalshi_ws_live_projection",
+            quote_timestamp=timestamp,
+        )
+        assert not store.append_dynamic_exit_candidate(
+            model_id="logistic_l2_identity",
+            opportunity_id="open-position",
+            ticker="KXBTC15M-example",
+            observed_at=timestamp,
+            action=ShadowExitAction.TAKE_PROFIT,
+            reason="executable_take_profit",
+            executable_bid=Decimal("0.75"),
+            close_now_ev=Decimal("0.75"),
+            hold_ev=Decimal("0.70"),
+            mark_change=Decimal("0.05"),
+            quote_source="kalshi_ws_live_projection",
+            quote_timestamp=timestamp,
+        )
+        assert not store.append_dynamic_exit_candidate(
+            model_id="logistic_l2_identity",
+            opportunity_id="open-position",
+            ticker="KXBTC15M-example",
+            observed_at=timestamp + timedelta(seconds=1),
+            action=ShadowExitAction.TAKE_PROFIT,
+            reason="different_later_quote",
+            executable_bid=Decimal("0.76"),
+            close_now_ev=Decimal("0.75"),
+            hold_ev=Decimal("0.70"),
+            mark_change=Decimal("0.05"),
+            quote_source="kalshi_ws_live_projection",
+            quote_timestamp=timestamp + timedelta(seconds=1),
+        )
+        with pytest.raises(ForwardShadowError, match="conflicts"):
+            store.append_dynamic_exit_candidate(
+                model_id="logistic_l2_identity",
+                opportunity_id="open-position",
+                ticker="KXBTC15M-other",
+                observed_at=timestamp,
+                action=ShadowExitAction.TAKE_PROFIT,
+                reason="wrong_ticker",
+                executable_bid=Decimal("0.75"),
+                close_now_ev=Decimal("0.75"),
+                hold_ev=Decimal("0.70"),
+                mark_change=Decimal("0.05"),
+                quote_source="kalshi_ws_live_projection",
+                quote_timestamp=timestamp,
+            )
+        assert store.summary()["dynamic_exit_candidates"] == 1
 
 
 def test_reconciliation_ignores_rejected_attempts_and_settles_only_filled_decision(
@@ -351,11 +421,34 @@ def test_three_forward_candidates_use_isolated_paper_portfolios_and_no_pyramidin
             return Decimal("0.70")
 
     runtime = object.__new__(ForwardShadowRuntime)
-    runtime.settings = SimpleNamespace(forward_shadow_order_quantity=Decimal("1"))
+    runtime.settings = SimpleNamespace(
+        forward_shadow_order_quantity=Decimal("1"),
+        kalshi_websocket_stale_seconds=120,
+    )
     runtime.models = Models()
     runtime.dataset = SimpleNamespace(dataset_id="dataset")
     stores: list[PaperStore] = []
     runtime.executions = {}
+    live_now = datetime.now(UTC)
+    runtime.execution_quotes = SimpleNamespace(
+        latest_quote=lambda ticker: DemoSynchronizedQuote(
+            ticker=ticker,
+            received_timestamp=live_now,
+            synchronized=True,
+            yes_bid=Decimal("0.60"),
+            yes_ask=Decimal("0.60"),
+            no_bid=Decimal("0.40"),
+            no_ask=Decimal("0.40"),
+            source="LIVE_KALSHI_WS",
+            book_received_timestamp=live_now,
+            live_book_read_at=live_now,
+            subscription_id=1,
+            sequence=1,
+            yes_bid_depth=((Decimal("0.60"), Decimal("2")),),
+            no_bid_depth=((Decimal("0.40"), Decimal("2")),),
+        ),
+        last_unavailable_reason=lambda _ticker: None,
+    )
     try:
         for model_id, _threshold in FORWARD_CANDIDATES:
             store = PaperStore(

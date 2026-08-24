@@ -301,6 +301,10 @@ class DemoSynchronizedQuote:
     live_book_read_at: datetime | None = None
     subscription_id: int | None = None
     sequence: int | None = None
+    # Full atomic depth is optional for legacy checkpoint readers, but required
+    # when a Shadow fill is projected from the Recorder-owned live WS snapshot.
+    yes_bid_depth: tuple[tuple[Decimal, Decimal], ...] = ()
+    no_bid_depth: tuple[tuple[Decimal, Decimal], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.ticker or self.received_timestamp.tzinfo is None:
@@ -339,6 +343,15 @@ class DemoSynchronizedQuote:
         if self.no_bid is not None and self.yes_ask is not None:
             if self.no_bid + self.yes_ask != Decimal(1):
                 raise ValueError("pre-submit NO bid/YES ask are not complementary")
+        for levels in (self.yes_bid_depth, self.no_bid_depth):
+            for price, quantity in levels:
+                if (
+                    not price.is_finite()
+                    or not quantity.is_finite()
+                    or not Decimal(0) < price < Decimal(1)
+                    or quantity <= 0
+                ):
+                    raise ValueError("pre-submit depth level is invalid")
 
 
 class DemoPreSubmitQuoteSource(Protocol):
@@ -774,6 +787,8 @@ class LiveKalshiWsQuoteSource:
                 live_book_read_at=read_at,
                 subscription_id=subscription_id,
                 sequence=sequence,
+                yes_bid_depth=yes,
+                no_bid_depth=no,
             )
         except (KeyError, InvalidOperation, TypeError, ValueError):
             self._unavailable(ticker, DemoDataUnavailableReason.LIVE_WS_STATE_MALFORMED)

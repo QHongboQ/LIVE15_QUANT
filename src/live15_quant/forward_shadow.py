@@ -23,6 +23,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from live15_quant.config import Settings
+from live15_quant.demo_execution import LiveKalshiWsQuoteSource
 from live15_quant.execution import ContractOutcome
 from live15_quant.features import (
     COINBASE_PRODUCT_BY_ASSET,
@@ -54,6 +55,12 @@ from live15_quant.paper_execution import KalshiPaperExecutionProvider, PaperExec
 from live15_quant.paper_storage import PaperStore
 from live15_quant.records import KalshiNativeQuoteRecord
 from live15_quant.risk import HardRiskLimits, ImmutableHardRiskLayer
+from live15_quant.shadow_execution import (
+    ShadowExecutor,
+    ShadowExitAction,
+    evaluate_shadow_exit,
+    live_ws_prediction_quote,
+)
 from live15_quant.storage import RecorderStore
 
 FORWARD_VERSION = "1.0.0"
@@ -250,6 +257,24 @@ class ForwardShadowStore:
                 ) STRICT;
                 CREATE INDEX idx_forward_reconciliation_issues_pending
                 ON forward_reconciliation_issues(model_id,ticker,reason);
+                CREATE TABLE forward_dynamic_exit_candidates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_id TEXT NOT NULL,
+                    opportunity_id TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    executable_bid TEXT,
+                    close_now_ev TEXT,
+                    hold_ev TEXT,
+                    mark_change TEXT,
+                    quote_source TEXT NOT NULL,
+                    quote_timestamp TEXT NOT NULL,
+                    UNIQUE(model_id,opportunity_id,action)
+                ) STRICT;
+                CREATE INDEX idx_forward_dynamic_exit_candidates_ticker
+                ON forward_dynamic_exit_candidates(model_id,ticker,observed_at,id);
                 """
             )
             metadata = {"schema_version": FORWARD_VERSION, **lineage}
@@ -297,6 +322,24 @@ class ForwardShadowStore:
             ) STRICT;
             CREATE INDEX IF NOT EXISTS idx_forward_reconciliation_issues_pending
             ON forward_reconciliation_issues(model_id,ticker,reason);
+            CREATE TABLE IF NOT EXISTS forward_dynamic_exit_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_id TEXT NOT NULL,
+                opportunity_id TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                action TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                executable_bid TEXT,
+                close_now_ev TEXT,
+                hold_ev TEXT,
+                mark_change TEXT,
+                quote_source TEXT NOT NULL,
+                quote_timestamp TEXT NOT NULL,
+                UNIQUE(model_id,opportunity_id,action)
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS idx_forward_dynamic_exit_candidates_ticker
+            ON forward_dynamic_exit_candidates(model_id,ticker,observed_at,id);
             """
         )
         self._connection.commit()
@@ -538,6 +581,80 @@ class ForwardShadowStore:
             self._connection.rollback()
             raise
 
+    def append_dynamic_exit_candidate(
+        self,
+        *,
+        model_id: str,
+        opportunity_id: str,
+        ticker: str,
+        observed_at: datetime,
+        action: ShadowExitAction,
+        reason: str,
+        executable_bid: Decimal | None,
+        close_now_ev: Decimal | None,
+        hold_ev: Decimal | None,
+        mark_change: Decimal | None,
+        quote_source: str,
+        quote_timestamp: datetime,
+    ) -> bool:
+        """Append a non-mutating dynamic-exit comparison fact exactly once.
+
+        The hold-to-settlement portfolio remains the frozen v2 forward baseline.
+        This side table preserves an auditable dynamic-exit candidate without
+        silently changing that baseline or sending an order.
+        """
+
+        if action is ShadowExitAction.NO_ACTION:
+            return False
+        if (
+            not quote_source
+            or quote_timestamp.tzinfo is None
+            or quote_timestamp.utcoffset() is None
+        ):
+            raise ForwardShadowError("dynamic exit quote provenance is malformed")
+        values = (
+            model_id,
+            opportunity_id,
+            ticker,
+            _timestamp(observed_at),
+            action.value,
+            reason,
+            _decimal(executable_bid),
+            _decimal(close_now_ev),
+            _decimal(hold_ev),
+            _decimal(mark_change),
+            quote_source,
+            _timestamp(quote_timestamp),
+        )
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            existing = self._connection.execute(
+                """SELECT ticker FROM forward_dynamic_exit_candidates
+                   WHERE model_id=? AND opportunity_id=? AND action=?""",
+                (model_id, opportunity_id, action.value),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["ticker"]) != ticker:
+                    raise ForwardShadowError("dynamic exit candidate conflicts with immutable fact")
+                # A candidate is the first durable observation of a specific
+                # exit condition.  Later quotes legitimately move; they must
+                # not turn an already-recorded advisory into a worker-fatal
+                # conflict or overwrite its original evidence.
+                self._connection.rollback()
+                return False
+            self._connection.execute(
+                """INSERT INTO forward_dynamic_exit_candidates(
+                   model_id,opportunity_id,ticker,observed_at,action,reason,executable_bid,
+                   close_now_ev,hold_ev,mark_change,quote_source,quote_timestamp
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                values,
+            )
+            self._connection.commit()
+            return True
+        except Exception:
+            self._connection.rollback()
+            raise
+
     def summary(self) -> dict[str, int]:
         return {
             "predictions": int(
@@ -558,6 +675,11 @@ class ForwardShadowStore:
             "settled": int(
                 self._connection.execute("SELECT COUNT(*) FROM forward_settlements").fetchone()[0]
             ),
+            "dynamic_exit_candidates": int(
+                self._connection.execute(
+                    "SELECT COUNT(*) FROM forward_dynamic_exit_candidates"
+                ).fetchone()[0]
+            ),
         }
 
     def metrics(self) -> dict[str, dict[str, object]]:
@@ -570,7 +692,8 @@ class ForwardShadowStore:
         rows = tuple(
             self._connection.execute(
                 """SELECT d.model_id,d.asset,d.bucket_seconds,d.prediction,d.action,d.yes_edge,
-                d.no_edge,d.fees,d.paper_order_id,d.fill_state,d.filled_quantity,s.outcome_yes,
+                d.no_edge,d.fees,d.paper_order_id,d.fill_state,d.fill_reason,d.data_status,
+                d.data_reason,d.filled_quantity,s.outcome_yes,
                 s.settlement_timestamp,s.realized_pnl FROM forward_decisions AS d
                 LEFT JOIN forward_settlements AS s
                 ON s.model_id=d.model_id AND s.opportunity_id=d.opportunity_id
@@ -654,6 +777,13 @@ def _forward_metric_summary(
             raise ForwardShadowError("actionable forward decision lacks its immutable edge")
         expected_edges.append(Decimal(str(edge)))
     filled = [row for row in actionable if Decimal(str(row["filled_quantity"] or "0")) > 0]
+    stale_quote_skips = [
+        row
+        for row in rows
+        if row["data_status"] == "data_unavailable"
+        and "stale" in str(row["data_reason"] or "").lower()
+    ]
+    price_moved_skips = [row for row in actionable if row["fill_reason"] == "price_moved"]
     result: dict[str, object] = {
         "predictions": len(predictions),
         "holds": len([row for row in rows if row["action"] == "hold"]),
@@ -673,6 +803,9 @@ def _forward_metric_summary(
                 or Decimal(str(row["filled_quantity"] or "0")) == 0
             ]
         ),
+        "fill_opportunity_rate": None if not actionable else len(filled) / len(actionable),
+        "skipped_due_to_stale_quote": len(stale_quote_skips),
+        "skipped_due_to_price_move": len(price_moved_skips),
         "open_positions": len(
             [
                 row
@@ -1429,8 +1562,11 @@ class ForwardShadowRuntime:
             candidate_ids=self.candidate_ids,
         )
         self.reader = LiveForwardReader(settings)
-        self.executions: dict[str, KalshiPaperExecutionProvider] = {}
+        self.executions: dict[str, ShadowExecutor] = {}
         self.paper_stores: list[PaperStore] = []
+        self.execution_quotes = LiveKalshiWsQuoteSource(
+            settings.recorder_health_path.with_name("kalshi-live-ws-books.json")
+        )
         for model_id in self.candidate_ids:
             paper = PaperStore(
                 settings.forward_shadow_paper_root / f"{model_id}.sqlite3",
@@ -1438,7 +1574,7 @@ class ForwardShadowRuntime:
                 starting_cash=settings.forward_shadow_starting_cash,
             )
             self.paper_stores.append(paper)
-            self.executions[model_id] = KalshiPaperExecutionProvider(
+            provider = KalshiPaperExecutionProvider(
                 store=paper,
                 account_id=f"paper_{model_id}",
                 starting_cash=settings.forward_shadow_starting_cash,
@@ -1453,12 +1589,14 @@ class ForwardShadowRuntime:
                 ),
                 kill_switch=settings.paper_kill_switch,
             )
+            self.executions[model_id] = ShadowExecutor(provider, paper)
 
     def run_once(self, now: datetime | None = None) -> dict[str, int]:
         observed = (now or datetime.now(UTC)).astimezone(UTC)
         self._settle(observed)
         for snapshot in self.reader.due_snapshots(observed, self.store.started_at):
             self._process(snapshot)
+        self._observe_dynamic_exit_candidates(observed)
         return self.store.summary()
 
     def probe(self, now: datetime | None = None) -> dict[str, int]:
@@ -1578,11 +1716,50 @@ class ForwardShadowRuntime:
                 "fees": str(result.fees),
             }
         probability = self.models.predict(model_id, self._example(snapshot))
-        quote = snapshot.quote
-        # The guard above establishes both executable sides.  Do not turn a
-        # legitimate transient one-sided book into a worker-fatal assertion.
-        if quote.yes_ask is None or quote.no_ask is None:  # pragma: no cover
-            raise PaperExecutionError("executable market side disappeared")
+        # Feature construction remains strictly as-of the decision checkpoint.
+        # The fill, however, must use the Recorder-owned current synchronized
+        # WS book rather than a historical SQLite checkpoint.  There is no
+        # fallback: unavailable live state becomes an explicit HOLD.
+        live = self.execution_quotes.latest_quote(snapshot.ticker)
+        quote = (
+            None
+            if live is None
+            else live_ws_prediction_quote(
+                asset=snapshot.asset,
+                ticker=snapshot.ticker,
+                series=snapshot.ticker.split("-", 1)[0],
+                quote=live,
+                now=datetime.now(UTC),
+                max_quote_age=timedelta(seconds=self.settings.kalshi_websocket_stale_seconds),
+            )
+        )
+        if quote is None or quote.yes_ask is None or quote.no_ask is None:
+            decision = StrategyDecision(
+                decision_id=_decision_id(model_id, snapshot.opportunity_id),
+                signal_timestamp=snapshot.decision_timestamp,
+                asset=snapshot.asset,
+                event_id=snapshot.ticker,
+                contract_id=snapshot.ticker,
+                decision=PaperDecisionType.HOLD,
+                outcome=None,
+                quantity=Decimal(0),
+                limit_price=None,
+            )
+            result = self.executions[model_id].execute(decision, None)
+            return {
+                **base,
+                "action": "hold",
+                "data_status": "data_unavailable",
+                "data_reason": self.execution_quotes.last_unavailable_reason(snapshot.ticker)
+                or "live_ws_execution_quote_unavailable",
+                "risk_allowed": None,
+                "risk_reasons": '["live_ws_execution_quote_unavailable"]',
+                "paper_order_id": result.order_id,
+                "fill_state": result.state.value,
+                "fill_reason": result.reason.value,
+                "filled_quantity": str(result.filled_quantity),
+                "fees": str(result.fees),
+            }
         yes_edge, no_edge = probability - quote.yes_ask, Decimal(1) - probability - quote.no_ask
         existing_position = self.executions[model_id].get_position(snapshot.ticker, snapshot.ticker)
         if snapshot.asset not in PAPER_ELIGIBLE_ASSETS:
@@ -1656,6 +1833,72 @@ class ForwardShadowRuntime:
             snapshot.values,
             snapshot.missing_reasons,
         )
+
+    def _observe_dynamic_exit_candidates(self, observed: datetime) -> None:
+        """Record deterministic early-exit candidates beside the frozen baseline.
+
+        Entry and settlement accounting remain in the original independent
+        hold-to-settlement portfolio.  This deliberately prevents an unreviewed
+        dynamic rule from mutating forward-v2 performance while still producing
+        actual current-book comparisons for later evaluation.
+        """
+
+        snapshots = {item.ticker: item for item in self.reader.probe_current(observed)}
+        for ticker in self.store.pending_tickers():
+            snapshot = snapshots.get(ticker)
+            if snapshot is None or snapshot.data_status != "ready":
+                continue
+            live = self.execution_quotes.latest_quote(ticker)
+            quote = (
+                None
+                if live is None
+                else live_ws_prediction_quote(
+                    asset=snapshot.asset,
+                    ticker=ticker,
+                    series=ticker.split("-", 1)[0],
+                    quote=live,
+                    now=observed,
+                    max_quote_age=timedelta(seconds=self.settings.kalshi_websocket_stale_seconds),
+                )
+            )
+            for decision in self.store.decisions_for_ticker(ticker):
+                model_id = str(decision["model_id"])
+                execution = self.executions.get(model_id)
+                if execution is None:
+                    raise ForwardShadowError("forward decision references an unknown Shadow model")
+                outcome = (
+                    ContractOutcome.YES
+                    if str(decision["action"]) == PaperDecisionType.BUY_YES.value
+                    else ContractOutcome.NO
+                )
+                position = execution.get_position(ticker, ticker, outcome)
+                if position is None or position.average_price is None:
+                    continue
+                probability = self.models.predict(model_id, self._example(snapshot))
+                evaluation = evaluate_shadow_exit(
+                    entry_price=position.average_price,
+                    outcome=outcome,
+                    quote=quote,
+                    fair_probability=probability,
+                    now=observed,
+                    window_end=snapshot.window_end,
+                )
+                if quote is None:
+                    continue
+                self.store.append_dynamic_exit_candidate(
+                    model_id=model_id,
+                    opportunity_id=str(decision["opportunity_id"]),
+                    ticker=ticker,
+                    observed_at=observed,
+                    action=evaluation.action,
+                    reason=evaluation.reason,
+                    executable_bid=evaluation.current_executable_bid,
+                    close_now_ev=evaluation.close_now_ev,
+                    hold_ev=evaluation.hold_ev,
+                    mark_change=evaluation.mark_change,
+                    quote_source=quote.source,
+                    quote_timestamp=quote.received_timestamp,
+                )
 
     def _settle(self, now: datetime) -> None:
         if not self.store.pending_tickers():
