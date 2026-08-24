@@ -27,6 +27,7 @@ from live15_quant.config import Settings, load_settings
 from live15_quant.demo_execution import (
     DemoDataUnavailableReason,
     DemoExecutionCoordinator,
+    DemoExecutionResultCode,
     DemoExecutionStore,
     DemoIntent,
     DemoIntentPurpose,
@@ -87,6 +88,25 @@ class DemoFirstFillStatus(StrEnum):
     FILLED = "FILLED"
     STOPPED = "STOPPED"
     ERROR = "ERROR"
+
+
+class DemoFirstFillLaunchSource(StrEnum):
+    """Explicit local ownership of a First-Fill worker launch."""
+
+    USER_CMD = "USER_CMD"
+    CODEX_DRY_RUN = "CODEX_DRY_RUN"
+    SUPERVISOR = "SUPERVISOR"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True, slots=True)
+class DemoFirstFillLaunchProvenance:
+    source: DemoFirstFillLaunchSource
+    launcher_name: str
+    parent_pid: int
+    # Determining a parent executable is platform-specific and may require
+    # elevated process inspection.  The explicit source is authoritative.
+    parent_process: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,7 +421,12 @@ class DemoFirstFillWorker:
 
     @classmethod
     def create(
-        cls, settings: Settings, paths: DemoFirstFillPaths, *, writes_enabled: bool
+        cls,
+        settings: Settings,
+        paths: DemoFirstFillPaths,
+        *,
+        writes_enabled: bool,
+        launch_provenance: DemoFirstFillLaunchProvenance | None = None,
     ) -> tuple[DemoFirstFillWorker, Any]:
         credentials = resolve_kalshi_demo_credentials(settings)
         client = KalshiDemoExecutionClient(settings, credentials, repository_root=Path.cwd())
@@ -419,7 +444,11 @@ class DemoFirstFillWorker:
             status_store.archive_terminal_attempt(
                 existing, history_path=paths.attempt_history_path, archived_at=started
             )
-        status = _initial_status(started, attempt_id=f"first-fill-{uuid.uuid4().hex}")
+        status = _initial_status(
+            started,
+            attempt_id=f"first-fill-{uuid.uuid4().hex}",
+            launch_provenance=launch_provenance,
+        )
         worker = cls(
             settings=settings,
             coordinator=DemoExecutionCoordinator(
@@ -624,6 +653,8 @@ class DemoFirstFillWorker:
             int(remote_counts.get(key, 0) or 0) > 0
             for key in ("remote_position_count", "remote_open_order_count", "remote_fill_count")
         )
+        if not remote_effect and fill_count == 0:
+            self._append_no_remote_effect_fact(intent, remote_counts)
         final = (
             "DEMO_ENTRY_EXECUTION_PATH_CERTIFIED"
             if fill_count > 0
@@ -657,6 +688,43 @@ class DemoFirstFillWorker:
             },
         )
         return final
+
+    def _append_no_remote_effect_fact(
+        self, intent: DemoIntent, remote_counts: dict[str, object]
+    ) -> None:
+        """Durably certify an official GET-only no-effect reconciliation.
+
+        The mutable status projection alone cannot safely release a later
+        first-fill attempt.  Persist the exact zero-count evidence in the
+        append-only Demo ledger before declaring this attempt terminal.
+        """
+
+        if not isinstance(self.coordinator, DemoExecutionCoordinator):
+            return
+        required_counts = (
+            "remote_position_count",
+            "remote_open_order_count",
+            "remote_fill_count",
+        )
+        if any(
+            not isinstance(remote_counts.get(key), int)
+            or isinstance(remote_counts.get(key), bool)
+            or int(remote_counts[key]) != 0
+            for key in required_counts
+        ):
+            raise DemoFirstFillError(
+                "official Demo reconciliation is incomplete; refusing no-effect terminal state"
+            )
+        self.coordinator._store.append_execution_diagnostic(
+            stable_client_order_id(intent),
+            DemoExecutionResultCode.NO_REMOTE_EFFECT,
+            {
+                "typed_reason": "NO_REMOTE_EFFECT",
+                "source": "official_demo_get_only_reconciliation",
+                **{key: int(remote_counts[key]) for key in required_counts},
+                "post_count": 1,
+            },
+        )
 
     def _stop(self, reason: str) -> None:
         self.status.update(
@@ -716,16 +784,30 @@ def _reconciled_no_remote_effect(existing: dict[str, object], store: DemoExecuti
     )
 
 
-def _initial_status(started_at: datetime, *, attempt_id: str | None = None) -> dict[str, object]:
+def _initial_status(
+    started_at: datetime,
+    *,
+    attempt_id: str | None = None,
+    launch_provenance: DemoFirstFillLaunchProvenance | None = None,
+) -> dict[str, object]:
     if attempt_id is None:
         attempt_id = f"first-fill-{uuid.uuid4().hex}"
     if not attempt_id:
         raise DemoFirstFillError("first-fill attempt identity must not be empty")
+    provenance = launch_provenance or DemoFirstFillLaunchProvenance(
+        DemoFirstFillLaunchSource.UNKNOWN,
+        "live15-demo-first-fill",
+        os.getppid(),
+    )
     timestamp = _timestamp(started_at)
     return {
         "status": DemoFirstFillStatus.STARTING.value,
         "first_fill_attempt_id": attempt_id,
         "pid": os.getpid(),
+        "launch_source": provenance.source.value,
+        "launcher_name": provenance.launcher_name,
+        "parent_pid": provenance.parent_pid,
+        "parent_process": provenance.parent_process,
         "started_at": timestamp,
         "last_heartbeat": timestamp,
         "last_signal_at": None,
@@ -830,6 +912,16 @@ def _configure_worker_log(path: Path) -> logging.FileHandler:
     return handler
 
 
+def _launch_policy_error(
+    source: DemoFirstFillLaunchSource, *, execute_approved: bool
+) -> str | None:
+    """Keep Demo write authority local, explicit, and independent of chat history."""
+
+    if execute_approved and source is not DemoFirstFillLaunchSource.USER_CMD:
+        return "REAL_DEMO_WRITE_REQUIRES_USER_LAUNCH"
+    return None
+
+
 def main(argv: Iterable[str] | None = None) -> None:
     import argparse
 
@@ -845,11 +937,39 @@ def main(argv: Iterable[str] | None = None) -> None:
         action="store_true",
         help="request graceful stop of a running first-fill worker",
     )
-    arguments = parser.parse_args(tuple(argv or ()))
+    parser.add_argument(
+        "--launch-source",
+        choices=tuple(source.value for source in DemoFirstFillLaunchSource),
+        default=DemoFirstFillLaunchSource.UNKNOWN.value,
+        help="explicit local launch ownership; only USER_CMD may enable Demo writes",
+    )
+    parser.add_argument(
+        "--launcher-name",
+        default="live15-demo-first-fill",
+        help="non-secret local launcher label for status and audit logs",
+    )
+    arguments = parser.parse_args(tuple(sys.argv[1:] if argv is None else argv))
+    source = DemoFirstFillLaunchSource(arguments.launch_source)
+    policy_error = _launch_policy_error(source, execute_approved=arguments.execute_approved)
+    if policy_error is not None:
+        print(json.dumps({"status": policy_error}, sort_keys=True))
+        return
     settings = load_settings()
     configure_logging(settings.log_level)
     paths = DemoFirstFillPaths()
     if arguments.stop:
+        existing = DemoFirstFillStatusStore(paths.status_path).read()
+        existing_source = (
+            str(existing.get("launch_source", DemoFirstFillLaunchSource.UNKNOWN.value))
+            if existing is not None
+            else DemoFirstFillLaunchSource.UNKNOWN.value
+        )
+        if (
+            existing_source == DemoFirstFillLaunchSource.USER_CMD.value
+            and source is not DemoFirstFillLaunchSource.USER_CMD
+        ):
+            print(json.dumps({"status": "STOP_REQUIRES_USER_LAUNCH"}, sort_keys=True))
+            return
         paths.stop_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = paths.stop_path.with_name(f".{paths.stop_path.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -865,13 +985,31 @@ def main(argv: Iterable[str] | None = None) -> None:
     try:
         lease.acquire(started)
     except DemoFirstFillAlreadyRunning as error:
-        print(json.dumps({"status": "ALREADY_RUNNING", "pid": error.pid}, sort_keys=True))
+        existing = DemoFirstFillStatusStore(paths.status_path).read()
+        existing_source = (
+            existing.get("launch_source", DemoFirstFillLaunchSource.UNKNOWN.value)
+            if existing is not None and int(existing.get("pid", 0)) == error.pid
+            else DemoFirstFillLaunchSource.UNKNOWN.value
+        )
+        print(
+            json.dumps(
+                {"status": "ALREADY_RUNNING", "pid": error.pid, "launch_source": existing_source},
+                sort_keys=True,
+            )
+        )
         return
     resources: Any = None
     try:
         paths.stop_path.unlink(missing_ok=True)
         worker, resources = DemoFirstFillWorker.create(
-            settings, paths, writes_enabled=arguments.execute_approved
+            settings,
+            paths,
+            writes_enabled=arguments.execute_approved,
+            launch_provenance=DemoFirstFillLaunchProvenance(
+                source=source,
+                launcher_name=str(arguments.launcher_name)[:128],
+                parent_pid=os.getppid(),
+            ),
         )
         worker.status.update(
             {
@@ -883,6 +1021,14 @@ def main(argv: Iterable[str] | None = None) -> None:
             }
         )
         worker._write_status()
+        logger.info(
+            "Demo first-fill launched source=%s launcher=%s execution_mode=%s parent_pid=%s",
+            source.value,
+            arguments.launcher_name,
+            worker.status["execution_mode"],
+            worker.status["parent_pid"],
+            extra={"event": "demo_first_fill_launch", "launch_source": source.value},
+        )
         final = worker.run_forever()
         print(json.dumps({"status": final}, sort_keys=True))
     finally:

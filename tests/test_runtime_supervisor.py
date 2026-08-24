@@ -105,6 +105,7 @@ def test_supervisor_starts_control_center_then_paper_after_healthy_recorder(
         "live15_quant.managed_control_center",
         "live15_quant.managed_paper",
     ]
+    assert all("demo_first_fill" not in process.command[-1] for process in launched)
     assert components["paper_forward"]["status"] == "STARTING"
     assert components["demo_first_fill"]["status"] == "DISABLED"
     status = read_json(tmp_path / "runtime" / "runtime-supervisor-status.json")

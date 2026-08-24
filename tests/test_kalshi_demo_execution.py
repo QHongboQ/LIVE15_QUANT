@@ -32,10 +32,18 @@ class FakeSigner:
 
 
 class FakeResponse:
-    def __init__(self, payload: object, url: str, status_code: int = 200) -> None:
+    def __init__(
+        self,
+        payload: object,
+        url: str,
+        status_code: int = 200,
+        *,
+        content_type: str = "application/json",
+    ) -> None:
         self.text = json.dumps(payload)
         self.url = url
         self.status_code = status_code
+        self.headers = {"Content-Type": content_type}
 
 
 class FakeSession:
@@ -278,13 +286,15 @@ def test_inconclusive_write_http_status_requires_reconciliation(
                 Decimal("0.51"),
             )
         )
-    assert error.value.reason_code == f"http_{status_code}"
-    assert error.value.diagnostic == {
-        "http_status": status_code,
-        "request_method": "POST",
-        "request_path": "/trade-api/v2/portfolio/events/orders",
-        "environment": "DEMO",
-    }
+        assert error.value.reason_code == f"http_{status_code}"
+        assert error.value.diagnostic == {
+            "http_status": status_code,
+            "content_type": "application/json",
+            "request_method": "POST",
+            "request_path": "/trade-api/v2/portfolio/events/orders",
+            "environment": "DEMO",
+            "sanitized_response_classification": "json_error_fields_absent",
+        }
 
 
 @pytest.mark.parametrize("status_code", (400, 401, 403, 422))
@@ -340,6 +350,7 @@ def test_http_error_extracts_only_whitelisted_provider_fields(tmp_path: Path) ->
         )
     assert error.value.diagnostic == {
         "http_status": 404,
+        "content_type": "application/json",
         "provider_error_code": "market_not_found",
         "sanitized_provider_message": "safe diagnostic",
         "sanitized_provider_detail": "safe detail",
@@ -374,10 +385,66 @@ def test_malformed_http_error_does_not_persist_raw_body(tmp_path: Path) -> None:
     assert "private-key" not in json.dumps(error.value.diagnostic)
     assert set(error.value.diagnostic) == {
         "http_status",
+        "content_type",
         "request_method",
         "request_path",
         "environment",
+        "sanitized_response_classification",
     }
+    assert error.value.diagnostic["sanitized_response_classification"] == "malformed_json"
+
+
+def test_html_http_error_records_only_content_type_and_classification(tmp_path: Path) -> None:
+    client, _, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {"ignored": "placeholder"},
+                f"{KALSHI_DEMO_API_BASE_URL}/portfolio/events/orders",
+                404,
+                content_type="text/html; charset=utf-8",
+            )
+        ],
+    )
+    response = client._session.responses[0]  # type: ignore[attr-defined]
+    response.text = "<html>secret-signature private-key</html>"
+    with pytest.raises(KalshiDemoAmbiguousWriteError) as error:
+        client.create_order(
+            DemoOrderRequest(
+                "KXBTC15M-TEST", "client-1", DemoBookSide.BID, Decimal("1"), Decimal("0.51")
+            )
+        )
+    assert error.value.diagnostic["content_type"] == "text/html"
+    assert error.value.diagnostic["sanitized_response_classification"] == "non_json_html"
+    assert "secret-signature" not in json.dumps(error.value.diagnostic)
+    assert "private-key" not in json.dumps(error.value.diagnostic)
+
+
+def test_http_error_redacts_credential_like_provider_fields(tmp_path: Path) -> None:
+    client, _, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {
+                    "code": "bad_request",
+                    "message": "signature=must-not-persist",
+                    "details": "private key must-not-persist",
+                },
+                f"{KALSHI_DEMO_API_BASE_URL}/portfolio/events/orders",
+                400,
+            )
+        ],
+    )
+    with pytest.raises(KalshiDemoWriteRejectedError) as error:
+        client.create_order(
+            DemoOrderRequest(
+                "KXBTC15M-TEST", "client-1", DemoBookSide.BID, Decimal("1"), Decimal("0.51")
+            )
+        )
+    encoded = json.dumps(error.value.diagnostic)
+    assert "must-not-persist" not in encoded
+    assert error.value.diagnostic["sanitized_provider_message"] == "signature=[REDACTED]"
+    assert error.value.diagnostic["sanitized_provider_detail"] == "private key=[REDACTED]"
 
 
 def test_malformed_successful_write_response_requires_reconciliation(tmp_path: Path) -> None:

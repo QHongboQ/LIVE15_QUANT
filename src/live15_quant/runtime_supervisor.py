@@ -436,6 +436,10 @@ class RuntimeSupervisor:
             "receipt_path": str((self.runtime / "demo_first_fill_worker.lock").resolve()),
             "log_path": str((self.logs / "demo_first_fill_worker.log").resolve()),
             "post_count": int(payload.get("post_count", 0)) if payload else 0,
+            "launch_source": payload.get("launch_source", "UNKNOWN") if payload else "UNKNOWN",
+            "launcher_name": payload.get("launcher_name") if payload else None,
+            "parent_pid": payload.get("parent_pid") if payload else None,
+            "parent_process": payload.get("parent_process") if payload else None,
         }
 
     @staticmethod

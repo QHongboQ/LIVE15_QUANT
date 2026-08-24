@@ -12,6 +12,7 @@ import pytest
 
 import live15_quant.demo_first_fill as demo_first_fill_module
 from live15_quant.demo_execution import (
+    DemoExecutionCoordinator,
     DemoExecutionResultCode,
     DemoExecutionStore,
     DemoIntent,
@@ -25,6 +26,8 @@ from live15_quant.demo_execution import (
 from live15_quant.demo_first_fill import (
     DemoFirstFillAlreadyRunning,
     DemoFirstFillError,
+    DemoFirstFillLaunchProvenance,
+    DemoFirstFillLaunchSource,
     DemoFirstFillLease,
     DemoFirstFillPaths,
     DemoFirstFillStatus,
@@ -33,6 +36,7 @@ from live15_quant.demo_first_fill import (
     _configure_worker_log,
     _initial_status,
     _latency_diagnostics,
+    _launch_policy_error,
     _reconciled_no_remote_effect,
     _remote_account_reconciliation,
 )
@@ -70,6 +74,57 @@ def _worker(tmp_path: Path, coordinator: object, reader) -> DemoFirstFillWorker:
         utc_now=lambda: started,
         sleep=lambda _seconds: None,
     )
+
+
+def test_real_demo_write_requires_explicit_user_launch_source() -> None:
+    assert _launch_policy_error(DemoFirstFillLaunchSource.USER_CMD, execute_approved=True) is None
+    for source in (
+        DemoFirstFillLaunchSource.CODEX_DRY_RUN,
+        DemoFirstFillLaunchSource.SUPERVISOR,
+        DemoFirstFillLaunchSource.UNKNOWN,
+    ):
+        assert (
+            _launch_policy_error(source, execute_approved=True)
+            == "REAL_DEMO_WRITE_REQUIRES_USER_LAUNCH"
+        )
+    assert (
+        _launch_policy_error(DemoFirstFillLaunchSource.CODEX_DRY_RUN, execute_approved=False)
+        is None
+    )
+
+
+def test_status_persists_explicit_launch_provenance() -> None:
+    provenance = DemoFirstFillLaunchProvenance(
+        DemoFirstFillLaunchSource.USER_CMD,
+        "Start_Demo_First_Fill.cmd",
+        1234,
+        "cmd.exe",
+    )
+    status = _initial_status(datetime(2026, 8, 24, tzinfo=UTC), launch_provenance=provenance)
+    assert status["launch_source"] == "USER_CMD"
+    assert status["launcher_name"] == "Start_Demo_First_Fill.cmd"
+    assert status["parent_pid"] == 1234
+    assert status["parent_process"] == "cmd.exe"
+
+
+def test_cli_blocks_non_user_real_write_before_loading_credentials(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        demo_first_fill_module,
+        "load_settings",
+        lambda: pytest.fail("a blocked launch must not resolve runtime configuration"),
+    )
+
+    demo_first_fill_module.main(["--execute-approved", "--launch-source", "CODEX_DRY_RUN"])
+
+    assert json.loads(capsys.readouterr().out) == {"status": "REAL_DEMO_WRITE_REQUIRES_USER_LAUNCH"}
+
+
+def test_launchers_are_explicitly_separated() -> None:
+    real = Path("Start_Demo_First_Fill.cmd").read_text(encoding="utf-8")
+    dry_run = Path("Start_Demo_First_Fill_Dry_Run.cmd").read_text(encoding="utf-8")
+    assert "--execute-approved --launch-source USER_CMD" in real
+    assert "--execute-approved" not in dry_run
+    assert "--launch-source CODEX_DRY_RUN" in dry_run
 
 
 def test_no_signal_keeps_worker_waiting_and_status_is_atomic(tmp_path) -> None:
@@ -298,6 +353,41 @@ def test_post_reconciliation_records_no_remote_effect_without_rewriting_intent(t
     assert result == "NO_REMOTE_EFFECT"
     assert worker.status["final_state"] == "NO_REMOTE_EFFECT"
     assert worker.status["post_count"] == 0
+
+
+def test_post_reconciliation_persists_no_remote_effect_for_real_coordinator(tmp_path) -> None:
+    class Client:
+        def positions(self):
+            return ()
+
+    intent = _intent()
+    path = tmp_path / "demo.sqlite3"
+    store = DemoExecutionStore(path)
+    client_order_id = store.append_intent(intent)
+    coordinator = DemoExecutionCoordinator(
+        Client(), store, writes_enabled=True, execution_smoke_approved=True
+    )
+    worker = _worker(tmp_path, coordinator, lambda _settings: ())
+    worker.remote_reconciliation_reader = lambda: {
+        "remote_position_count": 0,
+        "remote_open_order_count": 0,
+        "remote_fill_count": 0,
+    }
+
+    assert (
+        worker._reconcile_after_post(
+            intent,
+            DemoReconciliationResult(
+                client_order_id, DemoLifecycleState.RECONCILIATION_REQUIRED, None, 0
+            ),
+        )
+        == "NO_REMOTE_EFFECT"
+    )
+    diagnostic = store.latest_execution_diagnostic(client_order_id)
+    assert diagnostic is not None
+    assert diagnostic[0] is DemoExecutionResultCode.NO_REMOTE_EFFECT
+    assert diagnostic[1]["source"] == "official_demo_get_only_reconciliation"
+    store.close()
 
 
 def test_unreconciled_reserved_attempt_blocks_new_attempt(tmp_path) -> None:

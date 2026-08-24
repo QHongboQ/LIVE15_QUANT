@@ -40,6 +40,10 @@ _ALLOWED_READ_PATHS = frozenset(
 )
 _CREATE_ORDER_PATH = "/portfolio/events/orders"
 _TICKER_PATTERN = re.compile(r"[A-Z0-9][A-Z0-9.-]{0,199}")
+_SENSITIVE_PROVIDER_VALUE = re.compile(
+    r"(?i)\b(authorization|signature|api[_ -]?key|private[_ -]?key|cookie)\b"
+    r"\s*(?:[:=]\s*|\s+)([^\s,;]+)"
+)
 
 
 class KalshiDemoExecutionError(RuntimeError):
@@ -104,6 +108,7 @@ class HttpResponse(Protocol):
     text: str
     url: str
     status_code: int
+    headers: Mapping[str, str]
 
 
 class DemoSession(Protocol):
@@ -344,8 +349,11 @@ def _sanitized_http_diagnostic(
 ) -> dict[str, object]:
     """Extract only bounded, non-sensitive provider error fields."""
 
+    raw_content_type = response.headers.get("Content-Type", "")
+    content_type = _safe_content_type(raw_content_type)
     detail: dict[str, object] = {
         "http_status": int(response.status_code),
+        "content_type": content_type,
         "request_method": method,
         "request_path": path,
         "environment": "DEMO",
@@ -353,19 +361,65 @@ def _sanitized_http_diagnostic(
     try:
         payload = json.loads(response.text)
     except (json.JSONDecodeError, TypeError):
+        detail["sanitized_response_classification"] = _non_json_response_classification(
+            response.text, content_type
+        )
         return detail
     if not isinstance(payload, Mapping):
+        detail["sanitized_response_classification"] = "json_non_object"
         return detail
     code = payload.get("code")
     message = payload.get("message")
     provider_detail = payload.get("details")
     if isinstance(code, str) and code:
-        detail["provider_error_code"] = code[:256]
+        detail["provider_error_code"] = _sanitized_provider_text(code, 256)
     if isinstance(message, str) and message:
-        detail["sanitized_provider_message"] = message[:512]
+        detail["sanitized_provider_message"] = _sanitized_provider_text(message, 512)
     if isinstance(provider_detail, str) and provider_detail:
-        detail["sanitized_provider_detail"] = provider_detail[:512]
+        detail["sanitized_provider_detail"] = _sanitized_provider_text(provider_detail, 512)
+    if not any(
+        key in detail
+        for key in (
+            "provider_error_code",
+            "sanitized_provider_message",
+            "sanitized_provider_detail",
+        )
+    ):
+        detail["sanitized_response_classification"] = "json_error_fields_absent"
     return detail
+
+
+def _safe_content_type(value: object) -> str:
+    """Return a bounded media type, never a raw response header."""
+
+    if not isinstance(value, str):
+        return "unknown"
+    media_type = value.split(";", maxsplit=1)[0].strip().lower()
+    if not media_type or len(media_type) > 128:
+        return "unknown"
+    if not re.fullmatch(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+", media_type):
+        return "unknown"
+    return media_type
+
+
+def _sanitized_provider_text(value: str, limit: int) -> str:
+    """Bound a whitelisted provider field and redact credential-like values."""
+
+    normalized = " ".join(value.split())
+    redacted = _SENSITIVE_PROVIDER_VALUE.sub(r"\1=[REDACTED]", normalized)
+    return redacted[:limit]
+
+
+def _non_json_response_classification(body: object, content_type: str) -> str:
+    """Classify a non-JSON error without retaining any response-body text."""
+
+    if not isinstance(body, str) or not body.strip():
+        return "empty_body"
+    if content_type in {"text/html", "application/xhtml+xml"} or body.lstrip().startswith("<"):
+        return "non_json_html"
+    if content_type.endswith("/json") or content_type.endswith("+json"):
+        return "malformed_json"
+    return "non_json_text"
 
 
 def _timestamp_or_none(value: object, field: str) -> datetime | None:
