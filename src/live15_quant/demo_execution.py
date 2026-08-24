@@ -1987,6 +1987,8 @@ class DemoExecutionCoordinator:
         return self._record_remote(remote)
 
     def _record_remote(self, remote: DemoRemoteOrder) -> DemoReconciliationResult:
+        if remote.client_order_id is None:
+            raise DemoExecutionError("external Demo order cannot reconcile a LIVE15 intent")
         if self._store.intent_ticker(remote.client_order_id) != remote.ticker:
             raise DemoExecutionError("remote Demo order ticker conflicts with immutable intent")
         state = _local_state(remote)
@@ -2032,6 +2034,8 @@ class DemoExecutionCoordinator:
             return ()
         remote_by_client: dict[str, DemoRemoteOrder] = {}
         for remote in self._client.orders():
+            if remote.client_order_id is None:
+                continue
             if remote.client_order_id in remote_by_client:
                 raise DemoExecutionError("duplicate remote client order ID")
             remote_by_client[remote.client_order_id] = remote

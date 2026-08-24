@@ -843,6 +843,30 @@ def test_remote_exposure_and_buying_power_fail_closed(tmp_path: Path) -> None:
     assert client.create_calls == 0
 
 
+def test_external_manual_position_is_included_in_total_exposure_risk(tmp_path: Path) -> None:
+    intent = _intent()
+    client = FakeClient()
+    client.remote_positions = (
+        DemoRemotePosition(
+            "KXMANUAL-WEB-ORDER",
+            Decimal("1"),
+            Decimal("4.8"),
+            Decimal(0),
+            Decimal(0),
+            0,
+            "2026-08-23T00:00:00Z",
+        ),
+    )
+    with DemoExecutionStore(tmp_path / "demo.sqlite3") as store:
+        result = DemoExecutionCoordinator(
+            client, store, writes_enabled=True, execution_smoke_approved=True
+        ).submit(intent, _safe_context())
+
+    assert result.allowed is False  # type: ignore[union-attr]
+    assert DemoRiskReason.MAX_TOTAL_EXPOSURE in result.reasons  # type: ignore[union-attr]
+    assert client.create_calls == 0
+
+
 def test_future_official_response_cannot_execute_a_past_decision(tmp_path: Path) -> None:
     intent = _intent(decision_timestamp=datetime(2026, 8, 22, 23, 58, tzinfo=UTC))
     client = FakeClient()

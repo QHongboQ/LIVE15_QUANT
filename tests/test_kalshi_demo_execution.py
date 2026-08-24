@@ -616,6 +616,78 @@ def test_unknown_remote_order_state_fails_closed(tmp_path: Path) -> None:
     assert client.orders()[0].state.value == "reconciliation_required"
 
 
+@pytest.mark.parametrize("client_id_state", ("missing", "null", "empty"))
+def test_external_order_without_client_identity_is_parseable(
+    tmp_path: Path, client_id_state: str
+) -> None:
+    payload = _order(status="executed", fill="1", remaining="0")
+    if client_id_state == "missing":
+        payload.pop("client_order_id")
+    elif client_id_state == "null":
+        payload["client_order_id"] = None
+    else:
+        payload["client_order_id"] = ""
+    client, _, _ = _client(
+        tmp_path,
+        [FakeResponse({"orders": [payload]}, f"{KALSHI_DEMO_API_BASE_URL}/portfolio/orders")],
+    )
+
+    order = client.orders()[0]
+
+    assert order.order_id == "order-1"
+    assert order.client_order_id is None
+    assert order.state.value == "filled"
+
+
+def test_find_order_by_client_id_skips_external_orders_and_matches_exact_live15_id(
+    tmp_path: Path,
+) -> None:
+    external = _order(status="executed", fill="1", remaining="0")
+    external["order_id"] = "manual-order"
+    external["client_order_id"] = ""
+    live15 = _order()
+    client, _, _ = _client(
+        tmp_path,
+        [
+            FakeResponse(
+                {"orders": [external, live15]},
+                f"{KALSHI_DEMO_API_BASE_URL}/portfolio/orders",
+            )
+        ],
+    )
+
+    matched = client.find_order_by_client_id("client-1")
+
+    assert matched is not None
+    assert matched.order_id == "order-1"
+    assert matched.client_order_id == "client-1"
+
+
+def test_missing_required_remote_order_id_still_fails_closed(tmp_path: Path) -> None:
+    payload = _order()
+    payload["order_id"] = ""
+    payload["client_order_id"] = ""
+    client, _, _ = _client(
+        tmp_path,
+        [FakeResponse({"orders": [payload]}, f"{KALSHI_DEMO_API_BASE_URL}/portfolio/orders")],
+    )
+
+    with pytest.raises(KalshiDemoExecutionError, match="malformed Demo order identifiers"):
+        client.orders()
+
+
+def test_non_string_remote_client_order_id_still_fails_closed(tmp_path: Path) -> None:
+    payload = _order()
+    payload["client_order_id"] = {"unexpected": "shape"}
+    client, _, _ = _client(
+        tmp_path,
+        [FakeResponse({"orders": [payload]}, f"{KALSHI_DEMO_API_BASE_URL}/portfolio/orders")],
+    )
+
+    with pytest.raises(KalshiDemoExecutionError, match="malformed optional"):
+        client.orders()
+
+
 def test_paginated_remote_truth_is_rejected_until_complete(tmp_path: Path) -> None:
     client, _, _ = _client(
         tmp_path,

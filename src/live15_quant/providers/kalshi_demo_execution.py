@@ -153,7 +153,7 @@ class DemoOrderRequest:
 @dataclass(frozen=True, slots=True)
 class DemoRemoteOrder:
     order_id: str
-    client_order_id: str
+    client_order_id: str | None
     ticker: str
     state: DemoRemoteOrderState
     initial_count: Decimal
@@ -164,8 +164,12 @@ class DemoRemoteOrder:
     raw_status: str
 
     def __post_init__(self) -> None:
-        if not all((self.order_id, self.client_order_id, self.ticker, self.raw_status)):
+        if not all((self.order_id, self.ticker, self.raw_status)):
             raise ValueError("Demo remote order identifiers must not be empty")
+        if self.client_order_id is not None and (
+            not isinstance(self.client_order_id, str) or not self.client_order_id
+        ):
+            raise ValueError("Demo remote client order ID must be non-empty when present")
         values = (
             self.initial_count,
             self.filled_count,
@@ -474,9 +478,16 @@ def _order_state(status: str, filled: Decimal, remaining: Decimal) -> DemoRemote
 def _parse_order(value: object) -> DemoRemoteOrder:
     if not isinstance(value, Mapping):
         raise KalshiDemoExecutionError("malformed Demo order")
-    required_strings = ("order_id", "client_order_id", "ticker")
+    required_strings = ("order_id", "ticker")
     if any(not isinstance(value.get(field), str) or not value[field] for field in required_strings):
         raise KalshiDemoExecutionError("malformed Demo order identifiers")
+    raw_client_order_id = value.get("client_order_id")
+    if raw_client_order_id is None or raw_client_order_id == "":
+        client_order_id = None
+    elif isinstance(raw_client_order_id, str):
+        client_order_id = raw_client_order_id
+    else:
+        raise KalshiDemoExecutionError("malformed optional Demo client order identifier")
     initial = _decimal(value.get("initial_count_fp", value.get("initial_count")), "initial_count")
     filled = _decimal(value.get("fill_count_fp", value.get("fill_count", 0)), "fill_count")
     remaining = _decimal(
@@ -509,7 +520,7 @@ def _parse_order(value: object) -> DemoRemoteOrder:
         raise KalshiDemoExecutionError("malformed Demo order status")
     return DemoRemoteOrder(
         order_id=value["order_id"],
-        client_order_id=value["client_order_id"],
+        client_order_id=client_order_id,
         ticker=value["ticker"],
         state=_order_state(status, filled, remaining),
         initial_count=initial,
@@ -822,7 +833,13 @@ class KalshiDemoExecutionClient:
         )
 
     def find_order_by_client_id(self, client_order_id: str) -> DemoRemoteOrder | None:
-        matches = [order for order in self.orders() if order.client_order_id == client_order_id]
+        if not client_order_id:
+            raise KalshiDemoExecutionError("client order identity must not be empty")
+        matches = [
+            order
+            for order in self.orders()
+            if order.client_order_id is not None and order.client_order_id == client_order_id
+        ]
         if len(matches) > 1:
             raise KalshiDemoExecutionError("duplicate remote client order ID")
         return matches[0] if matches else None
