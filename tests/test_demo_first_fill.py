@@ -12,6 +12,8 @@ import pytest
 
 import live15_quant.demo_first_fill as demo_first_fill_module
 from live15_quant.demo_execution import (
+    DemoExecutionResultCode,
+    DemoExecutionStore,
     DemoIntent,
     DemoIntentPurpose,
     DemoLifecycleState,
@@ -24,12 +26,14 @@ from live15_quant.demo_first_fill import (
     DemoFirstFillAlreadyRunning,
     DemoFirstFillError,
     DemoFirstFillLease,
+    DemoFirstFillPaths,
     DemoFirstFillStatus,
     DemoFirstFillStatusStore,
     DemoFirstFillWorker,
     _configure_worker_log,
     _initial_status,
     _latency_diagnostics,
+    _reconciled_no_remote_effect,
     _remote_account_reconciliation,
 )
 from live15_quant.providers.kalshi_demo_execution import DemoBookSide
@@ -294,6 +298,149 @@ def test_post_reconciliation_records_no_remote_effect_without_rewriting_intent(t
     assert result == "NO_REMOTE_EFFECT"
     assert worker.status["final_state"] == "NO_REMOTE_EFFECT"
     assert worker.status["post_count"] == 0
+
+
+def test_unreconciled_reserved_attempt_blocks_new_attempt(tmp_path) -> None:
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    status = _initial_status(datetime(2026, 8, 24, tzinfo=UTC), attempt_id="attempt-one")
+    status.update(
+        {
+            "post_count": 1,
+            "last_candidate": {"client_order_id": "immutable-order"},
+            "final_state": "FATAL_RUNTIME_ERROR",
+        }
+    )
+    assert not _reconciled_no_remote_effect(status, store)
+    store.close()
+
+
+def test_only_immutable_remote_no_effect_releases_a_new_attempt_and_archives_old_status(
+    tmp_path,
+) -> None:
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    intent = _intent()
+    client_order_id = store.append_intent(intent)
+    status = _initial_status(datetime(2026, 8, 24, tzinfo=UTC), attempt_id="attempt-one")
+    status.update(
+        {
+            "post_count": 1,
+            "last_candidate": {"client_order_id": client_order_id},
+            "final_state": "FATAL_RUNTIME_ERROR",
+        }
+    )
+    store.append_execution_diagnostic(
+        client_order_id,
+        DemoExecutionResultCode.NO_REMOTE_EFFECT,
+        {
+            "typed_reason": "NO_REMOTE_EFFECT",
+            "source": "official_demo_get_only_reconciliation",
+            "remote_position_count": 0,
+            "remote_open_order_count": 0,
+            "remote_fill_count": 0,
+        },
+    )
+    assert _reconciled_no_remote_effect(status, store)
+    status_store = DemoFirstFillStatusStore(tmp_path / "status.json")
+    history = tmp_path / "attempts.jsonl"
+    status_store.archive_terminal_attempt(
+        status, history_path=history, archived_at=datetime(2026, 8, 24, 1, tzinfo=UTC)
+    )
+    # Crash/restart before a new status projection is written must not append
+    # the old immutable attempt twice.
+    status_store.archive_terminal_attempt(
+        status, history_path=history, archived_at=datetime(2026, 8, 24, 1, tzinfo=UTC)
+    )
+    assert len(history.read_text(encoding="utf-8").splitlines()) == 1
+    archived = json.loads(history.read_text(encoding="utf-8"))
+    assert archived["attempt_id"] == "attempt-one"
+    assert archived["status"]["post_count"] == 1
+    next_status = _initial_status(datetime(2026, 8, 24, 1, tzinfo=UTC), attempt_id="attempt-two")
+    assert next_status["first_fill_attempt_id"] == "attempt-two"
+    assert next_status["post_count"] == 0
+    store.close()
+
+
+def test_filled_or_non_no_effect_terminal_fact_cannot_be_retried(tmp_path) -> None:
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    client_order_id = store.append_intent(_intent())
+    status = _initial_status(datetime(2026, 8, 24, tzinfo=UTC), attempt_id="attempt-one")
+    status.update({"post_count": 1, "last_candidate": {"client_order_id": client_order_id}})
+    store.append_execution_diagnostic(
+        client_order_id, DemoExecutionResultCode.HTTP_SUCCESS_FILLED, {"fill_count": 1}
+    )
+    assert not _reconciled_no_remote_effect(status, store)
+    store.close()
+
+
+def test_legacy_status_without_attempt_id_is_archived_deterministically(tmp_path) -> None:
+    status = _initial_status(datetime(2026, 8, 24, tzinfo=UTC), attempt_id="temporary")
+    status.pop("first_fill_attempt_id")
+    status.update({"post_count": 1, "last_candidate": {"client_order_id": "legacy-order"}})
+    store = DemoFirstFillStatusStore(tmp_path / "status.json")
+    history = tmp_path / "attempts.jsonl"
+    store.archive_terminal_attempt(
+        status, history_path=history, archived_at=datetime(2026, 8, 24, 1, tzinfo=UTC)
+    )
+    assert json.loads(history.read_text(encoding="utf-8"))["attempt_id"] == "legacy-legacy-order"
+
+
+def test_create_opens_new_attempt_only_after_immutable_no_effect_reconciliation(
+    tmp_path, monkeypatch
+) -> None:
+    paths = DemoFirstFillPaths(
+        status_path=tmp_path / "status.json",
+        attempt_history_path=tmp_path / "attempts.jsonl",
+        demo_store_path=tmp_path / "demo.sqlite3",
+    )
+    store = DemoExecutionStore(paths.demo_store_path)
+    intent = _intent()
+    client_order_id = store.append_intent(intent)
+    store.append_execution_diagnostic(
+        client_order_id,
+        DemoExecutionResultCode.NO_REMOTE_EFFECT,
+        {
+            "typed_reason": "NO_REMOTE_EFFECT",
+            "source": "official_demo_get_only_reconciliation",
+            "remote_position_count": 0,
+            "remote_open_order_count": 0,
+            "remote_fill_count": 0,
+        },
+    )
+    store.close()
+    legacy = _initial_status(datetime(2026, 8, 24, tzinfo=UTC), attempt_id="temporary")
+    legacy.pop("first_fill_attempt_id")
+    legacy.update(
+        {
+            "post_count": 1,
+            "last_candidate": {"client_order_id": client_order_id},
+            "final_state": "FATAL_RUNTIME_ERROR",
+        }
+    )
+    paths.status_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    class Client:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        demo_first_fill_module, "resolve_kalshi_demo_credentials", lambda _s: object()
+    )
+    monkeypatch.setattr(demo_first_fill_module, "KalshiDemoExecutionClient", Client)
+    worker, resources = DemoFirstFillWorker.create(
+        SimpleNamespace(recorder_health_path=tmp_path / "health.json"), paths, writes_enabled=False
+    )
+    try:
+        assert worker.status["first_fill_attempt_id"] != "temporary"
+        assert worker.status["post_count"] == 0
+        archived = json.loads(paths.attempt_history_path.read_text(encoding="utf-8"))
+        assert archived["attempt_id"] == f"legacy-{client_order_id}"
+    finally:
+        client, opened_store = resources
+        opened_store.close()
+        client.close()
 
 
 def test_second_instance_is_blocked_and_stale_lease_is_recoverable(tmp_path) -> None:

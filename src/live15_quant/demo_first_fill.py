@@ -92,6 +92,7 @@ class DemoFirstFillStatus(StrEnum):
 @dataclass(frozen=True, slots=True)
 class DemoFirstFillPaths:
     status_path: Path = Path("runtime/demo_first_fill_status.json")
+    attempt_history_path: Path = Path("runtime/demo_first_fill_attempts.jsonl")
     lease_path: Path = Path("runtime/demo_first_fill_worker.lock")
     stop_path: Path = Path("runtime/demo_first_fill_stop.json")
     log_path: Path = Path("logs/demo_first_fill_worker.log")
@@ -158,7 +159,7 @@ class DemoFirstFillLease:
 class DemoFirstFillStatusStore:
     """Atomic, non-secret status projection with a durable post reservation."""
 
-    _REQUIRED = frozenset(
+    _BASE_REQUIRED = frozenset(
         {
             "status",
             "pid",
@@ -174,6 +175,7 @@ class DemoFirstFillStatusStore:
             "final_state",
         }
     )
+    _REQUIRED = _BASE_REQUIRED | frozenset({"first_fill_attempt_id"})
 
     def __init__(
         self,
@@ -197,11 +199,71 @@ class DemoFirstFillStatusStore:
             raise DemoFirstFillError(
                 "first-fill status is malformed; refusing a new POST"
             ) from None
-        if not isinstance(value, dict) or not self._REQUIRED.issubset(value):
+        if not isinstance(value, dict) or not self._BASE_REQUIRED.issubset(value):
             raise DemoFirstFillError("first-fill status is incomplete; refusing a new POST")
         if not isinstance(value["post_count"], int) or int(value["post_count"]) < 0:
             raise DemoFirstFillError("first-fill post counter is invalid")
+        attempt_id = value.get("first_fill_attempt_id")
+        if attempt_id is not None and (not isinstance(attempt_id, str) or not attempt_id):
+            raise DemoFirstFillError("first-fill attempt identity is invalid")
         return value
+
+    def archive_terminal_attempt(
+        self, value: dict[str, object], *, history_path: Path, archived_at: datetime
+    ) -> None:
+        """Append a terminal projection before a new attempt replaces it.
+
+        The status JSON is deliberately a mutable current-state projection.
+        Attempt history is a separate append-only local audit stream, so a
+        reconciled no-effect attempt is never erased merely to open a later
+        certification attempt.
+        """
+
+        if not self._BASE_REQUIRED.issubset(value):
+            raise DemoFirstFillError("terminal first-fill status is incomplete")
+        if archived_at.tzinfo is None or archived_at.utcoffset() is None:
+            raise DemoFirstFillError("terminal attempt archive time must be timezone-aware")
+        raw_attempt_id = value.get("first_fill_attempt_id")
+        if isinstance(raw_attempt_id, str) and raw_attempt_id:
+            attempt_id = raw_attempt_id
+        else:
+            candidate = value.get("last_candidate")
+            client_order_id = (
+                candidate.get("client_order_id") if isinstance(candidate, dict) else None
+            )
+            if not isinstance(client_order_id, str) or not client_order_id:
+                raise DemoFirstFillError(
+                    "legacy terminal attempt lacks immutable client order identity"
+                )
+            attempt_id = f"legacy-{client_order_id}"
+        fact = {
+            "archived_at": _timestamp(archived_at),
+            "attempt_id": attempt_id,
+            "event": "FIRST_FILL_ATTEMPT_ARCHIVED",
+            "status": value,
+        }
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if history_path.exists():
+                for line in history_path.read_text(encoding="utf-8").splitlines():
+                    if not line:
+                        continue
+                    prior = json.loads(line)
+                    if not isinstance(prior, dict):
+                        raise DemoFirstFillError("first-fill attempt history is malformed")
+                    if (
+                        prior.get("event") == "FIRST_FILL_ATTEMPT_ARCHIVED"
+                        and prior.get("attempt_id") == attempt_id
+                    ):
+                        return
+            with history_path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(fact, sort_keys=True, separators=(",", ":")) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except (OSError, json.JSONDecodeError) as error:
+            raise DemoFirstFillError(
+                "unable to append terminal first-fill attempt history"
+            ) from error
 
     def write(self, value: dict[str, object]) -> None:
         if not self._REQUIRED.issubset(value):
@@ -346,14 +408,18 @@ class DemoFirstFillWorker:
         store = DemoExecutionStore(paths.demo_store_path)
         status_store = DemoFirstFillStatusStore(paths.status_path)
         existing = status_store.read()
-        if existing is not None and int(existing["post_count"]) >= 1:
-            store.close()
-            client.close()
-            raise DemoFirstFillError(
-                "first-fill POST was already consumed; refusing another attempt"
-            )
         started = datetime.now(UTC)
-        status = _initial_status(started)
+        if existing is not None and int(existing["post_count"]) >= 1:
+            if not _reconciled_no_remote_effect(existing, store):
+                store.close()
+                client.close()
+                raise DemoFirstFillError(
+                    "first-fill attempt is not terminally reconciled; refusing another POST"
+                )
+            status_store.archive_terminal_attempt(
+                existing, history_path=paths.attempt_history_path, archived_at=started
+            )
+        status = _initial_status(started, attempt_id=f"first-fill-{uuid.uuid4().hex}")
         worker = cls(
             settings=settings,
             coordinator=DemoExecutionCoordinator(
@@ -397,6 +463,7 @@ class DemoFirstFillWorker:
                 "final_state": None,
                 "last_candidate": {
                     **dict(self.status["last_candidate"] or {}),
+                    "first_fill_attempt_id": self.status["first_fill_attempt_id"],
                     "client_order_id": client_order_id,
                 },
             }
@@ -620,10 +687,44 @@ class DemoFirstFillWorker:
             )
 
 
-def _initial_status(started_at: datetime) -> dict[str, object]:
+def _reconciled_no_remote_effect(existing: dict[str, object], store: DemoExecutionStore) -> bool:
+    """Return true only for a remote-confirmed, immutable no-effect attempt.
+
+    A status projection is not sufficient evidence to reopen an execution
+    capability.  The matching immutable Demo ledger diagnostic must certify
+    that official GET-only remote truth observed no order, fill, or position.
+    """
+
+    candidate = existing.get("last_candidate")
+    client_order_id = candidate.get("client_order_id") if isinstance(candidate, dict) else None
+    if not isinstance(client_order_id, str) or not client_order_id:
+        return False
+    diagnostic = store.latest_execution_diagnostic(client_order_id)
+    if diagnostic is None or diagnostic[0].value != "NO_REMOTE_EFFECT":
+        return False
+    detail = diagnostic[1]
+    zero_counts = all(
+        isinstance(detail.get(key), int)
+        and not isinstance(detail.get(key), bool)
+        and detail.get(key) == 0
+        for key in ("remote_position_count", "remote_open_order_count", "remote_fill_count")
+    )
+    return (
+        detail.get("typed_reason") == "NO_REMOTE_EFFECT"
+        and detail.get("source") == "official_demo_get_only_reconciliation"
+        and zero_counts
+    )
+
+
+def _initial_status(started_at: datetime, *, attempt_id: str | None = None) -> dict[str, object]:
+    if attempt_id is None:
+        attempt_id = f"first-fill-{uuid.uuid4().hex}"
+    if not attempt_id:
+        raise DemoFirstFillError("first-fill attempt identity must not be empty")
     timestamp = _timestamp(started_at)
     return {
         "status": DemoFirstFillStatus.STARTING.value,
+        "first_fill_attempt_id": attempt_id,
         "pid": os.getpid(),
         "started_at": timestamp,
         "last_heartbeat": timestamp,
