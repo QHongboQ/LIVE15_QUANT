@@ -45,6 +45,22 @@ from live15_quant.recorder_control import process_alive
 logger = logging.getLogger(__name__)
 
 
+def _remote_account_reconciliation(client: KalshiDemoExecutionClient) -> dict[str, object]:
+    """Read the official account snapshot using its canonical field contract.
+
+    ``DemoAccountSnapshot`` exposes ``buying_power`` (not ``balance``).  Keep
+    this read in one helper so post-reconciliation and remote-risk consumers
+    cannot drift into a second, incompatible account schema.
+    """
+
+    account = client.balance()
+    return {
+        "remote_buying_power": str(account.buying_power),
+        "remote_portfolio_value": str(account.portfolio_value),
+        "remote_account_updated_timestamp": account.updated_timestamp,
+    }
+
+
 class DemoFirstFillError(RuntimeError):
     """A first-fill worker invariant could not be established safely."""
 
@@ -359,8 +375,7 @@ class DemoFirstFillWorker:
             sleep=time.sleep,
             stop_requested=lambda: paths.stop_path.exists(),
             remote_reconciliation_reader=lambda: {
-                "remote_balance": str(client.balance().balance),
-                "remote_portfolio_value": str(client.balance().portfolio_value),
+                **_remote_account_reconciliation(client),
                 "remote_position_count": len(client.positions()),
                 "remote_open_order_count": len(client.open_orders()),
                 "remote_fill_count": len(client.fills()),
@@ -538,7 +553,17 @@ class DemoFirstFillWorker:
             )
             if diagnostic is not None:
                 code = diagnostic[0].value
-        final = "DEMO_ENTRY_EXECUTION_PATH_CERTIFIED" if fill_count > 0 else "DEMO_POST_COMPLETED"
+        remote_effect = any(
+            int(remote_counts.get(key, 0) or 0) > 0
+            for key in ("remote_position_count", "remote_open_order_count", "remote_fill_count")
+        )
+        final = (
+            "DEMO_ENTRY_EXECUTION_PATH_CERTIFIED"
+            if fill_count > 0
+            else "DEMO_POST_COMPLETED"
+            if remote_effect
+            else "NO_REMOTE_EFFECT"
+        )
         self.status.update(
             {
                 "status": (

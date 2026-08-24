@@ -30,6 +30,7 @@ from live15_quant.demo_first_fill import (
     _configure_worker_log,
     _initial_status,
     _latency_diagnostics,
+    _remote_account_reconciliation,
 )
 from live15_quant.providers.kalshi_demo_execution import DemoBookSide
 
@@ -254,6 +255,45 @@ def test_single_post_reservation_stops_worker_and_prevents_second_attempt(tmp_pa
     with pytest.raises(DemoFirstFillError, match="already reserved"):
         worker.reserve_post("second")
     assert coordinator.calls == 1
+
+
+def test_reconciliation_uses_buying_power_snapshot_field(tmp_path) -> None:
+    class Client:
+        def balance(self):
+            return SimpleNamespace(
+                buying_power=Decimal("100"),
+                portfolio_value=Decimal("0"),
+                updated_timestamp=1787535833,
+            )
+
+    assert _remote_account_reconciliation(Client()) == {
+        "remote_buying_power": "100",
+        "remote_portfolio_value": "0",
+        "remote_account_updated_timestamp": 1787535833,
+    }
+
+
+def test_post_reconciliation_records_no_remote_effect_without_rewriting_intent(tmp_path) -> None:
+    class Coordinator:
+        def reconcile_positions(self) -> int:
+            return 0
+
+    worker = _worker(tmp_path, Coordinator(), lambda _settings: ())
+    worker.remote_reconciliation_reader = lambda: {
+        "remote_buying_power": "100",
+        "remote_position_count": 0,
+        "remote_open_order_count": 0,
+        "remote_fill_count": 0,
+    }
+    result = worker._reconcile_after_post(
+        _intent(),
+        DemoReconciliationResult(
+            stable_client_order_id(_intent()), DemoLifecycleState.CANCELED, None, 0
+        ),
+    )
+    assert result == "NO_REMOTE_EFFECT"
+    assert worker.status["final_state"] == "NO_REMOTE_EFFECT"
+    assert worker.status["post_count"] == 0
 
 
 def test_second_instance_is_blocked_and_stale_lease_is_recoverable(tmp_path) -> None:
