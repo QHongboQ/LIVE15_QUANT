@@ -66,6 +66,148 @@ def _remote_account_reconciliation(client: KalshiDemoExecutionClient) -> dict[st
     }
 
 
+def _attempt_remote_reconciliation(
+    client: KalshiDemoExecutionClient, client_order_id: str
+) -> dict[str, object]:
+    """Read Demo truth scoped to one immutable LIVE15 client-order identity.
+
+    The Demo account can contain user-created web orders.  They remain part of
+    remote risk, but they are not evidence that a particular First-Fill
+    attempt submitted, filled, or opened a position.
+    """
+
+    account = _remote_account_reconciliation(client)
+    matching_order = client.find_order_by_client_id(client_order_id)
+    matching_fills = (
+        client.fills(order_id=matching_order.order_id) if matching_order is not None else ()
+    )
+    return {
+        **account,
+        "matching_order_count": 0 if matching_order is None else 1,
+        "matching_provider_order_id": (None if matching_order is None else matching_order.order_id),
+        "matching_ticker": None if matching_order is None else matching_order.ticker,
+        "matching_fill_count": len(matching_fills),
+        "matching_fill_ids": tuple(fill.fill_id for fill in matching_fills),
+    }
+
+
+def _attempt_baseline(existing: dict[str, object]) -> dict[str, object]:
+    candidate = existing.get("last_candidate")
+    if not isinstance(candidate, dict):
+        return {}
+    baseline = candidate.get("remote_baseline")
+    if isinstance(baseline, dict):
+        return dict(baseline)
+    # Compatibility for an already-reserved pre-attribution attempt.  Its
+    # pre-submit balance was durably projected, and the coordinator had
+    # already performed an exact-client-id duplicate lookup before reserving
+    # the write.  Treat this as a migration input only; new attempts always
+    # persist the complete identity-scoped baseline above.
+    legacy_buying_power = existing.get("remote_buying_power_before")
+    if isinstance(legacy_buying_power, str) and legacy_buying_power:
+        return {
+            "remote_buying_power": legacy_buying_power,
+            "matching_order_count": 0,
+            "matching_fill_count": 0,
+            "matching_fill_ids": (),
+            "baseline_kind": "legacy_reserved_client_id_lookup",
+        }
+    return {}
+
+
+def _attempt_no_remote_effect(baseline: dict[str, object], after: dict[str, object]) -> bool:
+    """Return true only when identity-scoped official truth proves no effect."""
+
+    before_buying_power = baseline.get("remote_buying_power")
+    after_buying_power = after.get("remote_buying_power")
+    if not isinstance(before_buying_power, str) or not isinstance(after_buying_power, str):
+        return False
+    try:
+        balance_unchanged = Decimal(before_buying_power) == Decimal(after_buying_power)
+    except (ArithmeticError, ValueError):
+        return False
+    order_count = after.get("matching_order_count")
+    fill_count = after.get("matching_fill_count")
+    return (
+        balance_unchanged
+        and isinstance(order_count, int)
+        and not isinstance(order_count, bool)
+        and order_count == 0
+        and isinstance(fill_count, int)
+        and not isinstance(fill_count, bool)
+        and fill_count == 0
+    )
+
+
+def _recover_provider_blocked_no_effect(
+    existing: dict[str, object], store: DemoExecutionStore, client: KalshiDemoExecutionClient
+) -> bool:
+    """Append, never rewrite, proof that a provider-blocked attempt had no effect.
+
+    This is invoked only during a later local start.  It is GET-only and makes
+    a previously terminal provider block eligible for a fresh *attempt* only
+    when its original immutable client identity has no remote effect.
+    """
+
+    if existing.get("final_state") != "DEMO_FIRST_REAL_FILL_BLOCKED_BY_PROVIDER":
+        return False
+    candidate = existing.get("last_candidate")
+    client_order_id = candidate.get("client_order_id") if isinstance(candidate, dict) else None
+    if not isinstance(client_order_id, str) or not client_order_id:
+        return False
+    if _reconciled_no_remote_effect(existing, store):
+        # A prior recovery may already have appended the immutable proof while
+        # leaving an older mutable projection behind.  Repair only that
+        # projection; the ledger remains append-only.
+        existing.update(
+            {
+                "fill_count": 0,
+                "current_attempt_fill_count": 0,
+                "matching_order_count": 0,
+                "matching_fill_count": 0,
+                "provider_order_id": None,
+            }
+        )
+        return True
+    baseline = _attempt_baseline(existing)
+    if not baseline:
+        # Older projections that did not persist a pre-POST baseline remain
+        # fail-closed; account-wide state cannot reconstruct one safely.
+        return False
+    try:
+        after = _attempt_remote_reconciliation(client, client_order_id)
+    except Exception:
+        # Startup must remain fail-closed if official Demo GET reconciliation
+        # cannot establish the terminal state.
+        return False
+    if not _attempt_no_remote_effect(baseline, after):
+        return False
+    store.append_execution_diagnostic(
+        client_order_id,
+        DemoExecutionResultCode.NO_REMOTE_EFFECT,
+        {
+            "typed_reason": "NO_REMOTE_EFFECT",
+            "source": "official_demo_attempt_scoped_reconciliation",
+            "matching_order_count": 0,
+            "matching_fill_count": 0,
+            "post_count": 1,
+            "terminal_provider_blocker": True,
+        },
+    )
+    # The status file is a mutable projection.  Correct its account-global
+    # fill count without altering any historical ledger fact.
+    existing.update(
+        {
+            "fill_count": 0,
+            "current_attempt_fill_count": 0,
+            "matching_order_count": 0,
+            "matching_fill_count": 0,
+            "provider_order_id": None,
+        }
+    )
+    return True
+
+
 class DemoFirstFillError(RuntimeError):
     """A first-fill worker invariant could not be established safely."""
 
@@ -380,9 +522,15 @@ def read_recent_forward_demo_intents(
 class _PostReservationClient:
     """Delegate all reads, reserving the sole durable POST immediately before write."""
 
-    def __init__(self, delegate: KalshiDemoExecutionClient, reserve: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        delegate: KalshiDemoExecutionClient,
+        reserve: Callable[[str, dict[str, object]], None],
+        capture_attempt_baseline: Callable[[str], dict[str, object]],
+    ) -> None:
         self._delegate = delegate
         self._reserve = reserve
+        self._capture_attempt_baseline = capture_attempt_baseline
         self.last_buying_power: Decimal | None = None
 
     def balance(self):
@@ -394,7 +542,15 @@ class _PostReservationClient:
         client_order_id = getattr(request, "client_order_id", None)
         if not isinstance(client_order_id, str) or not client_order_id:
             raise DemoFirstFillError("Demo create request lacks a safe client order identity")
-        self._reserve(client_order_id)
+        # Capture only the account facts that can be tied to this immutable
+        # client ID.  Account-wide fills/positions may belong to a user web
+        # order and must never become evidence for this attempt.
+        baseline = self._capture_attempt_baseline(client_order_id)
+        if int(baseline["matching_order_count"]) != 0:
+            raise DemoFirstFillError(
+                "matching Demo order already exists; refusing duplicate first-fill POST"
+            )
+        self._reserve(client_order_id, baseline)
         return self._delegate.create_order(request)
 
     def __getattr__(self, name: str) -> Any:
@@ -427,7 +583,7 @@ class DemoFirstFillWorker:
     heartbeat_log_seconds: float = 5.0
     last_heartbeat_at: datetime | None = None
     post_reserved: bool = False
-    remote_reconciliation_reader: Callable[[], dict[str, object]] | None = None
+    remote_reconciliation_reader: Callable[[str], dict[str, object]] | None = None
     stop_requested: Callable[[], bool] = lambda: False
     attempt_history_path: Path | None = None
     continue_until_fill: bool = False
@@ -452,13 +608,17 @@ class DemoFirstFillWorker:
             **({"base_url": demo_base_url} if demo_base_url is not None else {}),
         )
         reservation_client = _PostReservationClient(
-            client, lambda client_id: worker.reserve_post(client_id)
+            client,
+            lambda client_id, baseline: worker.reserve_post(client_id, baseline),
+            lambda client_id: _attempt_remote_reconciliation(client, client_id),
         )
         store = DemoExecutionStore(paths.demo_store_path)
         status_store = DemoFirstFillStatusStore(paths.status_path)
         existing = status_store.read()
         started = datetime.now(UTC)
         if existing is not None and int(existing["post_count"]) >= 1:
+            if _recover_provider_blocked_no_effect(existing, store, client):
+                status_store.write(existing)
             if not _reconciled_terminal_no_fill(existing, store):
                 store.close()
                 client.close()
@@ -493,17 +653,9 @@ class DemoFirstFillWorker:
             utc_now=lambda: datetime.now(UTC),
             sleep=time.sleep,
             stop_requested=lambda: paths.stop_path.exists(),
-            remote_reconciliation_reader=lambda: {
-                **_remote_account_reconciliation(client),
-                "remote_buying_power_before": (
-                    None
-                    if reservation_client.last_buying_power is None
-                    else str(reservation_client.last_buying_power)
-                ),
-                "remote_position_count": len(client.positions()),
-                "remote_open_order_count": len(client.open_orders()),
-                "remote_fill_count": len(client.fills()),
-            },
+            remote_reconciliation_reader=lambda client_order_id: _attempt_remote_reconciliation(
+                client, client_order_id
+            ),
             attempt_history_path=paths.attempt_history_path,
             continue_until_fill=continue_until_fill,
             candidate_already_attempted=lambda client_id: store.latest_state(client_id) is not None,
@@ -511,7 +663,7 @@ class DemoFirstFillWorker:
         # The closure above resolves after assignment, before any submit can occur.
         return worker, (client, store)
 
-    def reserve_post(self, client_order_id: str) -> None:
+    def reserve_post(self, client_order_id: str, baseline: dict[str, object] | None = None) -> None:
         if self.post_reserved or int(self.status["post_count"]) >= 1:
             raise DemoFirstFillError("first-fill POST already reserved; refusing duplicate write")
         self.post_reserved = True
@@ -526,6 +678,7 @@ class DemoFirstFillWorker:
                     **dict(self.status["last_candidate"] or {}),
                     "first_fill_attempt_id": self.status["first_fill_attempt_id"],
                     "client_order_id": client_order_id,
+                    "remote_baseline": dict(baseline or {}),
                 },
             }
         )
@@ -674,7 +827,7 @@ class DemoFirstFillWorker:
         # reconciled the order/fills; positions refresh is idempotent.
         reconciled_positions = self.coordinator.reconcile_positions()
         remote_counts = (
-            self.remote_reconciliation_reader()
+            self.remote_reconciliation_reader(stable_client_order_id(intent))
             if self.remote_reconciliation_reader is not None
             else {}
         )
@@ -688,39 +841,52 @@ class DemoFirstFillWorker:
             if diagnostic is not None:
                 code = diagnostic[0].value
                 provider_diagnostic = diagnostic[1]
-        remote_fill_count = int(remote_counts.get("remote_fill_count", 0) or 0)
-        remote_position_count = int(remote_counts.get("remote_position_count", 0) or 0)
-        remote_open_order_count = int(remote_counts.get("remote_open_order_count", 0) or 0)
-        remote_effect = any(
-            int(remote_counts.get(key, 0) or 0) > 0
-            for key in ("remote_position_count", "remote_open_order_count", "remote_fill_count")
-        )
-        before = remote_counts.get("remote_buying_power_before")
+        baseline = _attempt_baseline(self.status)
+        remote_fill_ids = remote_counts.get("matching_fill_ids", ())
+        baseline_fill_ids = baseline.get("matching_fill_ids", ())
+        if not isinstance(remote_fill_ids, (list, tuple)) or not isinstance(
+            baseline_fill_ids, (list, tuple)
+        ):
+            raise DemoFirstFillError("attempt-scoped remote fill identities are malformed")
+        current_attempt_fill_count = len(set(remote_fill_ids) - set(baseline_fill_ids))
+        matching_order_count = int(remote_counts.get("matching_order_count", 0) or 0)
+        matching_fill_count = int(remote_counts.get("matching_fill_count", 0) or 0)
+        remote_effect = matching_order_count > 0 or matching_fill_count > 0
+        before = baseline.get("remote_buying_power")
         after = remote_counts.get("remote_buying_power")
         balance_changed = (
             isinstance(before, str) and isinstance(after, str) and Decimal(before) != Decimal(after)
         )
         fill_certified = (
             inserted_fill_count > 0
-            and remote_fill_count > 0
-            and remote_position_count > 0
+            and current_attempt_fill_count > 0
+            and matching_order_count == 1
             and result.provider_order_id is not None
             and balance_changed
         )
         provider_blocker = code == DemoExecutionResultCode.HTTP_404.value and isinstance(
             provider_diagnostic.get("provider_error_code"), str
         )
-        if provider_blocker:
+        if provider_blocker and current_attempt_fill_count > 0:
+            # An HTTP provider error and a matching remote fill are mutually
+            # inconsistent.  Never report a fill as provider-blocked (or vice
+            # versa); preserve the facts and require explicit reconciliation.
+            final = "RECONCILIATION_REQUIRED"
+        elif provider_blocker:
+            self._append_no_remote_effect_fact(
+                intent, remote_counts, baseline, terminal_provider_blocker=True
+            )
             final = "DEMO_FIRST_REAL_FILL_BLOCKED_BY_PROVIDER"
         elif inserted_fill_count > 0 and not fill_certified:
             final = "RECONCILIATION_REQUIRED"
+        elif code == DemoExecutionResultCode.HTTP_SUCCESS_NO_FILL.value:
+            # A provider-confirmed IOC/no-fill can legitimately leave a
+            # remote order record while still having no matching fill.
+            final = "CONFIRMED_NO_FILL"
         elif not remote_effect and inserted_fill_count == 0:
-            if code == DemoExecutionResultCode.HTTP_SUCCESS_NO_FILL.value:
-                final = "CONFIRMED_NO_FILL"
-            else:
-                self._append_no_remote_effect_fact(intent, remote_counts)
-                final = "NO_REMOTE_EFFECT"
-        elif remote_open_order_count > 0 and inserted_fill_count == 0:
+            self._append_no_remote_effect_fact(intent, remote_counts, baseline)
+            final = "NO_REMOTE_EFFECT"
+        elif matching_order_count > 0 and inserted_fill_count == 0:
             final = "RECONCILIATION_REQUIRED"
         elif fill_certified:
             final = "DEMO_FIRST_REAL_FILL_CERTIFIED"
@@ -733,11 +899,12 @@ class DemoFirstFillWorker:
                     if fill_certified
                     else DemoFirstFillStatus.STOPPED.value
                 ),
-                "fill_count": remote_fill_count,
+                "fill_count": current_attempt_fill_count,
                 "last_http_result": code,
                 "last_error": None,
                 "final_state": final,
                 "reconciled_positions": reconciled_positions,
+                "current_attempt_fill_count": current_attempt_fill_count,
                 "provider_order_id": result.provider_order_id,
                 "balance_changed": balance_changed,
                 "provider_error_code": provider_diagnostic.get("provider_error_code"),
@@ -760,7 +927,7 @@ class DemoFirstFillWorker:
             extra={
                 "event": "demo_first_fill_complete",
                 "final_state": final,
-                "fill_count": remote_fill_count,
+                "fill_count": current_attempt_fill_count,
             },
         )
         return final
@@ -811,7 +978,12 @@ class DemoFirstFillWorker:
         )
 
     def _append_no_remote_effect_fact(
-        self, intent: DemoIntent, remote_counts: dict[str, object]
+        self,
+        intent: DemoIntent,
+        remote_counts: dict[str, object],
+        baseline: dict[str, object],
+        *,
+        terminal_provider_blocker: bool = False,
     ) -> None:
         """Durably certify an official GET-only no-effect reconciliation.
 
@@ -822,28 +994,20 @@ class DemoFirstFillWorker:
 
         if not isinstance(self.coordinator, DemoExecutionCoordinator):
             return
-        required_counts = (
-            "remote_position_count",
-            "remote_open_order_count",
-            "remote_fill_count",
-        )
-        if any(
-            not isinstance(remote_counts.get(key), int)
-            or isinstance(remote_counts.get(key), bool)
-            or int(remote_counts[key]) != 0
-            for key in required_counts
-        ):
+        if not _attempt_no_remote_effect(baseline, remote_counts):
             raise DemoFirstFillError(
-                "official Demo reconciliation is incomplete; refusing no-effect terminal state"
+                "attempt-scoped official Demo reconciliation cannot prove no remote effect"
             )
         self.coordinator._store.append_execution_diagnostic(
             stable_client_order_id(intent),
             DemoExecutionResultCode.NO_REMOTE_EFFECT,
             {
                 "typed_reason": "NO_REMOTE_EFFECT",
-                "source": "official_demo_get_only_reconciliation",
-                **{key: int(remote_counts[key]) for key in required_counts},
+                "source": "official_demo_attempt_scoped_reconciliation",
+                "matching_order_count": 0,
+                "matching_fill_count": 0,
                 "post_count": 1,
+                "terminal_provider_blocker": terminal_provider_blocker,
             },
         )
 
@@ -892,17 +1056,25 @@ def _reconciled_no_remote_effect(existing: dict[str, object], store: DemoExecuti
     if diagnostic is None or diagnostic[0].value != "NO_REMOTE_EFFECT":
         return False
     detail = diagnostic[1]
-    zero_counts = all(
+    legacy_zero_counts = all(
         isinstance(detail.get(key), int)
         and not isinstance(detail.get(key), bool)
         and detail.get(key) == 0
         for key in ("remote_position_count", "remote_open_order_count", "remote_fill_count")
     )
-    return (
-        detail.get("typed_reason") == "NO_REMOTE_EFFECT"
-        and detail.get("source") == "official_demo_get_only_reconciliation"
-        and zero_counts
+    attempt_zero_counts = all(
+        isinstance(detail.get(key), int)
+        and not isinstance(detail.get(key), bool)
+        and detail.get(key) == 0
+        for key in ("matching_order_count", "matching_fill_count")
     )
+    if detail.get("typed_reason") != "NO_REMOTE_EFFECT":
+        return False
+    if detail.get("source") == "official_demo_attempt_scoped_reconciliation":
+        return attempt_zero_counts
+    # Preserve the audited release semantics of pre-attribution historical
+    # attempts.  New code never emits this account-wide source.
+    return detail.get("source") == "official_demo_get_only_reconciliation" and legacy_zero_counts
 
 
 def _reconciled_terminal_no_fill(existing: dict[str, object], store: DemoExecutionStore) -> bool:
