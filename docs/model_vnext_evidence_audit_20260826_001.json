@@ -1,0 +1,273 @@
+{
+  "artifact_format": "live15-model-vnext-evidence-audit-v1",
+  "audit_id": "EVID-001A-20260826-001",
+  "risk_class": "L0_READ_ONLY_EVIDENCE_AUDIT",
+  "evidence_timestamp": "2026-08-25T19:39:38.2471884Z",
+  "primary_decision": "NEW_DATASET_FREEZE_ELIGIBLE",
+  "secondary_readiness": {
+    "proposed_next_dataset_freeze": "PROPOSED_NEXT_DATASET_FREEZE",
+    "mvn003": "INSUFFICIENT_MICROSTRUCTURE_EVIDENCE",
+    "mvn003_evidence_eligible": false,
+    "sequence": "INSUFFICIENT_SEQUENCE_EVIDENCE",
+    "sequence_research_eligible": false
+  },
+  "state_distinction": {
+    "recorder": "LIVE_AUTHORITATIVE_APPEND_ONLY",
+    "current_trainable_pool": "MUTABLE_INCREMENTAL_MATERIALIZER_OUTPUT",
+    "frozen_dataset_v1": "IMMUTABLE_HISTORICAL_EXPERIMENT_SNAPSHOT",
+    "experiment_snapshot": "NOT_CREATED_BY_THIS_AUDIT"
+  },
+  "recorder_snapshot": {
+    "path": "data/live15.sqlite3",
+    "observed_at": "2026-08-25T19:35:13.833425+00:00",
+    "status": "healthy",
+    "authoritative_provider": "sdk",
+    "synchronized_markets": 10,
+    "expected_markets": 10,
+    "sequence_gaps": 0,
+    "production_writes": 0,
+    "row_counts_complete": false,
+    "health_note": "Current Recorder health is healthy; historical atomic WS sequence evidence is evaluated separately below."
+  },
+  "current_trainable_pool": {
+    "path": "data/current_trainable.sqlite3",
+    "schema_version": "1",
+    "dataset_version": "1.2.0",
+    "feature_schema_version": "1.0.0",
+    "evaluator_version": "dataset-builder-shared-v1",
+    "materializer_status": "RUNNING",
+    "materializer_mode": "INCREMENTAL_CURRENT_TRAINABLE_NO_TRAINING",
+    "materializer_cadence_seconds": 300,
+    "materializer_last_heartbeat": "2026-08-25T19:35:29.933440+00:00",
+    "materializer_process_alive": true,
+    "evaluated_finalized_events": 4280,
+    "eligible_events": 3519,
+    "excluded_events": 761,
+    "unevaluated_events": 0,
+    "materialized_rows": 26032,
+    "last_settlement_row_id": 4290,
+    "last_materialized_timestamp": "2026-08-25T19:35:14.898895+00:00",
+    "latest_eligible_window_end": "2026-08-25T19:45:00.000000+00:00",
+    "first_eligible_window_start": "2026-08-20T18:45:00.000000+00:00",
+    "last_eligible_window_start": "2026-08-25T19:30:00.000000+00:00",
+    "source_identity": "0cd0f7c314ef72be13a65bfee27fde4e0c4f46c9242491de9d1563a6aa110002",
+    "source_limits": {
+      "recorder_schema_version": 10,
+      "kalshi_settlements": 4290,
+      "kalshi_settlements_count": 4280,
+      "kalshi_market_lifecycle": 16969,
+      "kalshi_market_lifecycle_count": 16949,
+      "kalshi_prediction_quotes": 1438110,
+      "kalshi_prediction_quotes_count": 1438050,
+      "coinbase_ticks": 12928263,
+      "coinbase_ticks_count": 12927989,
+      "underlying_observations": 3154886,
+      "underlying_observations_count": 3154834,
+      "data_gaps": 40018,
+      "data_gaps_count": 40018
+    }
+  },
+  "utc_day_evidence": {
+    "earliest_eligible_utc_date": "2026-08-20",
+    "latest_eligible_utc_date": "2026-08-25",
+    "distinct_utc_days": 6,
+    "usable_training_utc_days": 6,
+    "events_by_day": {
+      "2026-08-20": 105,
+      "2026-08-21": 526,
+      "2026-08-22": 600,
+      "2026-08-23": 671,
+      "2026-08-24": 898,
+      "2026-08-25": 719
+    },
+    "rows_by_day": {
+      "2026-08-20": 732,
+      "2026-08-21": 3718,
+      "2026-08-22": 4594,
+      "2026-08-23": 5113,
+      "2026-08-24": 6732,
+      "2026-08-25": 5143
+    }
+  },
+  "asset_coverage": {
+    "active_asset_count": 10,
+    "per_asset": {
+      "BNB": {"eligible_events": 409, "materialized_rows": 3074, "active_utc_days": 6},
+      "BTC": {"eligible_events": 422, "materialized_rows": 3077, "active_utc_days": 6},
+      "DOGE": {"eligible_events": 399, "materialized_rows": 2357, "active_utc_days": 6},
+      "ETH": {"eligible_events": 423, "materialized_rows": 3105, "active_utc_days": 6},
+      "Gold": {"eligible_events": 199, "materialized_rows": 1601, "active_utc_days": 4},
+      "HYPE": {"eligible_events": 410, "materialized_rows": 3101, "active_utc_days": 6},
+      "SOL": {"eligible_events": 423, "materialized_rows": 3186, "active_utc_days": 6},
+      "Silver": {"eligible_events": 199, "materialized_rows": 1609, "active_utc_days": 4},
+      "WTI Oil": {"eligible_events": 212, "materialized_rows": 1722, "active_utc_days": 4},
+      "XRP": {"eligible_events": 423, "materialized_rows": 3200, "active_utc_days": 6}
+    },
+    "coverage_note": "Gold, Silver, and WTI Oil have four eligible days because their existing market-session policy excludes closed sessions; this is not raw-row counting."
+  },
+  "event_evidence": {
+    "eligible_independent_events": 3519,
+    "new_events_since_dataset_v1_cutoff": 2428,
+    "dataset_v1_event_overlap": 1091,
+    "event_identity_check": "current eligible ticker set overlaps Dataset v1 exactly; no Dataset v1 event is missing",
+    "usable_path_target_events_union": 3445
+  },
+  "path_targets": {
+    "contract": {
+      "horizons_seconds": [5, 15, 30, 60, 120, 180, 300],
+      "terminal_horizon": "window_end",
+      "tolerance_seconds": 2,
+      "lookup": "same event, decision_timestamp < future_timestamp <= window_end, nearest earlier tie",
+      "no_fill_or_interpolation": true
+    },
+    "counts": {
+      "5": {"eligible_target_events": 0, "valid_target_rows": 0, "unavailable_or_rejected_rows": 26032, "reasons": {"future_observation_unavailable": 26032}},
+      "15": {"eligible_target_events": 0, "valid_target_rows": 0, "unavailable_or_rejected_rows": 26032, "reasons": {"future_observation_unavailable": 26032}},
+      "30": {"eligible_target_events": 1402, "valid_target_rows": 1402, "unavailable_or_rejected_rows": 24630, "reasons": {"future_observation_unavailable": 23207, "window_end_boundary": 1423}},
+      "60": {"eligible_target_events": 3086, "valid_target_rows": 5547, "unavailable_or_rejected_rows": 20485, "reasons": {"future_observation_unavailable": 16460, "window_end_boundary": 4025}},
+      "120": {"eligible_target_events": 3369, "valid_target_rows": 14579, "unavailable_or_rejected_rows": 11453, "reasons": {"future_observation_unavailable": 4316, "window_end_boundary": 7137}},
+      "180": {"eligible_target_events": 3153, "valid_target_rows": 6051, "unavailable_or_rejected_rows": 19981, "reasons": {"future_observation_unavailable": 9638, "window_end_boundary": 10343}},
+      "300": {"eligible_target_events": 3110, "valid_target_rows": 5978, "unavailable_or_rejected_rows": 20054, "reasons": {"future_observation_unavailable": 6528, "window_end_boundary": 13526}},
+      "window_end": {"eligible_target_events": 0, "valid_target_rows": 0, "unavailable_or_rejected_rows": 26032, "reasons": {"future_observation_unavailable": 26032}}
+    },
+    "note": "Five/15-second and window-end targets are unavailable because the current materialized decision grid has no observation within the frozen two-second tolerance; no label was fabricated."
+  },
+  "data_quality": {
+    "accepted_rows": 26032,
+    "rows_with_any_missing_feature": 9,
+    "missing_feature_values": 18,
+    "accepted_missing_reason_counts": {"not_enough_lookback": 18},
+    "accepted_stale_feature_values": 0,
+    "source_timestamp_asof_violations": 0,
+    "receive_timestamp_check": "canonical DatasetBuilder as-of gate is authoritative; receive timestamps are not duplicated in current_trainable_rows",
+    "eligible_gap_free_by_materializer_contract": true,
+    "exclusion_reason_tallies_not_mutually_exclusive": {
+      "missing_decision_time_metadata": 660,
+      "source_unavailable": 488,
+      "stale_source": 2875,
+      "insufficient_lookback": 394,
+      "market_closed": 216,
+      "market_side_unavailable": 5,
+      "restart_gap": 1311,
+      "source_gap_overlap": 775,
+      "runtime_stall_gap": 125
+    },
+    "status": "CLEAN_ELIGIBLE_POOL_WITH_TYPED_EXCLUSIONS"
+  },
+  "regime_coverage": {
+    "definition": "existing RuleAssistedRegimeExpert thresholds; decision-time return_30s, return_120s, realized_volatility_60s and binary opposite-sign reversal score",
+    "labels_overlap": true,
+    "rows_evaluated": 26032,
+    "data_unavailable_rows": 0,
+    "labels": {
+      "trending_up": {"rows": 8999, "events": 3194, "utc_days": 6},
+      "trending_down": {"rows": 7848, "events": 3109, "utc_days": 6},
+      "ranging_choppy": {"rows": 9185, "events": 3294, "utc_days": 6},
+      "reversal_risk_elevated": {"rows": 8398, "events": 3228, "utc_days": 6},
+      "low_volatility": {"rows": 26032, "events": 3519, "utc_days": 6},
+      "high_volatility": {"rows": 0, "events": 0, "utc_days": 0}
+    },
+    "limitation": "Rule labels are diagnostics, not a fitted regime model or promotion evidence."
+  },
+  "microstructure_evidence": {
+    "current_pool_depth_imbalance_rows": 26032,
+    "current_pool_depth_imbalance_row_coverage": 1.0,
+    "current_pool_events_with_depth_imbalance": 3519,
+    "current_pool_utc_days_with_depth_imbalance": 6,
+    "current_pool_assets_with_depth_imbalance": 10,
+    "atomic_synchronized_ws_independent_events": 0,
+    "atomic_synchronized_ws_independent_utc_days": 0,
+    "atomic_synchronized_ws_gap_free_events": 0,
+    "sdk_shadow_snapshot_count": 4320,
+    "sdk_shadow_delta_count": 1411237,
+    "sdk_shadow_recent_gap_count": 53736,
+    "sdk_shadow_unrecovered_gap_count": 0,
+    "sdk_shadow_synchronized_count": 0,
+    "sdk_shadow_top_depth_match_rate": 0.003971312184457621,
+    "sdk_shadow_recent_mismatch_count": 379971,
+    "status": "INSUFFICIENT_MICROSTRUCTURE_EVIDENCE",
+    "reason": "REST/materialized depth fields are present, but the required independent atomic synchronized WS sequence evidence is not established; raw WS row volume is not used as a substitute."
+  },
+  "dataset_v1_comparison": {
+    "dataset_id": "live15-dataset-v1-f81d7d1feebcbbaecff9",
+    "build_hash": "f81d7d1feebcbbaecff93086c2e1a577aeb72cc98b7bfabd22d826e05a4cce95",
+    "cutoff_timestamp": "2026-08-22T19:10:05.033102+00:00",
+    "evidence": {
+      "events": {"dataset_v1": 1091, "current_pool": 3519, "increase": 2428},
+      "rows": {"dataset_v1": 7984, "current_pool": 26032, "increase": 18048},
+      "utc_days": {"dataset_v1": 3, "current_pool": 6, "increase": 3},
+      "assets": {"dataset_v1": 10, "current_pool": 10, "increase": 0},
+      "usable_30s_targets": {"dataset_v1": 271, "current_pool": 1402, "increase": 1131},
+      "usable_60s_targets": {"dataset_v1": 1176, "current_pool": 5547, "increase": 4371},
+      "usable_120s_targets": {"dataset_v1": 2957, "current_pool": 14579, "increase": 11622},
+      "usable_180s_targets": {"dataset_v1": 1283, "current_pool": 6051, "increase": 4768},
+      "usable_300s_targets": {"dataset_v1": 1223, "current_pool": 5978, "increase": 4755}
+    },
+    "comparison_note": "The increase is measured by independent event identity and usable exact targets, not raw row multiplication alone."
+  },
+  "freeze_eligibility": {
+    "decision": "NEW_DATASET_FREEZE_ELIGIBLE",
+    "basis": [
+      "2428 independent eligible events are new after the Dataset v1 source cutoff",
+      "current eligible evidence covers six UTC days, including three new UTC days",
+      "all ten assets remain represented; thin assets retain explicit four-day coverage",
+      "exact 30s/60s/120s/180s/300s target counts increased materially",
+      "accepted rows have zero observed source-timestamp as-of violations and zero stale feature values",
+      "no model metric, revealed final-test result, or performance threshold was used"
+    ],
+    "blockers_not_overridden": [
+      "atomic synchronized WS microstructure evidence remains insufficient",
+      "sequence/deep-model gate remains closed"
+    ]
+  },
+  "proposed_next_dataset_freeze": {
+    "status": "PROPOSED_NEXT_DATASET_FREEZE",
+    "dataset_id_naming": "live15-dataset-v2-{deterministic_build_hash}",
+    "proposed_cutoff_timestamp": "2026-08-25T19:35:14.898895+00:00",
+    "cutoff_basis": "captured current-pool materializer/source limits, selected by evidence completeness rather than model performance",
+    "raw_snapshot_identity": {
+      "recorder_path": "data/live15.sqlite3",
+      "current_trainable_source_identity": "0cd0f7c314ef72be13a65bfee27fde4e0c4f46c9242491de9d1563a6aa110002",
+      "kalshi_settlements_max_row_id": 4290,
+      "data_gaps_max_row_id": 40018
+    },
+    "feature_schema": "1.0.0",
+    "eligibility_rules": "DatasetBuilder shared as-of/gap/quarantine policy; no rule changes",
+    "split_policy": "whole-event chronological train/validation/test with derived 600-second purge/embargo",
+    "final_test_policy": "new final test remains frozen and is not used for vNext selection or tuning",
+    "artifact_location": "data/datasets/<proposed-dataset-id>",
+    "required_manifest": ["source snapshot bounds", "feature schema", "eligibility policy", "split manifest", "artifact hashes", "code Git SHA"]
+  },
+  "reevaluation_gate": {
+    "mvn002_rerun": "one formal rerun only after EVID-001B freeze, same structured baseline families and metrics",
+    "hyperparameter_search": "bounded/predeclared only",
+    "final_test": "not consumed by this audit",
+    "mvn003": "blocked until independent atomic synchronized WS evidence passes"
+  },
+  "integrity": {
+    "mvn002_retrained": false,
+    "mvn003_started": false,
+    "dataset_v1_changed": false,
+    "current_pool_mutated": false,
+    "model_metrics_inspected": false,
+    "dataset_v1_final_test_consumed": false,
+    "runtime_recorder_materializer_changed": false,
+    "paper_production_changed": false
+  },
+  "checker": {
+    "verdict": "PASS",
+    "scope": [
+      "current_trainable.sqlite3 authoritative materializer output",
+      "current-pool source limits and checkpoint",
+      "Dataset v1 manifest identity and split event set",
+      "exact horizon lookup and source timestamp as-of checks",
+      "health/runtime read-only status",
+      "no training/final-test/runtime mutation"
+    ],
+    "limitations": [
+      "current_trainable_rows does not duplicate receive timestamps; canonical DatasetBuilder evaluator identity is retained",
+      "atomic synchronized WS sequence evidence is insufficient, so MVN-003 and sequence research remain blocked"
+    ]
+  },
+  "next_task": "EVID-001B — Freeze New Immutable Dataset"
+}
