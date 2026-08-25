@@ -1,4 +1,6 @@
 .venv/
+.venv.broken-*/
+.venv.python313-broken-*/
 __pycache__/
 *.pyc
 .pytest_cache/

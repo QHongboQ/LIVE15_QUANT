@@ -34,6 +34,15 @@ Kalshi Production -> kalshi-sdk -> LIVE15 KalshiGateway -> Reliability Adapter
 This separation is intentional: upgrading the external SDK is a dependency change, while
 LIVE15-specific behavior is maintained in the Gateway and downstream domain modules.
 
+## Upgrade and defect policy
+
+The normal path is to keep `kalshi-sdk` pinned and reproduce the environment from
+`requirements.lock`. An SDK upgrade is a deliberate dependency change: validate the new
+version against the Gateway contract and update only LIVE15-owned adapters when the upstream
+API changes. If a critical upstream defect is found, document it and pursue an upstream fix;
+only a separately reviewed, temporary fork is acceptable when an upstream resolution cannot
+arrive in time. LIVE15 must not clone, overwrite, or monkey-patch installed SDK source.
+
 The SDK v12 built-in host constants still select the supported shared hosts. LIVE15 uses Kalshi's
 recommended dedicated `external-api` hosts. `kalshi_gateway.client` therefore validates exact
 LIVE15 endpoint constants before constructing `KalshiConfig`; SDK environment variables and SDK

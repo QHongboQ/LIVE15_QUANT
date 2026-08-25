@@ -1,0 +1,26 @@
+{
+  "kalshi_sdk": {
+    "dependency_name": "kalshi-sdk",
+    "package_name": "kalshi-sdk",
+    "upstream_repository": "https://github.com/TexasCoding/kalshi-python-sdk",
+    "locked_version": "12.0.0",
+    "integration_mode": "dependency + LIVE15 KalshiGateway adapter",
+    "locally_patched": false,
+    "upgrade_policy": "pin and validate a dependency upgrade, then adjust only the LIVE15 adapter; escalate unresolved critical defects upstream or through a separately reviewed temporary fork",
+    "ownership_boundary": {
+      "sdk": [
+        "authenticated REST transport",
+        "WebSocket transport and subscriptions",
+        "reconnect/resubscribe",
+        "typed Kalshi API models",
+        "V2 order and portfolio primitives"
+      ],
+      "live15": [
+        "market universe and domain identity",
+        "reliability and fail-closed policy",
+        "Recorder persistence",
+        "features, Materializer, Paper, Risk, and Control Center"
+      ]
+    }
+  }
+}
