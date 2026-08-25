@@ -297,7 +297,8 @@ def _validate_manifest(manifest: Mapping[str, Any]) -> None:
     holdout = manifest.get("fresh_holdout", {})
     if holdout.get("state") != DATASET_V2_HOLDOUT_STATE or holdout.get("evaluation_performed"):
         raise Factor001RError("HOLDOUT_NOT_FROZEN")
-    if manifest.get("leakage_checker") != "PASS":
+    leakage = manifest.get("leakage_checker", {})
+    if leakage.get("status") != "PASS":
         raise Factor001RError("DATASET_LEAKAGE_CHECK_FAILED")
 
 
