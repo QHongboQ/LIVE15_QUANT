@@ -789,8 +789,8 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
         "dataset_build_hash": DATASET_BUILD_HASH,
         "holdout_state": DATASET_V2_HOLDOUT_STATE,
         "holdout_accessed": False,
-        "independent_utc_days": manifest.get("pool", {}).get("independent_utc_days"),
-        "independent_events": manifest.get("pool", {}).get("events_in_frozen_artifact"),
+        "independent_utc_days": manifest.get("evidence", {}).get("independent_utc_days"),
+        "independent_events": manifest.get("evidence", {}).get("independent_events"),
         "rows": {
             "train": sum(row.split == "train" for row in rows),
             "validation": sum(row.split == "validation" for row in rows),
