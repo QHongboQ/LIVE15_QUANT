@@ -103,3 +103,27 @@ thresholds, implement uncertainty, or wire dynamic exits/execution.
 Every future artifact must retain the Dataset ID/build hash, feature and label schema versions,
 training code SHA, fold policy, normalization/calibration provenance, cost assumptions, and final-
 test state. Paper remains local-only and paused; production writes remain disabled.
+
+## MVN-002 structured multi-horizon path baseline (development only)
+
+MVN-002 uses the frozen MVN-001 contract without changing its boundaries. The implementation is
+offline-only (`src/live15_quant/model_vnext_path.py`) and reads only Dataset v1's certified train
+rows. It evaluates independent heads for 5s, 15s, 30s, 60s, 120s, 180s, 300s, and
+`window_end`. The 5s, 15s, and window-end rows are retained with
+`future_observation_unavailable`; they are not interpolated or silently dropped. Exact train-row
+future observations make 271/1,176/2,957/1,283/1,223 examples available at 30/60/120/180/300s.
+
+The compact ablations are A0 (naive), A1 (short path/volatility), A2 (+ target distance), A3
+(+ time remaining), and A4 (+ existing descriptive market state). A0 is the zero/mean-return
+sanity benchmark. A1-A4 use train-only normalization and fixed linear, logistic, and XGBoost
+heads. XGBoost uses a bounded 40-round, depth-3 configuration; there is no sweep, stacking, deep
+sequence model, Paper/Shadow wiring, or production promotion. Walk-forward folds are whole-window
+chronological groups with the contract-derived 600-second purge/embargo. Per-asset and per-UTC-day
+diagnostics reuse the pooled fold-fitted state and never refit on validation groups.
+
+The immutable run manifest is `docs/model_vnext_mvn002_report.json`. Its best pooled validation
+MAE candidates were XGBoost A2 at 30s (0.0004515), XGBoost A4 at 60s (0.0008761), XGBoost A4 at
+120s (0.0013783), XGBoost A4 at 180s (0.0017869), and XGBoost A3 at 300s (0.0023083). These are
+development-fold diagnostics only: gains over naive/linear are small and not uniformly robust
+across days/assets, so the candidate outcome is `NO_ROBUST_PATH_EDGE_YET`. Dataset v1's revealed
+final test remains unconsumed. Sequence readiness remains `INSUFFICIENT_SEQUENCE_EVIDENCE`.
