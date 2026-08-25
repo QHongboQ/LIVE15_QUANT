@@ -1,0 +1,76 @@
+{
+  "report": "EVID-001B",
+  "status": "FROZEN_DEVELOPMENT_DATASET",
+  "dataset_id": "live15-dataset-v2-4bb4934bf328b6b024ff",
+  "dataset_path": "data/datasets/live15-dataset-v2-4bb4934bf328b6b024ff",
+  "deterministic_build_hash": "4bb4934bf328b6b024ff4183df134c481d962a041dc6ae760a3816d3c5228113",
+  "registered_cutoff": "2026-08-25T19:35:14.898895+00:00",
+  "source_identity": "0cd0f7c314ef72be13a65bfee27fde4e0c4f46c9242491de9d1563a6aa110002",
+  "source_row_id_limits": {
+    "coinbase_ticks": 12927989,
+    "underlying_observations": 3154834,
+    "kalshi_prediction_quotes": 1438050,
+    "kalshi_market_lifecycle": 16969,
+    "kalshi_settlements": 4280,
+    "data_gaps": 40018
+  },
+  "materializer": {
+    "dataset_version": "1.2.0",
+    "materializer_schema_version": "1",
+    "feature_schema_version": "1.0.0",
+    "eligibility_policy": "dataset-builder-shared-v1",
+    "bounded_logical_row_identity": "training_rows.jsonl sha256 in manifest"
+  },
+  "pool": {
+    "audited_events_before_embargo": 3519,
+    "rows_before_embargo": 26032,
+    "events_in_frozen_artifact": 3489,
+    "rows_in_frozen_artifact": 25975,
+    "independent_utc_days": 6,
+    "date_range": ["2026-08-20", "2026-08-25"]
+  },
+  "path_targets": {
+    "horizons_seconds": [5, 15, 30, 60, 120, 180, 300],
+    "window_end": true,
+    "tolerance_seconds": 2,
+    "valid_counts": {"5": 0, "15": 0, "30": 1391, "60": 5521, "120": 14473, "180": 6024, "300": 5949, "window_end": 0},
+    "total_counts": 25853,
+    "no_future_fill": true
+  },
+  "split": {
+    "policy": "chronological whole-window/event bundles",
+    "purge_seconds": 600,
+    "embargo_seconds": 600,
+    "excluded_embargo_rows": 122,
+    "test_events": 3801,
+    "holdout_state": "UNREVEALED_FROZEN",
+    "holdout_evaluation_performed": false
+  },
+  "evidence": {
+    "status": "DEVELOPMENT_EVIDENCE_ONLY",
+    "microstructure": "INSUFFICIENT_MICROSTRUCTURE_EVIDENCE",
+    "sequence_gate": "INSUFFICIENT_SEQUENCE_EVIDENCE",
+    "high_volatility_rows": 0,
+    "final_test_consumed": false,
+    "training_performed": false,
+    "evaluation_performed": false,
+    "mvn003_started": false
+  },
+  "performance": {
+    "fast_freeze_elapsed_seconds": 30.36,
+    "current_trainable_bytes_read": 546529280,
+    "frozen_output_bytes": 608562697
+  },
+  "old_replay": {"status": "STOPPED_AND_DEFERRED_AS_AUDIT_REBUILD_PATH", "partial_snapshot_preserved": true},
+  "deferred_item": "STORAGE-002 — Data Pipeline Throughput & Freeze Architecture",
+  "leakage_checker": "PASS",
+  "checker": "PASS",
+  "runtime_health_at_verification": {
+    "recorder": "ACTIVE_SDK_WS_SYNCHRONIZED",
+    "materializer": "CHECKPOINT_ADVANCING",
+    "overall_health": "DEGRADED_WS_ARCHIVE_SOURCE_FAILURE",
+    "freeze_scope_changed_runtime": false
+  },
+  "artifact_files": ["training_rows.jsonl", "path_targets.jsonl", "splits.json", "manifest.json"],
+  "next_task": "MVN-002 structured baseline only after explicit review; no automatic promotion"
+}
