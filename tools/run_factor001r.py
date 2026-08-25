@@ -522,7 +522,7 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
     _validate_manifest(manifest)
     experiment_id, contract = experiment_identity(manifest=manifest, code_sha=code_sha)
     candidates = build_candidates(experiment_id=experiment_id)
-    rows, event_splits = _load_rows(root, event_splits={})
+    rows, event_splits = _load_rows(root)
     targets = _load_targets(root, event_splits)
     if not rows or not targets:
         raise Factor001RError("NO_TRAIN_VALIDATION_ROWS")
