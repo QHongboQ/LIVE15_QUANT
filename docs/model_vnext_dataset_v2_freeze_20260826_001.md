@@ -36,6 +36,17 @@ The deferred engineering item is `STORAGE-002 — Data Pipeline Throughput &
 Freeze Architecture` (Recorder ingest, archive/materializer throughput, freeze
 I/O, backlog ETA, and disk headroom). It was not executed here.
 
+## Storage-pipeline responsibility boundary
+
+1. Recorder: continuous raw truth and authoritative persistence.
+2. WS Archive: hot retention and cold raw storage.
+3. Materializer: continuous leakage-safe feature/eligibility computation.
+4. Dataset Freeze: cheap immutable copy of already-materialized eligible evidence.
+5. Raw Replay: slow audit, rebuild, and disaster-recovery path only.
+
+The normal EVID-001B path is steps 3 → 4. It does not mix raw replay with the
+freeze operation.
+
 ## Contract and evidence
 
 - Audited pool: 3,519 eligible events / 26,032 rows; frozen artifact after two
