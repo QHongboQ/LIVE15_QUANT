@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from live15_quant.secrets import resolve_secret_path
+
 DEFAULT_PRODUCTS = ("BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD")
 DEFAULT_DATASET_DECISION_OFFSETS_SECONDS = (840, 720, 600, 480, 300, 180, 120, 60, 30)
 ROBINHOOD_15MIN_PUBLIC_URL = "https://robinhood.com/us/en/prediction-markets/15-min/"
@@ -335,8 +337,20 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         if source.get("LIVE15_ADAPTIVE_RETENTION_STATUS_PATH")
         else None
     )
-    pyth_api_key_path = (
+    enable_pyth_underlying = _boolean(
+        source, "LIVE15_ENABLE_PYTH_UNDERLYING", defaults.enable_pyth_underlying
+    )
+    configured_pyth_api_key_path = (
         Path(source["LIVE15_PYTH_API_KEY_PATH"]) if source.get("LIVE15_PYTH_API_KEY_PATH") else None
+    )
+    pyth_api_key_path = (
+        resolve_secret_path(
+            configured_pyth_api_key_path,
+            name="pyth-api-key.txt",
+            legacy_paths=(Path.home() / ".live15_quant" / "credentials" / "pyth-api-key.txt",),
+        )
+        if enable_pyth_underlying
+        else configured_pyth_api_key_path
     )
     effective_adaptive_state_path = adaptive_retention_state_path or (
         recorder_data_path.parent / "adaptive-retention.sqlite3"
@@ -476,9 +490,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             "LIVE15_RECORDER_COINBASE_STALE_SECONDS",
             defaults.recorder_coinbase_stale_seconds,
         ),
-        enable_pyth_underlying=_boolean(
-            source, "LIVE15_ENABLE_PYTH_UNDERLYING", defaults.enable_pyth_underlying
-        ),
+        enable_pyth_underlying=enable_pyth_underlying,
         pyth_hermes_base_url=PYTH_HERMES_BASE_URL,
         pyth_api_key_path=pyth_api_key_path,
         pyth_rest_fallback_interval_seconds=_positive_float(

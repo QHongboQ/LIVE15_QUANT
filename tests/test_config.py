@@ -57,6 +57,17 @@ def test_load_settings_rejects_unknown_kalshi_recorder_provider() -> None:
         load_settings({"LIVE15_KALSHI_RECORDER_PROVIDER": "both"})
 
 
+def test_pyth_enabled_uses_project_local_secret_when_no_path_is_configured(
+    tmp_path: Path, monkeypatch
+) -> None:
+    secret = tmp_path / ".secrets" / "pyth-api-key.txt"
+    secret.parent.mkdir()
+    secret.write_bytes(b"opaque")
+    monkeypatch.chdir(tmp_path)
+    settings = load_settings({"LIVE15_ENABLE_PYTH_UNDERLYING": "true"})
+    assert settings.pyth_api_key_path == secret
+
+
 def test_readiness_snapshot_budget_is_configurable_and_positive() -> None:
     settings = load_settings({"LIVE15_READINESS_SNAPSHOT_MAX_SECONDS": "180"})
     assert settings.readiness_snapshot_max_seconds == 180.0

@@ -19,6 +19,6 @@ does not change the Windows PATH.
 `.venv.pre-nuget-python-20260826-20260826-014606` for rollback; it is not deleted.
 
 The interpreter, temporary venv creation, lockfile installation, project imports, and JSON
-parsing were verified. Runtime restart validation remains conditional on the normal Codex
-sandbox being able to read the existing external Pyth credential file; no credential or ACL
-change is part of this toolchain migration.
+parsing were verified. Pyth now resolves through the project-local `.secrets` layer documented
+in [local secret references](local-secrets.md); the legacy user-profile credential remains an
+untouched rollback source.

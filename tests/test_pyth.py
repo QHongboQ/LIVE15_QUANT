@@ -101,7 +101,8 @@ class DisconnectingResponse(FakeResponse):
 
 
 def client(tmp_path, session, **settings):
-    key_path = tmp_path / "pyth.key"
+    key_path = tmp_path / ".secrets" / "pyth.key"
+    key_path.parent.mkdir(exist_ok=True)
     key_path.write_text("very-secret-value", encoding="utf-8")
     return PythHermesClient(Settings(pyth_api_key_path=key_path, **settings), session=session)
 
@@ -129,6 +130,18 @@ def test_parse_preserves_decimal_confidence_clocks_and_stale_state() -> None:
         require_all=False,
     ).observations[0]
     assert stale.freshness is FreshnessState.STALE
+
+
+def test_project_local_secret_path_is_allowed_without_exposing_value(
+    tmp_path: Path, monkeypatch
+) -> None:
+    secret = tmp_path / ".secrets" / "pyth-api-key.txt"
+    secret.parent.mkdir()
+    secret.write_bytes(b"opaque")
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    client = PythHermesClient(Settings(pyth_api_key_path=secret), session=FakeSession([]))
+    client.close()
 
 
 def test_one_malformed_feed_isolated_from_other_four() -> None:

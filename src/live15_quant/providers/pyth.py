@@ -17,6 +17,7 @@ import requests
 
 from live15_quant.config import Settings
 from live15_quant.models import Asset, FreshnessState, UnderlyingObservation, UnderlyingProvider
+from live15_quant.secrets import is_project_secret_path
 
 PYTH_FEEDS: Mapping[Asset, tuple[str, str]] = MappingProxyType(
     {
@@ -149,7 +150,9 @@ def read_pyth_api_key(path: Path | None) -> str:
         for candidate in (start, *start.parents)
         if (candidate / ".git").exists()
     }
-    if any(resolved.is_relative_to(root) for root in repository_roots):
+    if any(resolved.is_relative_to(root) for root in repository_roots) and not any(
+        is_project_secret_path(resolved, project_root=root) for root in repository_roots
+    ):
         raise PythCredentialError("Pyth API key must remain outside the repository")
     try:
         key = resolved.read_text(encoding="utf-8").strip()
