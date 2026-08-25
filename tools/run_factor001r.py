@@ -138,7 +138,13 @@ def build_candidates(*, experiment_id: str) -> tuple[Candidate, ...]:
 
     for name in PRIMITIVE_SUBSET:
         budget.claim("F0")
-        candidates.append(Candidate(make_factor(primitive(name), experiment_id=experiment_id, budget=complexity), "F0", "registered primitive baseline"))
+        candidates.append(
+            Candidate(
+                make_factor(primitive(name), experiment_id=experiment_id, budget=complexity),
+                "F0",
+                "registered primitive baseline",
+            )
+        )
 
     pair_specs = (
         ("MUL", "return_15s", "normalized_distance_to_target"),
@@ -177,23 +183,50 @@ def build_candidates(*, experiment_id: str) -> tuple[Candidate, ...]:
     for operator_name, left, right in pair_specs:
         budget.claim("F1")
         expression = operation(operator_name, primitive(left), primitive(right))
-        candidates.append(Candidate(make_factor(expression, experiment_id=experiment_id, budget=complexity), "F1", "predeclared pairwise interaction"))
+        candidates.append(
+            Candidate(
+                make_factor(expression, experiment_id=experiment_id, budget=complexity),
+                "F1",
+                "predeclared pairwise interaction",
+            )
+        )
 
     temporal_base = (*PRIMITIVE_SUBSET[:4], *PRIMITIVE_SUBSET[5:9])
     for name in temporal_base:
-        for operator_name, rationale in (("DELAY1", "one-step causal delay"), ("DECAY", "two-point causal decay")):
+        for operator_name, rationale in (
+            ("DELAY1", "one-step causal delay"),
+            ("DECAY", "two-point causal decay"),
+        ):
             budget.claim("F2")
             expression = operation(operator_name, primitive(name))
-            candidates.append(Candidate(make_factor(expression, experiment_id=experiment_id, budget=complexity), "F2", rationale))
+            candidates.append(
+                Candidate(
+                    make_factor(expression, experiment_id=experiment_id, budget=complexity),
+                    "F2",
+                    rationale,
+                )
+            )
         budget.claim("F2")
         expression = operation("ROLLING_MEAN", primitive(name), constant(60))
-        candidates.append(Candidate(make_factor(expression, experiment_id=experiment_id, budget=complexity), "F2", "60-second causal rolling mean"))
+        candidates.append(
+            Candidate(
+                make_factor(expression, experiment_id=experiment_id, budget=complexity),
+                "F2",
+                "60-second causal rolling mean",
+            )
+        )
 
     gated_base = PRIMITIVE_SUBSET[:12]
     for name in gated_base:
         budget.claim("F3")
         expression = operation("GATE", operation("SIGN", primitive("return_15s")), primitive(name))
-        candidates.append(Candidate(make_factor(expression, experiment_id=experiment_id, budget=complexity), "F3", "positive short-return gate"))
+        candidates.append(
+            Candidate(
+                make_factor(expression, experiment_id=experiment_id, budget=complexity),
+                "F3",
+                "positive short-return gate",
+            )
+        )
 
     composed_specs = (
         ("return_15s", "realized_volatility_60s"),
@@ -216,7 +249,13 @@ def build_candidates(*, experiment_id: str) -> tuple[Candidate, ...]:
             primitive(numerator),
             operation("ADD", primitive(denominator), constant(1e-6)),
         )
-        candidates.append(Candidate(make_factor(expression, experiment_id=experiment_id, budget=complexity), "F4", "small volatility/position normalized composition"))
+        candidates.append(
+            Candidate(
+                make_factor(expression, experiment_id=experiment_id, budget=complexity),
+                "F4",
+                "small volatility/position normalized composition",
+            )
+        )
 
     if len(candidates) != MAX_CANDIDATES or budget.evaluated != MAX_CANDIDATES:
         raise Factor001RError("PREDECLARED_CANDIDATE_COUNT_MISMATCH")
@@ -225,7 +264,9 @@ def build_candidates(*, experiment_id: str) -> tuple[Candidate, ...]:
     return tuple(candidates)
 
 
-def experiment_identity(*, manifest: Mapping[str, Any], code_sha: str) -> tuple[str, dict[str, Any]]:
+def experiment_identity(
+    *, manifest: Mapping[str, Any], code_sha: str
+) -> tuple[str, dict[str, Any]]:
     contract = {
         "version": EXPERIMENT_VERSION,
         "dataset_id": DATASET_V2_ID,
@@ -251,7 +292,9 @@ def _validate_manifest(manifest: Mapping[str, Any]) -> None:
     if manifest.get("deterministic_build_hash") != DATASET_BUILD_HASH:
         raise Factor001RError("DATASET_BUILD_HASH_MISMATCH")
     holdout = manifest.get("split", {})
-    if holdout.get("holdout_state") != DATASET_V2_HOLDOUT_STATE or holdout.get("holdout_evaluation_performed"):
+    if holdout.get("holdout_state") != DATASET_V2_HOLDOUT_STATE or holdout.get(
+        "holdout_evaluation_performed"
+    ):
         raise Factor001RError("HOLDOUT_NOT_FROZEN")
     if manifest.get("leakage_checker") != "PASS":
         raise Factor001RError("DATASET_LEAKAGE_CHECK_FAILED")
@@ -321,14 +364,27 @@ def _load_rows(root: Path) -> tuple[tuple[Row, ...], dict[str, str]]:
         prior: dict[str, list[TimedValue]] = {name: [] for name in PRIMITIVE_SUBSET}
         for item in event_rows:
             history = {name: tuple(values[-8:]) for name, values in prior.items()}
-            prepared.append(Row(item["event"], item["asset"], item["split"], item["day"], item["decision"], item["window_end"], item["features"], history))
+            prepared.append(
+                Row(
+                    item["event"],
+                    item["asset"],
+                    item["split"],
+                    item["day"],
+                    item["decision"],
+                    item["window_end"],
+                    item["features"],
+                    history,
+                )
+            )
             for name in PRIMITIVE_SUBSET:
                 prior[name].append(item["features"][name])
     prepared.sort(key=lambda row: row.decision)
     return tuple(prepared), event_splits
 
 
-def _load_targets(root: Path, event_splits: Mapping[str, str]) -> dict[tuple[str, datetime, int], Target]:
+def _load_targets(
+    root: Path, event_splits: Mapping[str, str]
+) -> dict[tuple[str, datetime, int], Target]:
     targets: dict[tuple[str, datetime, int], Target] = {}
     with (root / "path_targets.jsonl").open(encoding="utf-8") as handle:
         for line in handle:
@@ -365,11 +421,14 @@ def _correlation(left: Sequence[float], right: Sequence[float]) -> float | None:
     right_scale = math.sqrt(sum((value - right_mean) ** 2 for value in right))
     if left_scale <= 1e-15 or right_scale <= 1e-15:
         return None
-    return sum((a - left_mean) * (b - right_mean) for a, b in zip(left, right, strict=True)) / (left_scale * right_scale)
+    return sum((a - left_mean) * (b - right_mean) for a, b in zip(left, right, strict=True)) / (
+        left_scale * right_scale
+    )
 
 
 def _metric(values: Sequence[float], targets: Sequence[float], total: int) -> dict[str, Any]:
     pearson = _correlation(values, targets)
+
     def ranks(items: Sequence[float]) -> tuple[float, ...]:
         ordered = sorted(range(len(items)), key=lambda index: (items[index], index))
         result = [0.0] * len(items)
@@ -388,11 +447,18 @@ def _metric(values: Sequence[float], targets: Sequence[float], total: int) -> di
         "pearson_ic": pearson,
         "spearman_ic": rank,
         "p_value": pvalue,
-        "directional_accuracy": (sum((value > 0) == (target > 0) for value, target in zip(values, targets, strict=True)) / len(values)) if values else None,
+        "directional_accuracy": (
+            sum((value > 0) == (target > 0) for value, target in zip(values, targets, strict=True))
+            / len(values)
+        )
+        if values
+        else None,
     }
 
 
-def _group_metrics(values: Sequence[tuple[str, str, float, float]], total: int) -> tuple[dict[str, Any], dict[str, Any]]:
+def _group_metrics(
+    values: Sequence[tuple[str, str, float, float]], total: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
     by_day: dict[str, tuple[list[float], list[float]]] = defaultdict(lambda: ([], []))
     by_asset: dict[str, tuple[list[float], list[float]]] = defaultdict(lambda: ([], []))
     for day, asset, value, target in values:
@@ -401,14 +467,24 @@ def _group_metrics(values: Sequence[tuple[str, str, float, float]], total: int) 
         by_asset[asset][0].append(value)
         by_asset[asset][1].append(target)
     return (
-        {group: _metric(predictions, targets, len(predictions)) for group, (predictions, targets) in sorted(by_day.items())},
-        {group: _metric(predictions, targets, len(predictions)) for group, (predictions, targets) in sorted(by_asset.items())},
+        {
+            group: _metric(predictions, targets, len(predictions))
+            for group, (predictions, targets) in sorted(by_day.items())
+        },
+        {
+            group: _metric(predictions, targets, len(predictions))
+            for group, (predictions, targets) in sorted(by_asset.items())
+        },
     )
 
 
-def _stability(groups: Mapping[str, Mapping[str, Any]], pooled: Mapping[str, Any]) -> dict[str, Any]:
+def _stability(
+    groups: Mapping[str, Mapping[str, Any]], pooled: Mapping[str, Any]
+) -> dict[str, Any]:
     pooled_ic = pooled.get("pearson_ic")
-    valid = [metric["pearson_ic"] for metric in groups.values() if metric.get("pearson_ic") is not None]
+    valid = [
+        metric["pearson_ic"] for metric in groups.values() if metric.get("pearson_ic") is not None
+    ]
     sign_consistency = None
     if pooled_ic is not None and valid:
         sign_consistency = sum((value > 0) == (pooled_ic > 0) for value in valid) / len(valid)
@@ -420,7 +496,10 @@ def _stability(groups: Mapping[str, Mapping[str, Any]], pooled: Mapping[str, Any
 
 
 def _bh_fdr(pvalues: Mapping[str, float | None]) -> dict[str, float | None]:
-    valid = sorted(((key, value) for key, value in pvalues.items() if value is not None), key=lambda item: (item[1], item[0]))
+    valid = sorted(
+        ((key, value) for key, value in pvalues.items() if value is not None),
+        key=lambda item: (item[1], item[0]),
+    )
     total = len(valid)
     qvalues: dict[str, float | None] = {key: None for key in pvalues}
     running = 1.0
@@ -460,13 +539,19 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
             for horizon in VALID_HORIZONS:
                 target = targets.get((row.event, row.decision, horizon))
                 if target is not None:
-                    by_horizon[horizon][row.split].append((row.day, row.asset, float(value.value), target.value))
+                    by_horizon[horizon][row.split].append(
+                        (row.day, row.asset, float(value.value), target.value)
+                    )
         horizons: dict[str, Any] = {}
         for horizon in VALID_HORIZONS:
             horizon_data: dict[str, Any] = {}
             for split in ("train", "validation"):
                 values = by_horizon[horizon][split]
-                total = sum(1 for row in rows if row.split == split and (row.event, row.decision, horizon) in targets)
+                total = sum(
+                    1
+                    for row in rows
+                    if row.split == split and (row.event, row.decision, horizon) in targets
+                )
                 predictions = [item[2] for item in values]
                 target_values = [item[3] for item in values]
                 pooled = _metric(predictions, target_values, total)
@@ -497,12 +582,22 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
     for record in records:
         for horizon in VALID_HORIZONS:
             key = f"{record['factor_id']}:{horizon}"
-            validation_pvalues[key] = record["horizons"][str(horizon)]["validation"]["pooled"]["p_value"]
+            validation_pvalues[key] = record["horizons"][str(horizon)]["validation"]["pooled"][
+                "p_value"
+            ]
     qvalues = _bh_fdr(validation_pvalues)
     primitive_by_horizon: dict[int, dict[str, Any]] = {}
     for horizon in VALID_HORIZONS:
         primitive_records = [record for record in records if record["family"] == "F0"]
-        ranked = sorted(primitive_records, key=lambda record: _rank_key({"factor_id": record["factor_id"], "validation": record["horizons"][str(horizon)]["validation"]["pooled"]}))
+        ranked = sorted(
+            primitive_records,
+            key=lambda record: _rank_key(
+                {
+                    "factor_id": record["factor_id"],
+                    "validation": record["horizons"][str(horizon)]["validation"]["pooled"],
+                }
+            ),
+        )
         primitive_by_horizon[horizon] = ranked[0] if ranked else {}
 
     accepted = 0
@@ -513,23 +608,47 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
             item = record["horizons"][str(horizon)]["validation"]
             key = f"{record['factor_id']}:{horizon}"
             item["fdr_q_value"] = qvalues[key]
-            baseline = primitive_by_horizon[horizon]["horizons"][str(horizon)]["validation"]["pooled"] if primitive_by_horizon[horizon] else {}
+            baseline = (
+                primitive_by_horizon[horizon]["horizons"][str(horizon)]["validation"]["pooled"]
+                if primitive_by_horizon[horizon]
+                else {}
+            )
             item["primitive_baseline_spearman_ic"] = baseline.get("spearman_ic")
             stability = record["horizons"][str(horizon)]["validation"]
             coverage_ok = item["coverage"] >= MIN_COVERAGE
-            days_ok = stability["day_stability"]["groups"] >= MIN_STABLE_DAYS and (stability["day_stability"]["sign_consistency"] or 0) >= 0.60
-            assets_ok = stability["asset_stability"]["groups"] >= MIN_STABLE_ASSETS and (stability["asset_stability"]["sign_consistency"] or 0) >= 0.60
+            days_ok = (
+                stability["day_stability"]["groups"] >= MIN_STABLE_DAYS
+                and (stability["day_stability"]["sign_consistency"] or 0) >= 0.60
+            )
+            assets_ok = (
+                stability["asset_stability"]["groups"] >= MIN_STABLE_ASSETS
+                and (stability["asset_stability"]["sign_consistency"] or 0) >= 0.60
+            )
             fdr_ok = item["fdr_q_value"] is not None and item["fdr_q_value"] <= FDR_ALPHA
             baseline_ic = abs(baseline.get("spearman_ic") or 0.0)
             candidate_ic = abs(item.get("spearman_ic") or 0.0)
             advantage_ok = candidate_ic >= baseline_ic + 0.01
-            status = "VALIDATED_DEVELOPMENT" if record["family"] != "F0" and coverage_ok and days_ok and assets_ok and fdr_ok and advantage_ok else "DEFERRED_MORE_EVIDENCE"
+            status = (
+                "VALIDATED_DEVELOPMENT"
+                if record["family"] != "F0"
+                and coverage_ok
+                and days_ok
+                and assets_ok
+                and fdr_ok
+                and advantage_ok
+                else "DEFERRED_MORE_EVIDENCE"
+            )
             if status == "VALIDATED_DEVELOPMENT":
                 accepted += 1
             else:
                 counts["deferred"] += 1
             item["status"] = status
-            item["multiple_testing"] = {"method": "benjamini_hochberg", "alpha": FDR_ALPHA, "q_value": item["fdr_q_value"], "survives": fdr_ok}
+            item["multiple_testing"] = {
+                "method": "benjamini_hochberg",
+                "alpha": FDR_ALPHA,
+                "q_value": item["fdr_q_value"],
+                "survives": fdr_ok,
+            }
     if accepted == 0:
         scientific_conclusion = "NO_ROBUST_SYMBOLIC_FACTOR_SIGNAL"
     elif accepted < 3:
@@ -541,8 +660,27 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
     for record in records:
         for horizon in VALID_HORIZONS:
             item = record["horizons"][str(horizon)]["validation"]["pooled"]
-            ranking.append({"factor_id": record["factor_id"], "formula": record["formula"], "family": record["family"], "horizon": horizon, "spearman_ic": item["spearman_ic"], "pearson_ic": item["pearson_ic"], "coverage": item["coverage"], "status": record["horizons"][str(horizon)]["validation"]["pooled"].get("status", "")})
-    ranking.sort(key=lambda item: (-(abs(item["spearman_ic"]) if item["spearman_ic"] is not None else -1.0), item["factor_id"], item["horizon"]))
+            ranking.append(
+                {
+                    "factor_id": record["factor_id"],
+                    "formula": record["formula"],
+                    "family": record["family"],
+                    "horizon": horizon,
+                    "spearman_ic": item["spearman_ic"],
+                    "pearson_ic": item["pearson_ic"],
+                    "coverage": item["coverage"],
+                    "status": record["horizons"][str(horizon)]["validation"]["pooled"].get(
+                        "status", ""
+                    ),
+                }
+            )
+    ranking.sort(
+        key=lambda item: (
+            -(abs(item["spearman_ic"]) if item["spearman_ic"] is not None else -1.0),
+            item["factor_id"],
+            item["horizon"],
+        )
+    )
     report = {
         "report": "FACTOR-001R",
         "status": "DEVELOPMENT_EVIDENCE_ONLY",
@@ -554,26 +692,71 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
         "holdout_accessed": False,
         "independent_utc_days": manifest.get("pool", {}).get("independent_utc_days"),
         "independent_events": manifest.get("pool", {}).get("events_in_frozen_artifact"),
-        "rows": {"train": sum(row.split == "train" for row in rows), "validation": sum(row.split == "validation" for row in rows)},
+        "rows": {
+            "train": sum(row.split == "train" for row in rows),
+            "validation": sum(row.split == "validation" for row in rows),
+        },
         "horizons": VALID_HORIZONS,
         "primitive_subset": PRIMITIVE_SUBSET,
-        "search_budget": {"max_candidates": MAX_CANDIDATES, "generated": len(candidates), "evaluated": len(candidates), "rejected": 0, "seed": SEED},
-        "candidate_families": {family: sum(candidate.family == family for candidate in candidates) for family in ("F0", "F1", "F2", "F3", "F4")},
-        "multiple_testing": {"method": "benjamini_hochberg", "alpha": FDR_ALPHA, "tested_candidate_horizon_pairs": len(validation_pvalues)},
+        "search_budget": {
+            "max_candidates": MAX_CANDIDATES,
+            "generated": len(candidates),
+            "evaluated": len(candidates),
+            "rejected": 0,
+            "seed": SEED,
+        },
+        "candidate_families": {
+            family: sum(candidate.family == family for candidate in candidates)
+            for family in ("F0", "F1", "F2", "F3", "F4")
+        },
+        "multiple_testing": {
+            "method": "benjamini_hochberg",
+            "alpha": FDR_ALPHA,
+            "tested_candidate_horizon_pairs": len(validation_pvalues),
+        },
         "candidate_metric_distribution": {
             str(horizon): {
-                "median_abs_spearman_ic": median(abs(item["spearman_ic"]) for item in ranking if item["horizon"] == horizon and item["spearman_ic"] is not None),
-                "max_abs_spearman_ic": max((abs(item["spearman_ic"]) for item in ranking if item["horizon"] == horizon and item["spearman_ic"] is not None), default=None),
+                "median_abs_spearman_ic": median(
+                    abs(item["spearman_ic"])
+                    for item in ranking
+                    if item["horizon"] == horizon and item["spearman_ic"] is not None
+                ),
+                "max_abs_spearman_ic": max(
+                    (
+                        abs(item["spearman_ic"])
+                        for item in ranking
+                        if item["horizon"] == horizon and item["spearman_ic"] is not None
+                    ),
+                    default=None,
+                ),
             }
             for horizon in VALID_HORIZONS
         },
-        "best_by_horizon": {str(horizon): next((item for item in ranking if item["horizon"] == horizon), None) for horizon in VALID_HORIZONS},
-        "primitive_baseline_by_horizon": {str(horizon): {"factor_id": primitive_by_horizon[horizon].get("factor_id"), "formula": primitive_by_horizon[horizon].get("formula"), "validation": primitive_by_horizon[horizon].get("horizons", {}).get(str(horizon), {}).get("validation", {}).get("pooled")} for horizon in VALID_HORIZONS},
+        "best_by_horizon": {
+            str(horizon): next((item for item in ranking if item["horizon"] == horizon), None)
+            for horizon in VALID_HORIZONS
+        },
+        "primitive_baseline_by_horizon": {
+            str(horizon): {
+                "factor_id": primitive_by_horizon[horizon].get("factor_id"),
+                "formula": primitive_by_horizon[horizon].get("formula"),
+                "validation": primitive_by_horizon[horizon]
+                .get("horizons", {})
+                .get(str(horizon), {})
+                .get("validation", {})
+                .get("pooled"),
+            }
+            for horizon in VALID_HORIZONS
+        },
         "ranking": ranking,
         "factor_zoo": records,
         "validated_development_factor_count": accepted,
         "status_counts": dict(counts),
-        "reproducibility": {"candidate_generation_deterministic": True, "ranking_deterministic": True, "rerun_required": True},
+        "reproducibility": {
+            "candidate_generation_deterministic": True,
+            "ranking_deterministic": True,
+            "rerun_required": True,
+        },
         "scientific_conclusion": scientific_conclusion,
         "sequence_gate": "INSUFFICIENT_SEQUENCE_EVIDENCE",
         "runtime_wiring": False,
@@ -586,13 +769,21 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
         "",
         f"Status: **DEVELOPMENT EVIDENCE ONLY**; conclusion: **{scientific_conclusion}**.",
         "",
-        f"Experiment `{experiment_id}` uses Dataset v2 `{DATASET_V2_ID}` (build `{DATASET_BUILD_HASH}`), frozen train/validation rows only. Holdout state is `{DATASET_V2_HOLDOUT_STATE}` and holdout access is `False`.",
+        f"Experiment `{experiment_id}` uses Dataset v2 `{DATASET_V2_ID}` "
+        f"(build `{DATASET_BUILD_HASH}`), frozen train/validation rows only. "
+        f"Holdout state is `{DATASET_V2_HOLDOUT_STATE}` and holdout access is `False`.",
         "",
-        f"The candidate budget was frozen before metric evaluation at {MAX_CANDIDATES}: " + ", ".join(f"{family}={count}" for family, count in report["candidate_families"].items()) + ". No candidate-budget expansion or search-until-success rerun was performed.",
+        f"The candidate budget was frozen before metric evaluation at {MAX_CANDIDATES}: "
+        + ", ".join(f"{family}={count}" for family, count in report["candidate_families"].items())
+        + ". No candidate-budget expansion or search-until-success rerun was performed.",
         "",
         "## Acceptance and multiple testing",
         "",
-        f"Selection uses validation metrics, BH-FDR at alpha={FDR_ALPHA}, minimum coverage={MIN_COVERAGE}, at least {MIN_STABLE_DAYS} independent days, at least {MIN_STABLE_ASSETS} assets, sign consistency >=0.60, and a predeclared +0.01 absolute Rank IC advantage over the best primitive. These gates are development gates, not production criteria.",
+        f"Selection uses validation metrics, BH-FDR at alpha={FDR_ALPHA}, "
+        f"minimum coverage={MIN_COVERAGE}, at least {MIN_STABLE_DAYS} independent days, "
+        f"at least {MIN_STABLE_ASSETS} assets, sign consistency >=0.60, and a "
+        "predeclared +0.01 absolute Rank IC advantage over the best primitive. "
+        "These gates are development gates, not production criteria.",
         "",
         "## Best validation result by horizon",
         "",
@@ -601,13 +792,21 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
     ]
     for horizon in VALID_HORIZONS:
         item = report["best_by_horizon"][str(horizon)]
-        lines.append(f"| {horizon}s | `{item['factor_id'][:12]}` | {item['family']} | {item['spearman_ic']!s} | {item['coverage']:.3f} | development-only |")
-    lines.extend([
-        "",
-        "The full Factor Zoo record, all candidate exposure, per-horizon metrics, per-day/per-asset stability, FDR values, and rankings are in the JSON artifact. No factor is wired into a model or runtime.",
-        "",
-        "Sequence readiness remains `INSUFFICIENT_SEQUENCE_EVIDENCE`; FACTOR-002 reward learning and any trading optimization remain deferred.",
-    ])
+        lines.append(
+            f"| {horizon}s | `{item['factor_id'][:12]}` | {item['family']} | "
+            f"{item['spearman_ic']!s} | {item['coverage']:.3f} | development-only |"
+        )
+    lines.extend(
+        [
+            "",
+            "The full Factor Zoo record, all candidate exposure, per-horizon metrics, "
+            "per-day/per-asset stability, FDR values, and rankings are in the JSON artifact. "
+            "No factor is wired into a model or runtime.",
+            "",
+            "Sequence readiness remains `INSUFFICIENT_SEQUENCE_EVIDENCE`; "
+            "FACTOR-002 reward learning and any trading optimization remain deferred.",
+        ]
+    )
     output_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return report
 
@@ -619,8 +818,23 @@ def main() -> None:
     parser.add_argument("--output-md", type=Path, required=True)
     parser.add_argument("--code-sha", default=None)
     args = parser.parse_args()
-    report = evaluate(root=args.dataset_root, output_json=args.output_json, output_md=args.output_md, code_sha=args.code_sha or _git_sha())
-    print(json.dumps({"experiment_id": report["experiment_id"], "generated": report["search_budget"]["generated"], "evaluated": report["search_budget"]["evaluated"], "conclusion": report["scientific_conclusion"]}, sort_keys=True))
+    report = evaluate(
+        root=args.dataset_root,
+        output_json=args.output_json,
+        output_md=args.output_md,
+        code_sha=args.code_sha or _git_sha(),
+    )
+    print(
+        json.dumps(
+            {
+                "experiment_id": report["experiment_id"],
+                "generated": report["search_budget"]["generated"],
+                "evaluated": report["search_budget"]["evaluated"],
+                "conclusion": report["scientific_conclusion"],
+            },
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":
