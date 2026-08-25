@@ -400,7 +400,10 @@ def _load_targets(
             event = str(raw["event_identity"])
             if event_splits.get(event) != split:
                 raise Factor001RError("TARGET_EVENT_SPLIT_MISMATCH")
-            horizon = int(raw["horizon_seconds"])
+            raw_horizon = raw.get("horizon_seconds")
+            if raw_horizon is None:
+                continue
+            horizon = int(raw_horizon)
             if horizon not in VALID_HORIZONS or not raw.get("valid"):
                 continue
             decision = _time(str(raw["decision_timestamp"]))
