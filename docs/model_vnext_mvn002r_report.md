@@ -1,6 +1,6 @@
 # MVN-002R — Dataset v2 structured path re-evaluation
 
-Status: `DEVELOPMENT ONLY`  
+Status: `DEVELOPMENT ONLY`
 Outcome: `NO_ROBUST_PATH_EDGE_YET`
 
 ## Frozen experiment identity
