@@ -29,7 +29,7 @@ def test_benjamini_hochberg_is_deterministic_and_bounded() -> None:
 
 
 def test_experiment_identity_carries_frozen_lineage() -> None:
-    manifest = {"registered_cutoff": "2026-08-25T19:35:14.898895+00:00"}
+    manifest = {"cutoff": {"registered_at": "2026-08-25T19:35:14.898895+00:00"}}
     first = experiment_identity(manifest=manifest, code_sha="abc")
     second = experiment_identity(manifest=manifest, code_sha="abc")
     assert first == second

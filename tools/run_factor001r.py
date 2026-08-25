@@ -267,11 +267,14 @@ def build_candidates(*, experiment_id: str) -> tuple[Candidate, ...]:
 def experiment_identity(
     *, manifest: Mapping[str, Any], code_sha: str
 ) -> tuple[str, dict[str, Any]]:
+    cutoff = manifest.get("cutoff", {}).get("registered_at")
+    if not cutoff:
+        raise Factor001RError("DATASET_CUTOFF_MISSING")
     contract = {
         "version": EXPERIMENT_VERSION,
         "dataset_id": DATASET_V2_ID,
         "build_hash": DATASET_BUILD_HASH,
-        "cutoff": manifest["registered_cutoff"],
+        "cutoff": cutoff,
         "split": "frozen train/validation chronological event groups; 600s purge/embargo",
         "code_sha": code_sha,
         "dsl_version": FACTOR_DSL_VERSION,
@@ -291,10 +294,8 @@ def _validate_manifest(manifest: Mapping[str, Any]) -> None:
         raise Factor001RError("DATASET_V2_ID_MISMATCH")
     if manifest.get("deterministic_build_hash") != DATASET_BUILD_HASH:
         raise Factor001RError("DATASET_BUILD_HASH_MISMATCH")
-    holdout = manifest.get("split", {})
-    if holdout.get("holdout_state") != DATASET_V2_HOLDOUT_STATE or holdout.get(
-        "holdout_evaluation_performed"
-    ):
+    holdout = manifest.get("fresh_holdout", {})
+    if holdout.get("state") != DATASET_V2_HOLDOUT_STATE or holdout.get("evaluation_performed"):
         raise Factor001RError("HOLDOUT_NOT_FROZEN")
     if manifest.get("leakage_checker") != "PASS":
         raise Factor001RError("DATASET_LEAKAGE_CHECK_FAILED")
