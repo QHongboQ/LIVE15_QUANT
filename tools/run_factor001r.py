@@ -610,7 +610,8 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
     for record in records:
         record["horizons"] = dict(record["horizons"])
         for horizon in VALID_HORIZONS:
-            item = record["horizons"][str(horizon)]["validation"]
+            validation = record["horizons"][str(horizon)]["validation"]
+            item = validation["pooled"]
             key = f"{record['factor_id']}:{horizon}"
             item["fdr_q_value"] = qvalues[key]
             baseline = (
@@ -619,7 +620,7 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
                 else {}
             )
             item["primitive_baseline_spearman_ic"] = baseline.get("spearman_ic")
-            stability = record["horizons"][str(horizon)]["validation"]
+            stability = validation
             coverage_ok = item["coverage"] >= MIN_COVERAGE
             days_ok = (
                 stability["day_stability"]["groups"] >= MIN_STABLE_DAYS
