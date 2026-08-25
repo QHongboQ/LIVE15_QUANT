@@ -168,3 +168,29 @@ This layer is research-reference-only and does not copy or depend on AlphaGPT so
 FACTOR-002 requires additional independent days/events, explicit out-of-sample evidence, and a
 separate review before any larger search or model integration is considered. Sequence readiness
 remains `INSUFFICIENT_SEQUENCE_EVIDENCE`.
+
+## FACTOR-001R bounded evaluation (development evidence only)
+
+FACTOR-001R is the first one-shot scientific use of the FACTOR-001 DSL/VM. Experiment
+`4ab5287c517b23236d49821d` used only Dataset v2
+`live15-dataset-v2-4bb4934bf328b6b024ff` (build
+`4bb4934bf328b6b024ff4183df134c481d962a041dc6ae760a3816d3c5228113`), train 18,507 rows and
+validation 3,801 rows. The holdout remained `UNREVEALED_FROZEN` and `holdout_accessed=false`.
+The full Factor Zoo and candidate distribution are in
+`docs/factor_factory_mvn001r_report.json`; the human-readable report is
+`docs/factor_factory_mvn001r_report.md`.
+
+The search budget was frozen at 96 candidates before metrics: F0 primitives 16, F1 pairwise 32,
+F2 temporal 24, F3 gated 12, and F4 composed 12. Five valid horizons were evaluated (30s, 60s,
+120s, 180s, 300s); 5s, 15s, and `window_end` remained unavailable under the frozen target
+contract. All 96 candidates were evaluated with LeakageChecker PASS. Benjamini-Hochberg FDR at
+alpha 0.10, minimum 50% coverage, multi-day/asset sign stability, a +0.01 absolute Rank IC
+advantage over the best primitive, and a 0.95 development redundancy flag were predeclared.
+
+There were 80 primitive baseline horizon records deferred, 266 symbolic records rejected as
+unstable, 134 rejected as redundant, and 0 validated development factors. The best validation
+Rank IC was not FDR-stable or broad enough across the two validation UTC days, so the scientific
+outcome is `NO_ROBUST_SYMBOLIC_FACTOR_SIGNAL`. The same frozen run was repeated and produced
+identical JSON/Markdown hashes. This does not consume the holdout, promote a factor, change the
+Model vNext conclusion, or authorize FACTOR-002/reward learning. Sequence readiness remains
+`INSUFFICIENT_SEQUENCE_EVIDENCE`.
