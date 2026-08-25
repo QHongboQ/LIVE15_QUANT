@@ -1,0 +1,29 @@
+{
+  "source_repository": "https://github.com/mattpocock/skills",
+  "source_revision": "6654f6b60cd9d5be8b54c6fafe44346dabeb3b76",
+  "integration_mode": "selective local adaptation; upstream repository is not vendored",
+  "skills": [
+    {
+      "name": "diagnosing-bugs",
+      "local_path": ".agents/skills/diagnosing-bugs/SKILL.md",
+      "upstream_path": "skills/engineering/diagnose/SKILL.md",
+      "adapted": true,
+      "notes": "Uses upstream reproduce/minimise/hypothesis/instrument/fix loop with LIVE15 ownership and fail-closed rules."
+    },
+    {
+      "name": "tdd",
+      "local_path": ".agents/skills/tdd/SKILL.md",
+      "upstream_path": "skills/engineering/tdd/SKILL.md",
+      "adapted": true,
+      "notes": "Uses vertical red-green slices at public seams; exempt for documentation and audit-only work."
+    },
+    {
+      "name": "grill-with-docs",
+      "local_path": ".agents/skills/grill-with-docs/SKILL.md",
+      "upstream_path": "skills/engineering/grill-with-docs/SKILL.md",
+      "adapted": true,
+      "notes": "Uses repository evidence first, records only durable LIVE15 vocabulary/decisions, and never starts implementation automatically."
+    }
+  ],
+  "license_note": "Guidance is independently written/adapted for LIVE15; no upstream skill file is copied. Consult the upstream repository license before any future content reuse."
+}
