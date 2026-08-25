@@ -64,6 +64,10 @@ dataset build: callers must fit it only on the training event groups of each fol
 profile for validation/test or live inference. Missing inputs stay missing. This preserves both
 pooled-model and asset-specific model research without leaking future-fold statistics.
 
+The Model vNext decision-time, path-target, purge/embargo, and machine leakage gates are frozen in
+[`docs/model_vnext_contract.md`](model_vnext_contract.md). Future dataset/model work must invoke
+the `LeakageChecker` contract there rather than introduce a competing split or timestamp policy.
+
 ## Gap quarantine
 
 Raw schema v9 records append-only OPEN and RECOVERED source-gap facts independently from

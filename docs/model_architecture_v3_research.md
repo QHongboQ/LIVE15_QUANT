@@ -5,6 +5,10 @@ promoted, or connected to Paper/Shadow. Dataset v1 final test remains revealed
 and is forbidden for v3 architecture, horizon, threshold, calibration, or asset
 selection.
 
+The broader Model vNext hard gate is frozen in [`docs/model_vnext_contract.md`](model_vnext_contract.md).
+It is a contract-only milestone; this document's v3 research remains evidence-gated and does not
+authorize training or promotion.
+
 ## Selected layered design
 
 | Layer | First implementation | Role |
