@@ -1,5 +1,15 @@
 # LIVE15 change protocol
 
+## Protected-main publication
+
+The repository uses protected `main`: changes are published through an isolated worktree and an
+`agent/<task-id>` feature branch. The required sequence is Maker implementation, tests and other
+validation, independent Checker review, feature-branch push, pull request, resolution of review
+conversations, human approval, then Squash or Rebase merge. Direct pushes to `main`, force pushes,
+ruleset bypasses, and automatic merges are prohibited. Status checks are not yet required by the
+ruleset; adding a canonical required check is deferred to GOV-002. Any host/unsandboxed Git use is
+limited to an explicitly approved Git boundary and must not become arbitrary host shell access.
+
 Every coding task should make its boundary explicit before editing:
 
 1. Read `AGENTS.md` and relevant architecture/recovery documents.
