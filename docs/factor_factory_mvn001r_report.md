@@ -2,7 +2,7 @@
 
 Status: **DEVELOPMENT EVIDENCE ONLY**; conclusion: **NO_ROBUST_SYMBOLIC_FACTOR_SIGNAL**.
 
-Experiment `9d34c404a94ce43bdb1ba112` uses Dataset v2 `live15-dataset-v2-4bb4934bf328b6b024ff` (build `4bb4934bf328b6b024ff4183df134c481d962a041dc6ae760a3816d3c5228113`), frozen train/validation rows only. Holdout state is `UNREVEALED_FROZEN` and holdout access is `False`.
+Experiment `5df0767f2961e02caad4a551` uses Dataset v2 `live15-dataset-v2-4bb4934bf328b6b024ff` (build `4bb4934bf328b6b024ff4183df134c481d962a041dc6ae760a3816d3c5228113`), frozen train/validation rows only. Holdout state is `UNREVEALED_FROZEN` and holdout access is `False`.
 
 The candidate budget was frozen before metric evaluation at 96: F0=16, F1=32, F2=24, F3=12, F4=12. No candidate-budget expansion or search-until-success rerun was performed.
 
@@ -20,6 +20,6 @@ Selection uses validation metrics, BH-FDR at alpha=0.1, minimum coverage=0.5, at
 | 180s | `44560459f59c` | F3 | -0.22608081634615515 | 0.531 | development-only |
 | 300s | `37c33814a9b1` | F3 | -0.19531507151475644 | 0.526 | development-only |
 
-The full Factor Zoo record, all candidate exposure, per-horizon metrics, per-day/per-asset stability, FDR values, and rankings are in the JSON artifact. No factor is wired into a model or runtime.
+The compact tracked JSON preserves lineage, formulas/IDs, aggregate metrics, rejection counts, and ranking summaries. Full Factor Zoo records, per-horizon metrics, per-day/per-asset stability, FDR values, and rankings are emitted to the ignored regenerable detail artifact when --full-output-json is supplied. No factor is wired into a model or runtime.
 
 Sequence readiness remains `INSUFFICIENT_SEQUENCE_EVIDENCE`; FACTOR-002 reward learning and any trading optimization remain deferred.

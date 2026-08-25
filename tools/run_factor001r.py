@@ -530,7 +530,14 @@ def _aligned_correlation(
     return _correlation([left[key] for key in keys], [right[key] for key in keys])
 
 
-def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -> dict[str, Any]:
+def evaluate(
+    *,
+    root: Path,
+    output_json: Path,
+    output_md: Path,
+    code_sha: str,
+    full_output_json: Path | None = None,
+) -> dict[str, Any]:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     _validate_manifest(manifest)
     experiment_id, contract = experiment_identity(manifest=manifest, code_sha=code_sha)
@@ -867,7 +874,33 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
         "paper_or_production_changes": False,
         "checker": "PASS",
     }
-    output_json.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    full_report_bytes = json.dumps(report, indent=2, sort_keys=True).encode("utf-8")
+    if full_output_json is not None:
+        full_output_json.parent.mkdir(parents=True, exist_ok=True)
+        full_output_json.write_bytes(full_report_bytes)
+
+    compact_factor_zoo = [
+        {
+            "factor_id": record["factor_id"],
+            "family": record["family"],
+            "formula": record["formula"],
+            "required_lookback_seconds": record["required_lookback_seconds"],
+        }
+        for record in records
+    ]
+    compact_report = dict(report)
+    compact_report["factor_zoo"] = compact_factor_zoo
+    compact_report.pop("ranking", None)
+    if full_output_json is not None:
+        compact_report["detail_artifact"] = {
+            "path": str(full_output_json).replace("\\", "/"),
+            "sha256": hashlib.sha256(full_report_bytes).hexdigest(),
+            "bytes": len(full_report_bytes),
+            "storage": "ignored data artifact; regenerable by tools/run_factor001r.py",
+        }
+    output_json.write_text(
+        json.dumps(compact_report, indent=2, sort_keys=True), encoding="utf-8"
+    )
     lines = [
         "# FACTOR-001R — Bounded Symbolic Factor Evaluation",
         "",
@@ -903,8 +936,10 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
     lines.extend(
         [
             "",
-            "The full Factor Zoo record, all candidate exposure, per-horizon metrics, "
-            "per-day/per-asset stability, FDR values, and rankings are in the JSON artifact. "
+            "The compact tracked JSON preserves lineage, formulas/IDs, aggregate metrics, "
+            "rejection counts, and ranking summaries. Full Factor Zoo records, per-horizon "
+            "metrics, per-day/per-asset stability, FDR values, and rankings are emitted to "
+            "the ignored regenerable detail artifact when --full-output-json is supplied. "
             "No factor is wired into a model or runtime.",
             "",
             "Sequence readiness remains `INSUFFICIENT_SEQUENCE_EVIDENCE`; "
@@ -920,12 +955,14 @@ def main() -> None:
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--output-md", type=Path, required=True)
+    parser.add_argument("--full-output-json", type=Path, default=None)
     parser.add_argument("--code-sha", default=None)
     args = parser.parse_args()
     report = evaluate(
         root=args.dataset_root,
         output_json=args.output_json,
         output_md=args.output_md,
+        full_output_json=args.full_output_json,
         code_sha=args.code_sha or _git_sha(),
     )
     print(
