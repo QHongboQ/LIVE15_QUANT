@@ -641,7 +641,9 @@ async def test_ws_persistence_failure_remains_fail_loud(tmp_path, monkeypatch) -
 
         task = asyncio.create_task(recorder._record_kalshi_ws())
         await asyncio.wait_for(source.gap_observed.wait(), 1)
-        monkeypatch.setattr(store, "append_kalshi_ws_orderbook_event_batch", fail_persistence)
+        monkeypatch.setattr(
+            store, "write_kalshi_ws_persistence_event_batch_atomic", fail_persistence
+        )
         with pytest.raises(RecorderStorageError, match="durable write failure"):
             recorder._flush_kalshi_ws_pending()
         task.cancel()

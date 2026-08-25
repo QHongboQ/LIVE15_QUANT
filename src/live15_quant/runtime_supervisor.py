@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from live15_quant.config import Settings, load_settings
+from live15_quant.kalshi_gateway.client import KalshiGatewayError, production_runtime_environment
 from live15_quant.recorder_control import (
     WINDOWS_BACKGROUND_FLAGS,
     ManagedRecorderState,
@@ -75,6 +76,20 @@ class RuntimeSupervisor:
         self.controller = controller or RecorderProcessController(settings)
         self.started_at = utc_timestamp()
         self.children = {
+            "kalshi_sdk_ws_shadow": ManagedChild(
+                "kalshi_sdk_ws_shadow",
+                "live15_quant.managed_kalshi_sdk_shadow",
+                self.runtime / "kalshi-sdk-ws-shadow-status.json",
+                self.logs / "kalshi_sdk_ws_shadow.log",
+                self.logs / "kalshi_sdk_ws_shadow.error.log",
+            ),
+            "current_trainable": ManagedChild(
+                "current_trainable",
+                "live15_quant.managed_trainable",
+                self.runtime / "current-trainable-status.json",
+                self.logs / "current_trainable_worker.log",
+                self.logs / "current_trainable_worker.error.log",
+            ),
             "paper_forward": ManagedChild(
                 "paper_forward",
                 "live15_quant.managed_paper",
@@ -114,11 +129,20 @@ class RuntimeSupervisor:
     def tick(self) -> dict[str, dict[str, object]]:
         recorder = self._ensure_recorder()
         recorder_healthy = recorder["status"] == "HEALTHY"
+        recorder_readable = recorder["status"] in {"HEALTHY", "RUNNING", "STARTING"}
         control_center = self._ensure_child(self.children["control_center"], allowed=True)
+        kalshi_sdk_ws_shadow = self._ensure_child(
+            self.children["kalshi_sdk_ws_shadow"], allowed=recorder_readable
+        )
+        current_trainable = self._ensure_child(
+            self.children["current_trainable"], allowed=recorder_readable
+        )
         paper = self._ensure_child(self.children["paper_forward"], allowed=recorder_healthy)
         first_fill = self._first_fill_status()
         components = {
             "recorder": recorder,
+            "kalshi_sdk_ws_shadow": kalshi_sdk_ws_shadow,
+            "current_trainable": current_trainable,
             "paper_forward": paper,
             "control_center": control_center,
             "demo_first_fill": first_fill,
@@ -326,13 +350,19 @@ class RuntimeSupervisor:
             "heartbeat_age_seconds": None,
             "last_error": None,
             "process_alive": True,
-            "expected_mode": (
-                "PAPER_SHADOW_LOCAL_ONLY"
-                if child.name == "paper_forward"
-                else "LOCALHOST_READ_ONLY_WITH_BOUNDED_RECORDER_CONTROL"
-            ),
+            "expected_mode": self._expected_mode(child.name),
             "status_path": str(child.status_path.resolve()),
-            "receipt_path": str((self.runtime / f"{child.name}.pid").resolve()),
+            "receipt_path": str(
+                (
+                    self.runtime
+                    / {
+                        "kalshi_sdk_ws_shadow": "kalshi-sdk-ws-shadow.pid",
+                        "paper_forward": "paper-forward.pid",
+                        "current_trainable": "current-trainable.pid",
+                        "control_center": "control-center.pid",
+                    }[child.name]
+                ).resolve()
+            ),
             "log_path": str(child.stdout_path.resolve()),
             "launcher_pid": child.launcher.pid if child.launcher is not None else None,
         }
@@ -363,11 +393,25 @@ class RuntimeSupervisor:
 
     def _launch(self, child: ManagedChild) -> None:
         child.stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        environment = os.environ.copy()
+        if child.name == "kalshi_sdk_ws_shadow":
+            try:
+                environment = production_runtime_environment(self.settings, base=environment)
+            except KalshiGatewayError:
+                # Let the isolated child publish its typed fail-closed status;
+                # an unavailable credential must not take down Supervisor.
+                for name in (
+                    "KALSHI_DEMO",
+                    "LIVE15_KALSHI_DEMO_API_KEY_ID",
+                    "LIVE15_KALSHI_DEMO_API_KEY_ID_FILE",
+                    "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH",
+                ):
+                    environment.pop(name, None)
         with child.stdout_path.open("ab") as stdout, child.stderr_path.open("ab") as stderr:
             child.launcher = self._popen(
                 [sys.executable, "-m", child.module],
                 cwd=self.root,
-                env=os.environ.copy(),
+                env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=stdout,
                 stderr=stderr,
@@ -392,7 +436,7 @@ class RuntimeSupervisor:
         status = str(payload.get("status", "STOPPED")) if payload else "STOPPED"
         if alive and age is not None and age > 15:
             status = "STALE"
-        return {
+        projection = {
             "status": status,
             "pid": pid or None,
             "started_at": payload.get("started_at") if payload else None,
@@ -405,16 +449,38 @@ class RuntimeSupervisor:
             "receipt_path": str(
                 (
                     self.runtime
-                    / (
-                        "paper-forward.pid"
-                        if child.name == "paper_forward"
-                        else "control-center.pid"
-                    )
+                    / {
+                        "kalshi_sdk_ws_shadow": "kalshi-sdk-ws-shadow.pid",
+                        "paper_forward": "paper-forward.pid",
+                        "current_trainable": "current-trainable.pid",
+                        "control_center": "control-center.pid",
+                    }[child.name]
                 ).resolve()
             ),
             "log_path": str(child.stdout_path.resolve()),
             "launcher_pid": child.launcher.pid if child.launcher is not None else None,
         }
+        if child.name == "kalshi_sdk_ws_shadow" and payload:
+            for key in (
+                "connected_status",
+                "synchronized_count",
+                "subscribed_assets",
+                "parity_status",
+                "recent_mismatch_count",
+                "recent_gap_count",
+                "rollover_count",
+            ):
+                projection[key] = payload.get(key)
+        return projection
+
+    @staticmethod
+    def _expected_mode(name: str) -> str:
+        return {
+            "kalshi_sdk_ws_shadow": "SDK_WS_SHADOW_NO_RECORDER_WRITES",
+            "paper_forward": "PAPER_SHADOW_LOCAL_ONLY",
+            "current_trainable": "INCREMENTAL_CURRENT_TRAINABLE_NO_TRAINING",
+            "control_center": "LOCALHOST_READ_ONLY_WITH_BOUNDED_RECORDER_CONTROL",
+        }[name]
 
     def _first_fill_status(self) -> dict[str, object]:
         path = self.runtime / "demo_first_fill_status.json"

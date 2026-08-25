@@ -37,6 +37,8 @@ from live15_quant.gaps import (
     configured_streams,
     timedelta_seconds,
 )
+from live15_quant.kalshi_gateway.production_recorder_host import SdkProductionRecorderHost
+from live15_quant.kalshi_gateway.recorder_provider import RecorderMarketDataEvent
 from live15_quant.kalshi_lifecycle import (
     KalshiDiscovery,
     KalshiLifecycle,
@@ -110,6 +112,7 @@ from live15_quant.records import KalshiMarketRecord
 from live15_quant.runtime_status import atomic_json
 from live15_quant.secondary import secondary_from_benchmark_tick
 from live15_quant.storage import (
+    KalshiWsPersistenceEvent,
     MarketIdentityConflictError,
     RecorderStorageError,
     RecorderStore,
@@ -242,15 +245,15 @@ class KalshiNativeHealth:
                 for key, value in values.items()
             }
 
-        status = (
-            "storage_error"
-            if self.integrity not in {"ok", "not_checked"}
-            else "degraded"
-            if self.source_failures or self.stale_sources or self.stale_workers
-            else "healthy"
+        status, current_health_issues = _aggregate_current_health(
+            integrity=self.integrity,
+            source_failures=self.source_failures,
+            stale_sources=self.stale_sources,
+            stale_workers=self.stale_workers,
         )
         return {
             "status": status,
+            "current_health_issues": current_health_issues,
             "started_at": self.started_at.isoformat(),
             "observed_at": self.observed_at.isoformat(),
             "uptime_seconds": self.uptime_seconds,
@@ -316,6 +319,30 @@ class KalshiNativeHealth:
             "kalshi_rest_fallback_status": self.kalshi_rest_fallback_status,
             "ws_archive": self.ws_archive_metrics,
         }
+
+
+def _aggregate_current_health(
+    *,
+    integrity: str,
+    source_failures: dict[str, str],
+    stale_sources: tuple[str, ...],
+    stale_workers: tuple[str, ...],
+) -> tuple[str, list[str]]:
+    """Classify present conditions without treating historical retries as faults.
+
+    ``retry_counts`` is intentionally absent from this input: it is a retained
+    incident counter, not evidence that a dependency is currently unhealthy.
+    Source failures are removed by ``_source_ok`` after recovery, while stale
+    source and worker facts are recomputed for each heartbeat.
+    """
+    if integrity not in {"ok", "not_checked"}:
+        return "storage_error", ["storage_integrity"]
+    issues = [
+        *[f"source_failure:{key}" for key in sorted(source_failures)],
+        *[f"stale_source:{key}" for key in sorted(stale_sources)],
+        *[f"stale_worker:{key}" for key in sorted(stale_workers)],
+    ]
+    return ("degraded" if issues else "healthy"), issues
 
 
 @dataclass(slots=True)
@@ -457,7 +484,11 @@ class KalshiNativeRecorder:
             Asset.HYPE: HyperliquidHypePublicMarketDataSource,
         }
         self._kalshi_ws: KalshiWsSource | None = None
-        if settings.enable_kalshi_production_websocket:
+        self._sdk_recorder_host: SdkProductionRecorderHost | None = None
+        if (
+            settings.enable_kalshi_production_websocket
+            and settings.kalshi_recorder_provider == "legacy"
+        ):
             self._kalshi_ws = (
                 kalshi_ws_factory()
                 if kalshi_ws_factory is not None
@@ -638,6 +669,17 @@ class KalshiNativeRecorder:
                     self._source_failed("adaptive_retention", error)
             self._health.ws_archive_metrics = manifest.metrics()
         self._mark_startup_phase("recorder_state_ready", phase_started)
+        if (
+            settings.enable_kalshi_production_websocket
+            and settings.kalshi_recorder_provider == "sdk"
+        ):
+            self._sdk_recorder_host = SdkProductionRecorderHost(
+                settings=settings,
+                store=store,
+                universe=self._sdk_ws_universe,
+                on_committed=self._on_sdk_ws_committed,
+                on_transport_state=self._on_sdk_ws_transport_state,
+            )
 
     def _startup_phase_started(self) -> float | None:
         return self._monotonic() if self._startup_phase_observer is not None else None
@@ -791,12 +833,20 @@ class KalshiNativeRecorder:
             kalshi_ws_reconnect_count=(
                 int(getattr(self._kalshi_ws.diagnostics, "reconnects", 0))
                 if self._kalshi_ws is not None
-                else 0
+                else (
+                    self._sdk_recorder_host.reconnect_count
+                    if self._sdk_recorder_host is not None
+                    else 0
+                )
             ),
             kalshi_ws_queue_high_watermark=(
                 int(getattr(self._kalshi_ws.diagnostics, "receive_queue_high_watermark", 0))
                 if self._kalshi_ws is not None
-                else 0
+                else (
+                    self._sdk_recorder_host.queue_high_watermark
+                    if self._sdk_recorder_host is not None
+                    else 0
+                )
             ),
             kalshi_ws_queue_capacity=(
                 int(getattr(self._kalshi_ws.diagnostics, "receive_queue_capacity", 0))
@@ -1120,6 +1170,13 @@ class KalshiNativeRecorder:
             )
             tasks.append(
                 asyncio.create_task(self._monitor_kalshi_ws_liveness(), name="kalshi-ws-liveness")
+            )
+        elif self._sdk_recorder_host is not None:
+            tasks.append(asyncio.create_task(self._record_sdk_kalshi_ws(), name="kalshi-sdk-ws"))
+            tasks.append(
+                asyncio.create_task(
+                    self._publish_kalshi_ws_live_books(), name="kalshi-ws-live-projection"
+                )
             )
         for asset in KALSHI_15MIN_SERIES:
             tasks.extend(
@@ -1825,6 +1882,16 @@ class KalshiNativeRecorder:
         """Return the live primary only while the official WS state is synchronized."""
 
         coordinator = self._kalshi_ws_coordinator
+        if self._sdk_recorder_host is not None:
+            if (
+                self._health.kalshi_ws_state is not KalshiWsRuntimeState.SYNCHRONIZED
+                or not self._kalshi_ws_transport_fresh(self._utc_now())
+            ):
+                raise KalshiUnsynchronizedBookError("Kalshi SDK WS primary is unavailable")
+            for book in self._kalshi_ws_books.values():
+                if book.ticker == ticker:
+                    return book
+            raise KalshiUnsynchronizedBookError("Kalshi SDK WS ticker is unavailable")
         diagnostics = None if self._kalshi_ws is None else self._kalshi_ws.diagnostics
         transport_state = getattr(diagnostics, "transport_state", None)
         dropped = int(getattr(diagnostics, "receive_queue_dropped", 0))
@@ -1842,6 +1909,12 @@ class KalshiNativeRecorder:
     def _kalshi_ws_transport_fresh(self, observed: datetime) -> bool:
         """Keep a quiet book usable only while the official WS transport is live."""
 
+        if self._sdk_recorder_host is not None:
+            received = self._sdk_recorder_host.last_received_at
+            if received is None:
+                return False
+            age = (observed - received.astimezone(UTC)).total_seconds()
+            return 0 <= age <= self._settings.kalshi_websocket_stale_seconds
         source = self._kalshi_ws
         if source is None:
             return False
@@ -1891,7 +1964,12 @@ class KalshiNativeRecorder:
         if not self._kalshi_ws_pending:
             return
         pending = tuple(self._kalshi_ws_pending)
-        inserted, latency = self._store.append_kalshi_ws_orderbook_event_batch(pending)
+        inserted, latency = self._store.write_kalshi_ws_persistence_event_batch_atomic(
+            tuple(
+                KalshiWsPersistenceEvent.from_legacy(message, sync_status_after=sync_status_after)
+                for message, sync_status_after in pending
+            )
+        )
         del self._kalshi_ws_pending[: len(pending)]
         if inserted:
             self._health.row_counts["kalshi_ws_orderbook_events"] = (
@@ -2041,6 +2119,73 @@ class KalshiNativeRecorder:
                     self._retry_delay("kalshi_ws", self._settings.reconnect_delay_seconds)
                 ):
                     return
+
+    def _sdk_ws_universe(self) -> Mapping[Asset, str]:
+        """Current recorder-owned market identity for the SDK transport host."""
+
+        return {asset: market.ticker for asset, market in self._health.current.items()}
+
+    def _on_sdk_ws_transport_state(self, state: str, observed_at: datetime) -> None:
+        """Project transport state into existing Recorder health/gap semantics."""
+
+        normalized = state.lower()
+        if normalized in {"reconnecting", "disconnected", "closed"}:
+            self._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
+        elif normalized in {"connecting", "connected"} and (
+            self._health.kalshi_ws_state is not KalshiWsRuntimeState.SYNCHRONIZED
+        ):
+            self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+        self._worker_advanced("kalshi_ws", observed_at)
+
+    def _on_sdk_ws_committed(self, events: tuple[RecorderMarketDataEvent, ...]) -> None:
+        """Expose only durably committed, adapter-authoritative SDK books."""
+
+        # RecorderMarketDataConsumer invokes this callback only after the
+        # shared neutral batch writer has committed.  Keep the established
+        # legacy health key on that same success-only durability boundary;
+        # failed/rolled-back SDK batches never reach this callback.
+        if events:
+            self._worker_advanced("kalshi_ws_persistence")
+        for event in events:
+            book = event.book
+            if not event.authoritative or book is None:
+                continue
+            asset = event.canonical.asset
+            current = self._health.current.get(asset)
+            if current is None or current.ticker != book.ticker:
+                continue
+            self._kalshi_ws_books[asset] = book
+            self._capture_forward_shadow_checkpoint(asset, book)
+            self._health.kalshi_ws_synchronized[asset] = book.ticker
+            self._health.kalshi_ws_last_books[asset] = book.received_timestamp
+            self._observe_gap(
+                GapSource.KALSHI_WS,
+                asset,
+                book.received_timestamp,
+                source_health_key=f"kalshi_ws:{asset.value}",
+            )
+            self._source_ok(f"kalshi_ws:{asset.value}")
+            if event.canonical.event_type.value == "SNAPSHOT":
+                if self._store.append_kalshi_ws_checkpoint(book):
+                    self._wrote("kalshi_ws_book_checkpoints")
+        current_assets = set(self._health.current)
+        if self._sdk_recorder_host is not None:
+            self._health.kalshi_ws_seq_gaps = self._sdk_recorder_host.gap_count
+        if current_assets and current_assets.issubset(self._health.kalshi_ws_synchronized):
+            self._health.kalshi_ws_state = KalshiWsRuntimeState.SYNCHRONIZED
+            self._kalshi_ws_waiting_since_monotonic = None
+            if not self._startup_ws_synchronized_reported:
+                self._startup_ws_synchronized_reported = True
+                self._mark_startup_phase("kalshi_ws_synchronized", self._startup_phase_started())
+        self._worker_advanced("kalshi_ws")
+
+    async def _record_sdk_kalshi_ws(self) -> None:
+        """Production SDK transport; legacy WS code is never entered on this path."""
+
+        host = self._sdk_recorder_host
+        if host is None:
+            return
+        await host.run(self._stop_event)
 
     def _capture_forward_shadow_checkpoint(
         self, asset: Asset, book: SynchronizedKalshiOrderBook

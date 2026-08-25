@@ -51,15 +51,31 @@ def atomic_json(
         temporary.unlink(missing_ok=True)
 
 
-def read_json(path: Path, *, maximum_bytes: int = 64 * 1024) -> dict[str, object] | None:
-    try:
-        if path.stat().st_size > maximum_bytes:
-            raise RuntimeStatusError(f"runtime status exceeds {maximum_bytes} bytes")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeStatusError("runtime status is malformed") from error
+def read_json(
+    path: Path,
+    *,
+    maximum_bytes: int = 64 * 1024,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, object] | None:
+    for attempt in range(6):
+        try:
+            if path.stat().st_size > maximum_bytes:
+                raise RuntimeStatusError(f"runtime status exceeds {maximum_bytes} bytes")
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            break
+        except FileNotFoundError:
+            return None
+        except PermissionError as error:
+            # Windows readers can briefly lose the race with an atomic
+            # os.replace or a deny-read handle. Mirror atomic_json's bounded
+            # backoff so observability cannot tear down healthy market data.
+            if attempt == 5:
+                raise RuntimeStatusError("runtime status is temporarily unreadable") from error
+            sleep(0.01 * (2**attempt))
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeStatusError("runtime status is malformed") from error
+    else:  # pragma: no cover - loop always returns, breaks, or raises
+        raise RuntimeStatusError("runtime status is temporarily unreadable")
     if not isinstance(payload, dict):
         raise RuntimeStatusError("runtime status must be an object")
     return payload

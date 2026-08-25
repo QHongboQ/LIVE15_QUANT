@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -142,15 +143,17 @@ def test_duplicate_start_returns_running_without_spawning(tmp_path, monkeypatch)
 def test_start_and_graceful_pause_use_fixed_process_and_bounded_wait(tmp_path, monkeypatch) -> None:
     configured = managed_settings(tmp_path)
     monkeypatch.setattr(control, "project_root", lambda: tmp_path)
-    credential_root = tmp_path / "home" / ".live15_quant" / "credentials"
-    credential_root.mkdir(parents=True)
-    (credential_root / "kalshi-production-readonly-key-id.txt").write_text(
-        "test-key-id\n", encoding="utf-8"
+    credential_root = tmp_path / "production-credentials"
+    credential_root.mkdir()
+    key_id_path = credential_root / "key-id.txt"
+    private_key_path = credential_root / "private.key"
+    key_id_path.write_text("test-key-id\n", encoding="utf-8")
+    private_key_path.write_text("test-private-key\n", encoding="utf-8")
+    configured = replace(
+        configured,
+        kalshi_production_api_key_id_path=key_id_path,
+        kalshi_production_private_key_path=private_key_path,
     )
-    (credential_root / "kalshi-production-readonly.key").write_text(
-        "test-private-key\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(control.Path, "home", lambda: tmp_path / "home")
     monkeypatch.setenv("LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET", "false")
     alive = {9876: False}
     clock = [0.0]
@@ -198,10 +201,10 @@ def test_start_and_graceful_pause_use_fixed_process_and_bounded_wait(tmp_path, m
     assert captured["kwargs"]["env"]["LIVE15_ENABLE_SECONDARY_UNDERLYING"] == "true"  # type: ignore[index]
     assert captured["kwargs"]["env"]["LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET"] == "true"  # type: ignore[index]
     assert captured["kwargs"]["env"]["LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH"] == str(
-        credential_root / "kalshi-production-readonly-key-id.txt"
+        key_id_path.resolve()
     )  # type: ignore[index]
     assert captured["kwargs"]["env"]["LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH"] == str(
-        credential_root / "kalshi-production-readonly.key"
+        private_key_path.resolve()
     )  # type: ignore[index]
     assert controller.pause().state is ManagedRecorderState.PAUSED
     assert controller.status().pid is None
@@ -210,15 +213,6 @@ def test_start_and_graceful_pause_use_fixed_process_and_bounded_wait(tmp_path, m
 def test_managed_explicit_ws_opt_out_preserves_disabled_environment(tmp_path, monkeypatch) -> None:
     configured = managed_settings(tmp_path)
     monkeypatch.setattr(control, "project_root", lambda: tmp_path)
-    credential_root = tmp_path / "home" / ".live15_quant" / "credentials"
-    credential_root.mkdir(parents=True)
-    (credential_root / "kalshi-production-readonly-key-id.txt").write_text(
-        "test-key-id\n", encoding="utf-8"
-    )
-    (credential_root / "kalshi-production-readonly.key").write_text(
-        "test-private-key\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(control.Path, "home", lambda: tmp_path / "home")
     monkeypatch.setenv("LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET", "false")
     monkeypatch.setenv("LIVE15_MANAGED_DISABLE_KALSHI_PRODUCTION_WEBSOCKET", "true")
     alive = {2469: False}

@@ -28,6 +28,7 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.kalshi_demo_api_key_id_file is None
     assert settings.kalshi_demo_private_key_path is None
     assert settings.enable_kalshi_production_websocket is False
+    assert settings.kalshi_recorder_provider == "legacy"
     assert settings.kalshi_production_api_key_id_path is None
     assert settings.kalshi_production_private_key_path is None
     assert settings.enable_robinhood_reference is False
@@ -49,6 +50,11 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.adaptive_retention_state_path is None
     assert settings.adaptive_retention_disk_deescalation_samples == 3
     assert settings.readiness_snapshot_max_seconds == 300.0
+
+
+def test_load_settings_rejects_unknown_kalshi_recorder_provider() -> None:
+    with pytest.raises(ValueError, match="RECORDER_PROVIDER"):
+        load_settings({"LIVE15_KALSHI_RECORDER_PROVIDER": "both"})
 
 
 def test_readiness_snapshot_budget_is_configurable_and_positive() -> None:

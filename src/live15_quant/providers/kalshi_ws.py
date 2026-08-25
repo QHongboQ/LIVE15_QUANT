@@ -224,7 +224,19 @@ class KalshiProductionCredentialFiles:
             if not path.is_file():
                 raise KalshiReadOnlyWsError(f"Kalshi Production {label} file is unavailable")
         if self.private_key_path.suffix.lower() not in {".key", ".pem"}:
-            raise KalshiReadOnlyWsError("Kalshi Production private key must be a .key or .pem file")
+            try:
+                pem_header = self.private_key_path.read_bytes()[:128]
+            except OSError:
+                raise KalshiReadOnlyWsError(
+                    "Kalshi Production private key file is unavailable"
+                ) from None
+            # A user may retain an official PEM key in a generic .txt file.
+            # Accept only an unmistakable PEM private-key header; content is
+            # still parsed as RSA by KalshiProductionRsaPssSigner before use.
+            if b"-----BEGIN" not in pem_header or b"PRIVATE KEY-----" not in pem_header:
+                raise KalshiReadOnlyWsError(
+                    "Kalshi Production private key must be PEM or use a .key/.pem extension"
+                )
 
     def key_id(self) -> str:
         try:

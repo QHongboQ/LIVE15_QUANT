@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from live15_quant.config import Settings
+from live15_quant.kalshi_gateway.client import KalshiGatewayError, production_runtime_environment
 
 WINDOWS_CREATE_NO_WINDOW = 0x08000000
 WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -192,32 +193,34 @@ class RecorderProcessController:
             self._write_control("running", ManagedRecorderState.STARTING, "recorder is starting")
             previous_heartbeat = self._heartbeat_marker()
             environment = os.environ.copy()
-            environment.pop("LIVE15_KALSHI_DEMO_API_KEY_ID", None)
-            environment.pop("LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH", None)
             # Public, market-data-only secondary streams are part of the single
             # UI-managed recorder. Manual foreground runs remain opt-in via env.
             environment.setdefault("LIVE15_ENABLE_SECONDARY_UNDERLYING", "true")
-            credential_root = Path.home() / ".live15_quant" / "credentials"
-            production_key_id = credential_root / "kalshi-production-readonly-key-id.txt"
-            production_private_key = credential_root / "kalshi-production-readonly.key"
             managed_ws_disabled = environment.get(
                 "LIVE15_MANAGED_DISABLE_KALSHI_PRODUCTION_WEBSOCKET", ""
             ).strip().lower() in {"1", "true", "yes", "on"}
-            if (
-                not managed_ws_disabled
-                and production_key_id.is_file()
-                and production_private_key.is_file()
-            ):
-                # A UI-managed recorder owns the complete public-data collection
-                # profile.  A stale inherited ``false`` must not silently disable
-                # the already configured, read-only production market-data socket.
-                # An explicit managed opt-out remains available for operators that
-                # intentionally want to run the UI without the Production WS.
-                environment["LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET"] = "true"
-                environment["LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH"] = str(production_key_id)
-                environment["LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH"] = str(
-                    production_private_key
-                )
+            if not managed_ws_disabled:
+                try:
+                    environment = production_runtime_environment(self.settings, base=environment)
+                except KalshiGatewayError:
+                    # Credential availability must never turn into a Demo or stale
+                    # credential fallback.  The recorder continues public collection
+                    # while its official Production WS remains explicitly disabled.
+                    for name in (
+                        "LIVE15_KALSHI_DEMO_API_KEY_ID",
+                        "LIVE15_KALSHI_DEMO_API_KEY_ID_FILE",
+                        "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH",
+                    ):
+                        environment.pop(name, None)
+                    environment["LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET"] = "false"
+            else:
+                for name in (
+                    "KALSHI_DEMO",
+                    "LIVE15_KALSHI_DEMO_API_KEY_ID",
+                    "LIVE15_KALSHI_DEMO_API_KEY_ID_FILE",
+                    "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH",
+                ):
+                    environment.pop(name, None)
             flags = 0
             if os.name == "nt":
                 # DETACHED_PROCESS is deliberately absent: combined with CREATE_NO_WINDOW

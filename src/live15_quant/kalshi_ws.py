@@ -651,7 +651,12 @@ class KalshiAtomicOrderBookCoordinator:
             )
         self._last_sequence = sequence
 
-    def accept(self, message: KalshiOrderBookMessage) -> SynchronizedKalshiOrderBook | None:
+    def accept(
+        self,
+        message: KalshiOrderBookMessage,
+        *,
+        materialize: bool = True,
+    ) -> SynchronizedKalshiOrderBook | None:
         if message.ticker not in self._subscribed:
             raise KalshiBookInvariantError("WebSocket message ticker is not subscribed")
         existing = self._books.get(message.ticker)
@@ -675,7 +680,7 @@ class KalshiAtomicOrderBookCoordinator:
             self._resync_pending.discard(message.ticker)
             if self._resync_pending:
                 return None
-            return self.book(message.ticker)
+            return self.book(message.ticker) if materialize else None
         book = self._books.get(message.ticker)
         if book is None or book.status is not KalshiBookSyncStatus.SYNCHRONIZED:
             raise KalshiSequenceGapError(
@@ -698,7 +703,7 @@ class KalshiAtomicOrderBookCoordinator:
             # with snapshots for the remaining markets. Apply the contiguous
             # delta, but never expose a partial subscription as synchronized.
             return None
-        return self.book(message.ticker)
+        return self.book(message.ticker) if materialize else None
 
     def accept_ack(self, message: KalshiCommandAcknowledged) -> None:
         """Advance a sequenced subscription ack so replay does not invent a data gap."""
@@ -742,11 +747,15 @@ class KalshiAtomicOrderBookCoordinator:
     def reset(self) -> None:
         """Disconnect invalidates every book; reconnect must begin with snapshots."""
 
-        self._invalidate_all()
+        # A new transport session must not expose a book after only one of
+        # the subscription's markets has re-snapshotted.  Keep the complete
+        # pending set here: ``accept(snapshot)`` removes each ticker only
+        # after its fresh authoritative baseline arrives.
+        self._books.clear()
+        self._resync_pending = set(self._subscribed)
+        self._awaiting_resync_baseline = True
         self._subscription_id = None
         self._last_sequence = None
-        self._resync_pending.clear()
-        self._awaiting_resync_baseline = False
 
 
 class SynchronizedKalshiBookProvider(Protocol):

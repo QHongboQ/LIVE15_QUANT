@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -86,6 +87,117 @@ class MarketIdentityConflictError(RecorderStorageError):
 
 class DataGapConflictError(RecorderStorageError):
     """Raised when one logical gap is presented with contradictory facts."""
+
+
+@dataclass(frozen=True, slots=True)
+class KalshiWsPersistenceEvent:
+    """Transport-neutral raw-orderbook fact accepted by ``RecorderStore``.
+
+    This is deliberately a persistence DTO, not a websocket command or SDK
+    model.  Providers must have already established ordering and sync status.
+    """
+
+    connection_id: str
+    subscription_id: int
+    sequence: int
+    event_kind: KalshiWsEventKind
+    ticker: str | None
+    market_id: str | None
+    market_tickers: tuple[str, ...]
+    side: KalshiBookSide | None
+    price: Decimal | None
+    quantity_delta: Decimal | None
+    yes_bids: tuple[OrderBookLevel, ...]
+    no_bids: tuple[OrderBookLevel, ...]
+    source_timestamp: datetime | None
+    received_timestamp: datetime
+    parse_timestamp: datetime
+    sync_status_after: KalshiBookSyncStatus
+    provenance: str
+    data_role: DataRole
+    received_monotonic_ns: int | None = None
+
+    @property
+    def socket_received_timestamp(self) -> datetime:
+        return self.received_timestamp
+
+    @property
+    def socket_received_monotonic_ns(self) -> int | None:
+        return self.received_monotonic_ns
+
+    @property
+    def enqueue_timestamp(self) -> datetime | None:
+        return None
+
+    @property
+    def enqueue_monotonic_ns(self) -> int | None:
+        return None
+
+    @property
+    def role(self) -> DataRole:
+        return self.data_role
+
+    @classmethod
+    def from_legacy(
+        cls,
+        message: KalshiOrderBookMessage | KalshiCommandAcknowledged,
+        *,
+        sync_status_after: KalshiBookSyncStatus,
+    ) -> KalshiWsPersistenceEvent:
+        acknowledgement = message if isinstance(message, KalshiCommandAcknowledged) else None
+        if acknowledgement is not None:
+            if acknowledgement.subscription_id is None or acknowledgement.sequence is None:
+                raise RecorderStorageError(
+                    "unsequenced Kalshi WS acknowledgement is not replay state"
+                )
+            return cls(
+                connection_id=acknowledgement.connection_id,
+                subscription_id=acknowledgement.subscription_id,
+                sequence=acknowledgement.sequence,
+                event_kind=KalshiWsEventKind.SUBSCRIPTION_ACK,
+                ticker=None,
+                market_id=None,
+                market_tickers=acknowledgement.market_tickers,
+                side=None,
+                price=None,
+                quantity_delta=None,
+                yes_bids=(),
+                no_bids=(),
+                source_timestamp=None,
+                received_timestamp=acknowledgement.socket_received_timestamp,
+                parse_timestamp=acknowledgement.parse_timestamp,
+                sync_status_after=sync_status_after,
+                provenance=acknowledgement.provenance,
+                data_role=acknowledgement.role,
+                received_monotonic_ns=acknowledgement.socket_received_monotonic_ns,
+            )
+        snapshot = message if isinstance(message, KalshiOrderBookSnapshot) else None
+        delta = message if isinstance(message, KalshiOrderBookDelta) else None
+        if snapshot is None and delta is None:
+            raise RecorderStorageError("unsupported legacy Kalshi WS persistence event")
+        return cls(
+            connection_id=message.connection_id,
+            subscription_id=message.subscription_id,
+            sequence=message.sequence,
+            event_kind=(
+                KalshiWsEventKind.SNAPSHOT if snapshot is not None else KalshiWsEventKind.DELTA
+            ),
+            ticker=message.ticker,
+            market_id=message.market_id,
+            market_tickers=(),
+            side=None if delta is None else delta.side,
+            price=None if delta is None else delta.price,
+            quantity_delta=None if delta is None else delta.quantity_delta,
+            yes_bids=() if snapshot is None else snapshot.yes_bids,
+            no_bids=() if snapshot is None else snapshot.no_bids,
+            source_timestamp=message.source_timestamp,
+            received_timestamp=message.socket_received_timestamp,
+            parse_timestamp=message.parse_timestamp,
+            sync_status_after=sync_status_after,
+            provenance=message.provenance,
+            data_role=message.role,
+            received_monotonic_ns=message.socket_received_monotonic_ns,
+        )
 
 
 # Startup may only inspect a fixed, indexed recovery window per configured
@@ -719,15 +831,30 @@ class RecorderStore:
         path: Path,
         *,
         startup_phase_observer: Callable[[str, float], None] | None = None,
+        read_only: bool = False,
     ) -> None:
         self.path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
+        if not read_only:
+            path.parent.mkdir(parents=True, exist_ok=True)
         phase_started = time.perf_counter()
-        self._connection = sqlite3.connect(path)
+        if read_only:
+            if not path.is_file():
+                raise RecorderStorageError("read-only recorder database is unavailable")
+            self._connection = sqlite3.connect(
+                f"file:{path.resolve().as_posix()}?mode=ro", uri=True, timeout=5
+            )
+        else:
+            self._connection = sqlite3.connect(path)
         self._connection.row_factory = sqlite3.Row
         try:
             if startup_phase_observer is not None:
                 startup_phase_observer("db_open", time.perf_counter() - phase_started)
+            if read_only:
+                self._connection.execute("PRAGMA query_only=ON")
+                self._connection.execute("PRAGMA busy_timeout=5000")
+                self._assert_read_only_schema()
+                return
             phase_started = time.perf_counter()
             self._connection.execute("PRAGMA journal_mode=WAL")
             self._connection.execute("PRAGMA foreign_keys=ON")
@@ -744,6 +871,13 @@ class RecorderStore:
         except Exception:
             self._connection.close()
             raise
+
+    def _assert_read_only_schema(self) -> None:
+        row = self._connection.execute(
+            "SELECT value FROM recorder_metadata WHERE key='schema_version'"
+        ).fetchone()
+        if row is None or row["value"] != str(SCHEMA_VERSION):
+            raise RecorderStorageError("read-only recorder schema is incompatible")
 
     def _initialize_or_migrate_schema(self) -> None:
         metadata_exists = self._connection.execute(
@@ -1685,11 +1819,100 @@ class RecorderStore:
         self.finalize_kalshi_ws_orderbook_events(((row_id, message.socket_received_monotonic_ns),))
         return True
 
-    def append_kalshi_ws_orderbook_event_batch(
+    def write_kalshi_ws_persistence_event_atomic(self, event: KalshiWsPersistenceEvent) -> bool:
+        """Write one transport-neutral validated WS fact as one SQLite transaction.
+
+        It intentionally persists only provider-established state; it does not
+        apply deltas, inspect a sequence gap, or reconstruct an orderbook.
+        """
+
+        if event.subscription_id < 1 or event.sequence < 1:
+            raise RecorderStorageError("Kalshi WS persistence identity is invalid")
+        if event.event_kind is KalshiWsEventKind.SNAPSHOT and (
+            event.ticker is None or event.market_id is None
+        ):
+            raise RecorderStorageError("Kalshi WS snapshot persistence identity is invalid")
+        if event.event_kind is KalshiWsEventKind.DELTA and (
+            event.ticker is None
+            or event.market_id is None
+            or event.side is None
+            or event.price is None
+            or event.quantity_delta is None
+        ):
+            raise RecorderStorageError("Kalshi WS delta persistence payload is invalid")
+        immutable: tuple[object, ...] = (
+            event.connection_id,
+            event.subscription_id,
+            event.sequence,
+            event.event_kind.value,
+            event.ticker,
+            event.market_id,
+            json.dumps(event.market_tickers, separators=(",", ":")),
+            None if event.side is None else event.side.value,
+            None if event.price is None else _decimal(event.price),
+            None if event.quantity_delta is None else _decimal(event.quantity_delta),
+            json.dumps(
+                [[str(level.price), str(level.quantity)] for level in event.yes_bids],
+                separators=(",", ":"),
+            ),
+            json.dumps(
+                [[str(level.price), str(level.quantity)] for level in event.no_bids],
+                separators=(",", ":"),
+            ),
+            None if event.source_timestamp is None else _timestamp(event.source_timestamp),
+            event.provenance,
+            event.data_role.value,
+        )
+        content_hash = _fingerprint(immutable)
+        key = (event.connection_id, event.subscription_id, event.sequence)
+        received_ns = event.received_monotonic_ns
+        with self._connection:
+            existing = self._connection.execute(
+                """SELECT content_hash FROM kalshi_ws_orderbook_events
+                WHERE connection_id=? AND subscription_id=? AND sequence=?""",
+                key,
+            ).fetchone()
+            if existing is not None:
+                if existing["content_hash"] != content_hash:
+                    raise RecorderStorageError(
+                        "conflicting Kalshi WS fact for subscription sequence"
+                    )
+                return False
+            persisted_at = datetime.now(UTC)
+            latency = (
+                Decimal(time.perf_counter_ns() - received_ns) / Decimal(1_000_000)
+                if received_ns is not None
+                else None
+            )
+            if latency is not None and latency < 0:
+                raise RecorderStorageError("Kalshi WS persistence timing is not monotonic")
+            self._connection.execute(
+                """INSERT INTO kalshi_ws_orderbook_events(
+                    schema_version,connection_id,subscription_id,sequence,event_kind,ticker,
+                    market_id,market_tickers,side,price,quantity_delta,yes_bids,no_bids,
+                    source_timestamp,socket_received_timestamp,enqueue_timestamp,parse_timestamp,
+                    persisted_timestamp,receive_enqueue_latency_ms,receive_persist_latency_ms,
+                    sync_status_after,provenance,data_role,content_hash
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    SCHEMA_VERSION,
+                    *immutable[:13],
+                    _timestamp(event.received_timestamp),
+                    None,
+                    _timestamp(event.parse_timestamp),
+                    _timestamp(persisted_at),
+                    None,
+                    None if latency is None else str(latency),
+                    event.sync_status_after.value,
+                    *immutable[13:],
+                    content_hash,
+                ),
+            )
+        return True
+
+    def write_kalshi_ws_persistence_event_batch_atomic(
         self,
-        events: Sequence[
-            tuple[KalshiOrderBookMessage | KalshiCommandAcknowledged, KalshiBookSyncStatus]
-        ],
+        events: Sequence[KalshiWsPersistenceEvent],
     ) -> tuple[int, Decimal | None]:
         """Persist a bounded verified batch with one duplicate lookup and one transaction."""
 
@@ -1698,23 +1921,19 @@ class RecorderStore:
         if len(events) > 1024:
             raise RecorderStorageError("Kalshi WS persistence batch exceeds bounded capacity")
         prepared: dict[tuple[str, int, int], tuple[tuple[object, ...], str, int | None]] = {}
-        for message, sync_status_after in events:
-            acknowledgement = message if isinstance(message, KalshiCommandAcknowledged) else None
+        for message in events:
+            acknowledgement = (
+                message if message.event_kind is KalshiWsEventKind.SUBSCRIPTION_ACK else None
+            )
             if acknowledgement is not None and (
                 acknowledgement.subscription_id is None or acknowledgement.sequence is None
             ):
                 raise RecorderStorageError(
                     "unsequenced Kalshi WS acknowledgement is not replay state"
                 )
-            snapshot = message if isinstance(message, KalshiOrderBookSnapshot) else None
-            delta = message if isinstance(message, KalshiOrderBookDelta) else None
-            event_kind = (
-                KalshiWsEventKind.SUBSCRIPTION_ACK
-                if acknowledgement is not None
-                else KalshiWsEventKind.SNAPSHOT
-                if snapshot is not None
-                else KalshiWsEventKind.DELTA
-            )
+            snapshot = message if message.event_kind is KalshiWsEventKind.SNAPSHOT else None
+            delta = message if message.event_kind is KalshiWsEventKind.DELTA else None
+            event_kind = message.event_kind
             yes_bids = json.dumps(
                 [[str(level.price), str(level.quantity)] for level in snapshot.yes_bids]
                 if snapshot is not None
@@ -1780,7 +1999,7 @@ class RecorderStore:
                 None,
                 str(enqueue_latency) if enqueue_latency is not None else None,
                 None,
-                sync_status_after.value,
+                message.sync_status_after.value,
                 *immutable[13:],
                 content_hash,
             )
@@ -1863,6 +2082,21 @@ class RecorderStore:
             else None
         )
         return len(inserts), maximum
+
+    def append_kalshi_ws_orderbook_event_batch(
+        self,
+        events: Sequence[
+            tuple[KalshiOrderBookMessage | KalshiCommandAcknowledged, KalshiBookSyncStatus]
+        ],
+    ) -> tuple[int, Decimal | None]:
+        """Legacy compatibility entrypoint routed through the neutral batch writer."""
+
+        return self.write_kalshi_ws_persistence_event_batch_atomic(
+            tuple(
+                KalshiWsPersistenceEvent.from_legacy(message, sync_status_after=sync_status_after)
+                for message, sync_status_after in events
+            )
+        )
 
     def stage_kalshi_ws_orderbook_event(
         self,
@@ -2752,6 +2986,46 @@ class RecorderStore:
             )
         for row in rows:
             yield self._kalshi_settlement_record(row)
+
+    def replay_kalshi_settlements_after(
+        self, *, after_row_id: int, max_row_id: int
+    ) -> Iterator[KalshiSettlementRecord]:
+        """Replay a fixed incremental settlement range in recorder-ID order."""
+
+        if after_row_id < 0 or max_row_id < after_row_id:
+            raise ValueError("invalid incremental settlement row bounds")
+        rows = self._connection.execute(
+            """
+            SELECT * FROM kalshi_settlements
+            WHERE id>? AND id<=?
+            ORDER BY id ASC
+            """,
+            (after_row_id, max_row_id),
+        )
+        for row in rows:
+            yield self._kalshi_settlement_record(row)
+
+    def incremental_training_source_limits(self) -> dict[str, int]:
+        """Capture bounded row IDs for a read-only incremental evaluation cycle."""
+
+        tables = (
+            "coinbase_ticks",
+            "underlying_observations",
+            "kalshi_prediction_quotes",
+            "kalshi_market_lifecycle",
+            "kalshi_settlements",
+            "data_gaps",
+        )
+        limits: dict[str, int] = {"recorder_schema_version": SCHEMA_VERSION}
+        for table in tables:
+            row = self._connection.execute(
+                f"SELECT COUNT(*) AS count, COALESCE(MAX(id), 0) AS max_id FROM {table}"
+            ).fetchone()
+            if row is None:
+                raise RecorderStorageError(f"could not capture incremental limit for {table}")
+            limits[table] = int(row["max_id"])
+            limits[f"{table}_count"] = int(row["count"])
+        return limits
 
     def join_training_label(
         self,

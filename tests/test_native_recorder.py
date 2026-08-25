@@ -27,7 +27,7 @@ from live15_quant.models import (
     UnderlyingObservation,
     UnderlyingProvider,
 )
-from live15_quant.native_recorder import KalshiNativeRecorder
+from live15_quant.native_recorder import KalshiNativeRecorder, _aggregate_current_health
 from live15_quant.providers.kalshi import KalshiPublicApiError, KalshiTargetUnavailableError
 from live15_quant.providers.pyth import (
     PythFeedIssue,
@@ -536,6 +536,30 @@ def test_multi_asset_network_failure_isolated_and_health_is_machine_readable(tmp
     payload = json.loads(health_path.read_text(encoding="utf-8"))
     assert payload["status"] == "degraded"
     assert payload["current_markets"]["BTC"].startswith("KXBTC15M-")
+
+
+def test_historical_retry_counter_does_not_degrade_current_health() -> None:
+    status, issues = _aggregate_current_health(
+        integrity="ok",
+        source_failures={},
+        stale_sources=(),
+        stale_workers=(),
+    )
+
+    assert status == "healthy"
+    assert issues == []
+
+
+def test_current_reconnect_or_stale_worker_degrades_health() -> None:
+    status, issues = _aggregate_current_health(
+        integrity="ok",
+        source_failures={},
+        stale_sources=("kalshi_ws:BTC",),
+        stale_workers=("kalshi_ws",),
+    )
+
+    assert status == "degraded"
+    assert issues == ["stale_source:kalshi_ws:BTC", "stale_worker:kalshi_ws"]
 
 
 def test_managed_restart_can_reuse_verified_health_without_full_startup_scans(
@@ -1453,6 +1477,33 @@ async def test_archive_chunk_work_yields_event_loop_to_control_and_health(
 
         assert recorder.health().worker_progress["control_watcher"] == NOW
         assert recorder.health().worker_progress["health"] == NOW
+
+
+def test_sdk_durable_commit_advances_existing_persistence_health_key(tmp_path) -> None:
+    with RecorderStore(tmp_path / "sdk-progress.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                recorder_health_path=tmp_path / "health.json",
+                enable_kalshi_production_websocket=True,
+                kalshi_recorder_provider="sdk",
+                enable_ws_archive=False,
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+
+        recorder._on_sdk_ws_committed(())
+        assert "kalshi_ws_persistence" not in recorder._health.worker_progress
+
+        # This callback is the consumer's post-commit notification.  A full
+        # book is unnecessary here: only its successful durability boundary
+        # matters to Recorder health progress.
+        recorder._on_sdk_ws_committed((SimpleNamespace(authoritative=False, book=None),))
+        assert recorder._health.worker_progress["kalshi_ws_persistence"] == NOW
 
 
 def test_archive_retention_waits_for_current_ws_books_to_synchronize(tmp_path) -> None:

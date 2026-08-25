@@ -977,6 +977,19 @@ def test_credential_repr_errors_and_interface_do_not_expose_secrets(tmp_path: Pa
     assert forbidden.isdisjoint(KalshiProductionReadOnlyWebSocket.__dict__)
 
 
+def test_production_credential_validation_accepts_only_pem_text_file(tmp_path: Path) -> None:
+    key_id = tmp_path / "production-key-id.txt"
+    private_key = tmp_path / "production-private.txt"
+    key_id.write_text("key-id", encoding="utf-8")
+    private_key.write_text("-----BEGIN PRIVATE KEY-----\n", encoding="ascii")
+
+    KalshiProductionCredentialFiles(key_id, private_key).validate(Path.cwd())
+
+    private_key.write_text("not a key", encoding="ascii")
+    with pytest.raises(KalshiReadOnlyWsError, match="must be PEM"):
+        KalshiProductionCredentialFiles(key_id, private_key).validate(Path.cwd())
+
+
 def test_settings_factory_stops_at_disabled_or_missing_production_credentials() -> None:
     with pytest.raises(KalshiReadOnlyWsError, match="not enabled"):
         KalshiProductionReadOnlyWebSocket.from_settings(Settings())

@@ -1,0 +1,25 @@
+{
+  "capture": {
+    "captured_from": "wss://external-api-ws.kalshi.com/trade-api/ws/v2",
+    "environment": "PRODUCTION",
+    "note": "Real depth rows retained as a bounded sanitized sample; authentication data was never captured.",
+    "signed_path": "/trade-api/ws/v2"
+  },
+  "snapshot": {
+    "msg": {
+      "market_id": "c5e666a6-d168-491b-acbe-878d61f267b5",
+      "market_ticker": "KXHYPE15M-26AUG241415-15",
+      "yes_dollars_fp": [
+        ["0.0010", "810.00"],
+        ["0.0020", "130.00"],
+        ["0.0030", "3.00"],
+        ["0.0040", "8.00"],
+        ["0.0100", "161.00"],
+        ["0.0110", "420.00"]
+      ]
+    },
+    "seq": 1,
+    "sid": 1,
+    "type": "orderbook_snapshot"
+  }
+}

@@ -39,6 +39,9 @@ class Settings:
     kalshi_demo_api_key_id_file: Path | None = field(default=None, repr=False)
     kalshi_demo_private_key_path: Path | None = field(default=None, repr=False)
     enable_kalshi_production_websocket: bool = False
+    # The transport selection is explicit so two authoritative writers can
+    # never be started through an implicit fallback.
+    kalshi_recorder_provider: str = "legacy"
     kalshi_production_api_key_id_path: Path | None = field(default=None, repr=False)
     kalshi_production_private_key_path: Path | None = field(default=None, repr=False)
     kalshi_websocket_read_timeout_seconds: float = 45.0
@@ -106,6 +109,11 @@ class Settings:
     dataset_decision_offsets_seconds: tuple[int, ...] = DEFAULT_DATASET_DECISION_OFFSETS_SECONDS
     dataset_quote_max_age_seconds: float = 15.0
     dataset_underlying_max_age_seconds: float = 15.0
+    # Mutable, non-artifact trainability projection.  This never triggers training.
+    current_trainable_path: Path = Path("data/current_trainable.sqlite3")
+    current_trainable_poll_interval_seconds: float = 300.0
+    current_trainable_active_poll_interval_seconds: float = 5.0
+    current_trainable_batch_events: int = 25
     paper_data_path: Path = Path("data/paper.sqlite3")
     paper_account_id: str = "local-paper"
     paper_starting_cash: Decimal = Decimal("1000")
@@ -132,6 +140,8 @@ class Settings:
     log_level: str = "INFO"
 
     def __post_init__(self) -> None:
+        if self.kalshi_recorder_provider not in {"legacy", "sdk"}:
+            raise ValueError("kalshi recorder provider must be legacy or sdk")
         if (
             self.forward_shadow_starting_cash <= 0
             or self.forward_shadow_order_quantity <= 0
@@ -139,6 +149,12 @@ class Settings:
             or self.forward_shadow_decision_grace_seconds <= 0
         ):
             raise ValueError("forward shadow configuration must be positive")
+        if (
+            self.current_trainable_poll_interval_seconds <= 0
+            or self.current_trainable_active_poll_interval_seconds <= 0
+            or self.current_trainable_batch_events <= 0
+        ):
+            raise ValueError("current trainable materializer configuration must be positive")
         ladder = (21_600, 14_400, 10_800, 7_200, 3_600)
         if self.enable_adaptive_ws_retention and (
             self.adaptive_retention_min_seconds not in ladder
@@ -232,6 +248,13 @@ def _boolean(source: Mapping[str, str], name: str, default: bool) -> bool:
     if raw not in {"true", "false", "1", "0"}:
         raise ValueError(f"{name} must be true/false or 1/0")
     return raw in {"true", "1"}
+
+
+def _recorder_provider(source: Mapping[str, str], default: str) -> str:
+    value = source.get("LIVE15_KALSHI_RECORDER_PROVIDER", default).strip().lower()
+    if value not in {"legacy", "sdk"}:
+        raise ValueError("LIVE15_KALSHI_RECORDER_PROVIDER must be legacy or sdk")
+    return value
 
 
 def _optional_positive_float(
@@ -400,6 +423,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             "LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET",
             defaults.enable_kalshi_production_websocket,
         ),
+        kalshi_recorder_provider=_recorder_provider(source, defaults.kalshi_recorder_provider),
         kalshi_production_api_key_id_path=(
             Path(source["LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH"])
             if source.get("LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH")
