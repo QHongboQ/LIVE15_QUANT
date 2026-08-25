@@ -1,0 +1,17 @@
+{
+  "task_id": "LOOP-DRY-RUN",
+  "title": "Validate bounded loop tooling",
+  "task_type": "test",
+  "objective": "Prove contract loading, validation, protected-path review, and state transitions without changing LIVE15 behavior.",
+  "allowed_scope": ["tools/live15_loop.py", "docs/agents/loop-engineering.md", ".agents/contracts", ".agents/state"],
+  "forbidden_scope": ["src/live15_quant/", "data/", "runtime/", "models/", "Production writes"],
+  "acceptance_criteria": ["Contract validates against the tracked schema shape", "The dry run persists CREATED, VALIDATING, CHECKER_RUNNING, and PASS states", "No business/runtime files are changed"],
+  "validation_commands": ["python tools/live15_loop.py validate-contract --contract .agents/contracts/example-loop-001.json"],
+  "risk_level": "L1",
+  "change_budget": {"max_files": 5, "max_added_lines": 200, "max_deleted_lines": 0, "allowed_paths": ["tools/", "docs/agents/", ".agents/"], "forbidden_paths": ["src/live15_quant/", "data/", "runtime/", "models/"], "hard": true},
+  "max_iterations": 3,
+  "human_approval_requirements": ["Human review before merge"],
+  "expected_output": "PASS with a durable state record and no production changes.",
+  "rollback_expectation": "Delete only the dry-run state file; do not alter runtime or data.",
+  "model_policy": {"maker": "terra-medium", "checker": "luna-medium", "reasoning": "bounded"}
+}

@@ -1,0 +1,7 @@
+{"version": 1, "rules": [
+  {"name": "recorder-authority", "patterns": ["src/live15_quant/recorder*.py", "src/live15_quant/*recorder*", "src/live15_quant/kalshi_gateway/*", "src/live15_quant/kalshi_native*"], "minimum_risk": "L3"},
+  {"name": "reliability-gap-quarantine", "patterns": ["src/live15_quant/*reliab*", "src/live15_quant/*gap*", "src/live15_quant/*quarantine*"], "minimum_risk": "L3"},
+  {"name": "settlement-truth", "patterns": ["src/live15_quant/*settlement*", "src/live15_quant/*lifecycle*", "src/live15_quant/dataset.py"], "minimum_risk": "L3"},
+  {"name": "dataset-model-truth", "patterns": ["src/live15_quant/*dataset*", "src/live15_quant/*model*", "models/**"], "minimum_risk": "L3"},
+  {"name": "risk-execution-production", "patterns": ["src/live15_quant/*risk*", "src/live15_quant/*execution*", "src/live15_quant/*order*", "src/live15_quant/config.py", "src/live15_quant/runtime_supervisor.py", "scripts/*runtime*", "*.cmd", "*.ps1"], "minimum_risk": "L3"}
+]}

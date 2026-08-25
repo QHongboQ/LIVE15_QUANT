@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live15.local/schemas/task-contract.schema.json",
+  "title": "LIVE15 bounded engineering task contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "title", "task_type", "objective", "allowed_scope", "forbidden_scope", "acceptance_criteria", "validation_commands", "risk_level", "change_budget", "max_iterations", "human_approval_requirements", "expected_output", "rollback_expectation"],
+  "properties": {
+    "task_id": {"type": "string", "pattern": "^[A-Z0-9][A-Z0-9_-]{2,63}$"},
+    "title": {"type": "string", "minLength": 1},
+    "task_type": {"type": "string", "enum": ["audit", "docs", "test", "engineering", "proposal"]},
+    "objective": {"type": "string", "minLength": 1},
+    "allowed_scope": {"$ref": "#/$defs/stringList"},
+    "forbidden_scope": {"$ref": "#/$defs/stringList"},
+    "acceptance_criteria": {"$ref": "#/$defs/stringList"},
+    "validation_commands": {"$ref": "#/$defs/stringList"},
+    "risk_level": {"type": "string", "enum": ["L0", "L1", "L2", "L3", "L4"]},
+    "change_budget": {"type": "object", "additionalProperties": false, "required": ["max_files", "max_added_lines", "max_deleted_lines", "hard"], "properties": {"max_files": {"type": "integer", "minimum": 0}, "max_added_lines": {"type": "integer", "minimum": 0}, "max_deleted_lines": {"type": "integer", "minimum": 0}, "allowed_paths": {"$ref": "#/$defs/stringList"}, "forbidden_paths": {"$ref": "#/$defs/stringList"}, "hard": {"type": "boolean"}}},
+    "max_iterations": {"type": "integer", "minimum": 1, "maximum": 3},
+    "human_approval_requirements": {"$ref": "#/$defs/stringList"},
+    "expected_output": {"type": "string", "minLength": 1},
+    "rollback_expectation": {"type": "string", "minLength": 1},
+    "model_policy": {"type": "object", "additionalProperties": false, "properties": {"maker": {"type": "string"}, "checker": {"type": "string"}, "reasoning": {"type": "string"}}}
+  },
+  "$defs": {"stringList": {"type": "array", "items": {"type": "string"}}}
+}

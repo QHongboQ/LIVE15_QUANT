@@ -1,0 +1,9 @@
+{"version": 1, "base_gates": [
+  {"id": "diff-check", "command": "git diff --check", "required": true},
+  {"id": "ruff-lint", "when": "python_changed", "command": "ruff check .", "required": true},
+  {"id": "ruff-format", "when": "python_changed", "command": "ruff format --check .", "required": true},
+  {"id": "targeted-tests", "when": "tests_or_behavior_changed", "command": "pytest <task-targets>", "required": true},
+  {"id": "secret-scan", "command": "scan staged files for credentials, tokens, runtime/data artifacts", "required": true},
+  {"id": "scope-review", "command": "compare changed paths with contract allowed/forbidden scope", "required": true},
+  {"id": "protected-boundary", "command": "evaluate .agents/loop/protected-boundaries.json", "required": true}
+], "optional_gates": ["imports", "pip check", "runtime health", "Recorder sync/gaps", "Materializer", "Paper", "Control Center", "artifact hashes"], "policy": "Do not force runtime validation for docs-only or metadata-only tasks."}
