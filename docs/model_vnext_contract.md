@@ -127,3 +127,21 @@ MAE candidates were XGBoost A2 at 30s (0.0004515), XGBoost A4 at 60s (0.0008761)
 development-fold diagnostics only: gains over naive/linear are small and not uniformly robust
 across days/assets, so the candidate outcome is `NO_ROBUST_PATH_EDGE_YET`. Dataset v1's revealed
 final test remains unconsumed. Sequence readiness remains `INSUFFICIENT_SEQUENCE_EVIDENCE`.
+
+## MVN-002R Dataset v2 re-evaluation (development only)
+
+MVN-002R is a one-shot re-evaluation of the same structured baseline on the immutable Dataset v2
+freeze `live15-dataset-v2-4bb4934bf328b6b024ff` (cutoff `2026-08-25T19:35:14.898895+00:00`). It
+uses only the frozen train/validation partitions (18,507 / 3,801 rows; 3,489 events across six
+UTC days), with the registered 600-second purge/embargo and train-only normalization. The fresh
+holdout remains `UNREVEALED_FROZEN`; its rows and labels are skipped before decoding and are not
+used for selection, calibration, or scoring. Dataset v1's revealed final test remains untouched.
+
+The fixed A0–A4 ablations and naive, linear, logistic, and bounded XGBoost heads are preserved.
+Valid targets were 30s/60s/120s/180s/300s; 5s/15s/`window_end` remain typed unavailable. The
+complete manifest is `docs/model_vnext_mvn002r_report.json` and the human-readable report is
+`docs/model_vnext_mvn002r_report.md`. The prior Dataset v1 XGBoost/A2 30s directional accuracy
+(`0.6529`) fell to `0.4713` on this fixed Dataset v2 development evaluation. The result is
+`NO_ROBUST_PATH_EDGE_YET`: no stable XGBoost advantage or cross-fold/day/asset edge was found.
+This is not fresh OOS evidence and no candidate is promoted. Microstructure and sequence gates
+remain `INSUFFICIENT_MICROSTRUCTURE_EVIDENCE` and `INSUFFICIENT_SEQUENCE_EVIDENCE`.

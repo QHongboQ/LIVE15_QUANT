@@ -48,10 +48,43 @@ def test_fixed_contract_is_not_expanded() -> None:
 def test_metrics_are_deterministic_and_include_probability_quality() -> None:
     now = datetime(2026, 8, 20, tzinfo=UTC)
     rows = tuple(
-        Example(f"e{i}", "BTC", "train", now + timedelta(minutes=i), now, now + timedelta(minutes=15), 30, {}, value, int(value > 0))
+        Example(
+            f"e{i}",
+            "BTC",
+            "train",
+            now + timedelta(minutes=i),
+            now,
+            now + timedelta(minutes=15),
+            30,
+            {},
+            value,
+            int(value > 0),
+        )
         for i, value in enumerate((-0.01, 0.01, 0.02, -0.02))
     )
-    first = _metrics(rows, __import__("numpy").array((-0.01, 0.01, 0.01, -0.01)), __import__("numpy").array((0.2, 0.8, 0.7, 0.3)))
-    second = _metrics(rows, __import__("numpy").array((-0.01, 0.01, 0.01, -0.01)), __import__("numpy").array((0.2, 0.8, 0.7, 0.3)))
+    first = _metrics(
+        rows,
+        __import__("numpy").array((-0.01, 0.01, 0.01, -0.01)),
+        __import__("numpy").array((0.2, 0.8, 0.7, 0.3)),
+    )
+    second = _metrics(
+        rows,
+        __import__("numpy").array((-0.01, 0.01, 0.01, -0.01)),
+        __import__("numpy").array((0.2, 0.8, 0.7, 0.3)),
+    )
     assert first == second
     assert {"mae", "rmse", "directional_accuracy", "logloss", "brier", "ece"} <= first.keys()
+
+
+def test_committed_report_has_v2_lineage_and_no_holdout_consumption() -> None:
+    report = json.loads(
+        __import__("pathlib")
+        .Path("docs/model_vnext_mvn002r_report.json")
+        .read_text(encoding="utf-8")
+    )
+    assert report["dataset_id"] == DATASET_ID
+    assert report["build_hash"] == BUILD_HASH
+    assert report["holdout_rows_consumed"] is False
+    assert report["holdout_labels_loaded"] is False
+    assert report["leakage_checker"] == "PASS"
+    assert report["sequence_gate"] == "INSUFFICIENT_SEQUENCE_EVIDENCE"
