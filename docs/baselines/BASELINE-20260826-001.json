@@ -1,0 +1,131 @@
+{
+  "baseline_id": "BASELINE-20260826-001",
+  "purpose": "Pre-Model-vNext immutable LIVE15 runtime, data, and model snapshot",
+  "evidence_collected_at": "2026-08-26",
+  "repository": {
+    "path": "D:/LIVE15_QUANT",
+    "head": "14823e318eeb373d68d7bd0bda8ce81f830954da",
+    "origin_main": "14823e318eeb373d68d7bd0bda8ce81f830954da",
+    "branch": "main",
+    "workspace_note": "Unrelated pre-existing dirty changes were preserved and are not part of this baseline artifact commit."
+  },
+  "runtime": {
+    "supervisor": {"pid": 4256, "status": "RUNNING"},
+    "recorder": {"pid": 2280, "status": "HEALTHY", "provider": "sdk", "authoritative": true, "legacy_ws": "LEGACY_ROLLBACK_ONLY"},
+    "materializer": {"pid": 15140, "status": "RUNNING", "mode": "INCREMENTAL_CURRENT_TRAINABLE_NO_TRAINING", "evaluated_finalized_events": 4150, "eligible_events": 3432, "excluded_events": 718, "materialized_rows": 25543, "unevaluated_events": 0, "last_settlement_row_id": 4160, "last_error": null},
+    "paper": {"pid": 17536, "process": "RUNNING", "status": "PAUSED", "pause_reason": "USER_PAUSE_TRADING", "mode": "PAPER_SHADOW_LOCAL_ONLY", "demo_real_write_state": "DEMO_REAL_WRITE_FROZEN_PROVIDER_BLOCKER"},
+    "control_center": {"pid": 12408, "status": "RUNNING", "http": "127.0.0.1:8765", "http_status": 200},
+    "sdk_ws_shadow": {"pid": 7548, "status": "RUNNING", "authoritative": false, "mode": "SDK_WS_SHADOW_NO_RECORDER_WRITES"}
+  },
+  "recorder_health": {
+    "status": "healthy",
+    "synchronized_count": 10,
+    "expected_market_count": 10,
+    "unrecovered_gap_count": 0,
+    "reconnect_count": 34,
+    "resync_count": 0,
+    "stale_sources": [],
+    "current_health_issues": [],
+    "fatal_task": null,
+    "fatal_error_type": null,
+    "persistence_progress": "fresh",
+    "production_writes": 0
+  },
+  "current_universe": [
+    "KXBNB15M-26AUG251230-30",
+    "KXBTC15M-26AUG251230-30",
+    "KXDOGE15M-26AUG251230-30",
+    "KXETH15M-26AUG251230-30",
+    "KXGOLD15M-26AUG251230-30",
+    "KXHYPE15M-26AUG251230-30",
+    "KXSOL15M-26AUG251230-30",
+    "KXSILVER15M-26AUG251230-30",
+    "KXWTI15M-26AUG251230-30",
+    "KXXRP15M-26AUG251230-30"
+  ],
+  "storage": {
+    "hot_db_path": "data/live15.sqlite3",
+    "hot_db_bytes_observed": 50719006720,
+    "wal_bytes_observed": 67108864,
+    "shm_bytes_observed": 13991936,
+    "current_trainable_db_bytes_observed": 535146496,
+    "cold_archive_bytes": 7713479260,
+    "retention_seconds": 21600,
+    "archive_chunks": 32234,
+    "archive_verified_chunks": 32234,
+    "archive_failed_chunks": 0,
+    "archive_backlog_events": 10000,
+    "archive_backlog_capped": true,
+    "archive_lag_seconds_observed": 45841.5,
+    "archive_throughput_events_per_second_observed": 2266,
+    "storage_classification": "STORAGE_GROWTH_HIGH_BUT_VALID",
+    "audit_scope": "Read-only bounded health/metadata counters; no VACUUM, purge, retention, schema, or recorder changes."
+  },
+  "database_snapshot": {
+    "path": "data/live15.sqlite3",
+    "schema_version": "10",
+    "health_row_counts": {
+      "coinbase_ticks": 12744392,
+      "data_gaps": 38140,
+      "kalshi_market_lifecycle": 16459,
+      "kalshi_prediction_quotes": 1404772,
+      "kalshi_settlement_conflicts": 0,
+      "kalshi_settlements": 4150,
+      "kalshi_ws_book_checkpoints": 24005,
+      "kalshi_ws_orderbook_events": 245500891,
+      "secondary_underlying_observations": 4536661,
+      "underlying_observations": 3048903
+    },
+    "observed_endpoint_bounds": {
+      "orderbook_events": {"first_id": 227503935, "last_id": 282089138, "first_source_timestamp": "2026-08-25T02:00:49.727444+00:00", "last_source_timestamp": "2026-08-25T16:19:55.772372+00:00"},
+      "book_checkpoints": {"first_id": 1, "last_id": 24014, "first_source_timestamp": "2026-08-21T18:05:47.309978+00:00", "last_source_timestamp": "2026-08-25T16:19:55.375390+00:00"},
+      "prediction_quotes": {"first_id": 61, "last_id": 1404871, "first_source_timestamp": "2026-08-20T18:50:03.712442+00:00", "last_source_timestamp": "2026-08-25T16:19:51.434109+00:00"},
+      "lifecycle": {"first_id": 21, "last_id": 16479, "first_source_timestamp": "2026-08-20T18:50:01.644094+00:00", "last_source_timestamp": "2026-08-25T16:15:31.330709+00:00"},
+      "settlements": {"first_id": 11, "last_id": 4160, "first_source_timestamp": "2026-08-20T18:50:01.644094+00:00", "last_source_timestamp": "2026-08-25T16:15:31.330709+00:00"}
+    },
+    "data_gaps": {"total": 38140, "open": 19070, "recovered": 19070},
+    "identity_counts": {"lifecycle_distinct_tickers": 4160, "lifecycle_distinct_event_tickers": 4160, "quote_assets": 10, "quote_tickers": 4101, "coinbase_products": 5, "underlying_assets": 5}
+  },
+  "dataset_v1": {
+    "id": "live15-dataset-v1-f81d7d1feebcbbaecff9",
+    "version": "1.0.0",
+    "created_at": "2026-08-22T19:26:15.313052+00:00",
+    "build_hash": "f81d7d1feebcbbaecff93086c2e1a577aeb72cc98b7bfabd22d826e05a4cce95",
+    "events": 1091,
+    "rows": 7984,
+    "features": 42,
+    "decision_offsets_seconds": [840, 720, 600, 480, 300, 180, 120, 60, 30],
+    "coverage_utc": ["2026-08-20", "2026-08-21", "2026-08-22"],
+    "split_policy": "chronological event-grouped; no event/ticker crosses splits",
+    "label_truth": "finalized Kalshi settlement with official yes/no only",
+    "normalization": "train-only fit per fold with missing indicators; no future-row statistics"
+  },
+  "models": {
+    "v1_final": {"champion_model": null, "champion_status": "NO_CHAMPION", "learning_winner_before_calibration": "xgboost", "selection_reason": ["validation_brier_does_not_beat_market_implied_baseline", "final_test_net_pnl_not_positive_after_estimated_costs", "final_test_profit_factor_not_above_one"], "calibration": "validation-platt-or-identity-v1", "edge_policy": "min expected edge 0.05; executable ask + conservative taker fee; no fill/slippage optimism"},
+    "v2_latest": {"status": "FORWARD_CANDIDATE", "created_at": "2026-08-22T22:15:22.283016+00:00", "candidate_count": 6, "dataset_lineage": "Dataset v1", "formal_champion": false},
+    "v3": {"status": "NO_V3_FORWARD_CANDIDATE", "candidate_gate": "BLOCKED", "microstructure_evidence": "INSUFFICIENT_MICROSTRUCTURE_EVIDENCE", "formal_champion": false},
+    "active_promotion": "No Champion; Paper process is explicitly paused by USER_PAUSE_TRADING. No model promotion was inferred."
+  },
+  "integrity_gates": {
+    "as_of_timestamp_integrity": "PASS",
+    "label_integrity": "PASS",
+    "backfill_integrity": "PASS",
+    "split_integrity": "PASS",
+    "normalization_integrity": "PASS_BY_DOCUMENTED_CONTRACT",
+    "final_test_integrity": "PASS",
+    "sequence_readiness": "INSUFFICIENT_SEQUENCE_EVIDENCE",
+    "notes": "No new model, threshold, dataset, Recorder, database, or Production write was performed by this snapshot."
+  },
+  "checker": {
+    "role": "independent read-only verification",
+    "verdict": "PASS",
+    "scope": ["runtime status files/API", "health.json", "Dataset v1 manifest", "model manifests", "git identity"],
+    "limitations": ["SDK shadow status is non-authoritative and intentionally excluded from official Recorder health", "sequence readiness remains insufficient for vNext promotion"]
+  },
+  "immutability": {
+    "artifact_type": "metadata/report only",
+    "runtime_or_database_mutated": false,
+    "historical_artifacts_changed": false,
+    "production_writes": 0
+  }
+}
