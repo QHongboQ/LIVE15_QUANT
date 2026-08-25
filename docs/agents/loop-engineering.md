@@ -53,6 +53,13 @@ Never mutate the user's dirty main checkout for an autonomous task. Reuse a work
 its branch and task id match and it has no competing owner. Never automatically delete a worktree
 with uncommitted changes; leave it and report if safety cannot be proved.
 
+GitHub publication follows protected-main governance: push only the feature branch, open a pull
+request, resolve conversations, and wait for human approval before an allowed Squash or Rebase
+merge. LOOP-001 never direct-pushes or force-pushes `main`, bypasses a ruleset, or auto-merges.
+Required checks are not currently mandatory; selecting one is deferred to GOV-002. An explicitly
+approved host Git boundary may authenticate, fetch, compare, push a feature branch, and inspect or
+open its pull request, but does not authorize unrelated unsandboxed commands.
+
 ## Roles
 
 `.codex/agents/maker.toml` and `.codex/agents/checker.toml` are role specifications, not

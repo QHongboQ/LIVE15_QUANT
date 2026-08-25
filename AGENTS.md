@@ -49,6 +49,16 @@ problem.
 
 ## Working protocol
 
+### Protected `main` governance
+
+The GitHub `main` branch is protected. Mutating work must use an isolated worktree and an
+`agent/<task-id>` branch, followed by Maker validation, independent Checker validation, a
+feature-branch push, and a pull request. Review conversations must be resolved and a human must
+approve the change before `main` is updated with an allowed Squash or Rebase merge. Do not push
+directly to `main`, force-push, bypass branch protection, or auto-merge. Required status checks are
+not currently enforced; GOV-002 may add a canonical required check. Host/unsandboxed Git is an
+explicit boundary for approved Git operations only and is not a general shell escape hatch.
+
 1. Read this guide and the relevant project docs.
 2. Inspect actual repository/runtime truth before forming a theory.
 3. Define ownership, scope, acceptance criteria, and a bounded change budget.
