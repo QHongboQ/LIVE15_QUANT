@@ -520,6 +520,16 @@ def _rank_key(record: Mapping[str, Any]) -> tuple[float, str]:
     return (-(abs(value) if value is not None else -1.0), record["factor_id"])
 
 
+def _aligned_correlation(
+    left: Mapping[tuple[str, datetime], float],
+    right: Mapping[tuple[str, datetime], float],
+) -> float | None:
+    keys = sorted(set(left) & set(right))
+    if len(keys) < 3:
+        return None
+    return _correlation([left[key] for key in keys], [right[key] for key in keys])
+
+
 def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -> dict[str, Any]:
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     _validate_manifest(manifest)
@@ -531,6 +541,7 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
         raise Factor001RError("NO_TRAIN_VALIDATION_ROWS")
 
     vm = SafeFactorVM()
+    validation_vectors: dict[tuple[str, int], dict[tuple[str, datetime], float]] = defaultdict(dict)
     records: list[dict[str, Any]] = []
     for candidate in candidates:
         by_horizon: dict[int, dict[str, list[Any]]] = {
@@ -547,6 +558,10 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
                     by_horizon[horizon][row.split].append(
                         (row.day, row.asset, float(value.value), target.value)
                     )
+                    if row.split == "validation":
+                        validation_vectors[(candidate.spec.factor_id, horizon)][
+                            (row.event, row.decision)
+                        ] = float(value.value)
         horizons: dict[str, Any] = {}
         for horizon in VALID_HORIZONS:
             horizon_data: dict[str, Any] = {}
@@ -605,8 +620,22 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
         )
         primitive_by_horizon[horizon] = ranked[0] if ranked else {}
 
+    top_symbolic_by_horizon: dict[int, list[dict[str, Any]]] = {}
+    for horizon in VALID_HORIZONS:
+        symbolic = [record for record in records if record["family"] != "F0"]
+        top_symbolic_by_horizon[horizon] = sorted(
+            symbolic,
+            key=lambda record: _rank_key(
+                {
+                    "factor_id": record["factor_id"],
+                    "validation": record["horizons"][str(horizon)]["validation"]["pooled"],
+                }
+            ),
+        )[:10]
+
     accepted = 0
-    counts = defaultdict(int)
+    status_counts: defaultdict[str, int] = defaultdict(int)
+    gate_failure_counts: defaultdict[str, int] = defaultdict(int)
     for record in records:
         record["horizons"] = dict(record["horizons"])
         for horizon in VALID_HORIZONS:
@@ -634,20 +663,72 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
             baseline_ic = abs(baseline.get("spearman_ic") or 0.0)
             candidate_ic = abs(item.get("spearman_ic") or 0.0)
             advantage_ok = candidate_ic >= baseline_ic + 0.01
-            status = (
-                "VALIDATED_DEVELOPMENT"
-                if record["family"] != "F0"
-                and coverage_ok
-                and days_ok
-                and assets_ok
-                and fdr_ok
-                and advantage_ok
-                else "DEFERRED_MORE_EVIDENCE"
+            candidate_vector = validation_vectors[(record["factor_id"], horizon)]
+            primitive_correlations = [
+                _aligned_correlation(
+                    candidate_vector,
+                    validation_vectors[(primitive["factor_id"], horizon)],
+                )
+                for primitive in records
+                if primitive["family"] == "F0"
+            ]
+            symbolic_correlations = [
+                _aligned_correlation(
+                    candidate_vector,
+                    validation_vectors[(other["factor_id"], horizon)],
+                )
+                for other in top_symbolic_by_horizon[horizon]
+                if other["factor_id"] != record["factor_id"]
+            ]
+            max_primitive_redundancy = max(
+                (abs(value) for value in primitive_correlations if value is not None),
+                default=None,
             )
+            max_symbolic_redundancy = max(
+                (abs(value) for value in symbolic_correlations if value is not None),
+                default=None,
+            )
+            redundancy_flagged = (
+                record["family"] != "F0"
+                and max(
+                    max_primitive_redundancy or 0.0,
+                    max_symbolic_redundancy or 0.0,
+                )
+                >= 0.95
+            )
+            item["redundancy"] = {
+                "development_threshold": 0.95,
+                "max_abs_correlation_to_primitive": max_primitive_redundancy,
+                "max_abs_correlation_to_top_symbolic": max_symbolic_redundancy,
+                "flagged": redundancy_flagged,
+            }
+            reasons = []
+            if not coverage_ok:
+                reasons.append("coverage")
+            if not days_ok:
+                reasons.append("day_stability")
+            if not assets_ok:
+                reasons.append("asset_stability")
+            if not fdr_ok:
+                reasons.append("multiple_testing")
+            if not advantage_ok:
+                reasons.append("primitive_advantage")
+            if redundancy_flagged:
+                reasons.append("redundancy")
+            item["gate_reasons"] = reasons
+            if record["family"] == "F0":
+                status = "DEFERRED_MORE_EVIDENCE"
+            elif redundancy_flagged:
+                status = "REJECTED_REDUNDANT"
+            elif reasons:
+                status = "REJECTED_UNSTABLE"
+            else:
+                status = "VALIDATED_DEVELOPMENT"
             if status == "VALIDATED_DEVELOPMENT":
                 accepted += 1
-            else:
-                counts["deferred"] += 1
+            status_counts[status] += 1
+            for reason in reasons:
+                gate_failure_counts[reason] += 1
             item["status"] = status
             item["multiple_testing"] = {
                 "method": "benjamini_hochberg",
@@ -687,6 +768,18 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
             item["horizon"],
         )
     )
+    best_by_family: dict[str, dict[str, dict[str, Any] | None]] = {}
+    for horizon in VALID_HORIZONS:
+        best_by_family[str(horizon)] = {}
+        for family in ("F0", "F1", "F2", "F3", "F4"):
+            best_by_family[str(horizon)][family] = next(
+                (
+                    item
+                    for item in ranking
+                    if item["horizon"] == horizon and item["family"] == family
+                ),
+                None,
+            )
     report = {
         "report": "FACTOR-001R",
         "status": "DEVELOPMENT_EVIDENCE_ONLY",
@@ -720,6 +813,8 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
             "alpha": FDR_ALPHA,
             "tested_candidate_horizon_pairs": len(validation_pvalues),
         },
+        "gate_failure_counts": dict(gate_failure_counts),
+        "best_by_family_by_horizon": best_by_family,
         "candidate_metric_distribution": {
             str(horizon): {
                 "median_abs_spearman_ic": median(
@@ -757,7 +852,7 @@ def evaluate(*, root: Path, output_json: Path, output_md: Path, code_sha: str) -
         "ranking": ranking,
         "factor_zoo": records,
         "validated_development_factor_count": accepted,
-        "status_counts": dict(counts),
+        "status_counts": dict(status_counts),
         "reproducibility": {
             "candidate_generation_deterministic": True,
             "ranking_deterministic": True,
