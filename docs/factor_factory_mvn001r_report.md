@@ -2,7 +2,7 @@
 
 Status: **DEVELOPMENT EVIDENCE ONLY**; conclusion: **NO_ROBUST_SYMBOLIC_FACTOR_SIGNAL**.
 
-Experiment `4ab5287c517b23236d49821d` uses Dataset v2 `live15-dataset-v2-4bb4934bf328b6b024ff` (build `4bb4934bf328b6b024ff4183df134c481d962a041dc6ae760a3816d3c5228113`), frozen train/validation rows only. Holdout state is `UNREVEALED_FROZEN` and holdout access is `False`.
+Experiment `9d34c404a94ce43bdb1ba112` uses Dataset v2 `live15-dataset-v2-4bb4934bf328b6b024ff` (build `4bb4934bf328b6b024ff4183df134c481d962a041dc6ae760a3816d3c5228113`), frozen train/validation rows only. Holdout state is `UNREVEALED_FROZEN` and holdout access is `False`.
 
 The candidate budget was frozen before metric evaluation at 96: F0=16, F1=32, F2=24, F3=12, F4=12. No candidate-budget expansion or search-until-success rerun was performed.
 

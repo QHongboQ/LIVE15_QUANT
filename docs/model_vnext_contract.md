@@ -172,7 +172,7 @@ remains `INSUFFICIENT_SEQUENCE_EVIDENCE`.
 ## FACTOR-001R bounded evaluation (development evidence only)
 
 FACTOR-001R is the first one-shot scientific use of the FACTOR-001 DSL/VM. Experiment
-`4ab5287c517b23236d49821d` used only Dataset v2
+`9d34c404a94ce43bdb1ba112` used only Dataset v2
 `live15-dataset-v2-4bb4934bf328b6b024ff` (build
 `4bb4934bf328b6b024ff4183df134c481d962a041dc6ae760a3816d3c5228113`), train 18,507 rows and
 validation 3,801 rows. The holdout remained `UNREVEALED_FROZEN` and `holdout_accessed=false`.

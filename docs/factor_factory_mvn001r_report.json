@@ -348,7 +348,7 @@
   "experiment_contract": {
     "build_hash": "4bb4934bf328b6b024ff4183df134c481d962a041dc6ae760a3816d3c5228113",
     "candidate_generation": "F0/F1/F2/F3/F4 fixed ordered definitions",
-    "code_sha": "bbdb1c4e0a647881087f7bb5e3dd2b83d5aa3dd3",
+    "code_sha": "925446e5e107ba139bb58b043a72d99ef0e85d3f",
     "cutoff": "2026-08-25T19:35:14.898895+00:00",
     "dataset_id": "live15-dataset-v2-4bb4934bf328b6b024ff",
     "dsl_version": "1.0.0",
@@ -377,7 +377,7 @@
     "split": "frozen train/validation chronological event groups; 600s purge/embargo",
     "version": "FACTOR-001R-1.0.0"
   },
-  "experiment_id": "4ab5287c517b23236d49821d",
+  "experiment_id": "9d34c404a94ce43bdb1ba112",
   "factor_zoo": [
     {
       "complexity": {
@@ -139607,8 +139607,8 @@
     180,
     300
   ],
-  "independent_events": null,
-  "independent_utc_days": null,
+  "independent_events": 3489,
+  "independent_utc_days": 6,
   "leakage_rejects": 0,
   "multiple_testing": {
     "alpha": 0.1,
