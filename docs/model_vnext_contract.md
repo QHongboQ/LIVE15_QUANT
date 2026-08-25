@@ -145,3 +145,26 @@ complete manifest is `docs/model_vnext_mvn002r_report.json` and the human-readab
 `NO_ROBUST_PATH_EDGE_YET`: no stable XGBoost advantage or cross-fold/day/asset edge was found.
 This is not fresh OOS evidence and no candidate is promoted. Microstructure and sequence gates
 remain `INSUFFICIENT_MICROSTRUCTURE_EVIDENCE` and `INSUFFICIENT_SEQUENCE_EVIDENCE`.
+
+## FACTOR-001 symbolic factor factory (development infrastructure only)
+
+FACTOR-001 adds a small, auditable symbolic-factor foundation in
+`src/live15_quant/factor_factory.py`. It is not a model, a trading strategy, or a promotion
+path. The typed JSON DSL accepts only registered `FEATURE_REGISTRY` primitives and the fixed
+operators NEG, ABS, SIGN, ADD, SUB, MUL, SAFE_DIV, DELAY1, DECAY, ROLLING_MEAN, ROLLING_STD,
+and GATE. A deterministic VM evaluates explicit as-of histories; it has no `eval`, filesystem,
+network, settlement, Recorder, Paper, or Production capability.
+
+The hard budget is depth <=3, operators <=5, primitives <=6, and lookback <=300 seconds. A
+factor identity hashes the canonical formula, DSL/operator versions, feature schema, and Dataset
+v2 lineage. Evaluation plans accept only `live15-dataset-v2-4bb4934bf328b6b024ff`, retain the
+600-second purge/embargo, expose train/validation only, and reject holdout access, event split
+crossing, future targets, future observations, and invalid as-of provenance. Search is bounded to
+100 candidates (the deterministic demo contains six definitions); Factor Zoo records remain
+`PROPOSED`/development metadata until real forward evidence exists. No Dataset v2 rows are
+rewritten and no holdout labels are decoded.
+
+This layer is research-reference-only and does not copy or depend on AlphaGPT source. A future
+FACTOR-002 requires additional independent days/events, explicit out-of-sample evidence, and a
+separate review before any larger search or model integration is considered. Sequence readiness
+remains `INSUFFICIENT_SEQUENCE_EVIDENCE`.
