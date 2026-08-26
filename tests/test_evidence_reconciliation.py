@@ -1,5 +1,8 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from live15_quant.canonical_evidence import EvidenceReconciliationError
 from live15_quant.evidence_reconciliation import (
     H0_PROVENANCE,
     H1_PROVENANCE,
@@ -51,3 +54,8 @@ def test_selection_is_not_the_first_n_markets_from_storage_order() -> None:
 
 def test_provenance_tiers_are_explicit_and_distinct() -> None:
     assert len({H0_PROVENANCE, H1_PROVENANCE, H2_PROVENANCE}) == 3
+
+
+def test_selector_rejects_first_n_sampling_policy() -> None:
+    with pytest.raises(EvidenceReconciliationError, match="first-N"):
+        select_stratified_markets(_markets(), sampling_policy="first N API-order markets")

@@ -11,6 +11,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
+from live15_quant.canonical_evidence import validate_sampling_policy
+
 STRATIFICATION_SCHEMA_VERSION = "evid-recon-001-stratified-v1"
 H0_PROVENANCE = "H0_LIVE_NATIVE"
 H1_PROVENANCE = "H1_KALSHI_OFFICIAL_HISTORY"
@@ -45,6 +47,7 @@ class StratifiedSelection:
     per_day_counts: Mapping[str, int]
     per_asset_counts: Mapping[str, int]
     per_day_asset_counts: Mapping[str, Mapping[str, int]]
+    sampling_policy: str = "evenly-spaced UTC day x asset x bounded events"
 
     @property
     def tickers(self) -> tuple[str, ...]:
@@ -53,7 +56,7 @@ class StratifiedSelection:
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
-            "policy": "evenly-spaced UTC day x asset x bounded events",
+            "policy": self.sampling_policy,
             "target_days": self.target_days,
             "events_per_asset_day": self.events_per_asset_day,
             "selected_days": list(self.selected_days),
@@ -74,6 +77,7 @@ def select_stratified_markets(
     target_days: int = 7,
     events_per_asset_day: int = 3,
     assets: Iterable[str] | None = None,
+    sampling_policy: str = "evenly-spaced UTC day x asset x bounded events",
 ) -> StratifiedSelection:
     """Select a bounded, deterministic multi-day market sample.
 
@@ -83,6 +87,7 @@ def select_stratified_markets(
 
     if target_days <= 0 or events_per_asset_day <= 0:
         raise ValueError("target_days and events_per_asset_day must be positive")
+    validate_sampling_policy(sampling_policy)
     allowed = {str(asset) for asset in assets} if assets is not None else None
     buckets: dict[tuple[date, str], list[Mapping[str, object]]] = defaultdict(list)
     for market in markets:
@@ -106,6 +111,7 @@ def select_stratified_markets(
             {},
             {},
             {},
+            sampling_policy,
         )
     day_count = min(target_days, len(available_days))
     chosen_indices = (
@@ -141,4 +147,5 @@ def select_stratified_markets(
         dict(sorted(per_day.items())),
         dict(sorted(per_asset.items())),
         {day: dict(sorted(counts.items())) for day, counts in sorted(per_day_asset.items())},
+        sampling_policy,
     )

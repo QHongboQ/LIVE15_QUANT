@@ -60,3 +60,11 @@ gate only and no model training was run. H0 remains separate real live-native ev
 4,350 event identities); its trade-derived sub-minute path representation is not materialized, so
 H0 and H1 were not silently merged. H2 produced no usable snapshots after a bounded timestamp
 contract failure and HTTP 429, and remains blocked.
+
+## DATA-READINESS-001 gate
+
+The sequence evaluator must consume a canonical evidence snapshot rather than infer global days
+from `trade_sequence_manifest.json`. The manifest remains a bounded H1 stratified artifact; its
+7 source days cannot overwrite the broader H1 source record, and H0's 6 live-native days remain
+separate. First-N/API-order sampling is prohibited. An unexplained source-days-to-artifact-days
+collapse is `EVIDENCE_RECONCILIATION_REQUIRED` and blocks any future sequence training preflight.
