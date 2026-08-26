@@ -169,6 +169,49 @@
       "limitations": ["do not manufacture trades, candles, snapshots, or deltas"]
     }
   ],
+  "hist002r_provider_integration": {
+    "status": "READ_ONLY_PROVIDER_BOUNDARY_READY",
+    "protected_main_sha": "9d3777c5e603d7936f17b8984b0e6c54f1f359c7",
+    "official_provider": {
+      "provider_id": "kalshi_official",
+      "tier": "H1_KALSHI_OFFICIAL_HISTORY",
+      "sdk": "kalshi-sdk==12.0.0",
+      "endpoint_families": [
+        "historical_cutoff",
+        "historical_markets",
+        "historical_trades",
+        "historical_candlesticks"
+      ],
+      "authority": "official historical contract data"
+    },
+    "depthfeed_provider": {
+      "provider_id": "depthfeed_kalshi_l2",
+      "tier": "H2_DEPTHFEED_RECORDED_L2",
+      "endpoint_families": ["markets", "snapshots", "ticks"],
+      "snapshot_quality_class": "HISTORICAL_L2_SNAPSHOT",
+      "tick_quality_class": "HISTORICAL_L2_DELTA",
+      "key_status": "DEPTHFEED_INTEGRATION_READY_KEY_REQUIRED",
+      "bulk_download_performed": false
+    },
+    "live_recorder": {
+      "provider_id": "live15_recorder_h0",
+      "authority": "future LIVE15-owned realtime microstructure",
+      "changed": false
+    },
+    "asset_coverage": {
+      "crypto_historical_l2": ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"],
+      "commodities_official_history_only": ["Gold", "Silver", "WTI"],
+      "commodities_historical_l2": "UNAVAILABLE_FROM_VERIFIED_PROVIDER"
+    },
+    "leakage_policy": [
+      "information_available_at_decision_time_only",
+      "completed_candles_only",
+      "provider_receive_timestamp_at_or_before_decision",
+      "no_future_nearest_join",
+      "no_forward_fill_or_interpolation",
+      "no_synthetic_orderbook"
+    ]
+  },
   "gates": {
     "historical_acquisition": "HISTORICAL_SOURCE_ACQUISITION_PENDING",
     "microstructure": "INSUFFICIENT_MICROSTRUCTURE_EVIDENCE",
