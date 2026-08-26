@@ -320,6 +320,7 @@ class FailureWatcher:
             )
             result = {
                 "status": status.value,
+                "detected_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 "workflow": self.workflow,
                 "run": asdict(run),
                 "failure": asdict(context),
