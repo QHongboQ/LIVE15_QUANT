@@ -98,7 +98,7 @@ conflicts were observed. The store occupied 675,569,664 bytes at materialization
 Gold, Silver, and WTI had no verified in-window market rows in this cutoff snapshot. DepthFeed was
 not configured (`H2_PENDING_DEPTHFEED_CREDENTIALS`), so no historical L2 or tick/delta data was
 requested. The deterministic `HistoricalResearchDataset` identity is
-`historical-research-26d259fca746d0da85703b77`; its ignored full manifest is
+`historical-research-f2d529adfb95080971becdaf`; its ignored full manifest is
 `data/research/hist003/hist003_manifest.json` and the tracked summary is
 `hist003_acquisition_summary.json`. A plan-only expanding walk-forward layout has eight folds
 (30 train days, 7 validation days, 7-day step, 600-second purge/embargo, whole-event groups).

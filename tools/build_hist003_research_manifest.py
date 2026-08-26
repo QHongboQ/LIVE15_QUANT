@@ -156,6 +156,7 @@ def main() -> int:
     report = json.loads(args.manifest.read_text(encoding="utf-8"))
     report.update(
         {
+            "code_sha": args.code_sha,
             "dataset_id": manifest.dataset_id,
             "acquisition_identity": dataset_id,
             "api_calls_total": {
