@@ -215,7 +215,9 @@ def acquire_depthfeed_evidence(output_dir: Path, code_sha: str) -> dict[str, obj
     return report
 
 
-def build_report(output_dir: Path, code_sha: str) -> dict[str, object]:
+def build_report(
+    output_dir: Path, code_sha: str, *, acquire_depthfeed: bool = True
+) -> dict[str, object]:
     trades, source = load_trade_observations(HIST003_DB)
     config = SequenceConfig()
     rows, summary = build_trade_sequences(trades, config)
@@ -239,7 +241,13 @@ def build_report(output_dir: Path, code_sha: str) -> dict[str, object]:
         code_sha=code_sha,
         config=config,
     )
-    depthfeed = acquire_depthfeed_evidence(output_dir, code_sha)
+    depth_manifest = output_dir / "depthfeed_snapshot_manifest.json"
+    if acquire_depthfeed:
+        depthfeed = acquire_depthfeed_evidence(output_dir, code_sha)
+    elif depth_manifest.is_file():
+        depthfeed = json.loads(depth_manifest.read_text(encoding="utf-8"))
+    else:
+        raise FileNotFoundError("cannot reuse missing DepthFeed manifest")
     report = {
         "report": "FLOW-005B1_EVIDENCE",
         "code_sha": code_sha,
@@ -264,8 +272,13 @@ def build_report(output_dir: Path, code_sha: str) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_ROOT)
+    parser.add_argument(
+        "--reuse-depthfeed",
+        action="store_true",
+        help="reuse the already-acquired bounded DepthFeed result without another network call",
+    )
     args = parser.parse_args()
-    report = build_report(args.output_dir, _code_sha())
+    report = build_report(args.output_dir, _code_sha(), acquire_depthfeed=not args.reuse_depthfeed)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
