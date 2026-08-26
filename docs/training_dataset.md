@@ -84,3 +84,18 @@ backfill that was unavailable at decision time. Kalshi finalized settlement rema
 The same typed readiness boundary returns only `PASS` or `DATA_UNAVAILABLE` for future live
 inference when a required source is stale, disconnected, inside a gap, lacks lookback, or has no
 synchronized orderbook.
+
+## Historical research boundary (HIST-001)
+
+Historical research uses a separate `HistoricalResearchDataset` lineage and must not be called
+Dataset v3. H0 live-native Recorder data, verified H1 historical observations, and limited H2
+contract data retain explicit source tiers, boundaries, and limitations. The Recorder remains the
+authoritative live path; historical research is not fresh forward validation and must not unlock
+the microstructure or sequence gates by row count alone.
+
+Historical samples preserve source/receive as-of timestamps, event identity, target boundaries,
+missing reasons, and provenance. Walk-forward evaluation is chronological and whole-event with
+the MVN-001-derived purge/embargo. No future-nearest join, backfill, forward fill, interpolation,
+implicit zero fill, settlement feature, or random row split is permitted. The canonical audit and
+bounded proof are recorded in `docs/hist001_historical_source_capability.json` and the reusable
+validators live in `live15_quant.historical_research`.
