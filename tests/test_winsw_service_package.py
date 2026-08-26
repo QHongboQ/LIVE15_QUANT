@@ -83,7 +83,10 @@ def test_bootstrap_rejects_bad_download_without_promoting_it() -> None:
             def log_message(self, *_args: object) -> None:
                 pass
 
-        server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(project)))
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            partial(Handler, directory=str(project)),
+        )
         metadata["url"] = f"http://127.0.0.1:{server.server_port}/download.bin"
         (project / "deploy/windows/winsw-v2.12.0.json").write_text(json.dumps(metadata))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
