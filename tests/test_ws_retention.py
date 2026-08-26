@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -27,6 +28,8 @@ from live15_quant.ws_retention import (
     WsRetentionError,
     WsRetentionManifest,
     _read_records,
+    _ReplayState,
+    _usable_replay_baseline,
     assess_purge_benefit,
     compact_database_offline,
     evaluate_database_compaction,
@@ -490,6 +493,22 @@ def test_failed_chunk_can_be_explicitly_quarantined_and_resume_pointer_advances(
     )
 
 
+def test_failed_baseline_reconciliation_requires_explicit_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, manifest = _service(tmp_path)
+    monkeypatch.setattr(
+        "live15_quant.ws_retention.decode_archive_chunk",
+        lambda _blob: (_ for _ in ()).throw(WsRetentionError("checksum failure")),
+    )
+    with pytest.raises(WsRetentionError, match="checksum failure"):
+        service.run_once(now=NOW)
+    failed = manifest.chunks()[0]
+    with pytest.raises(WsRetentionError, match="lacks explicit"):
+        manifest.quarantine_replay_baseline_failure(failed.chunk_id, now=NOW, evidence="wrong")
+    assert manifest.chunks()[0].state is ArchiveState.FAILED
+
+
 def test_delta_only_chunk_waits_for_baseline_without_publishing_or_failing(
     tmp_path: Path,
 ) -> None:
@@ -504,6 +523,123 @@ def test_delta_only_chunk_waits_for_baseline_without_publishing_or_failing(
     assert not tuple(service.archive_root.rglob("*.zlib"))
     with pytest.raises(WsRetentionError, match="unreplayable archive chunk"):
         service.run_once(now=NOW)
+
+
+def test_non_null_baseline_requires_matching_synchronized_book(tmp_path: Path) -> None:
+    service, _manifest = _service(tmp_path)
+    records = _read_records(
+        service.source_database,
+        after_id=0,
+        cutoff=datetime.max.replace(tzinfo=UTC),
+        maximum_records=3,
+    )
+    baseline = _ReplayState.empty()
+    baseline.apply(records[0])
+    baseline.apply(records[1])
+    payload = baseline.as_json()
+    assert _usable_replay_baseline(payload, records[2])
+    assert not _usable_replay_baseline(payload, replace(records[2], ticker="missing"))
+    assert not _usable_replay_baseline(payload, replace(records[2], market_id="wrong"))
+
+
+def test_unreplayable_prefix_is_quarantined_when_later_snapshot_exists(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    with sqlite3.connect(service.source_database) as connection:
+        connection.execute("DELETE FROM kalshi_ws_orderbook_events WHERE id=2")
+    store = RecorderStore(service.source_database)
+    snapshot_time = NOW - timedelta(hours=7)
+    store.append_kalshi_ws_orderbook_event(
+        KalshiOrderBookSnapshot(
+            connection_id="connection-2",
+            subscription_id=2,
+            sequence=1,
+            ticker=TICKER,
+            market_id="market-1",
+            yes_bids=(OrderBookLevel(Decimal("0.5000"), Decimal("10.0000")),),
+            no_bids=(),
+            source_timestamp=snapshot_time,
+            socket_received_timestamp=snapshot_time,
+            parse_timestamp=snapshot_time + timedelta(microseconds=1),
+        ),
+        sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED,
+    )
+    store.close()
+    prefixes = []
+    while True:
+        chunk = service.run_once(now=NOW).chunk
+        assert chunk is not None
+        if chunk.state is not ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING:
+            suffix = chunk
+            break
+        prefixes.append(chunk)
+    assert prefixes
+    assert all(item.failure == "REPLAY_BASELINE_MISSING" for item in prefixes)
+    assert suffix is not None
+    assert suffix.state is ArchiveState.PURGE_ELIGIBLE
+    assert suffix.first_event_id > prefixes[-1].last_event_id
+    assert manifest.metrics()["failed"] == 0
+
+
+def test_waiting_prefix_reconciles_after_snapshot_arrives(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    with sqlite3.connect(service.source_database) as connection:
+        connection.execute("DELETE FROM kalshi_ws_orderbook_events WHERE id=2")
+    waiting = service.run_once(now=NOW).chunk
+    assert waiting is not None
+    assert waiting.state is ArchiveState.WAITING_FOR_REPLAY_BASELINE
+    store = RecorderStore(service.source_database)
+    snapshot_time = NOW - timedelta(hours=7)
+    store.append_kalshi_ws_orderbook_event(
+        KalshiOrderBookSnapshot(
+            connection_id="connection-2",
+            subscription_id=2,
+            sequence=1,
+            ticker=TICKER,
+            market_id="market-1",
+            yes_bids=(),
+            no_bids=(),
+            source_timestamp=snapshot_time,
+            socket_received_timestamp=snapshot_time,
+            parse_timestamp=snapshot_time + timedelta(microseconds=1),
+        ),
+        sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED,
+    )
+    store.close()
+    reconciled = service.run_once(now=NOW).chunk
+    assert reconciled is not None
+    assert reconciled.state is ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING
+    resumed = None
+    while resumed is None or resumed.state is ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING:
+        resumed = service.run_once(now=NOW).chunk
+    assert resumed.state is ArchiveState.PURGE_ELIGIBLE
+    assert manifest.metrics()["failed"] == 0
+
+
+def test_unrelated_boundary_snapshot_does_not_quarantine_prefix(tmp_path: Path) -> None:
+    service, _manifest = _service(tmp_path)
+    with sqlite3.connect(service.source_database) as connection:
+        connection.execute("DELETE FROM kalshi_ws_orderbook_events WHERE id=2")
+    store = RecorderStore(service.source_database)
+    snapshot_time = NOW - timedelta(hours=7)
+    store.append_kalshi_ws_orderbook_event(
+        KalshiOrderBookSnapshot(
+            connection_id="connection-2",
+            subscription_id=2,
+            sequence=1,
+            ticker="KXOTHER",
+            market_id="other-market",
+            yes_bids=(),
+            no_bids=(),
+            source_timestamp=snapshot_time,
+            socket_received_timestamp=snapshot_time,
+            parse_timestamp=snapshot_time + timedelta(microseconds=1),
+        ),
+        sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED,
+    )
+    store.close()
+    result = service.run_once(now=NOW).chunk
+    assert result is not None
+    assert result.state is ArchiveState.WAITING_FOR_REPLAY_BASELINE
 
 
 def test_purge_authorization_refuses_quarantine_boundary(

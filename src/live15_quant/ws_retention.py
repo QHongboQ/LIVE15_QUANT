@@ -453,6 +453,32 @@ class _ReplayState:
             levels[record.price] = quantity
 
 
+def _usable_replay_baseline(payload: str | None, record: KalshiWsOrderBookEventRecord) -> bool:
+    """Return whether persisted replay state can safely accept ``record``."""
+
+    if record.event_kind is not KalshiWsEventKind.DELTA:
+        return True
+    if record.ticker is None or record.market_id is None:
+        return False
+    try:
+        state = _ReplayState.from_json(payload)
+    except (KeyError, TypeError, ValueError, WsRetentionError):
+        return False
+    book = state.books.get(record.ticker)
+    return (
+        state.synchronized
+        and state.connection_id == record.connection_id
+        and state.subscription_id == record.subscription_id
+        and record.ticker in state.subscribed
+        and book is not None
+        and book.market_id == record.market_id
+    )
+
+
+def _ticker_family(ticker: str | None) -> str | None:
+    return None if ticker is None else ticker.split("15M-", 1)[0]
+
+
 class WsRetentionManifest:
     """Separate transactional manifest; raw database compaction cannot remove it."""
 
@@ -771,6 +797,74 @@ class WsRetentionManifest:
             assert updated is not None
             return self._chunk(updated)
 
+    def quarantine_replay_baseline_prefix(
+        self, chunk_id: str, *, now: datetime, reason: str = "REPLAY_BASELINE_MISSING"
+    ) -> ArchiveChunk:
+        """Isolate a proven historical prefix without claiming replay verification."""
+
+        with self._connect() as connection, connection:
+            row = connection.execute(
+                "SELECT state FROM ws_retention_chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            if row is None:
+                raise WsRetentionError("archive manifest chunk is missing")
+            current = ArchiveState(row["state"])
+            if current not in {
+                ArchiveState.WRITING,
+                ArchiveState.WAITING_FOR_REPLAY_BASELINE,
+            }:
+                raise WsRetentionError("only a waiting replay-baseline prefix may be quarantined")
+            connection.execute(
+                "UPDATE ws_retention_chunks SET state=?,failure=?,updated_at=? WHERE chunk_id=?",
+                (
+                    ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING.value,
+                    reason,
+                    now.isoformat(),
+                    chunk_id,
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM ws_retention_chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            assert updated is not None
+            return self._chunk(updated)
+
+    def quarantine_replay_baseline_failure(
+        self,
+        chunk_id: str,
+        *,
+        now: datetime,
+        evidence: str,
+        reason: str = "REPLAY_BASELINE_MISSING",
+    ) -> ArchiveChunk:
+        """Reconcile a failed chunk only after the caller proves a baseline gap."""
+
+        with self._connect() as connection, connection:
+            row = connection.execute(
+                "SELECT state FROM ws_retention_chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            if row is None or ArchiveState(row["state"]) is not ArchiveState.FAILED:
+                raise WsRetentionError("only a failed replay-baseline gap may be reconciled")
+            if evidence != "DELTA_PREFIX_NO_BASELINE_LATER_SNAPSHOT":
+                raise WsRetentionError("failed chunk lacks explicit replay-baseline evidence")
+            connection.execute(
+                "UPDATE ws_retention_chunks SET state=?,failure=?,updated_at=? WHERE chunk_id=?",
+                (
+                    ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING.value,
+                    reason,
+                    now.isoformat(),
+                    chunk_id,
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM ws_retention_chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            assert updated is not None
+            return self._chunk(updated)
+
+    def waiting_replay_chunks(self) -> tuple[ArchiveChunk, ...]:
+        return self.chunks(ArchiveState.WAITING_FOR_REPLAY_BASELINE)
+
     def quarantine_overlaps(
         self, first_event_id: int, last_event_id: int
     ) -> tuple[ArchiveChunk, ...]:
@@ -1083,6 +1177,151 @@ class WsArchiveService:
         if self.source_database == self.manifest.path:
             raise ValueError("archive manifest must be separate from raw storage")
 
+    def _authoritative_snapshot_after(
+        self,
+        event_id: int,
+        *,
+        cutoff: datetime,
+        expected_identity: tuple[str, int] | None = None,
+        expected_ticker: str | None = None,
+        expected_market_id: str | None = None,
+        expected_families: set[str] | None = None,
+        maximum_records: int = 250_000,
+    ) -> KalshiWsOrderBookEventRecord | None:
+        """Find the next coherent snapshot without treating it as an earlier baseline."""
+
+        if expected_identity is None:
+            return None
+
+        connection = sqlite3.connect(
+            f"file:{self.source_database.as_posix()}?mode=ro", uri=True, timeout=2.0
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(
+                "SELECT * FROM kalshi_ws_orderbook_events WHERE id>? ORDER BY id LIMIT ?",
+                (event_id, maximum_records),
+            )
+            identity = expected_identity
+            for row in rows:
+                record = RecorderStore._kalshi_ws_event_record(row)
+                current = (record.connection_id, record.subscription_id)
+                if identity is None:
+                    identity = current
+                if current != identity:
+                    if (
+                        record.event_kind is KalshiWsEventKind.SNAPSHOT
+                        and record.sequence == 1
+                        and record.socket_received_timestamp < cutoff
+                        and (
+                            expected_families is None
+                            or _ticker_family(record.ticker) in expected_families
+                        )
+                    ):
+                        return record
+                    identity = current
+                    continue
+                if record.event_kind is KalshiWsEventKind.SNAPSHOT:
+                    if (
+                        record.socket_received_timestamp < cutoff
+                        and expected_ticker is not None
+                        and expected_market_id is not None
+                        and record.ticker == expected_ticker
+                        and record.market_id == expected_market_id
+                    ):
+                        return record
+        finally:
+            connection.close()
+        return None
+
+    def _reconcile_waiting_baseline(self, now: datetime) -> None:
+        """Resolve waiting prefixes only after a later authoritative snapshot exists."""
+
+        cutoff = now - self.hot_retention
+        for waiting in self.manifest.waiting_replay_chunks():
+            identity = self._source_identity(waiting.last_event_id)
+            leading_delta = next(
+                (
+                    record
+                    for record in self._range_records(waiting)
+                    if record.event_kind is KalshiWsEventKind.DELTA
+                ),
+                None,
+            )
+            if leading_delta is None:
+                continue
+            snapshot = self._authoritative_snapshot_after(
+                waiting.last_event_id,
+                cutoff=cutoff,
+                expected_identity=identity,
+                expected_ticker=leading_delta.ticker,
+                expected_market_id=leading_delta.market_id,
+                expected_families={
+                    family
+                    for family in (_ticker_family(item) for item in waiting.tickers)
+                    if family is not None
+                },
+            )
+            if snapshot is not None:
+                self.manifest.quarantine_replay_baseline_prefix(waiting.chunk_id, now=now)
+            break
+
+    def _reconcile_failed_baseline(self, now: datetime) -> None:
+        cutoff = now - self.hot_retention
+        for failed in self.manifest.chunks(ArchiveState.FAILED):
+            records = self._range_records(failed)
+            if not records or not all(
+                record.event_kind is KalshiWsEventKind.DELTA for record in records
+            ):
+                continue
+            leading_delta = next(
+                (record for record in records if record.event_kind is KalshiWsEventKind.DELTA),
+                None,
+            )
+            if leading_delta is None:
+                continue
+            archive_path = (self.archive_root / failed.relative_path).resolve()
+            if archive_path.exists():
+                continue
+            prior = self.manifest.end_state_before(
+                leading_delta.row_id, leading_delta.connection_id, leading_delta.subscription_id
+            )
+            if _usable_replay_baseline(prior, leading_delta):
+                continue
+            snapshot = self._authoritative_snapshot_after(
+                failed.last_event_id,
+                cutoff=cutoff,
+                expected_identity=(leading_delta.connection_id, leading_delta.subscription_id),
+                expected_ticker=leading_delta.ticker,
+                expected_market_id=leading_delta.market_id,
+                expected_families={
+                    family
+                    for family in (_ticker_family(item.ticker) for item in records)
+                    if family is not None
+                },
+            )
+            if snapshot is not None:
+                self.manifest.quarantine_replay_baseline_failure(
+                    failed.chunk_id,
+                    now=now,
+                    evidence="DELTA_PREFIX_NO_BASELINE_LATER_SNAPSHOT",
+                )
+            break
+
+    def _source_identity(self, event_id: int) -> tuple[str, int] | None:
+        connection = sqlite3.connect(
+            f"file:{self.source_database.as_posix()}?mode=ro", uri=True, timeout=2.0
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            row = connection.execute(
+                "SELECT connection_id,subscription_id FROM kalshi_ws_orderbook_events WHERE id=?",
+                (event_id,),
+            ).fetchone()
+            return None if row is None else (str(row[0]), int(row[1]))
+        finally:
+            connection.close()
+
     def _range_records(self, chunk: ArchiveChunk) -> tuple[KalshiWsOrderBookEventRecord, ...]:
         records = _read_records(
             self.source_database,
@@ -1245,6 +1484,8 @@ class WsArchiveService:
     def _run_once(self, *, now: datetime | None = None) -> ArchiveRunResult:
         observed = (now or datetime.now(UTC)).astimezone(UTC)
         started = time.perf_counter()
+        self._reconcile_failed_baseline(observed)
+        self._reconcile_waiting_baseline(observed)
         incomplete = self.manifest.chunks(
             ArchiveState.WRITING,
             ArchiveState.WRITTEN,
@@ -1271,16 +1512,50 @@ class WsArchiveService:
                 f"chunk-{first.row_id}-{records[-1].row_id}.zlib"
             )
             chunk = self.manifest.reserve(records, relative_path=relative, created_at=observed)
-        if (
-            records[0].event_kind is KalshiWsEventKind.DELTA
-            and self.manifest.end_state_before(
-                records[0].row_id, records[0].connection_id, records[0].subscription_id
+        leading_delta = next(
+            (record for record in records if record.event_kind is KalshiWsEventKind.DELTA),
+            None,
+        )
+        has_leading_snapshot = any(
+            record.event_kind is KalshiWsEventKind.SNAPSHOT
+            and leading_delta is not None
+            and (record.connection_id, record.subscription_id)
+            == (leading_delta.connection_id, leading_delta.subscription_id)
+            and record.ticker == leading_delta.ticker
+            and record.market_id == leading_delta.market_id
+            for record in records
+            if record.row_id <= (leading_delta.row_id if leading_delta else record.row_id)
+        )
+        if leading_delta is not None and not has_leading_snapshot:
+            prior_json = self.manifest.end_state_before(
+                leading_delta.row_id,
+                leading_delta.connection_id,
+                leading_delta.subscription_id,
             )
-            is None
-        ):
-            waiting = self.manifest.mark_waiting_for_replay_baseline(chunk.chunk_id, now=observed)
-            elapsed = max(time.perf_counter() - started, 1e-9)
-            return ArchiveRunResult(waiting, elapsed, 0.0, 0)
+            if not _usable_replay_baseline(prior_json, leading_delta):
+                snapshot = self._authoritative_snapshot_after(
+                    records[-1].row_id,
+                    cutoff=observed - self.hot_retention,
+                    expected_identity=(leading_delta.connection_id, leading_delta.subscription_id),
+                    expected_ticker=leading_delta.ticker,
+                    expected_market_id=leading_delta.market_id,
+                    expected_families={
+                        family
+                        for family in (_ticker_family(item.ticker) for item in records)
+                        if family is not None
+                    },
+                )
+                if snapshot is not None:
+                    quarantined = self.manifest.quarantine_replay_baseline_prefix(
+                        chunk.chunk_id, now=observed
+                    )
+                    elapsed = max(time.perf_counter() - started, 1e-9)
+                    return ArchiveRunResult(quarantined, elapsed, 0.0, 0)
+                waiting = self.manifest.mark_waiting_for_replay_baseline(
+                    chunk.chunk_id, now=observed
+                )
+                elapsed = max(time.perf_counter() - started, 1e-9)
+                return ArchiveRunResult(waiting, elapsed, 0.0, 0)
         result = self._verify_and_publish(chunk, records, observed)
         elapsed = max(time.perf_counter() - started, 1e-9)
         return ArchiveRunResult(
