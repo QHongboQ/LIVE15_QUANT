@@ -1,0 +1,126 @@
+{
+  "artifact_format": "live15-data-foundation-baseline-001b",
+  "baseline_id": "data-foundation-v1",
+  "task": "BASELINE-001B",
+  "status": "AUDIT_COMPLETE_TAG_DEFERRED_UNTIL_BASELINE_PR_MERGE",
+  "observed_at": "2026-08-26T00:00:00+08:00",
+  "protected_main_sha": "da83c473cf66f84b4d3621d9ef55f7164c4ba9dc",
+  "source_commit": "da83c473cf66f84b4d3621d9ef55f7164c4ba9dc",
+  "scope": {
+    "model_training": false,
+    "production_writes": 0,
+    "paper_active": false,
+    "dataset_v2_id": "live15-dataset-v2-4bb4934bf328b6b024ff",
+    "holdout_status": "UNREVEALED_FROZEN",
+    "holdout_accessed": false
+  },
+  "governance": {
+    "pr_14": {
+      "status": "SQUASH_MERGED",
+      "head": "f5839fc2e88b6583fd62750085d5e3d28510de3b",
+      "merge_sha": "da83c473cf66f84b4d3621d9ef55f7164c4ba9dc",
+      "ci_run": "32935451418"
+    },
+    "open_prs_needing_human_review": [12, 1],
+    "baseline_tag": "DEFERRED_UNTIL_BASELINE_MANIFEST_PR_MERGES"
+  },
+  "data_layers": {
+    "h0_recorder": {
+      "path": "data/live15.sqlite3",
+      "provider": "SDK_AUTHORITATIVE",
+      "status": "HEALTHY_READ_ONLY_AUDIT",
+      "quote_rows_observed": 1460580,
+      "underlying_rows_observed": 3212987,
+      "book_checkpoints": 25509,
+      "independent_utc_days": 5,
+      "data_gaps": {"total": 40719, "recovered": 20358, "unrecovered": 20361},
+      "repair_or_inference": false,
+      "path_sequence_materialized": false
+    },
+    "h0_archive": {
+      "manifest": "data/ws_archive_manifest.sqlite3",
+      "chunks": 33248,
+      "failed_chunks": 1,
+      "purged_chunks": 32434,
+      "purge_eligible_chunks": 813,
+      "retention_note": "hot orderbook rows are partial retention; archive manifest is authoritative for retained chunks"
+    },
+    "current_trainable": {
+      "path": "data/current_trainable.sqlite3",
+      "status": "MUTABLE_INCREMENTAL_MATERIALIZER_OUTPUT",
+      "events": 4350,
+      "rows": 26402,
+      "eligible_events": 3582,
+      "ineligible_events": 768,
+      "independent_utc_days": 6,
+      "assets": 10,
+      "path_target_status": {
+        "5": "UNAVAILABLE_NO_FABRICATION",
+        "15": "UNAVAILABLE_NO_FABRICATION",
+        "30": "VALID_ROWS_PRESENT",
+        "60": "VALID_ROWS_PRESENT",
+        "120": "VALID_ROWS_PRESENT",
+        "180": "VALID_ROWS_PRESENT",
+        "300": "VALID_ROWS_PRESENT",
+        "window_end": "UNAVAILABLE_NO_FABRICATION"
+      }
+    },
+    "h1_historical": {
+      "dataset_id": "historical-research-f2d529adfb95080971becdaf",
+      "window": {"start": "2026-03-28T00:00:00+00:00", "end": "2026-06-26T00:00:00+00:00", "days": 90},
+      "markets": 59056,
+      "trades": 886454,
+      "candles_1m": 5242,
+      "independent_utc_days": 90,
+      "detail_scope": "bounded 500-market detail cap",
+      "conflicts": 0,
+      "fold_plan": {"status": "PLAN_ONLY", "folds": 8, "purge_embargo_seconds": 600}
+    },
+    "h2_depthfeed": {
+      "status": "BLOCKED_NOT_MATERIALIZED",
+      "snapshot_status": "MICROSTRUCTURE_SNAPSHOT_BLOCKED",
+      "delta_status": "H2_DELTA_UNAVAILABLE_PLAN_LIMIT",
+      "fake_orderbook_reconstruction": false
+    }
+  },
+  "storage": {
+    "free_bytes_observed": 209201324032,
+    "tracked_raw_data": false,
+    "storage_optimization_run": false
+  },
+  "secrets_and_dependencies": {
+    "secrets_directory_ignored": true,
+    "tracked_secret_like_files": ["docs/local-secrets.md", "src/live15_quant/secrets.py", "tests/test_secrets.py"],
+    "python": "3.13.15",
+    "kalshi_sdk": "12.0.0",
+    "ruff": "0.16.3"
+  },
+  "residue": {
+    "safe_cleanup": "TEST_CACHE_REMOVAL_BLOCKED_BY_FILESYSTEM_ACL",
+    "preserved_runtime_pid_files": true,
+    "active_control_center_pid": true,
+    "example_run_state": ".agents/state/runs/example-loop-001.json"
+  },
+  "readiness": {
+    "canonical_evidence_gate": "PASS",
+    "sequence": "INSUFFICIENT_SEQUENCE_EVIDENCE",
+    "microstructure": "INSUFFICIENT_MICROSTRUCTURE_EVIDENCE",
+    "structured_path": "ELIGIBLE_H1_OFFICIAL",
+    "path_model_tournament": "NOT_APPROVED_PENDING_BASELINE_TAG_AND_H2/SEQUENCE_GATES"
+  },
+  "integrity": {
+    "dataset_v2_mutated": false,
+    "holdout_revealed": false,
+    "recorder_changed": false,
+    "runtime_paper_production_changed": false,
+    "model_training": false,
+    "final_test_used": false
+  },
+  "validation": {
+    "checker": "PENDING_BASELINE_PR_VALIDATION",
+    "ruff_check": "PENDING",
+    "ruff_format_check": "PENDING",
+    "pytest": "PENDING",
+    "git_diff_check": "PENDING"
+  }
+}
