@@ -153,6 +153,26 @@ def test_h0_h1_h2_are_reported_separately_and_h0_is_priority() -> None:
     assert snapshot.h0_priority_source == "H0_LIVE_NATIVE"
 
 
+def test_capability_days_do_not_inherit_general_coverage_days() -> None:
+    h0 = replace(
+        _record("h0", "H0_LIVE_NATIVE", days=6, path_days=0),
+        coverage_days=tuple(f"2026-01-{index:02d}" for index in range(1, 7)),
+    )
+    h1 = replace(
+        _record("h1", "H1_KALSHI_OFFICIAL_HISTORY", days=7, path_days=7),
+        coverage_days=tuple(f"2026-02-{index:02d}" for index in range(1, 8)),
+    )
+    snapshot = build_canonical_evidence_snapshot(
+        experiment_id="capability-day-isolation",
+        experiment_cutoff=CUTOFF,
+        records=(h0, h1),
+    )
+    assert snapshot.readiness_days()["h0_path_days"] == 0
+    result = training_preflight(snapshot, model_family="path_expert")
+    assert result.status is PreflightStatus.PARTIAL
+    assert result.reasons == ("H0_PRIORITY_VALIDATION_REQUIRED",)
+
+
 def test_snapshot_is_deterministic_and_cutoff_is_enforced() -> None:
     records = (_record("h0", "H0_LIVE_NATIVE", days=6),)
     first = build_canonical_evidence_snapshot(

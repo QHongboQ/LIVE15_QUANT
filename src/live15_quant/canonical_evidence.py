@@ -236,7 +236,17 @@ class CanonicalEvidenceSnapshot:
     @staticmethod
     def _aggregate_days(records: Sequence[EvidenceRecord], attribute: str) -> int:
         values = [int(getattr(record, attribute)) for record in records]
-        coverage_days = {day for record in records for day in record.coverage_days}
+        # Coverage days describe the record's overall scope, not every capability it
+        # carries.  A source may cover six days while having no path/snapshot/delta
+        # evidence at all; those days must not be promoted into a capability readiness
+        # count.  Fall back to the explicit capability count when no capability-specific
+        # day list is available.
+        coverage_days = {
+            day
+            for record in records
+            if int(getattr(record, attribute)) > 0
+            for day in record.coverage_days
+        }
         return len(coverage_days) if coverage_days else max(values, default=0)
 
     def readiness_days(self) -> dict[str, int]:
