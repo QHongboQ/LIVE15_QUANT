@@ -291,12 +291,16 @@ def build_trade_sequences(
                 for horizon in config.target_horizons
             },
         }
+    per_asset_sequence_counts = Counter(str(row["asset"]) for row in rows)
+    per_day_sequence_counts = Counter(str(row["decision_timestamp"])[:10] for row in rows)
     summary: dict[str, object] = {
         "provenance": H1_PROVENANCE,
         "sequence_count": len(rows),
         "independent_days": len({str(row["decision_timestamp"])[:10] for row in rows}),
         "independent_events": len({str(row["event_id"]) for row in rows}),
         "assets": sorted({str(row["asset"]) for row in rows}),
+        "per_asset_sequence_counts": dict(sorted(per_asset_sequence_counts.items())),
+        "per_day_sequence_counts": dict(sorted(per_day_sequence_counts.items())),
         "grid_summary": grid_summary,
         "exclusions": dict(sorted(exclusions.items())),
         "target_missing": dict(sorted(target_missing.items())),
