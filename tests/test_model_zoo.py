@@ -177,3 +177,26 @@ def test_oos_not_eligible_is_explicit_not_zero() -> None:
         all_assets=frozenset({"BTC", "Gold"}),
     )
     assert result.per_asset["Gold"] == {"status": "OOS_NOT_ELIGIBLE", "rows": 0}
+
+
+def test_foundation_adapter_contracts_cover_layers_without_runtime_wiring() -> None:
+    contracts = model_zoo.build_model_adapter_contracts()
+    assert {item.layer for item in contracts} == {
+        model_zoo.ModelLayer.PATH,
+        model_zoo.ModelLayer.TERMINAL,
+        model_zoo.ModelLayer.MICROSTRUCTURE,
+        model_zoo.ModelLayer.ROUTER,
+    }
+    assert all(not item.runtime_wiring for item in contracts)
+    assert all(item.allowed_data_sources for item in contracts)
+
+
+def test_foundation_adapter_contract_rejects_holdout_and_empty_inputs() -> None:
+    with pytest.raises(ValueError, match="holdout"):
+        model_zoo.ModelAdapterContract(
+            family_id="bad",
+            layer=model_zoo.ModelLayer.PATH,
+            allowed_data_sources=("DATASET_V2_HOLDOUT",),
+            input_schema_version="x",
+            output_schema_version="x",
+        )
