@@ -1,0 +1,66 @@
+{
+  "report": "FLOW-005B1_EVIDENCE",
+  "schema_version": "flow005b1-evidence-1.0.0",
+  "code_sha": "748c20946fb395eae7c17036b68be50adcc0755c",
+  "historical_research_dataset_id": "historical-research-f2d529adfb95080971becdaf",
+  "sequence_manifest_id": "flow005b1-sequence-38e032fa554d45cd4225aea4",
+  "source": {
+    "provenance": "H1_KALSHI_OFFICIAL_HISTORY",
+    "trade_rows": 886454,
+    "markets_with_trades": 350,
+    "independent_utc_days": 1,
+    "assets": ["BNB", "BTC", "DOGE", "ETH", "HYPE", "SOL", "XRP"],
+    "trade_rows_by_asset": {
+      "BNB": 25300,
+      "BTC": 645260,
+      "DOGE": 30497,
+      "ETH": 85410,
+      "HYPE": 36398,
+      "SOL": 32478,
+      "XRP": 31111
+    },
+    "trade_days": ["2026-06-25"]
+  },
+  "sequence": {
+    "grid_seconds": [5, 15, 30],
+    "lookback_seconds": 120,
+    "target_horizons_seconds": [30, 60, 120, 180, 300],
+    "target_tolerance_seconds": 15,
+    "sequence_count": 37172,
+    "independent_events": 350,
+    "independent_days": 1,
+    "per_asset_sequence_counts": {"BNB": 3072, "BTC": 11461, "DOGE": 3446, "ETH": 7678, "HYPE": 4056, "SOL": 3753, "XRP": 3706},
+    "per_day_sequence_counts": {"2026-06-25": 37172},
+    "per_grid": {
+      "5": {"sequences": 13632, "events": 214, "days": 1, "target_available": {"30": 13176, "60": 12577, "120": 11158, "180": 9835, "300": 7542}},
+      "15": {"sequences": 14597, "events": 350, "days": 1, "target_available": {"30": 13611, "60": 13118, "120": 12049, "180": 10917, "300": 8535}},
+      "30": {"sequences": 8943, "events": 350, "days": 1, "target_available": {"30": 7987, "60": 7671, "120": 7051, "180": 6399, "300": 5045}}
+    },
+    "exclusions": {"insufficient_history": 9418, "no_trade_in_source_bucket": 31292},
+    "target_missing_reasons": {
+      "event_boundary": {"30": 756, "60": 1911, "120": 4738, "180": 7704, "300": 13780},
+      "future_target_unavailable": {"30": 1642, "60": 1895, "120": 2176, "180": 2317, "300": 2270}
+    },
+    "walk_forward": {"train_days": 30, "validation_days": 7, "step_days": 7, "purge_embargo_seconds": 600, "available_folds": 0},
+    "readiness": "SEQUENCE_PARTIAL_MORE_DATA_OR_REPRESENTATION_NEEDED",
+    "model_training_unlocked": false,
+    "no_fill_or_interpolation": true
+  },
+  "depthfeed": {
+    "provenance": "H2_DEPTHFEED_RECORDED_L2",
+    "requested_days": 7,
+    "snapshot_count": 0,
+    "independent_days": 0,
+    "assets": [],
+    "snapshot_readiness": "MICROSTRUCTURE_SNAPSHOT_BLOCKED",
+    "delta_readiness": "H2_DELTA_UNAVAILABLE_PLAN_LIMIT",
+    "delta_evidence": "HTTP_402_KNOWN_FREE_PLAN_LIMIT; no retry",
+    "observed_limitation": "HTTP 429 on bounded snapshot request after metadata discovery; no repeated retry",
+    "tlob_readiness": "TLOB_BLOCKED",
+    "baseline_lob_readiness": "BLOCKED_NO_SNAPSHOTS"
+  },
+  "dataset_v2_touched": false,
+  "holdout_accessed": false,
+  "recorder_changed": false,
+  "model_training": false
+}

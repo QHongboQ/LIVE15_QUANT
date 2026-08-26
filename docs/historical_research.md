@@ -105,3 +105,17 @@ requested. The deterministic `HistoricalResearchDataset` identity is
 Structured H1 path/terminal research is eligible; microstructure and event-delta research remain
 H2-gated, and sequence readiness remains `INSUFFICIENT_SEQUENCE_EVIDENCE`. No model was trained,
 Dataset v2 or its holdout was read, and Recorder/Production/Paper paths were unchanged.
+
+## FLOW-005B1 — causal evidence re-evaluation (development only)
+
+The read-only H1 detail was materialized into causal sequence evidence at 5s, 15s, and 30s
+grids: 13,632, 14,597, and 8,943 rows respectively (37,172 total), across 350 markets and
+the single detail day `2026-06-25`. Per-asset totals across all grids were BNB 3,072; BTC
+11,461; DOGE 3,446; ETH 7,678; HYPE 4,056; SOL 3,753; XRP 3,706. With one independent day
+there are zero chronological validation folds, so path readiness remains
+`SEQUENCE_PARTIAL_MORE_DATA_OR_REPRESENTATION_NEEDED` and no model training is unlocked.
+
+The bounded seven-day DepthFeed attempt discovered 50 metadata rows; its first snapshot request
+returned HTTP 429 and was not retried. The known free-plan tick/delta limitation remains HTTP
+402, so snapshot readiness and TLOB readiness remain blocked. H1 trades were not treated as L2,
+and no model, Dataset v2, holdout, Recorder, Paper, or Production state was changed.
