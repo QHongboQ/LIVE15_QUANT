@@ -137,3 +137,20 @@ promotion or OOS claim. H0 was audited independently: six real live-native days 
 identities, with quotes/underlying/L2 retained in their authoritative stores; H0 path rows were not
 fabricated or blended into H1. H2 remains blocked after bounded provider timestamp and rate-limit
 failures. The compact tracked summary is `docs/evid_recon001_report.json`.
+
+## DATA-READINESS-001 — canonical reconciliation gate
+
+The permanent machine-readable contract is `CanonicalEvidenceSnapshot` in
+`src/live15_quant/canonical_evidence.py`. It retains H0 live-native, H1 official history, H2
+DepthFeed L2, current trainable-pool, and frozen-dataset records as separate provenance-bearing
+objects with explicit scope (`FULL_SOURCE`, `BOUNDED_WINDOW`, `STRATIFIED_SAMPLE`,
+`SAMPLED_SUBSET`, `FROZEN_DATASET`, or `EXPERIMENT_CUTOFF`). It exposes separate H0/H1/H2 path,
+snapshot, and delta day counts and never lets a sampled/capped artifact overwrite global source
+coverage.
+
+The confirmed first-N temporal bug is now guarded in code and regression tests. API-order,
+storage-order, and first-N policies are rejected; unexplained source-to-artifact temporal collapse
+returns `EVIDENCE_RECONCILIATION_REQUIRED` and blocks training preflight. H0 is the hard future
+priority for current-regime validation and promotion reality checks; H1/H2 can accelerate research
+only with row-level provenance and source-specific semantics. Dataset v2 and its holdout remain
+immutable and unaccessed.

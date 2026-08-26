@@ -4,6 +4,15 @@
   "dataset_v2": "live15-dataset-v2-4bb4934bf328b6b024ff",
   "holdout_state": "UNREVEALED_FROZEN",
   "holdout_accessed": false,
+  "canonical_evidence_gate": {
+    "schema_version": "canonical-evidence-v1",
+    "api": "live15_quant.canonical_evidence.build_canonical_evidence_snapshot",
+    "training_preflight": "live15_quant.canonical_evidence.training_preflight",
+    "required_before_model_training": true,
+    "h0_priority_validation": true,
+    "first_n_temporal_sampling": "PROHIBITED",
+    "inconsistency_block": "EVIDENCE_RECONCILIATION_REQUIRED"
+  },
   "hist003_historical_research_dataset": "historical-research-f2d529adfb95080971becdaf",
   "sequence_readiness": {
     "manifest": "docs/sequence_readiness.json",

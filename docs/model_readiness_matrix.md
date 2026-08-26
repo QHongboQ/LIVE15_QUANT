@@ -29,6 +29,18 @@ so no sequence model was trained and Path training remains locked. H2 raw ticks 
 All statuses are readiness decisions, not profitability or promotion decisions. Dataset v2
 holdout remains `UNREVEALED_FROZEN` and is not an allowed source.
 
+## DATA-READINESS-001 canonical gate
+
+Future readiness must start from `CanonicalEvidenceSnapshot`; the legacy scalar evidence helper is
+compatibility-only and must not be used as global truth. The gate preserves separate H0/H1/H2 path,
+snapshot, and delta days, rejects first-N/API-order temporal sampling, and blocks unexplained
+sample-to-source coverage collapse as `EVIDENCE_RECONCILIATION_REQUIRED`. H0 remains the preferred
+fresh current-regime validation source even when H1/H2 improve historical research metrics.
+
+No model training is authorized by this gate. A model-family request must pass
+`training_preflight(...)` with an experiment cutoff and holdout isolation before any future
+tournament or AUTO-ML run.
+
 ## EVID-RECON-001 update
 
 The prior one-day H1 sequence evidence was traced to first-N-per-asset temporal concentration,

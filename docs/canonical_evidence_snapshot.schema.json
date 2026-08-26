@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "live15://canonical-evidence-v1",
+  "title": "CanonicalEvidenceSnapshot",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "snapshot_id",
+    "experiment_id",
+    "experiment_cutoff",
+    "records",
+    "frozen_datasets",
+    "inconsistency_states",
+    "readiness_days"
+  ],
+  "properties": {
+    "schema_version": {"const": "canonical-evidence-v1"},
+    "snapshot_id": {"type": "string", "pattern": "^ces-[0-9a-f]{24}$"},
+    "experiment_id": {"type": "string", "minLength": 1},
+    "experiment_cutoff": {"type": "string", "format": "date-time"},
+    "records": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidenceRecord"}},
+    "frozen_datasets": {"type": "array", "items": {"type": "object"}},
+    "inconsistency_states": {"type": "array", "items": {"type": "string"}},
+    "readiness_days": {"$ref": "#/$defs/readinessDays"}
+  },
+  "$defs": {
+    "evidenceRecord": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "provenance_tier",
+        "coverage_scope",
+        "earliest_timestamp",
+        "latest_timestamp",
+        "independent_utc_days",
+        "independent_events",
+        "assets",
+        "per_day_counts",
+        "per_asset_counts",
+        "row_count",
+        "artifact_id",
+        "cutoff",
+        "sampling_policy",
+        "capped",
+        "full_source",
+        "data_quality_status",
+        "gap_quarantine_state",
+        "sequence_availability",
+        "microstructure_availability",
+        "target_availability"
+      ],
+      "properties": {
+        "source_id": {"type": "string"},
+        "provenance_tier": {"type": "string", "enum": ["H0_LIVE_NATIVE", "H1_KALSHI_OFFICIAL_HISTORY", "H2_DEPTHFEED_RECORDED_L2", "CURRENT_TRAINABLE_POOL", "FROZEN_DATASET"]},
+        "coverage_scope": {"type": "string", "enum": ["FULL_SOURCE", "BOUNDED_WINDOW", "STRATIFIED_SAMPLE", "SAMPLED_SUBSET", "FROZEN_DATASET", "EXPERIMENT_CUTOFF"]},
+        "earliest_timestamp": {"type": "string", "format": "date-time"},
+        "latest_timestamp": {"type": "string", "format": "date-time"},
+        "independent_utc_days": {"type": "integer", "minimum": 0},
+        "independent_events": {"type": "integer", "minimum": 0},
+        "assets": {"type": "array", "items": {"type": "string"}},
+        "per_day_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "per_asset_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "row_count": {"type": "integer", "minimum": 0},
+        "artifact_id": {"type": "string"},
+        "cutoff": {"type": "string", "format": "date-time"},
+        "sampling_policy": {"type": "string"},
+        "capped": {"type": "boolean"},
+        "full_source": {"type": "boolean"},
+        "data_quality_status": {"type": "string"},
+        "gap_quarantine_state": {"type": "string"},
+        "sequence_availability": {"type": "object"},
+        "microstructure_availability": {"type": "object"},
+        "target_availability": {"type": "object"},
+        "source_independent_utc_days": {"type": ["integer", "null"], "minimum": 0},
+        "source_independent_events": {"type": ["integer", "null"], "minimum": 0},
+        "source_assets": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "readinessDays": {
+      "type": "object",
+      "required": ["h0_path_days", "h1_path_days", "h2_path_days", "combined_path_days", "h0_snapshot_days", "h1_snapshot_days", "h2_snapshot_days", "combined_snapshot_days", "h0_delta_days", "h1_delta_days", "h2_delta_days", "combined_delta_days"],
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    }
+  }
+}
