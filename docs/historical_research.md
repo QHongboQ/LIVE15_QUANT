@@ -105,3 +105,35 @@ requested. The deterministic `HistoricalResearchDataset` identity is
 Structured H1 path/terminal research is eligible; microstructure and event-delta research remain
 H2-gated, and sequence readiness remains `INSUFFICIENT_SEQUENCE_EVIDENCE`. No model was trained,
 Dataset v2 or its holdout was read, and Recorder/Production/Paper paths were unchanged.
+
+## FLOW-005B1 — causal evidence re-evaluation (development only)
+
+The read-only H1 detail was materialized into causal sequence evidence at 5s, 15s, and 30s
+grids: 13,632, 14,597, and 8,943 rows respectively (37,172 total), across 350 markets and
+the single detail day `2026-06-25`. Per-asset totals across all grids were BNB 3,072; BTC
+11,461; DOGE 3,446; ETH 7,678; HYPE 4,056; SOL 3,753; XRP 3,706. With one independent day
+there are zero chronological validation folds, so path readiness remains
+`SEQUENCE_PARTIAL_MORE_DATA_OR_REPRESENTATION_NEEDED` and no model training is unlocked.
+
+The bounded seven-day DepthFeed attempt discovered 50 metadata rows; its first snapshot request
+returned HTTP 429 and was not retried. The known free-plan tick/delta limitation remains HTTP
+402, so snapshot readiness and TLOB readiness remain blocked. H1 trades were not treated as L2,
+and no model, Dataset v2, holdout, Recorder, Paper, or Production state was changed.
+
+## EVID-RECON-001 — layered evidence reconciliation
+
+The one-day detail result was audited and its exact cause is
+`HIST003_DETAIL_CAP_FIRST_N_PER_ASSET_TEMPORAL_CONCENTRATION`: the old 350-market cap selected
+the first records per asset in API/storage order, all of which traded on `2026-06-25`. The bounded
+replacement is deterministic and stratified by evenly spaced UTC day, asset, and event. It used
+147 already-known H1 markets across `2026-03-28`, `2026-04-12`, `2026-04-27`, `2026-05-11`,
+`2026-05-26`, `2026-06-10`, and `2026-06-25`; no full 90-day replay was performed.
+
+The new ignored research store contains 201,424 official trades, 2,187 candles, and zero conflicts.
+The causal sequence materialization contains 10,653 rows, 144 independent event identities, and
+four expanding folds (3 train days, 1 validation day, 1-day step, 600-second purge/embargo).
+This is `SEQUENCE_READY_FOR_BOUNDED_MODEL_TRAINING` as a research readiness result, not a model
+promotion or OOS claim. H0 was audited independently: six real live-native days and 4,350 event
+identities, with quotes/underlying/L2 retained in their authoritative stores; H0 path rows were not
+fabricated or blended into H1. H2 remains blocked after bounded provider timestamp and rate-limit
+failures. The compact tracked summary is `docs/evid_recon001_report.json`.
