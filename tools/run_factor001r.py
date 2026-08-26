@@ -898,9 +898,7 @@ def evaluate(
             "bytes": len(full_report_bytes),
             "storage": "ignored data artifact; regenerable by tools/run_factor001r.py",
         }
-    output_json.write_text(
-        json.dumps(compact_report, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    output_json.write_text(json.dumps(compact_report, indent=2, sort_keys=True), encoding="utf-8")
     lines = [
         "# FACTOR-001R — Bounded Symbolic Factor Evaluation",
         "",

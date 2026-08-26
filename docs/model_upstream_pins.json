@@ -1,0 +1,59 @@
+{
+  "schema_version": "flow-005b-upstream-pins-1.0.0",
+  "status": "PROVENANCE_ONLY_NO_RUNTIME_DEPENDENCIES",
+  "created_for": "FLOW-005B-PREP",
+  "pin_policy": {
+    "reference_type": "full_commit_sha",
+    "floating_refs_allowed": false,
+    "vendored": false,
+    "runtime_dependency": false,
+    "training_authorized": false
+  },
+  "pins": [
+    {
+      "name": "Time-Series-Library",
+      "repository": "https://github.com/thuml/Time-Series-Library",
+      "commit_sha": "4e938a1767106324dd753b2a44832bf870a0252e",
+      "license": "MIT",
+      "license_evidence": "LICENSE at pinned commit",
+      "role": "Path Expert research reference",
+      "models": ["TimeXer", "PatchTST", "iTransformer", "TimeMixer", "TimesNet", "DLinear"],
+      "adapter_strategy": "narrow offline adapter; no repository import or vendoring",
+      "runtime_dependency": false
+    },
+    {
+      "name": "TLOB",
+      "repository": "https://github.com/LeonardoBerti00/TLOB",
+      "commit_sha": "f1c0af4d81067978914361766db0457a7d8b6a46",
+      "license": "MIT",
+      "license_evidence": "LICENSE at pinned commit",
+      "role": "Microstructure research reference",
+      "models": ["TLOB", "DeepLOB", "MLPLOB"],
+      "adapter_strategy": "bounded snapshot adapter only; no runtime wiring",
+      "runtime_dependency": false
+    },
+    {
+      "name": "Qlib",
+      "repository": "https://github.com/microsoft/qlib",
+      "commit_sha": "79633dd9506ea689e5400dea0197717b5b3d74b7",
+      "license": "MIT",
+      "license_evidence": "LICENSE at pinned main revision",
+      "role": "Offline rolling-research orchestration reference",
+      "models": [],
+      "adapter_strategy": "manifest/fold-plan vocabulary only; no dependency",
+      "runtime_dependency": false
+    },
+    {
+      "name": "EarnHFT",
+      "repository": "https://github.com/TradeMaster-NTU/EarnHFT",
+      "commit_sha": "0e1e11a6d9aff70efb1807baa3416429568deb31",
+      "license": null,
+      "license_evidence": "NO_LICENSE_FILE_FOUND_AT_PIN",
+      "license_review_status": "REVIEW_REQUIRED_BEFORE_ANY_USE_OR_DISTRIBUTION",
+      "role": "Hierarchical architecture reference only",
+      "models": ["hierarchical low-level agents", "minute-level router"],
+      "adapter_strategy": "documentation/provenance only; no code import, policy learning, or execution",
+      "runtime_dependency": false
+    }
+  ]
+}

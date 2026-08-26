@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0.0",
+  "readiness_id": "sequence-readiness-e49a9da9be75f7b06280ede8",
+  "dataset_id": "historical-research-f2d529adfb95080971becdaf",
+  "dataset_name": "HistoricalResearchDataset",
+  "source_database": "data/research/hist003/hist003_official.sqlite3",
+  "source_window": {
+    "requested_days": 90,
+    "start": "2026-03-28T00:00:00+00:00",
+    "end": "2026-06-26T00:00:00+00:00"
+  },
+  "sequence_contract": {
+    "lengths": [3, 5, 8, 10],
+    "horizons_seconds": [30, 60, 120, 180, 300],
+    "resolutions": ["1m_candle", "trade_event"],
+    "event_local": true,
+    "normalization": "train_fold_only",
+    "purge_embargo_seconds": 600,
+    "no_future_nearest": true,
+    "no_interpolation_or_fill": true
+  },
+  "raw_counts": {
+    "markets": 59056,
+    "trades": 886454,
+    "candles_1m": 5242,
+    "assets": 7
+  },
+  "sequence_counts": {
+    "candle_sequences": 37118,
+    "trade_sequences": 0,
+    "excluded_candidates": 67162,
+    "independent_sequence_days": 1
+  },
+  "horizon_counts": {
+    "1m_candle": {"30": 0, "60": 11685, "120": 10317, "180": 8948, "300": 6168},
+    "trade_event": {"30": 0, "60": 0, "120": 0, "180": 0, "300": 0}
+  },
+  "assets": {
+    "BNB": {"candle_sequences": 5289, "trade_sequences": 0},
+    "BTC": {"candle_sequences": 5400, "trade_sequences": 0},
+    "DOGE": {"candle_sequences": 5212, "trade_sequences": 0},
+    "ETH": {"candle_sequences": 5368, "trade_sequences": 0},
+    "HYPE": {"candle_sequences": 5288, "trade_sequences": 0},
+    "SOL": {"candle_sequences": 5240, "trade_sequences": 0},
+    "XRP": {"candle_sequences": 5321, "trade_sequences": 0}
+  },
+  "exclusion_reasons": {
+    "INSUFFICIENT_LOOKBACK": 38500,
+    "NON_CONTIGUOUS_LOOKBACK": 345,
+    "TARGET_NOT_EXACT": 28317
+  },
+  "readiness": {
+    "sequence_status": "SEQUENCE_PARTIAL_MORE_DATA_OR_REPRESENTATION_NEEDED",
+    "microstructure_snapshot_status": "MICROSTRUCTURE_SNAPSHOT_NOT_MATERIALIZED",
+    "microstructure_delta_status": "MICROSTRUCTURE_DELTA_BLOCKED",
+    "reasons": [
+      "HIST003_EVIDENCE_BELOW_SEQUENCE_GATE",
+      "ONE_MINUTE_CADENCE_CANNOT_PROVE_30S_TARGET",
+      "TRADE_DERIVED_SUBMINUTE_REPRESENTATION_UNAVAILABLE"
+    ]
+  },
+  "fold_plan": {
+    "status": "PLAN_ONLY",
+    "fold_count": 8,
+    "mode": "expanding",
+    "train_days": 30,
+    "validation_days": 7,
+    "step_days": 7,
+    "purge_embargo_seconds": 600,
+    "whole_event_groups": true,
+    "random_split": false
+  },
+  "commodity_status": "HISTORICAL_COMMODITY_SEQUENCE_UNAVAILABLE_IN_CURRENT_HIST003_ARTIFACT",
+  "microstructure": {
+    "snapshot": "not materialized in HIST-003; DepthFeed snapshot probe is not historical archive evidence",
+    "delta": "blocked by provider capability/plan (HTTP 402); no snapshot-to-delta conversion"
+  },
+  "dataset_v2_touched": false,
+  "holdout_accessed": false,
+  "model_training": false
+}

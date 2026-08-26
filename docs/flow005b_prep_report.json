@@ -1,0 +1,33 @@
+{
+  "workflow": "FLOW-005B-PREP",
+  "status": "DEVELOPMENT_RESEARCH_ONLY",
+  "branch": "agent/flow-005b-prep-upstream-sequence",
+  "protected_main_base": "ca7f7765649e9ae3215867d8f88f458749ebabe0",
+  "builder_source_sha": "ca7f7765649e9ae3215867d8f88f458749ebabe0",
+  "dataset_id": "historical-research-f2d529adfb95080971becdaf",
+  "dataset_v2": "live15-dataset-v2-4bb4934bf328b6b024ff",
+  "holdout_state": "UNREVEALED_FROZEN",
+  "sequence_readiness_manifest": "docs/sequence_readiness.json",
+  "upstream_pins_manifest": "docs/model_upstream_pins.json",
+  "sequence_status": "SEQUENCE_PARTIAL_MORE_DATA_OR_REPRESENTATION_NEEDED",
+  "microstructure_snapshot_status": "MICROSTRUCTURE_SNAPSHOT_NOT_MATERIALIZED",
+  "microstructure_delta_status": "MICROSTRUCTURE_DELTA_BLOCKED",
+  "no_model_training": true,
+  "dataset_v2_touched": false,
+  "holdout_accessed": false,
+  "recorder_changed": false,
+  "paper_or_production_wiring": false,
+  "checker": {
+    "verdict": "PASS",
+    "checks": [
+      "exact full-SHA upstream pins with explicit license evidence",
+      "event-local as-of sequence construction",
+      "no future-nearest, interpolation, forward-fill, or zero-fill",
+      "30-second target not fabricated from 1-minute candles",
+      "trade stream not silently converted into a sequence",
+      "snapshot and delta readiness kept separate",
+      "Dataset v2 and holdout isolated",
+      "no model training or runtime/Paper/Production changes"
+    ]
+  }
+}
