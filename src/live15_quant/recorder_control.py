@@ -78,6 +78,36 @@ def process_alive(pid: int) -> bool:
     return True
 
 
+def process_identity(pid: int) -> dict[str, str] | None:
+    """Return the stable Windows process facts needed to reject PID reuse."""
+    if not process_alive(pid) or os.name != "nt":
+        return None
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x1000 | 0x0400, False, pid)
+    if not handle:
+        return None
+    try:
+        created = ctypes.c_ulonglong()
+        ignored = (ctypes.c_ulonglong(), ctypes.c_ulonglong(), ctypes.c_ulonglong())
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(created),
+            *(ctypes.byref(value) for value in ignored),
+        ):
+            return None
+        size = ctypes.c_ulong(32768)
+        image = ctypes.create_unicode_buffer(size.value)
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(size)):
+            return None
+        # FILETIME ticks are 100ns since 1601-01-01 UTC; retain the exact value
+        # rather than rounding it through a locale-dependent wall clock.
+        return {"process_start_time": str(created.value), "executable": image.value}
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _atomic_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")

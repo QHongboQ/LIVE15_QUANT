@@ -292,6 +292,96 @@ def test_stale_component_receipt_uses_bounded_restart_backoff(tmp_path: Path) ->
     assert sum(p.command[-1] == "live15_quant.managed_paper" for p in launched) == 1
 
 
+def test_pid_reuse_control_center_receipt_is_restarted_without_touching_recorder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = configured(tmp_path)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "control-center-status.json").write_text(
+        json.dumps(
+            {
+                "status": "RUNNING",
+                "pid": 15212,
+                "started_at": NOW.isoformat(),
+                "last_heartbeat": datetime.now(UTC).isoformat(),
+                "process_start_time": "original",
+                "expected_executable": "python.exe",
+                "listen_host": "127.0.0.1",
+                "listen_port": 8765,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("live15_quant.runtime_supervisor.process_alive", lambda pid: pid == 15212)
+    controller = FakeController()
+    supervisor = RuntimeSupervisor(
+        settings,
+        root=tmp_path,
+        controller=controller,
+        popen=lambda command, **_kwargs: FakeProcess(command),
+        identity_lookup=lambda _pid: {"process_start_time": "reused", "executable": "node.exe"},
+        control_center_probe=lambda _host, _port: False,
+        monotonic=lambda: 100.0,
+    )
+
+    result = supervisor.tick()
+
+    assert result["control_center"]["health_state"] == "PID_REUSED"
+    assert result["control_center"]["status"] == "BACKOFF"
+    assert controller.pause_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("identity", "probe_result", "expected"),
+    [
+        ({"process_start_time": "original", "executable": "other.exe"}, True, "COMMAND_MISMATCH"),
+        (
+            {"process_start_time": "original", "executable": "python.exe"},
+            False,
+            "HEALTH_ENDPOINT_FAILED",
+        ),
+    ],
+)
+def test_control_center_watchdog_rejects_wrong_identity_or_failed_health_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    identity: dict[str, str],
+    probe_result: bool,
+    expected: str,
+) -> None:
+    settings = configured(tmp_path)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "control-center-status.json").write_text(
+        json.dumps(
+            {
+                "status": "RUNNING",
+                "pid": 15212,
+                "started_at": NOW.isoformat(),
+                "last_heartbeat": datetime.now(UTC).isoformat(),
+                "process_start_time": "original",
+                "expected_executable": "python.exe",
+                "listen_host": "127.0.0.1",
+                "listen_port": 8765,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("live15_quant.runtime_supervisor.process_alive", lambda _pid: True)
+    supervisor = RuntimeSupervisor(
+        settings,
+        root=tmp_path,
+        controller=FakeController(),
+        popen=lambda command, **_kwargs: FakeProcess(command),
+        identity_lookup=lambda _pid: identity,
+        control_center_probe=lambda _host, _port: probe_result,
+        monotonic=lambda: 100.0,
+    )
+
+    assert supervisor.tick()["control_center"]["health_state"] == expected
+
+
 def test_one_component_launch_failure_is_backed_off_without_killing_tick(
     tmp_path: Path,
 ) -> None:

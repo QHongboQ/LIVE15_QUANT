@@ -13,6 +13,8 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +27,7 @@ from live15_quant.recorder_control import (
     ManagedRecorderState,
     RecorderProcessController,
     process_alive,
+    process_identity,
 )
 from live15_quant.runtime_status import (
     RuntimePidLease,
@@ -51,6 +54,23 @@ class ManagedChild:
     healthy_since_monotonic: float | None = None
 
 
+def _control_center_http_healthy(host: str, port: int) -> bool:
+    """Verify the listener is this read-only Control Center, not just any PID."""
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/api/health", timeout=2.0) as response:
+            if response.status != 200:
+                return False
+        with urllib.request.urlopen(f"http://{host}:{port}/api/system", timeout=2.0) as response:
+            payload = json.loads(response.read(64 * 1024))
+        return bool(
+            isinstance(payload, dict)
+            and payload.get("service") == "LIVE15 Control Center"
+            and payload.get("bind_host") == "127.0.0.1"
+        )
+    except (OSError, ValueError, urllib.error.URLError, json.JSONDecodeError):
+        return False
+
+
 class RuntimeSupervisor:
     """Start dependencies in order and restart independent services with backoff."""
 
@@ -63,6 +83,8 @@ class RuntimeSupervisor:
         sleep: Any = time.sleep,
         popen: Any = subprocess.Popen,
         controller: Any = None,
+        identity_lookup: Any = process_identity,
+        control_center_probe: Any = _control_center_http_healthy,
     ) -> None:
         self.settings = settings
         self.root = (root or Path.cwd()).resolve()
@@ -74,6 +96,8 @@ class RuntimeSupervisor:
         self._sleep = sleep
         self._popen = popen
         self.controller = controller or RecorderProcessController(settings)
+        self._identity_lookup = identity_lookup
+        self._control_center_probe = control_center_probe
         self.started_at = utc_timestamp()
         self.children = {
             "kalshi_sdk_ws_shadow": ManagedChild(
@@ -434,6 +458,11 @@ class RuntimeSupervisor:
         age = (datetime.now(UTC) - heartbeat).total_seconds() if heartbeat else None
         alive = pid > 0 and process_alive(pid)
         status = str(payload.get("status", "STOPPED")) if payload else "STOPPED"
+        health_state = "HEALTHY" if alive else "PROCESS_MISSING"
+        if child.name == "control_center":
+            health_state = self._control_center_health(payload, pid, age, alive)
+            alive = health_state == "HEALTHY"
+            status = "RUNNING" if alive else "RESTART_REQUIRED"
         if alive and age is not None and age > 15:
             status = "STALE"
         projection = {
@@ -459,6 +488,7 @@ class RuntimeSupervisor:
             ),
             "log_path": str(child.stdout_path.resolve()),
             "launcher_pid": child.launcher.pid if child.launcher is not None else None,
+            "health_state": health_state,
         }
         if child.name == "kalshi_sdk_ws_shadow" and payload:
             for key in (
@@ -472,6 +502,34 @@ class RuntimeSupervisor:
             ):
                 projection[key] = payload.get(key)
         return projection
+
+    def _control_center_health(
+        self, payload: dict[str, object] | None, pid: int, age: float | None, alive: bool
+    ) -> str:
+        if not payload or pid <= 0:
+            return "PROCESS_MISSING"
+        expected_start = payload.get("process_start_time")
+        expected_executable = payload.get("expected_executable")
+        if not isinstance(expected_start, str) or not isinstance(expected_executable, str):
+            return "STALE_PID"
+        if not alive:
+            return "PROCESS_MISSING"
+        identity = self._identity_lookup(pid)
+        if identity is None:
+            return "DEGRADED"
+        if identity.get("process_start_time") != expected_start:
+            return "PID_REUSED"
+        if os.path.normcase(identity.get("executable", "")) != os.path.normcase(
+            expected_executable
+        ):
+            return "COMMAND_MISMATCH"
+        if age is None or age > self.settings.ui_heartbeat_stale_seconds:
+            return "HEARTBEAT_STALE"
+        host = payload.get("listen_host")
+        port = payload.get("listen_port")
+        if not isinstance(host, str) or not isinstance(port, int):
+            return "PORT_NOT_LISTENING"
+        return "HEALTHY" if self._control_center_probe(host, port) else "HEALTH_ENDPOINT_FAILED"
 
     @staticmethod
     def _expected_mode(name: str) -> str:

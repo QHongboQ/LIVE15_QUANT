@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -11,6 +12,7 @@ import uvicorn
 from live15_quant.config import load_settings
 from live15_quant.control_center import LOCAL_HOST, create_app
 from live15_quant.logging_config import configure_logging
+from live15_quant.recorder_control import process_identity
 from live15_quant.runtime_status import (
     RuntimePidLease,
     atomic_json,
@@ -65,6 +67,9 @@ async def _run() -> None:
     control_path = runtime / "runtime-supervisor-control.json"
     started = utc_timestamp()
     lease.acquire()
+    identity = process_identity(os.getpid())
+    if identity is None:
+        raise RuntimeError("control center process identity is unavailable")
     server = uvicorn.Server(
         uvicorn.Config(
             create_app(settings),
@@ -82,7 +87,17 @@ async def _run() -> None:
         expected_mode="LOCALHOST_READ_ONLY_WITH_BOUNDED_RECORDER_CONTROL",
         working_directory=root,
         log_path=root / "logs" / "control_center.log",
-        extra={"listen_host": LOCAL_HOST, "listen_port": settings.ui_port},
+        extra={
+            "service_name": "live15_control_center",
+            "process_start_time": identity["process_start_time"],
+            "expected_executable": identity["executable"],
+            "expected_command": f"{sys.executable} -m live15_quant.managed_control_center",
+            "runtime_instance_id": f"{os.getpid()}:{identity['process_start_time']}",
+            "listen_host": LOCAL_HOST,
+            "listen_port": settings.ui_port,
+            "health_state": "STARTING",
+            "last_health_check": started,
+        },
     )
     atomic_json(status_path, status)
 
