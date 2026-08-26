@@ -103,10 +103,56 @@
   },
   "readiness": {
     "canonical_evidence_gate": "PASS",
-    "sequence": "INSUFFICIENT_SEQUENCE_EVIDENCE",
+    "sequence": "SEQUENCE_PARTIAL_MORE_DATA_OR_REPRESENTATION_NEEDED",
     "microstructure": "INSUFFICIENT_MICROSTRUCTURE_EVIDENCE",
-    "structured_path": "ELIGIBLE_H1_OFFICIAL",
+    "structured_path": "PARTIAL_H1_READY_H0_PRIORITY_VALIDATION_REQUIRED",
     "path_model_tournament": "NOT_APPROVED_PENDING_BASELINE_TAG_AND_H2/SEQUENCE_GATES"
+  },
+  "sequence_reconciliation": {
+    "prior_evid_recon_status": "SEQUENCE_READY_FOR_BOUNDED_MODEL_TRAINING",
+    "canonical_status": "SEQUENCE_PARTIAL_MORE_DATA_OR_REPRESENTATION_NEEDED",
+    "root_cause": "canonical_evidence.CanonicalEvidenceSnapshot._aggregate_days counted general coverage_days for capabilities whose explicit capability count was zero; H0 had six general coverage days but no materialized path evidence",
+    "files": [
+      "src/live15_quant/canonical_evidence.py",
+      "tests/test_canonical_evidence.py",
+      "docs/evid_recon001_report.json",
+      "docs/sequence_readiness.json"
+    ],
+    "data_regressed": false,
+    "h1_stratified_evidence": {"utc_days": 7, "events": 144, "sequences": 10653, "folds": 4, "purge_embargo_seconds": 600},
+    "canonical_readiness": "READY",
+    "training_preflight_path_expert": "PARTIAL",
+    "training_preflight_reason": "H0_PRIORITY_VALIDATION_REQUIRED",
+    "holdout_accessed": false
+  },
+  "storage_lifecycle": {
+    "status": "STORAGE_LIFECYCLE_PARTIAL",
+    "hot_db_bytes": 56981635072,
+    "wal_bytes": 67108864,
+    "shm_bytes": 32768,
+    "free_bytes": 208660918272,
+    "archive_enabled_in_code": true,
+    "archive_automatic_while_recorder_runs": true,
+    "archive_currently_active": false,
+    "archive_last_success": "2026-08-25T20:37:07.618991+00:00",
+    "archive_chunks": 33248,
+    "archive_verified_chunks": 33247,
+    "archive_failed_chunks": 1,
+    "archive_purge_eligible_chunks": 813,
+    "archive_purged_chunks": 32434,
+    "archive_backlog_blocker": "failed chunk ws-244812239-244812260",
+    "archive_verification": "checksum_and_replay_verification_code_present; current manifest has one FAILED chunk",
+    "purge_implemented": true,
+    "purge_automatic_while_recorder_runs": true,
+    "purge_rule": "manifest PURGE_ELIGIBLE plus file/logical/replay checksum and contiguous range verification; bounded 20000-row batches",
+    "compaction_implemented": true,
+    "compaction_automatic": false,
+    "compaction_gate": {"allowed": false, "reclaimable_bytes": 0, "minimum_bytes": 8589934592, "minimum_percent": 25},
+    "raw_ws_growth_bytes_per_day": 29213080119.70317,
+    "net_disk_growth_bytes_per_day": 22197316285.812614,
+    "runway_days_net_growth": 9.4,
+    "runway_days_raw_ws_growth": 7.1,
+    "growth_note": "short observed window; runway is an estimate, not a capacity guarantee"
   },
   "integrity": {
     "dataset_v2_mutated": false,
@@ -117,7 +163,7 @@
     "final_test_used": false
   },
   "validation": {
-    "checker": "PENDING_BASELINE_PR_VALIDATION",
+    "checker": "PASS_BOUNDED_READ_ONLY_AUDIT",
     "ruff_check": "PENDING",
     "ruff_format_check": "PENDING",
     "pytest": "PENDING",
