@@ -358,6 +358,28 @@ class KalshiOfficialHistoricalProvider:
             limit=limit,
         )
 
+    def market_pages(
+        self,
+        *,
+        series_ticker: str,
+        max_pages: int = _MAX_PROBE_PAGES,
+        limit: int = 1000,
+        cursor: str | None = None,
+    ) -> Iterable[tuple[tuple[HistoricalMarketRecord, ...], str | None, int]]:
+        """Yield bounded historical market pages for resumable acquisition."""
+
+        if not 1 <= max_pages <= _MAX_PROBE_PAGES:
+            raise ValueError("max_pages is outside the bounded historical acquisition range")
+        for page_number in range(1, max_pages + 1):
+            params: dict[str, object] = {"series_ticker": series_ticker, "limit": limit}
+            if cursor:
+                params["cursor"] = cursor
+            rows, next_cursor = self._page("markets", **params)
+            yield tuple(self._market_record(row) for row in rows), next_cursor, page_number
+            if not next_cursor:
+                break
+            cursor = next_cursor
+
     def _markets_or_trades(self, method: str, **kwargs: object) -> tuple[Any, ...]:
         max_pages = int(kwargs.pop("max_pages", 1))
         if not 1 <= max_pages <= _MAX_PROBE_PAGES:
