@@ -44,6 +44,8 @@ class ArchiveState(StrEnum):
     PURGE_ELIGIBLE = "purge_eligible"
     PURGED = "purged"
     FAILED = "failed"
+    WAITING_FOR_REPLAY_BASELINE = "waiting_for_replay_baseline"
+    QUARANTINED_REPLAY_BASELINE_MISSING = "quarantined_replay_baseline_missing"
 
 
 class DiskThresholdState(StrEnum):
@@ -684,8 +686,22 @@ class WsRetentionManifest:
             if row is None:
                 raise WsRetentionError("archive manifest chunk is missing")
             current = ArchiveState(row["state"])
+            if state in {
+                ArchiveState.WAITING_FOR_REPLAY_BASELINE,
+                ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING,
+            }:
+                raise WsRetentionError("use the explicit replay-baseline state transition API")
             if current is ArchiveState.FAILED and state is not ArchiveState.FAILED:
                 raise WsRetentionError("failed archive chunk cannot advance")
+            if (
+                current
+                in {
+                    ArchiveState.WAITING_FOR_REPLAY_BASELINE,
+                    ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING,
+                }
+                and state is not current
+            ):
+                raise WsRetentionError("replay-baseline state cannot advance implicitly")
             if state is not ArchiveState.FAILED and _STATE_ORDER[state] < _STATE_ORDER[current]:
                 return
             if state is not ArchiveState.FAILED and _STATE_ORDER[state] > _STATE_ORDER[current] + 1:
@@ -695,6 +711,81 @@ class WsRetentionManifest:
                 f"UPDATE ws_retention_chunks SET {','.join(assignments)} WHERE chunk_id=?",
                 (state.value, now.isoformat(), *facts.values(), chunk_id),
             )
+
+    def mark_waiting_for_replay_baseline(
+        self, chunk_id: str, *, now: datetime, reason: str = "REPLAY_BASELINE_MISSING"
+    ) -> ArchiveChunk:
+        """Stop a delta-only chunk before it becomes a false replay failure."""
+
+        with self._connect() as connection, connection:
+            row = connection.execute(
+                "SELECT state FROM ws_retention_chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            if row is None:
+                raise WsRetentionError("archive manifest chunk is missing")
+            current = ArchiveState(row["state"])
+            if current not in {
+                ArchiveState.WRITING,
+                ArchiveState.WAITING_FOR_REPLAY_BASELINE,
+            }:
+                raise WsRetentionError("only an unverified chunk may wait for a replay baseline")
+            connection.execute(
+                "UPDATE ws_retention_chunks SET state=?,failure=?,updated_at=? WHERE chunk_id=?",
+                (ArchiveState.WAITING_FOR_REPLAY_BASELINE.value, reason, now.isoformat(), chunk_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM ws_retention_chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            assert updated is not None
+            return self._chunk(updated)
+
+    def quarantine_failed_chunk(
+        self, chunk_id: str, *, now: datetime, reason: str = "REPLAY_BASELINE_MISSING"
+    ) -> ArchiveChunk:
+        """Explicitly isolate an unreplayable range while retaining its raw source rows."""
+
+        with self._connect() as connection, connection:
+            row = connection.execute(
+                "SELECT state FROM ws_retention_chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            if row is None:
+                raise WsRetentionError("archive manifest chunk is missing")
+            current = ArchiveState(row["state"])
+            if current not in {
+                ArchiveState.FAILED,
+                ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING,
+            }:
+                raise WsRetentionError("only a failed chunk may be quarantined")
+            connection.execute(
+                "UPDATE ws_retention_chunks SET state=?,failure=?,updated_at=? WHERE chunk_id=?",
+                (
+                    ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING.value,
+                    reason,
+                    now.isoformat(),
+                    chunk_id,
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM ws_retention_chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            assert updated is not None
+            return self._chunk(updated)
+
+    def quarantine_overlaps(
+        self, first_event_id: int, last_event_id: int
+    ) -> tuple[ArchiveChunk, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM ws_retention_chunks
+                WHERE state=? AND NOT(last_event_id<? OR first_event_id>?)
+                ORDER BY first_event_id""",
+                (
+                    ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING.value,
+                    first_event_id,
+                    last_event_id,
+                ),
+            )
+            return tuple(self._chunk(row) for row in rows)
 
     def end_state_before(
         self, event_id: int, connection_id: str, subscription_id: int
@@ -720,11 +811,13 @@ class WsRetentionManifest:
 
     def last_event_id(self) -> int:
         with self._connect() as connection:
-            failed = connection.execute(
-                "SELECT chunk_id FROM ws_retention_chunks WHERE state='failed' LIMIT 1"
+            blocked = connection.execute(
+                """SELECT chunk_id FROM ws_retention_chunks
+                WHERE state IN (?,?) LIMIT 1""",
+                (ArchiveState.FAILED.value, ArchiveState.WAITING_FOR_REPLAY_BASELINE.value),
             ).fetchone()
-            if failed is not None:
-                raise WsRetentionError("failed archive chunk blocks later retention ranges")
+            if blocked is not None:
+                raise WsRetentionError("unreplayable archive chunk blocks later retention ranges")
             row = connection.execute(
                 "SELECT MAX(last_event_id) FROM ws_retention_chunks"
             ).fetchone()
@@ -746,7 +839,10 @@ class WsRetentionManifest:
                     'checksum_verified','replay_verified','committed','purge_eligible','purged'
                 )) verified,
                 SUM(state IN ('committed','purge_eligible','purged')) retention_verified,
-                SUM(state='failed') failed,SUM(state='purge_eligible') eligible,
+                SUM(state='failed') failed,
+                SUM(state='waiting_for_replay_baseline') waiting_for_replay_baseline,
+                SUM(state='quarantined_replay_baseline_missing') quarantined,
+                SUM(state='purge_eligible') eligible,
                 COALESCE(SUM(purged_events),0) purged,
                 COALESCE(SUM(compressed_bytes),0) compressed,
                 COALESCE(SUM(uncompressed_bytes),0) uncompressed,
@@ -1175,6 +1271,16 @@ class WsArchiveService:
                 f"chunk-{first.row_id}-{records[-1].row_id}.zlib"
             )
             chunk = self.manifest.reserve(records, relative_path=relative, created_at=observed)
+        if (
+            records[0].event_kind is KalshiWsEventKind.DELTA
+            and self.manifest.end_state_before(
+                records[0].row_id, records[0].connection_id, records[0].subscription_id
+            )
+            is None
+        ):
+            waiting = self.manifest.mark_waiting_for_replay_baseline(chunk.chunk_id, now=observed)
+            elapsed = max(time.perf_counter() - started, 1e-9)
+            return ArchiveRunResult(waiting, elapsed, 0.0, 0)
         result = self._verify_and_publish(chunk, records, observed)
         elapsed = max(time.perf_counter() - started, 1e-9)
         return ArchiveRunResult(
@@ -1265,6 +1371,8 @@ class WsPurgeService:
     def _authorize(self, chunk: ArchiveChunk) -> None:
         if chunk.state is not ArchiveState.PURGE_ELIGIBLE:
             raise WsRetentionError("purge chunk is not manifest-authorized")
+        if self.manifest.quarantine_overlaps(chunk.first_event_id, chunk.last_event_id):
+            raise WsRetentionError("purge range crosses a quarantined replay-baseline gap")
         self.verify_preserved_archive(chunk)
 
     def run_once(self, *, now: datetime | None = None) -> PurgeRunResult:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -181,6 +182,32 @@ def test_market_and_portfolio_reads_use_sdk_resources() -> None:
     assert portfolio.positions(exchange_index=2) == ()
     assert portfolio.orders(ticker="TICKER", exchange_index=2) == ()
     assert portfolio.fills(ticker="TICKER", exchange_index=2) == ()
+
+
+def test_orderbook_updates_delegate_snapshot_safe_resubscribe_semantics() -> None:
+    calls: list[tuple[int, str, dict[str, object]]] = []
+
+    class SubscriptionManager:
+        async def update_subscription(self, client_id: int, action: str, **kwargs: object) -> None:
+            calls.append((client_id, action, kwargs))
+
+    session = SimpleNamespace(_sub_mgr=SubscriptionManager())
+    asyncio.run(
+        KalshiWebSocketGateway.update_orderbook_subscription(
+            session,
+            client_id=7,
+            delete_tickers=("KXETH15M-TEST",),
+            add_tickers=("KXBTC15M-TEST",),
+        )
+    )
+    assert calls == [
+        (7, "delete_markets", {"market_tickers": ["KXETH15M-TEST"]}),
+        (
+            7,
+            "add_markets",
+            {"market_tickers": ["KXBTC15M-TEST"], "send_initial_snapshot": True},
+        ),
+    ]
 
 
 def test_order_get_uses_list_fallback_only_for_404() -> None:
