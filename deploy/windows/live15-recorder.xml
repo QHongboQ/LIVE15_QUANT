@@ -1,0 +1,23 @@
+<service>
+  <id>LIVE15Recorder</id>
+  <name>LIVE15 Recorder</name>
+  <description>Authoritative LIVE15 market-data Recorder.</description>
+  <executable>%BASE%\..\..\.venv\Scripts\python.exe</executable>
+  <arguments>-c &quot;from live15_quant.cli import recorder_main; recorder_main()&quot;</arguments>
+  <workingdirectory>%BASE%\..\..</workingdirectory>
+  <env name="PYTHONUNBUFFERED" value="1" />
+  <env name="PYTHONUTF8" value="1" />
+  <env name="LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET" value="true" />
+  <env name="LIVE15_KALSHI_RECORDER_PROVIDER" value="sdk" />
+  <env name="LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH" value="%LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH%" />
+  <env name="LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH" value="%LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH%" />
+  <startmode>Automatic</startmode>
+  <logpath>%BASE%\..\..\logs</logpath>
+  <log mode="roll" />
+  <stoptimeout>15 sec</stoptimeout>
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <onfailure action="restart" delay="60 sec" />
+  <onfailure action="none" />
+  <resetfailure>5 min</resetfailure>
+</service>
