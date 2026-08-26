@@ -51,3 +51,36 @@ for promotion, Production authority, Hard Risk, and protected architecture chang
 
 The full proof manifest is a local ignored artifact at
 `data/research/hist001_proof.json`; raw history is never committed to Git.
+
+## HIST-002R — verified provider hierarchy
+
+HIST-002R adds a read-only provider boundary without changing the Recorder or Dataset v2:
+
+1. `kalshi_official` / `H1_KALSHI_OFFICIAL_HISTORY` is the authoritative source for official
+   historical markets, metadata, public trades, and completed candlesticks. The installed
+   `kalshi-sdk==12.0.0` historical resource is used directly for cutoff, markets, trades, and
+   candles.
+2. `depthfeed_kalshi_l2` / `H2_DEPTHFEED_RECORDED_L2` is optional third-party evidence for
+   historical full-depth snapshots and separately sourced ticks. Snapshot rows are classified
+   `HISTORICAL_L2_SNAPSHOT`; tick rows are classified `HISTORICAL_L2_DELTA`. Snapshots are never
+   converted into deltas or synthetic ladders.
+3. `live15_recorder_h0` remains the authoritative source for future LIVE15-owned realtime
+   microstructure. The new adapters do not import or write Recorder state.
+
+DepthFeed is independently failing and requires a project secret reference named
+`.secrets/depthfeed-api-key.txt` plus an explicitly configured `DEPTHFEED_BASE_URL`. Without the
+key, the adapter returns `DEPTHFEED_NOT_CONFIGURED`; no credential is logged or committed. The
+bounded probe is intentionally key-gated and does not perform bulk acquisition. The official
+Kalshi probe uses one representative page and short cutoff/trade/candle requests only.
+
+All observations retain provider provenance and endpoint family. Candles are eligible only after
+their period end; L2 selection uses the latest observation with provider receive time at or before
+the decision. There is no future-nearest join, forward fill, interpolation, or fake orderbook
+reconstruction. Acquisition manifests hash provider, endpoint, bounds, tickers, archive floor,
+rows, and code SHA while excluding acquisition time from scientific content identity.
+
+Coverage is source-aware: crypto BTC/ETH/SOL/XRP/DOGE/BNB/HYPE may use official history plus H2
+L2 where available; Gold/Silver/WTI use official markets/trades/candles only, with historical L2
+`UNAVAILABLE_FROM_VERIFIED_PROVIDER`. This remains historical research infrastructure, not fresh
+current-regime validation or model eligibility promotion. HIST-003 is the future bounded bulk
+acquisition task; no bulk archive was downloaded here.

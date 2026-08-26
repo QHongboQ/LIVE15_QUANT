@@ -1,0 +1,61 @@
+{
+  "report": "HIST-002R",
+  "status": "READ_ONLY_PROVIDER_BOUNDARY_READY",
+  "protected_main_sha": "9d3777c5e603d7936f17b8984b0e6c54f1f359c7",
+  "providers": [
+    {
+      "provider_id": "kalshi_official",
+      "tier": "H1_KALSHI_OFFICIAL_HISTORY",
+      "authority": "official historical contract data",
+      "sdk": "kalshi-sdk==12.0.0",
+      "endpoint_families": [
+        "historical_cutoff",
+        "historical_markets",
+        "historical_trades",
+        "historical_candlesticks"
+      ],
+      "historical_full_l2": "UNAVAILABLE_FROM_OFFICIAL_PROVIDER"
+    },
+    {
+      "provider_id": "depthfeed_kalshi_l2",
+      "tier": "H2_DEPTHFEED_RECORDED_L2",
+      "authority": "supplemental historical L2 evidence",
+      "endpoint_families": ["markets", "snapshots", "ticks"],
+      "snapshot_quality_class": "HISTORICAL_L2_SNAPSHOT",
+      "tick_quality_class": "HISTORICAL_L2_DELTA",
+      "archive_floor": {
+        "KXBTC15M": "2026-01-08",
+        "KXETH15M": "2026-01-08",
+        "KXSOL15M": "2026-01-09",
+        "KXXRP15M": "2026-02-11",
+        "KXBNB15M": "2026-03-07",
+        "KXDOGE15M": "2026-03-07",
+        "KXHYPE15M": "2026-03-18"
+      },
+      "delta_archive_floor": "2026-08-07",
+      "bulk_download_performed": false,
+      "key_status": "DEPTHFEED_INTEGRATION_READY_KEY_REQUIRED"
+    },
+    {
+      "provider_id": "live15_recorder_h0",
+      "tier": "H0_LIVE15_REALTIME_CAPTURE",
+      "authority": "LIVE15 Recorder / kalshi-sdk live microstructure",
+      "changed": false
+    }
+  ],
+  "asset_eligibility": {
+    "crypto_l2": ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"],
+    "commodities_official_only": ["Gold", "Silver", "WTI"],
+    "commodities_l2": "UNAVAILABLE_FROM_VERIFIED_PROVIDER"
+  },
+  "safety": {
+    "dataset_v2_touched": false,
+    "holdout_accessed": false,
+    "recorder_changed": false,
+    "production_or_paper_wiring": false,
+    "model_training": false,
+    "future_nearest_join": false,
+    "interpolation": false,
+    "synthetic_orderbook": false
+  }
+}
