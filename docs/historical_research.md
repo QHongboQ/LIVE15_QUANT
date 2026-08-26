@@ -13,9 +13,9 @@ The local evidence available for a bounded proof is H0 live-native data already 
 LIVE15: Coinbase ticks, Pyth observations, secondary underlying observations, Kalshi quote and
 lifecycle records, finalized settlements, current-trainable rows, and SDK-authoritative WS
 orderbook events. The WS archive is independently manifested and its coverage boundary is
-visible. The current integration can request historical Kalshi market metadata through
-`/historical/markets`, but no historical trades/candles/full orderbook source was acquired or
-proven, so those capabilities remain unavailable rather than inferred.
+visible. Before HIST-003, the current integration could request historical Kalshi market metadata
+through `/historical/markets`, but no historical trades/candles/full orderbook source had been
+acquired or proven; those capabilities were kept unavailable rather than inferred.
 
 The proof uses a read-only row-ID-bounded snapshot of `data/current_trainable.sqlite3` as a
 separate `HistoricalResearchDataset` lineage. It is not Dataset v3 and it does not read or alter
@@ -82,5 +82,26 @@ rows, and code SHA while excluding acquisition time from scientific content iden
 Coverage is source-aware: crypto BTC/ETH/SOL/XRP/DOGE/BNB/HYPE may use official history plus H2
 L2 where available; Gold/Silver/WTI use official markets/trades/candles only, with historical L2
 `UNAVAILABLE_FROM_VERIFIED_PROVIDER`. This remains historical research infrastructure, not fresh
-current-regime validation or model eligibility promotion. HIST-003 is the future bounded bulk
-acquisition task; no bulk archive was downloaded here.
+current-regime validation or model eligibility promotion.
+
+## HIST-003 — bounded 90-day acquisition (development only)
+
+HIST-003 completed the bounded official-history acquisition against the resolved Kalshi cutoff
+`2026-06-26T00:00:00Z`, covering `2026-03-28T00:00:00Z` through that cutoff. The complete
+in-window market metadata set contains 59,056 markets across 90 independent UTC days, with
+886,454 official public trades and 5,242 completed 1-minute candles retained in the ignored raw
+SQLite store. Detail trades/candles were intentionally capped at 500 markets; this is partial
+detail coverage, not an uncontrolled full-tape download. Two cutoff, 132 market-page, 700 trade,
+and 700 candle GET calls were recorded across the initial run and bounded candle retry run; no
+conflicts were observed. The store occupied 675,569,664 bytes at materialization.
+
+Gold, Silver, and WTI had no verified in-window market rows in this cutoff snapshot. DepthFeed was
+not configured (`H2_PENDING_DEPTHFEED_CREDENTIALS`), so no historical L2 or tick/delta data was
+requested. The deterministic `HistoricalResearchDataset` identity is
+`historical-research-26d259fca746d0da85703b77`; its ignored full manifest is
+`data/research/hist003/hist003_manifest.json` and the tracked summary is
+`hist003_acquisition_summary.json`. A plan-only expanding walk-forward layout has eight folds
+(30 train days, 7 validation days, 7-day step, 600-second purge/embargo, whole-event groups).
+Structured H1 path/terminal research is eligible; microstructure and event-delta research remain
+H2-gated, and sequence readiness remains `INSUFFICIENT_SEQUENCE_EVIDENCE`. No model was trained,
+Dataset v2 or its holdout was read, and Recorder/Production/Paper paths were unchanged.

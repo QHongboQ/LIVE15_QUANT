@@ -1,0 +1,78 @@
+{
+  "report": "HIST-003",
+  "status": "PARTIAL_H2_PENDING_DEPTHFEED_CREDENTIALS",
+  "code_sha": "b61cbce45c62532dab1ce181141a255eb0c5b4fa",
+  "window": {
+    "start": "2026-03-28T00:00:00+00:00",
+    "end": "2026-06-26T00:00:00+00:00",
+    "days": 90
+  },
+  "cutoff": "2026-06-26T00:00:00+00:00",
+  "universe": {
+    "BTC": "KXBTC15M",
+    "ETH": "KXETH15M",
+    "SOL": "KXSOL15M",
+    "XRP": "KXXRP15M",
+    "DOGE": "KXDOGE15M",
+    "BNB": "KXBNB15M",
+    "HYPE": "KXHYPE15M",
+    "Gold": "KXGOLD15M",
+    "Silver": "KXSILVER15M",
+    "WTI": "KXWTI15M"
+  },
+  "provider": "kalshi_official",
+  "depthfeed": "DEPTHFEED_NOT_CONFIGURED",
+  "counts": {
+    "markets": 59056,
+    "trades": 886454,
+    "candles_1m": 5242,
+    "conflicts": 0,
+    "independent_utc_days": 90,
+    "events_markets": 59056
+  },
+  "api_calls": {
+    "historical_cutoff": 2,
+    "historical_markets": 132,
+    "historical_trades": 700,
+    "historical_candlesticks": 700
+  },
+  "detail_scope": {
+    "market_metadata": "all in-window markets",
+    "trades_and_candles": "bounded 500-market detail cap",
+    "partial_detail_coverage": true
+  },
+  "per_asset": {
+    "BTC": {"markets": 8486, "trades": 645260, "candles_1m": 750},
+    "ETH": {"markets": 8486, "trades": 85410, "candles_1m": 750},
+    "SOL": {"markets": 8448, "trades": 32478, "candles_1m": 745},
+    "XRP": {"markets": 8409, "trades": 31111, "candles_1m": 749},
+    "DOGE": {"markets": 8409, "trades": 30497, "candles_1m": 749},
+    "BNB": {"markets": 8409, "trades": 25300, "candles_1m": 750},
+    "HYPE": {"markets": 8409, "trades": 36398, "candles_1m": 749},
+    "Gold": {"markets": 0, "trades": 0, "candles_1m": 0},
+    "Silver": {"markets": 0, "trades": 0, "candles_1m": 0},
+    "WTI": {"markets": 0, "trades": 0, "candles_1m": 0}
+  },
+  "walk_forward_plan": {
+    "status": "PLAN_ONLY",
+    "fold_count": 8,
+    "mode": "expanding",
+    "train_days": 30,
+    "validation_days": 7,
+    "step_days": 7,
+    "purge_embargo_seconds": 600,
+    "whole_event_groups": true,
+    "random_split": false
+  },
+  "historical_research_dataset_id": "historical-research-26d259fca746d0da85703b77",
+  "acquisition_identity": "historical-research-123b3b9f439e57b700afd7a4",
+  "raw_store": "ignored data/research/hist003/hist003_official.sqlite3",
+  "storage_bytes": 675569664,
+  "dataset_v2_touched": false,
+  "holdout_accessed": false,
+  "recorder_changed": false,
+  "model_training": false,
+  "sequence_readiness": "INSUFFICIENT_SEQUENCE_EVIDENCE",
+  "microstructure_readiness": "H2_PENDING_DEPTHFEED_CREDENTIALS",
+  "structured_path_readiness": "ELIGIBLE_H1_OFFICIAL"
+}
