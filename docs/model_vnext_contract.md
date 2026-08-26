@@ -209,3 +209,19 @@ outcome is `NO_ROBUST_SYMBOLIC_FACTOR_SIGNAL`. The same frozen run was repeated 
 identical JSON/Markdown hashes. This does not consume the holdout, promote a factor, change the
 Model vNext conclusion, or authorize FACTOR-002/reward learning. Sequence readiness remains
 `INSUFFICIENT_SEQUENCE_EVIDENCE`.
+
+## FLOW-005B upstream pins and causal sequence readiness
+
+FLOW-005B records exact upstream provenance in `docs/model_upstream_pins.json`; the references
+are full commit SHAs only, with no vendoring or runtime dependency. Time-Series-Library and TLOB
+are MIT-licensed at their pins, Qlib is an MIT-licensed orchestration reference, and EarnHFT has
+no license file at its pinned revision and therefore remains architecture-only pending review.
+
+The causal historical representation is documented in `docs/sequence_readiness.json`. It is
+event-local, completed-observation-only, train-fold-normalized, and uses an expanding whole-event
+fold plan with a 600-second purge/embargo. HIST-003 yields 37,118 exact-target 1-minute candle
+sequences across one independent sequence day; 30-second targets and a bounded trade-derived
+sub-minute representation are unavailable. The gate is
+`SEQUENCE_PARTIAL_MORE_DATA_OR_REPRESENTATION_NEEDED`. Microstructure snapshot and delta status
+remain separate, with delta blocked by the provider capability/plan response. No model training,
+Dataset v2/holdout access, or runtime/Paper/Production wiring occurred.

@@ -13,9 +13,9 @@ Recorder, execution, or Hard Risk.
 | Qlib | rolling-retrain, research orchestration, and RL reference | research reference only | not a current runtime dependency |
 | EarnHFT | hierarchical trading architecture reference | architecture reference only | not a current runtime dependency |
 
-Upstream provenance is the FLOW-005A approved decision plus the pinned LIVE15 contracts. Exact
-upstream commit revisions must be recorded before implementation; this milestone deliberately
-does not vendor code or add dependencies. License review is a gate for any future import.
+Upstream provenance is recorded in `docs/model_upstream_pins.json` with full commit SHAs. No
+upstream repository is vendored or added as a dependency. EarnHFT has no license file at its
+pinned revision and remains architecture-only pending license review.
 
 ## Layered LIVE15 architecture
 
@@ -63,3 +63,18 @@ joins, interpolation, forward fill, implicit zero substitution, or the unreveale
 
 The machine-readable source of truth is `docs/model_zoo_foundation.json`; executable contracts are
 in `live15_quant.model_zoo`, and readiness evaluation is in `live15_quant.model_readiness`.
+
+## FLOW-005B causal sequence preparation
+
+The causal representation and measured evidence are recorded in
+`docs/sequence_readiness.json` and `docs/sequence_readiness.md`. It uses event-local completed
+1-minute candles with sequence lengths 3/5/8/10 and horizons 30/60/120/180/300 seconds. The
+HIST-003 store contains 5,242 candles and produces 37,118 exact-target candle sequences across
+one independent sequence UTC day. The 30-second horizon is unavailable at 1-minute cadence;
+trade-event sequences are intentionally not fabricated from irregular trades.
+
+The result is `SEQUENCE_PARTIAL_MORE_DATA_OR_REPRESENTATION_NEEDED`. Snapshot and delta
+microstructure readiness remain separate: `MICROSTRUCTURE_SNAPSHOT_NOT_MATERIALIZED` and
+`MICROSTRUCTURE_DELTA_BLOCKED` (provider HTTP 402). Commodity sequence research remains
+`HISTORICAL_COMMODITY_SEQUENCE_UNAVAILABLE_IN_CURRENT_HIST003_ARTIFACT`. No model training,
+Dataset v2/holdout access, Recorder, Paper, Production, or Hard Risk changes occurred.

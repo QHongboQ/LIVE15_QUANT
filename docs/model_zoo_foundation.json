@@ -5,11 +5,22 @@
   "holdout_state": "UNREVEALED_FROZEN",
   "holdout_accessed": false,
   "hist003_historical_research_dataset": "historical-research-f2d529adfb95080971becdaf",
+  "sequence_readiness": {
+    "manifest": "docs/sequence_readiness.json",
+    "status": "SEQUENCE_PARTIAL_MORE_DATA_OR_REPRESENTATION_NEEDED",
+    "candle_sequences": 37118,
+    "trade_sequences": 0,
+    "independent_sequence_utc_days": 1,
+    "microstructure_snapshot_status": "MICROSTRUCTURE_SNAPSHOT_NOT_MATERIALIZED",
+    "microstructure_delta_status": "MICROSTRUCTURE_DELTA_BLOCKED"
+  },
   "provenance": {
     "decision": "FLOW-005A",
     "audit_date": "2026-08-26",
     "external_code_vendored": false,
-    "license_policy": "review upstream license before any vendoring or dependency addition"
+    "license_policy": "review upstream license before any vendoring or dependency addition",
+    "upstream_pins_manifest": "docs/model_upstream_pins.json",
+    "sequence_readiness_manifest": "docs/sequence_readiness.json"
   },
   "families": [
     {
