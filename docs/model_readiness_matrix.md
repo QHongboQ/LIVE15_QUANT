@@ -28,3 +28,13 @@ so no sequence model was trained and Path training remains locked. H2 raw ticks 
 
 All statuses are readiness decisions, not profitability or promotion decisions. Dataset v2
 holdout remains `UNREVEALED_FROZEN` and is not an allowed source.
+
+## EVID-RECON-001 update
+
+The prior one-day H1 sequence evidence was traced to first-N-per-asset temporal concentration,
+not to a lack of historical days. A deterministic 7-day stratified sample now supplies 10,653
+causal sequences across 144 event identities and four chronological folds (`purge_embargo_seconds`
+`600`). Accordingly, structured path evidence is now `SEQUENCE_READY_FOR_BOUNDED_MODEL_TRAINING`
+for offline bounded work only. H0's 6-day live-native layer remains supplementary because its
+trade-derived path rows are not materialized. H2 remains `MICROSTRUCTURE_SNAPSHOT_BLOCKED` with
+`H2_DELTA_UNAVAILABLE_PLAN_LIMIT`; no sequence or microstructure model was trained.

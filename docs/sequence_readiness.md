@@ -45,3 +45,18 @@ Commodity sequence research remains
 The deterministic machine-readable records are `docs/flow005b1_evidence_report.json` and the
 ignored `data/research/flow005b1/trade_sequence_manifest.json`. Dataset v2,
 its `UNREVEALED_FROZEN` holdout, Recorder, Paper, Production, and Hard Risk were not touched.
+
+## EVID-RECON-001 reconciliation
+
+The one-day result is now classified as a selection artifact, not a coverage conclusion:
+`HIST003_DETAIL_CAP_FIRST_N_PER_ASSET_TEMPORAL_CONCENTRATION`. The old first-N-per-asset cap
+selected 350 markets whose trades were concentrated on `2026-06-25`. A deterministic replacement
+selected 3 events per asset on 7 evenly spaced UTC days and materialized 147 markets, 201,424
+official trades, 2,187 candles, and 10,653 causal 5s/15s/30s sequences. This gives 7 independent
+H1 source days, 144 event identities, and 4 expanding folds with a 600-second purge/embargo.
+
+The resulting path evidence is `SEQUENCE_READY_FOR_BOUNDED_MODEL_TRAINING`; this is a readiness
+gate only and no model training was run. H0 remains separate real live-native evidence (6 days,
+4,350 event identities); its trade-derived sub-minute path representation is not materialized, so
+H0 and H1 were not silently merged. H2 produced no usable snapshots after a bounded timestamp
+contract failure and HTTP 429, and remains blocked.

@@ -1,0 +1,57 @@
+{
+  "report": "EVID-RECON-001",
+  "status": "EVIDENCE_RECONCILED_PARTIAL",
+  "code_sha": "313908ca86832364f550fe32e3e49fcf0bafb062",
+  "root_cause": "HIST003_DETAIL_CAP_FIRST_N_PER_ASSET_TEMPORAL_CONCENTRATION",
+  "h0": {
+    "provenance": "H0_LIVE_NATIVE",
+    "source": "data/live15.sqlite3 plus current_trainable.sqlite3 and ws_archive_manifest.sqlite3 (read-only)",
+    "independent_utc_days": 6,
+    "independent_events": 4350,
+    "assets": 10,
+    "quote_rows": 1460580,
+    "underlying_rows": 3212987,
+    "l2_checkpoints": 25509,
+    "atomic_orderbook_event_rows_retained": 298985205,
+    "gaps": {"rows": 40719, "recovered": 20358, "unrecovered": 20361},
+    "trade_path_sequence_materialized": false
+  },
+  "h1": {
+    "provenance": "H1_KALSHI_OFFICIAL_HISTORY",
+    "source_dataset_id": "historical-research-f2d529adfb95080971becdaf",
+    "selection": {
+      "policy": "evenly-spaced UTC day x asset x bounded events",
+      "target_days": 7,
+      "events_per_asset_day": 3,
+      "selected_markets": 147,
+      "selected_days": ["2026-03-28", "2026-04-12", "2026-04-27", "2026-05-11", "2026-05-26", "2026-06-10", "2026-06-25"]
+    },
+    "completed_markets": 147,
+    "trade_rows": 201424,
+    "candle_rows": 2187,
+    "conflicts": 0,
+    "sequence_count": 10653,
+    "independent_trade_days": 7,
+    "independent_events": 144,
+    "fold_plan": {"mode": "expanding", "train_days": 3, "validation_days": 1, "step_days": 1, "purge_embargo_seconds": 600, "folds": 4},
+    "path_readiness": "SEQUENCE_READY_FOR_BOUNDED_MODEL_TRAINING"
+  },
+  "h2": {
+    "provenance": "H2_DEPTHFEED_RECORDED_L2",
+    "discovered_markets": 50,
+    "snapshot_rows": 0,
+    "snapshot_readiness": "MICROSTRUCTURE_SNAPSHOT_BLOCKED",
+    "delta_readiness": "H2_DELTA_UNAVAILABLE_PLAN_LIMIT",
+    "bounded_failure": "provider returned naive received_timestamp values; subsequent bounded request was HTTP 429; no timestamp coercion or unbounded retry"
+  },
+  "combined": {
+    "path_ready_days": 7,
+    "h0_supplementary_days": 6,
+    "path_readiness": "SEQUENCE_READY_FOR_BOUNDED_MODEL_TRAINING",
+    "microstructure_readiness": "BLOCKED_NO_H2_SNAPSHOTS",
+    "model_training": false,
+    "dataset_v2_touched": false,
+    "holdout_accessed": false,
+    "recorder_changed": false
+  }
+}
