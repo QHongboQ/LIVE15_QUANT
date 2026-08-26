@@ -909,7 +909,11 @@ def ws_retention_main(argv: Sequence[str] | None = None) -> None:
     """Inspect or advance bounded verified WS retention without arbitrary paths or commands."""
 
     parser = argparse.ArgumentParser(prog="live15-ws-retention")
-    parser.add_argument("action", choices=("status", "archive-once", "purge-once", "compact-copy"))
+    parser.add_argument(
+        "action",
+        choices=("status", "archive-once", "purge-once", "quarantine-failed", "compact-copy"),
+    )
+    parser.add_argument("--chunk-id")
     parser.add_argument("--destination", type=Path)
     arguments = parser.parse_args(argv)
     settings = load_settings()
@@ -946,6 +950,16 @@ def ws_retention_main(argv: Sequence[str] | None = None) -> None:
             batch_rows=settings.ws_archive_purge_batch_rows,
         ).run_once()
         print(json.dumps(asdict(result), indent=2, default=str, sort_keys=True))
+        return
+    if arguments.action == "quarantine-failed":
+        if not arguments.chunk_id:
+            raise SystemExit("quarantine-failed requires --chunk-id")
+        with manifest.maintenance_lease():
+            chunk = manifest.quarantine_failed_chunk(
+                arguments.chunk_id,
+                now=datetime.now(UTC),
+            )
+        print(json.dumps(asdict(chunk), indent=2, default=str, sort_keys=True))
         return
     if arguments.destination is None:
         raise SystemExit("compact-copy requires --destination")

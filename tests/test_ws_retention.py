@@ -467,6 +467,57 @@ def test_failed_archive_blocks_later_ranges_instead_of_skipping_raw_truth(
     assert manifest.chunks()[0].state is ArchiveState.FAILED
 
 
+def test_failed_chunk_can_be_explicitly_quarantined_and_resume_pointer_advances(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, manifest = _service(tmp_path)
+    monkeypatch.setattr(
+        "live15_quant.ws_retention.decode_archive_chunk",
+        lambda _blob: (_ for _ in ()).throw(WsRetentionError("missing replay baseline")),
+    )
+    with pytest.raises(WsRetentionError, match="missing replay baseline"):
+        service.run_once(now=NOW)
+    failed = manifest.chunks()[0]
+    quarantined = manifest.quarantine_failed_chunk(failed.chunk_id, now=NOW)
+    assert quarantined.state is ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING
+    assert quarantined.failure == "REPLAY_BASELINE_MISSING"
+    assert manifest.last_event_id() == failed.last_event_id
+    assert manifest.metrics()["quarantined"] == 1
+    # The explicit transition is idempotent for an operator retry.
+    assert (
+        manifest.quarantine_failed_chunk(failed.chunk_id, now=NOW).state
+        is ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING
+    )
+
+
+def test_delta_only_chunk_waits_for_baseline_without_publishing_or_failing(
+    tmp_path: Path,
+) -> None:
+    service, _manifest = _service(tmp_path)
+    connection = sqlite3.connect(service.source_database)
+    with connection:
+        connection.execute("DELETE FROM kalshi_ws_orderbook_events WHERE id IN (1,2)")
+    result = service.run_once(now=NOW)
+    assert result.chunk is not None
+    assert result.chunk.state is ArchiveState.WAITING_FOR_REPLAY_BASELINE
+    assert result.chunk.failure == "REPLAY_BASELINE_MISSING"
+    assert not tuple(service.archive_root.rglob("*.zlib"))
+    with pytest.raises(WsRetentionError, match="unreplayable archive chunk"):
+        service.run_once(now=NOW)
+
+
+def test_purge_authorization_refuses_quarantine_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, manifest = _service(tmp_path)
+    chunk = service.run_once(now=NOW).chunk
+    assert chunk is not None
+    monkeypatch.setattr(manifest, "quarantine_overlaps", lambda *_args: (chunk,))
+    purge = WsPurgeService(service.source_database, service.archive_root, manifest)
+    with pytest.raises(WsRetentionError, match="quarantined replay-baseline gap"):
+        purge.run_once(now=NOW)
+
+
 def test_cross_process_maintenance_lease_fails_fast(tmp_path: Path) -> None:
     service, manifest = _service(tmp_path)
     with manifest.maintenance_lease():

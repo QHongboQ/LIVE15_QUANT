@@ -31,6 +31,35 @@ Kalshi Production -> kalshi-sdk -> LIVE15 KalshiGateway -> Reliability Adapter
                   -> Recorder Consumer -> RecorderStore -> Materializer / Paper
 ```
 
+## Upstream orderbook resynchronization audit (2026-08-26)
+
+The pinned `kalshi-sdk==12.0.0` was compared with the upstream `TexasCoding/kalshi-python-sdk`
+resynchronization fix merged as `04e7ac8` (PR #231, source fix `f5db1a1`). The installed v12
+package contains that behavior and the subsequent resubscribe-window stash drain (`#254`):
+
+- `KalshiWebSocket._handle_seq_gap` clears orderbook state by server SID, resets the sequence
+  watermark, calls `SubscriptionManager.resubscribe_one`, and drains frames captured during the
+  unsubscribe/subscribe handoff.
+- `SubscriptionManager.resubscribe_one` and `resubscribe_all` force
+  `send_initial_snapshot=True` for `orderbook_delta` subscriptions.
+- `OrderbookManager.remove_by_sid` clears all books owned by the affected SID, including
+  all-markets subscriptions; sequence resets are treated as recovery events rather than silently
+  dispatched resets.
+- `KalshiWebSocket._handle_reconnect` clears sequence/book state, resubscribes, and drains the
+  resubscribe stash before marking the stream active.
+
+This is the upstream contract LIVE15 relies on. No SDK source is copied, vendored, monkey-patched,
+or replaced by a second generic websocket state machine. The LIVE15 Gateway only delegates
+subscription updates (including `send_initial_snapshot=True` for added tickers), while the
+Reliability Adapter and archive layer retain project-specific provenance, fail-closed state,
+replay verification, and quarantine semantics.
+
+The historical `ws-244812239-244812260` failure is separate from future SDK recovery: the archived
+22 rows are delta-only on the replacement subscription and have no persisted authoritative
+baseline at or before the first delta. They therefore remain a LIVE15-specific
+`QUARANTINED_REPLAY_BASELINE_MISSING` range; later snapshot-started segments may proceed, but the
+historical rows are never relabeled as replay-verified.
+
 This separation is intentional: upgrading the external SDK is a dependency change, while
 LIVE15-specific behavior is maintained in the Gateway and downstream domain modules.
 
