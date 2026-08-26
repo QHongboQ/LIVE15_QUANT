@@ -35,3 +35,4 @@ health.json
 secrets/
 *.key
 *.pem
+.local-tools/
