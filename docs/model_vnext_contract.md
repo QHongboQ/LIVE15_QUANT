@@ -98,6 +98,21 @@ The implementation order is structured logistic baseline, structured XGBoost pat
 causal sequence challenger only after the evidence gate. MVN-001 does not train MVN-002, tune
 thresholds, implement uncertainty, or wire dynamic exits/execution.
 
+## FLOW-005A Model Zoo foundation (development only)
+
+FLOW-005A defines source-aware adapter contracts for a layered Path Expert, Terminal/decision
+baseline, Microstructure Expert, and future Router layer. Time-Series-Library is the Path Expert
+provenance reference; TLOB is the Microstructure Expert reference with DeepLOB/MLPLOB as bounded
+baselines; Qlib and EarnHFT remain research/architecture references only. No upstream repository
+is vendored and no new runtime dependency is introduced.
+
+The machine-readable manifest is `docs/model_zoo_foundation.json`. Path foundation readiness is
+`READY`/`APPROVED_FOR_FOUNDATION` from the bounded HIST-003 evidence, while full sequence training
+is `PARTIAL` because detailed sequence coverage is capped. Microstructure readiness is `PARTIAL`:
+H0 Recorder and H2 snapshot evidence exist, but H2 ticks are unavailable. Dataset v2 holdout
+remains `UNREVEALED_FROZEN` and is not an allowed source. Router, execution, Paper, Production,
+Recorder, and Hard Risk wiring remain explicitly outside this milestone.
+
 ## Lineage and review
 
 Every future artifact must retain the Dataset ID/build hash, feature and label schema versions,

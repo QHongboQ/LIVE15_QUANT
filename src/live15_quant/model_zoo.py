@@ -16,6 +16,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import StrEnum
 from pathlib import Path
 from statistics import fmean
 from typing import Any
@@ -52,6 +53,73 @@ CALIBRATION_POLICY_VERSION = "validation-platt-or-identity-v1"
 EDGE_POLICY_VERSION = "fixed-executable-ask-edge-v1"
 DEFAULT_SEED = 20260823
 OOS_NOT_ELIGIBLE = "OOS_NOT_ELIGIBLE"
+MODEL_ZOO_FOUNDATION_VERSION = "1.0.0"
+
+
+class ModelLayer(StrEnum):
+    """Layered Model vNext ownership boundary."""
+
+    PATH = "path_expert"
+    TERMINAL = "terminal_expert"
+    MICROSTRUCTURE = "microstructure_expert"
+    ROUTER = "router_policy"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelAdapterContract:
+    """Offline adapter boundary; no contract permits runtime execution wiring."""
+
+    family_id: str
+    layer: ModelLayer
+    allowed_data_sources: tuple[str, ...]
+    input_schema_version: str
+    output_schema_version: str
+    runtime_wiring: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.family_id or not self.input_schema_version or not self.output_schema_version:
+            raise ValueError("model adapter identity and schemas are required")
+        if not self.allowed_data_sources:
+            raise ValueError("model adapter requires at least one allowed data source")
+        if any("holdout" in source.lower() for source in self.allowed_data_sources):
+            raise ValueError("model adapter cannot allow Dataset v2 holdout data")
+        if self.runtime_wiring:
+            raise ValueError("FLOW-005A adapters cannot enable runtime wiring")
+
+
+def build_model_adapter_contracts() -> tuple[ModelAdapterContract, ...]:
+    """Return the bounded, source-aware contracts for future model implementations."""
+
+    return (
+        ModelAdapterContract(
+            "path_expert_foundation",
+            ModelLayer.PATH,
+            ("H1_KALSHI_OFFICIAL_HISTORY", "H0_LIVE_NATIVE_FEATURES"),
+            "MVN001_PATH_FEATURES_V1",
+            "MVN001_MULTI_HORIZON_PATH_V1",
+        ),
+        ModelAdapterContract(
+            "terminal_baseline",
+            ModelLayer.TERMINAL,
+            ("H1_KALSHI_OFFICIAL_HISTORY", "H0_LIVE_NATIVE_FEATURES"),
+            "MVN001_TERMINAL_FEATURES_V1",
+            "MVN001_TERMINAL_PROBABILITY_V1",
+        ),
+        ModelAdapterContract(
+            "microstructure_expert",
+            ModelLayer.MICROSTRUCTURE,
+            ("H0_LIVE_NATIVE_ORDERBOOK", "H2_DEPTHFEED_SNAPSHOT", "H2_DEPTHFEED_TICK"),
+            "MVN001_MICROSTRUCTURE_FEATURES_V1",
+            "MVN001_MICROSTRUCTURE_STATE_V1",
+        ),
+        ModelAdapterContract(
+            "router_policy_foundation",
+            ModelLayer.ROUTER,
+            ("MODEL_EXPERT_OUTPUTS_V1", "REGIME_DESCRIPTOR_V1"),
+            "MVN001_EXPERT_OUTPUTS_V1",
+            "ROUTER_POLICY_DECISION_V1",
+        ),
+    )
 
 
 class ModelZooError(RuntimeError):

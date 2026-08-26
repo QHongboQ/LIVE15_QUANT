@@ -1,0 +1,98 @@
+{
+  "foundation_version": "1.0.0",
+  "status": "DEVELOPMENT_RESEARCH_FOUNDATION_ONLY",
+  "dataset_v2": "live15-dataset-v2-4bb4934bf328b6b024ff",
+  "holdout_state": "UNREVEALED_FROZEN",
+  "holdout_accessed": false,
+  "hist003_historical_research_dataset": "historical-research-f2d529adfb95080971becdaf",
+  "provenance": {
+    "decision": "FLOW-005A",
+    "audit_date": "2026-08-26",
+    "external_code_vendored": false,
+    "license_policy": "review upstream license before any vendoring or dependency addition"
+  },
+  "families": [
+    {
+      "family_id": "path_expert_foundation",
+      "upstream_name": "Time-Series-Library",
+      "role": "Path Expert",
+      "status": "READY",
+      "approved_data_sources": ["H1_KALSHI_OFFICIAL_HISTORY", "H0_LIVE_NATIVE_FEATURES"],
+      "blocked_by": ["full_training_requires_complete_sequence_representation"],
+      "notes": "Foundation contract approved; no broad training or runtime wiring.",
+      "candidate_models": ["TimeXer", "PatchTST", "iTransformer", "TimeMixer", "TimesNet", "DLinear"],
+      "provenance_reference": "FLOW-005A approved upstream decision; pin exact revision before implementation"
+    },
+    {
+      "family_id": "terminal_baseline",
+      "upstream_name": "LIVE15 structured baseline",
+      "role": "Terminal / decision baseline expert",
+      "status": "READY",
+      "approved_data_sources": ["H1_KALSHI_OFFICIAL_HISTORY", "H0_LIVE_NATIVE_FEATURES"],
+      "blocked_by": [],
+      "notes": "Offline benchmark only; existing MVN-002 evidence remains development-only.",
+      "provenance_reference": "MVN-001/MVN-002 contract"
+    },
+    {
+      "family_id": "microstructure_expert",
+      "upstream_name": "TLOB",
+      "role": "Microstructure Expert",
+      "status": "PARTIAL",
+      "approved_data_sources": ["H0_LIVE_NATIVE_ORDERBOOK", "H2_DEPTHFEED_SNAPSHOT", "H2_DEPTHFEED_TICK"],
+      "blocked_by": ["H2_TICKS_UNAVAILABLE", "commodity_historical_l2_unverified"],
+      "notes": "Snapshot probe is available; tick probe returned provider capability/plan HTTP 402.",
+      "candidate_models": ["TLOB", "DeepLOB", "MLPLOB"],
+      "provenance_reference": "FLOW-005A approved upstream decision; pin exact revision before implementation"
+    },
+    {
+      "family_id": "path_sequence_challengers",
+      "upstream_name": "Time-Series-Library",
+      "role": "Path Expert sequence challengers",
+      "status": "RESEARCH_ONLY",
+      "approved_data_sources": ["H1_KALSHI_OFFICIAL_HISTORY", "H0_LIVE_NATIVE_FEATURES"],
+      "blocked_by": ["no_sequence_model_training_in_FLOW_005A", "full_sequence_readiness_gate"],
+      "notes": "Candidate list is architectural provenance, not a training authorization.",
+      "provenance_reference": "FLOW-005A approved upstream decision"
+    },
+    {
+      "family_id": "rolling_research_orchestration",
+      "upstream_name": "Qlib",
+      "role": "Rolling retrain / research orchestration reference",
+      "status": "RESEARCH_ONLY",
+      "approved_data_sources": ["OFFLINE_RESEARCH_MANIFESTS"],
+      "blocked_by": ["not_a_current_runtime_dependency"],
+      "notes": "Reference only; no Qlib dependency or code imported.",
+      "provenance_reference": "FLOW-005A approved upstream decision"
+    },
+    {
+      "family_id": "hierarchical_architecture_reference",
+      "upstream_name": "EarnHFT",
+      "role": "Hierarchical trading architecture reference",
+      "status": "ARCHITECTURE_ONLY",
+      "approved_data_sources": ["MODEL_EXPERT_OUTPUTS_V1", "REGIME_DESCRIPTOR_V1"],
+      "blocked_by": ["future_router_not_implemented", "no_execution_or_risk_wiring"],
+      "notes": "Reference only; no policy learning, execution, or risk changes.",
+      "provenance_reference": "FLOW-005A approved upstream decision"
+    },
+    {
+      "family_id": "router_policy_foundation",
+      "upstream_name": "LIVE15 future router contract",
+      "role": "Regime / Router layer",
+      "status": "ARCHITECTURE_ONLY",
+      "approved_data_sources": ["MODEL_EXPERT_OUTPUTS_V1", "REGIME_DESCRIPTOR_V1"],
+      "blocked_by": ["expert_contracts_not_promoted", "runtime_wiring_forbidden"],
+      "notes": "Interface skeleton only; cannot emit orders or change Hard Risk.",
+      "provenance_reference": "FLOW-005A layered architecture decision"
+    },
+    {
+      "family_id": "microstructure_commodity",
+      "upstream_name": "LIVE15 source-aware microstructure",
+      "role": "Commodity Microstructure Expert",
+      "status": "BLOCKED",
+      "approved_data_sources": ["H0_LIVE_NATIVE_ORDERBOOK"],
+      "blocked_by": ["commodity_historical_l2_unavailable_from_verified_provider"],
+      "notes": "Do not unlock Gold/Silver/WTI microstructure research from snapshots or trades alone.",
+      "provenance_reference": "HIST-003 capability boundary"
+    }
+  ]
+}
