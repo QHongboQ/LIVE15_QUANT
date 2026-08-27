@@ -2541,19 +2541,32 @@ class KalshiNativeRecorder:
             observed = self._utc_now()
             try:
                 if self._ws_archive_backpressure_active():
+                    poll_mode, poll_seconds = self._archive_poll_schedule(
+                        backlog_events=0, backpressure=True
+                    )
                     self._health.ws_archive_metrics = {
                         **self._health.ws_archive_metrics,
                         "enabled": True,
                         "deferred_for_ws_backpressure": True,
+                        "archive_poll_mode": poll_mode,
+                        "archive_next_poll_seconds": poll_seconds,
                     }
                     self._source_ok(key)
                     self._worker_advanced(key, observed)
-                    if await self._wait(self._settings.ws_archive_poll_interval_seconds):
+                    if await self._wait(poll_seconds):
                         return
                     continue
                 result = await asyncio.to_thread(self._archive_service.run_once, now=observed)
+                eligibility = None
+                if result.backlog_events <= 0:
+                    eligibility = await asyncio.to_thread(
+                        self._archive_service.eligibility, observed
+                    )
                 manifest_metrics = self._archive_service.manifest.metrics()
                 if self._ws_archive_backpressure_active():
+                    poll_mode, poll_seconds = self._archive_poll_schedule(
+                        backlog_events=result.backlog_events, backpressure=True
+                    )
                     self._health.ws_archive_metrics = {
                         **self._health.ws_archive_metrics,
                         **manifest_metrics,
@@ -2564,10 +2577,12 @@ class KalshiNativeRecorder:
                         "archive_throughput_events_per_second": result.events_per_second,
                         "archive_elapsed_seconds": result.elapsed_seconds,
                         "deferred_for_ws_backpressure": True,
+                        "archive_poll_mode": poll_mode,
+                        "archive_next_poll_seconds": poll_seconds,
                     }
                     self._source_ok(key)
                     self._worker_advanced(key, self._utc_now())
-                    if await self._wait(self._settings.ws_archive_poll_interval_seconds):
+                    if await self._wait(poll_seconds):
                         return
                     continue
                 hot_metrics = await asyncio.to_thread(self._archive_service.hot_metrics, observed)
@@ -2733,6 +2748,19 @@ class KalshiNativeRecorder:
                     "shadow_acceptance_passed": shadow_passed,
                     "deferred_for_ws_backpressure": False,
                 }
+                poll_mode, poll_seconds = self._archive_poll_schedule(
+                    backlog_events=result.backlog_events,
+                    next_eligible_at=(
+                        None if eligibility is None else eligibility.next_eligible_at
+                    ),
+                    eligibility_status=(None if eligibility is None else eligibility.status),
+                )
+                self._health.ws_archive_metrics.update(
+                    {
+                        "archive_poll_mode": poll_mode,
+                        "archive_next_poll_seconds": poll_seconds,
+                    }
+                )
                 if (
                     adaptive_status is not None
                     and adaptive_status.controller_mode is AdaptiveRetentionMode.FAIL_SAFE
@@ -2765,8 +2793,34 @@ class KalshiNativeRecorder:
                 if await self._wait(self._settings.ws_archive_poll_interval_seconds):
                     return
                 continue
-            if await self._wait(self._settings.ws_archive_poll_interval_seconds):
+            if await self._wait(poll_seconds):
                 return
+
+    def _archive_poll_schedule(
+        self,
+        *,
+        backlog_events: int,
+        next_eligible_at: datetime | None = None,
+        eligibility_status: str | None = None,
+        backpressure: bool = False,
+    ) -> tuple[str, float]:
+        """Return a bounded, deterministic archive polling mode and delay."""
+
+        if backpressure:
+            return "BACKPRESSURE", 2.0
+        if backlog_events >= self._archive_service.chunk_records:
+            return "CATCH_UP", 2.0
+        if backlog_events >= max(1, self._archive_service.chunk_records // 4):
+            return "ACTIVE", 5.0
+        if backlog_events > 0:
+            return "NEAR_CAUGHT_UP", 10.0
+        if (
+            eligibility_status == "WAITING_FOR_RETENTION_ELIGIBILITY"
+            and next_eligible_at is not None
+        ):
+            seconds = (next_eligible_at - self._utc_now()).total_seconds()
+            return "IDLE", max(2.0, min(60.0, seconds))
+        return "IDLE", 60.0
 
     def _ws_archive_backpressure_active(self) -> bool:
         if self._kalshi_ws is None:
