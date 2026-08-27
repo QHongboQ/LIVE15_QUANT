@@ -26,6 +26,7 @@ from live15_quant.control_center_models import (
     OperationsResponse,
     RecorderControlResponse,
     RecorderEventResponse,
+    ResearchDataResponse,
     StorageResponse,
     SystemResponse,
     TrainingResponse,
@@ -125,6 +126,10 @@ def create_app(
     @app.get("/api/training", response_model=TrainingResponse)
     def training() -> TrainingResponse:
         return boundary.training()
+
+    @app.get("/api/research-data", response_model=ResearchDataResponse)
+    def research_data() -> ResearchDataResponse:
+        return boundary.research_data()
 
     @app.get("/api/archive", response_model=ArchiveResponse)
     def archive() -> ArchiveResponse:

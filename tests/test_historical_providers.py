@@ -243,3 +243,12 @@ def test_depthfeed_snapshot_pagination_is_bounded_and_key_is_not_logged() -> Non
     assert len(session.calls) == 2
     assert all("opaque-secret" not in str(call[:2]) for call in session.calls)
     assert isinstance(snapshots[0], HistoricalL2Snapshot)
+
+
+def test_depthfeed_adapter_appends_v3_to_documented_root() -> None:
+    session = FakeDepthSession()
+    adapter = DepthFeedHistoricalOrderbookProvider(
+        api_key="opaque-secret", base_url="https://api.depthfeed.com", session=session
+    )
+    adapter.discover_markets(limit=1)
+    assert session.calls[0][0].startswith("https://api.depthfeed.com/v3/kalshi/markets")

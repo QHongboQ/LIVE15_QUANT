@@ -9,8 +9,8 @@ const ASSET_LABELS = Object.freeze({
 
 // Recorder collection cadence is configured server-side and is independent of these
 // read-only API refresh intervals. The one-second countdown below performs no request.
-const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, system: 30000, coverage: 60000, data: 30000, training: 30000, archive: 10000, storage: 30000, operations: 10000, account: 10000 });
-const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, data: null, training: null, archive: null, storage: null, operations: null, events: null, system: null, account: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
+const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, system: 30000, coverage: 60000, data: 30000, training: 30000, researchData: 60000, archive: 10000, storage: 30000, operations: 10000, account: 10000 });
+const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, data: null, training: null, researchData: null, archive: null, storage: null, operations: null, events: null, system: null, account: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
 const lastFetched = new Map();
 const inFlight = new Map();
 const stateErrors = new Map();
@@ -170,14 +170,14 @@ function emptyState(titleText, detail) {
 function currentRoute() {
   const parts = (location.hash.replace(/^#\/?/, "") || "overview").split("/").filter(Boolean);
   if (parts[0] === "markets" && parts[1]) return { name: "detail", asset: decodeURIComponent(parts.slice(1).join("/")) };
-  if (["dashboard", "markets", "data", "training", "archive", "storage", "operations", "events", "system", "overview", "portfolio", "account", "orders", "history", "watchlist", "analytics", "signals", "models"].includes(parts[0])) return { name: parts[0] };
+  if (["dashboard", "markets", "data", "training", "research-data", "archive", "storage", "operations", "events", "system", "overview", "portfolio", "account", "orders", "history", "watchlist", "analytics", "signals", "models"].includes(parts[0])) return { name: parts[0] };
   return { name: "overview" };
 }
 
 function setHeading(route) {
   const headings = {
     dashboard: ["ADMIN · OVERVIEW", "Dashboard"], overview: ["TRADING", "Overview"], portfolio: ["TRADING", "Portfolio"], account: ["TRADING", "Account"], orders: ["TRADING", "Orders"], history: ["TRADING", "History"], watchlist: ["TRADING", "Watchlist"], analytics: ["INTELLIGENCE", "Analytics"], signals: ["INTELLIGENCE", "Signals"], models: ["INTELLIGENCE", "Models"], markets: ["MARKET DATA", "15-Minute Markets"],
-    data: ["DATA", "Data Pipeline"], training: ["TRAINING", "Training Truth"], archive: ["ARCHIVE", "Archive"], storage: ["STORAGE", "Storage"], operations: ["OPERATIONS", "Operations"], events: ["OPERATIONS", "Warnings / Errors"], system: ["SYSTEM", "System / Health"],
+    data: ["DATA", "Data Pipeline"], training: ["TRAINING", "Training Truth"], "research-data": ["INTELLIGENCE", "Research Data"], archive: ["ARCHIVE", "Archive"], storage: ["STORAGE", "Storage"], operations: ["OPERATIONS", "Operations"], events: ["OPERATIONS", "Warnings / Errors"], system: ["SYSTEM", "System / Health"],
     detail: ["MARKET DETAIL", `${ASSET_LABELS[route.asset]?.[0] || route.asset} Contract`],
   };
   [eyebrow.textContent, title.textContent] = headings[route.name];
@@ -661,6 +661,73 @@ function renderTraining() {
   return root;
 }
 
+function renderResearchData() {
+  const research = state.researchData;
+  if (!research) return emptyState("Research data unavailable", "Waiting for the bounded read-only Research Data API.");
+  const root = node("div");
+  const metrics = node("div", "metric-grid");
+  append(metrics,
+    metric("Research Universe", valueOrDash(research.universe_id)),
+    metric("Live-native days", number(research.capability_days?.LIVE_NATIVE_DAYS?.length)),
+    metric("Path/terminal days", number(research.capability_days?.PATH_TERMINAL_DAYS?.length)),
+    metric("Trade-sequence days", number(research.capability_days?.TRADE_SEQUENCE_DAYS?.length)),
+    metric("L2 snapshot days", number(research.capability_days?.L2_SNAPSHOT_DAYS?.length)),
+    metric("L2 delta days", number(research.capability_days?.L2_DELTA_DAYS?.length)),
+    metric("Eligible events", number(research.eligible_events)),
+    metric("Eligible observations", number(research.eligible_observations)),
+    metric("DepthFeed", valueOrDash(research.depthfeed_status))
+  );
+  root.append(metrics, sectionHead("Research universe", "Underlying authorized sources · not a Dataset v2 partition"));
+  const coverage = node("div", "detail-grid");
+  const days = node("div", "panel");
+  days.append(append(node("div", "panel-head"), node("h2", "", "Capability-specific coverage days")));
+  const daysBody = node("div", "panel-body kv-grid");
+  append(daysBody,
+    kv("Earliest", timestamp(research.earliest_timestamp)), kv("Latest", timestamp(research.latest_timestamp)),
+    kv("UTC calendar", (research.utc_calendar_days || []).join(", ") || "N/A"),
+    kv("Market sessions", (research.market_session_days || []).join(", ") || "N/A"),
+    kv("Live-native", (research.capability_days?.LIVE_NATIVE_DAYS || []).join(", ") || "N/A"),
+    kv("Path / terminal", (research.capability_days?.PATH_TERMINAL_DAYS || []).join(", ") || "N/A"),
+    kv("Trade sequence", (research.capability_days?.TRADE_SEQUENCE_DAYS || []).join(", ") || "N/A"),
+    kv("L2 snapshots", (research.capability_days?.L2_SNAPSHOT_DAYS || []).join(", ") || "N/A"),
+    kv("L2 deltas", (research.capability_days?.L2_DELTA_DAYS || []).join(", ") || "N/A"),
+    kv("Forward OOS", (research.capability_days?.FORWARD_OOS_DAYS || []).join(", ") || "N/A"),
+    kv("Validation days", (research.validation_days || []).join(", ") || "N/A")
+  );
+  days.append(daysBody);
+  const holdout = node("div", "panel");
+  holdout.append(append(node("div", "panel-head"), node("h2", "", "Frozen holdout boundary"), badge(research.frozen_holdout?.status || "unknown")));
+  const holdoutBody = node("div", "panel-body kv-grid");
+  append(holdoutBody,
+    kv("Dataset", valueOrDash(research.frozen_holdout?.dataset_id)),
+    kv("Payload accessed", research.frozen_holdout?.payload_accessed ? "YES" : "NO"),
+    kv("Excluded identities", number(research.frozen_holdout?.excluded_event_count)),
+    kv("Excluded time ranges", number(research.frozen_holdout?.excluded_time_range_count)),
+    kv("Policy", "Metadata-only exclusion")
+  );
+  holdout.append(holdoutBody); append(coverage, days, holdout); root.append(coverage);
+  root.append(sectionHead("Typed freshness policy", "15m horizon is not the development-history horizon"));
+  const freshness = node("div", "detail-grid");
+  const fields = [["Feature freshness", research.freshness_policy?.feature_freshness], ["Training recency", research.freshness_policy?.training_recency], ["Forward OOS freshness", research.freshness_policy?.forward_oos_freshness]];
+  fields.forEach(([name, values]) => {
+    const panel = node("div", "panel"); panel.append(append(node("div", "panel-head"), node("h2", "", name)));
+    const body = node("div", "panel-body kv-grid");
+    Object.entries(values || {}).forEach(([key, value]) => body.append(kv(key.replaceAll("_", " "), typeof value === "boolean" ? (value ? "YES" : "NO") : valueOrDash(value))));
+    panel.append(body); freshness.append(panel);
+  });
+  root.append(freshness, sectionHead("Authorized source registry", "Deterministic H0 → H1 → H2 precedence; conflicts quarantine"));
+  const wrap = node("div", "table-wrap"); const table = node("table"); const head = node("tr");
+  ["Source", "Tier", "Coverage", "Events", "Observations", "State"].forEach((item) => head.append(node("th", item === "Source" ? "" : "num", item)));
+  const body = node("tbody");
+  (research.sources || []).forEach((item) => append(body, append(node("tr"), node("td", "", item.source_id), node("td", "num", item.trust_tier), node("td", "num", `${timestamp(item.earliest_timestamp)} → ${timestamp(item.latest_timestamp)}`), node("td", "num", number(item.eligible_events)), node("td", "num", number(item.eligible_observations)), node("td", "num", item.verification_state))));
+  table.append(append(node("thead"), head), body); wrap.append(table); root.append(wrap);
+  if (research.depthfeed_status === "DEPTHFEED_INTEGRATION_READY_KEY_REQUIRED") root.append(emptyState("DepthFeed credential required", "Configure the server-side DepthFeed key through the existing secret boundary; no key is displayed or stored in this UI."));
+  if (research.depthfeed_status === "DEPTHFEED_BASE_URL_REQUIRED") root.append(emptyState("DepthFeed endpoint unavailable", "Configure the non-secret DEPTHFEED_BASE_URL through the server-side environment boundary; no credential is displayed or stored in this UI."));
+  if (research.depthfeed_status === "CONFIGURED_NO_ACQUISITION") root.append(emptyState("DepthFeed acquisition pending", "Credential and endpoint are configured; bounded overlap validation must pass before historical L2 is accepted."));
+  if (stateErrors.has("researchData")) root.append(emptyState("Research Data refresh failed", "No cached value was changed; retrying remains read-only."));
+  return root;
+}
+
 function renderSystem() {
   const health = state.health;
   const system = state.system;
@@ -843,7 +910,7 @@ function render() {
   const route = currentRoute();
   setHeading(route);
   updateSidebar();
-  const renderers = { dashboard: renderDashboard, overview: () => renderAccountPage("overview"), portfolio: () => renderAccountPage("portfolio"), account: () => renderAccountPage("overview"), orders: () => renderReadOnlyShell("Orders"), history: () => renderReadOnlyShell("History"), watchlist: () => renderReadOnlyShell("Watchlist"), analytics: () => renderReadOnlyShell("Analytics"), signals: () => renderReadOnlyShell("Signals"), models: () => renderReadOnlyShell("Models"), markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem };
+  const renderers = { dashboard: renderDashboard, overview: () => renderAccountPage("overview"), portfolio: () => renderAccountPage("portfolio"), account: () => renderAccountPage("overview"), orders: () => renderReadOnlyShell("Orders"), history: () => renderReadOnlyShell("History"), watchlist: () => renderReadOnlyShell("Watchlist"), analytics: () => renderReadOnlyShell("Analytics"), signals: () => renderReadOnlyShell("Signals"), models: () => renderReadOnlyShell("Models"), "research-data": renderResearchData, markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem };
   let contents;
   try { contents = renderers[route.name](); }
   catch (error) { console.error("LIVE15 view render failed", error); contents = emptyState("Unable to render this view", "Retrying is safe; local data remains read-only."); }
@@ -859,6 +926,7 @@ async function refresh(force = false) {
   if (["overview", "portfolio", "account", "orders", "history", "dashboard", "detail"].includes(route.name)) tasks.push(fetchJson("account", "/api/account?profile=production_primary", INTERVALS.account, force));
   if (["dashboard", "events", "system", "operations"].includes(route.name)) tasks.push(fetchJson("events", eventsUrl(), INTERVALS.events, force));
   if (["dashboard", "training", "data"].includes(route.name)) tasks.push(fetchJson("training", "/api/training", INTERVALS.training, force));
+  if (route.name === "research-data") tasks.push(fetchJson("researchData", "/api/research-data", INTERVALS.researchData, force));
   if (["dashboard", "data"].includes(route.name)) tasks.push(fetchJson("data", "/api/data", INTERVALS.data, force));
   if (["dashboard", "archive"].includes(route.name)) tasks.push(fetchJson("archive", "/api/archive", INTERVALS.archive, force));
   if (["dashboard", "storage"].includes(route.name)) tasks.push(fetchJson("storage", "/api/storage", INTERVALS.storage, force));

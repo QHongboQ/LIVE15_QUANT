@@ -646,7 +646,21 @@ def model_zoo_main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, default=Path("data/models"))
     parser.add_argument("--seed", type=int, default=20260823)
+    parser.add_argument(
+        "--reproduction-only",
+        action="store_true",
+        help="acknowledge this Dataset artifact command is reproduction only",
+    )
     arguments = parser.parse_args(argv)
+    from live15_quant.research_data_authority import require_reproduction_only
+
+    try:
+        require_reproduction_only(
+            reproduction_only=arguments.reproduction_only,
+            entrypoint="live15-model-zoo",
+        )
+    except ValueError as error:
+        parser.error(str(error))
     dataset = load_certified_dataset(arguments.dataset)
     summary = ModelZooV1(
         dataset,
@@ -680,7 +694,21 @@ def model_zoo_v2_main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--v1-model-zoo", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, default=Path("data/models"))
     parser.add_argument("--seed", type=int, default=20260823)
+    parser.add_argument(
+        "--reproduction-only",
+        action="store_true",
+        help="acknowledge this Dataset artifact command is reproduction only",
+    )
     arguments = parser.parse_args(argv)
+    from live15_quant.research_data_authority import require_reproduction_only
+
+    try:
+        require_reproduction_only(
+            reproduction_only=arguments.reproduction_only,
+            entrypoint="live15-model-zoo-v2",
+        )
+    except ValueError as error:
+        parser.error(str(error))
     summary = ModelZooV2(
         load_certified_dataset(arguments.dataset),
         arguments.output_root,
