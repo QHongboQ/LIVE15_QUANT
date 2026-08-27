@@ -75,6 +75,55 @@ def test_gap_storage_is_idempotent_conflict_safe_and_deterministic(tmp_path) -> 
     assert replayed[0].duration_seconds == Decimal("40")
 
 
+def test_same_logical_gap_from_sequential_session_is_idempotent(tmp_path) -> None:
+    first = gap(BASE, BASE + timedelta(seconds=40))
+    second = replace(
+        first,
+        recorder_session_id="session-2",
+        incident_id="recorder-session:session-2",
+    )
+    with RecorderStore(tmp_path / "raw.sqlite3") as store:
+        assert store.append_data_gap(first)
+    with RecorderStore(tmp_path / "raw.sqlite3") as store:
+        assert not store.append_data_gap(second)
+        assert store.replay_data_gaps() == (first,)
+
+
+def test_sequential_session_accepts_legacy_provenance_fingerprint(tmp_path) -> None:
+    first = gap(BASE, BASE + timedelta(seconds=40))
+    second = replace(
+        first,
+        recorder_session_id="session-2",
+        incident_id="recorder-session:session-2",
+    )
+    with RecorderStore(tmp_path / "raw.sqlite3") as store:
+        assert store.append_data_gap(first)
+        row = store._connection.execute(
+            "SELECT source,asset,instrument,gap_start,gap_end,duration_seconds,"
+            "threshold_seconds,reason,error_type,recovered,recorder_session_id,incident_id "
+            "FROM data_gaps"
+        ).fetchone()
+        legacy_hash = storage_module._fingerprint(
+            (
+                row["source"],
+                row["asset"],
+                row["instrument"],
+                row["gap_start"],
+                row["gap_end"],
+                row["duration_seconds"],
+                row["threshold_seconds"],
+                row["reason"],
+                row["error_type"],
+                row["recovered"],
+                row["recorder_session_id"],
+                row["incident_id"],
+            )
+        )
+        store._connection.execute("UPDATE data_gaps SET content_hash=?", (legacy_hash,))
+        store._connection.commit()
+        assert not store.append_data_gap(second)
+
+
 def test_active_gap_is_append_only_idempotent_and_closed_by_recovery(tmp_path) -> None:
     active = gap(BASE, None, recovered=False)
     recovered = gap(BASE, BASE + timedelta(seconds=40))

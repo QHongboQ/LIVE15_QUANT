@@ -364,3 +364,52 @@ def test_authority_builds_snapshot_and_canonical_evidence_from_explicit_archive_
     assert all("dataset" not in item.source_id for item in universe.source_manifests)
     assert evidence.records[0].artifact_id == selection.source_identity
     assert evidence.records[0].provenance_tier == "H0_LIVE_NATIVE"
+
+
+def test_archive_snapshot_survives_mvn003_typed_input_round_trip(tmp_path: Path) -> None:
+    """The runner seam preserves archive coverage provenance without running work."""
+    from live15_quant.archive_research import ArchiveResearchQuery
+    from live15_quant.canonical_evidence import build_canonical_evidence_snapshot
+    from live15_quant.research_runner import (
+        ResearchRunInput,
+        load_research_input_snapshot,
+        write_research_input_snapshot,
+    )
+
+    database, root, manifest_path, (chunk,) = _archive(tmp_path)
+    settings = Settings(
+        recorder_data_path=database,
+        current_trainable_path=tmp_path / "current.sqlite3",
+        ws_archive_root=root,
+        ws_archive_manifest_path=manifest_path,
+        feature_store_path=tmp_path / "features.sqlite3",
+        paper_data_path=tmp_path / "paper.sqlite3",
+        recorder_health_path=tmp_path / "health.json",
+        recorder_control_path=tmp_path / "control.json",
+        recorder_pid_path=tmp_path / "recorder.pid",
+        readiness_report_path=tmp_path / "readiness.json",
+    )
+    query = ArchiveResearchQuery(chunk.first_event_id, chunk.last_event_id, NOW, maximum_chunks=1)
+    universe, selection = ResearchDataAuthority(
+        settings, project_root=tmp_path
+    ).archive_research_snapshot(query, code_git_sha="a" * 40)
+    typed_input = ResearchRunInput(
+        universe,
+        build_canonical_evidence_snapshot(
+            experiment_id="archive-mvn003-contract",
+            experiment_cutoff=NOW,
+            records=(selection.canonical_evidence_record(),),
+        ),
+        model_family="path_expert",
+    )
+    path = tmp_path / "typed-input.json"
+
+    write_research_input_snapshot(path, typed_input)
+    loaded = load_research_input_snapshot(path)
+
+    assert loaded.research_universe.source_manifests[0].coverage_status == {
+        "materialization": "EXPLICIT_BOUNDED_READ_ONLY",
+        "metadata": "VERIFIED_METADATA",
+        "replay": "REPLAY_VERIFIED",
+        "selection": "AVAILABLE",
+    }

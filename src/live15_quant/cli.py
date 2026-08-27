@@ -92,6 +92,79 @@ from live15_quant.ws_retention import (
     evaluate_database_compaction,
 )
 
+
+def research_preflight_main(argv: Sequence[str] | None = None) -> None:
+    """Run a bounded, isolated research preflight from an approved typed input snapshot."""
+    from live15_quant.research_runner import (
+        HashWorkAdapter,
+        ResearchRunConfig,
+        ResearchRunner,
+        load_research_input_snapshot,
+    )
+
+    parser = argparse.ArgumentParser(prog="live15-research-preflight")
+    parser.add_argument("--snapshot", type=Path, required=True)
+    parser.add_argument("--experiment", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path, default=None)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--code-revision", required=True)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--smoke-units", type=int, default=1)
+    parser.add_argument("--max-work-units", type=int, default=100)
+    parser.add_argument("--checkpoint-interval-units", type=int, default=10)
+    parser.add_argument("--max-wall-seconds", type=float, default=60.0)
+    parser.add_argument("--max-output-bytes", type=int, default=64 * 1024 * 1024)
+    parser.add_argument("--max-memory-bytes", type=int, default=2 * 1024 * 1024 * 1024)
+    arguments = parser.parse_args(argv)
+    if not 1 <= arguments.smoke_units <= 100:
+        parser.error("--smoke-units must be between 1 and 100")
+    project_root = Path(__file__).resolve().parents[2]
+    output_root = arguments.output.resolve()
+    expected_checkpoint = (
+        output_root / "experiments" / arguments.experiment / "checkpoints" / "current.json"
+    )
+    if arguments.checkpoint is not None and arguments.checkpoint.resolve() != expected_checkpoint:
+        parser.error("--checkpoint must equal the experiment's isolated current.json path")
+    protected = (
+        project_root,
+        project_root / "data",
+        project_root / "src",
+        project_root / "runtime",
+    )
+    run_input = load_research_input_snapshot(arguments.snapshot.resolve())
+    result = ResearchRunner(
+        output_root=output_root,
+        protected_roots=protected,
+        code_identity=arguments.code_revision,
+        config=ResearchRunConfig(
+            max_work_units=arguments.max_work_units,
+            checkpoint_interval_units=arguments.checkpoint_interval_units,
+            max_output_bytes=arguments.max_output_bytes,
+            max_wall_seconds=arguments.max_wall_seconds,
+            max_memory_bytes=arguments.max_memory_bytes,
+        ),
+    ).run(
+        arguments.experiment,
+        run_input,
+        HashWorkAdapter(arguments.smoke_units),
+        seed=arguments.seed,
+        resume=arguments.resume,
+    )
+    print(
+        json.dumps(
+            {
+                "status": result.status,
+                "experiment_dir": str(result.experiment_dir),
+                "completed_units": list(result.completed_units),
+                "result_digest": result.result_digest,
+                "checkpoint_sequence": result.checkpoint_sequence,
+            },
+            sort_keys=True,
+        )
+    )
+
+
 logger = logging.getLogger(__name__)
 
 
