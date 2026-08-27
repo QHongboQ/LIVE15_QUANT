@@ -76,6 +76,26 @@ explicit boundary for approved Git operations only and is not a general shell es
 Use the local adapted skills in `.agents/skills/` for diagnosis, TDD, and alignment. Their
 provenance and LIVE15-specific adaptations are recorded in `.agents/skills-manifest.json`.
 
+## Agent skills and project brain
+
+Use `setup-matt-pocock-skills` only to change the configured workflow. The
+project uses GitHub issues and a single-context documentation layout; see
+`docs/agents/issue-tracker.md` and `docs/agents/domain.md`.
+
+For normal work, load only the relevant skill from `.agents/skills/`, then one
+context pointer:
+
+- strategy/authority → `PROJECT_CHARTER.md`;
+- vocabulary/architecture routing → `CONTEXT.md`;
+- durable decision → `docs/adr/README.md`;
+- transient workstream orientation → `CURRENT_STATE.md`;
+- guarded regression → `BUG_REGISTRY.md`.
+
+The `live15-*` skills preserve project-specific safety adaptations. The
+standard names are pinned upstream workflow skills; see
+`docs/agents/skills-installation.md`. Do not load every skill, ADR, or domain
+document at session start.
+
 ## Durable context pointers
 
 - Architecture and SDK boundary: `docs/kalshi-sdk-v12-migration.md`, `docs/kalshi_native_architecture.md`
