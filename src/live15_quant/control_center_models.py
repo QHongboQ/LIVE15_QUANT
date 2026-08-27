@@ -62,10 +62,10 @@ class WsArchiveHealth(StrictResponse):
     chunks: int = 0
     verified: int = 0
     failed: int = 0
-    eligible: int = 0
-    purged: int = 0
-    compressed: int = 0
-    uncompressed: int = 0
+    eligible: int | None = None
+    purged: int | None = None
+    compressed: int | None = None
+    uncompressed: int | None = None
     last_archive: datetime | None = None
     last_replay: datetime | None = None
     hot_events_estimate: int = 0
@@ -79,14 +79,16 @@ class WsArchiveHealth(StrictResponse):
     archive_elapsed_seconds: float = 0.0
     archive_lag_seconds: float | None = None
     compression_ratio: float | None = None
-    last_purge_deleted_events: int = 0
-    last_purge_transaction_seconds: float = 0.0
-    last_purge_reusable_bytes: int = 0
+    last_purge_deleted_events: int | None = None
+    last_purge_transaction_seconds: float | None = None
+    last_purge_reusable_bytes: int | None = None
     hot_sqlite_used_bytes: int | None = None
     freelist_reusable_bytes: int | None = None
     physical_database_bytes: int | None = None
     wal_bytes: int | None = None
     cold_archive_bytes: int | None = None
+    raw_ws_growth_bytes_per_hour: float | None = None
+    raw_ws_growth_bytes_per_day: float | None = None
     cold_archive_growth_bytes_per_hour: float | None = None
     cold_archive_growth_bytes_per_day: float | None = None
     net_disk_growth_sample_seconds: float | None = None
@@ -96,8 +98,8 @@ class WsArchiveHealth(StrictResponse):
     disk_free_bytes: int | None = None
     disk_threshold_state: str = "unknown"
     shadow_acceptance_passed: bool = False
-    quarantined: int = 0
-    waiting_for_replay_baseline: int = 0
+    quarantined: int | None = None
+    waiting_for_replay_baseline: int | None = None
     archive_poll_mode: str | None = None
     archive_next_poll_seconds: float | None = None
     deferred_for_ws_backpressure: bool = False
@@ -301,14 +303,28 @@ class ArchiveResponse(StrictResponse):
     generated_at: datetime
     state: str
     enabled: bool
+    poll_mode: str | None = None
+    next_poll_seconds: float | None = None
     verified_chunks: int | None = None
     failed_chunks: int | None = None
+    waiting_chunks: int | None = None
     quarantined_chunks: int | None = None
     backlog_events: int | None = None
     throughput_events_per_second: float | None = None
     lag_seconds: float | None = None
+    uncompressed_archive_bytes: int | None = None
+    compressed_archive_bytes: int | None = None
+    compression_ratio: float | None = None
+    compressed_bytes_saved: int | None = None
+    compression_saving_percent: float | None = None
     cold_archive_bytes: int | None = None
+    purge_eligible_chunks: int | None = None
+    purged_chunks: int | None = None
+    total_purged_events: int | None = None
     purge_eligible_events: int | None = None
+    last_purge_deleted_events: int | None = None
+    last_purge_duration_seconds: float | None = None
+    last_purge_reusable_bytes: int | None = None
     purge_is_dry_run: bool = True
     notes: list[str] = Field(default_factory=list)
 
@@ -319,10 +335,31 @@ class StorageResponse(StrictResponse):
     disk_total_bytes: int | None = None
     disk_free_bytes: int | None = None
     hot_sqlite_bytes: int | None = None
+    sqlite_reusable_bytes: int | None = None
+    physical_reclaimed_bytes: int | None = None
     cold_archive_bytes: int | None = None
     wal_bytes: int | None = None
+    compression_saved_bytes: int | None = None
+    compression_saving_percent: float | None = None
     growth_bytes_per_day: float | None = None
+    raw_ws_growth_bytes_per_hour: float | None = None
+    raw_ws_growth_bytes_per_day: float | None = None
+    cold_archive_growth_bytes_per_hour: float | None = None
+    cold_archive_growth_bytes_per_day: float | None = None
+    net_disk_growth_bytes_per_hour: float | None = None
+    net_disk_growth_bytes_per_day: float | None = None
     retention_seconds: float | None = None
+    purge_eligible_chunks: int | None = None
+    purged_chunks: int | None = None
+    total_purged_events: int | None = None
+    last_purge_deleted_events: int | None = None
+    last_purge_duration_seconds: float | None = None
+    last_purge_reusable_bytes: int | None = None
+    compaction_reclaimable_bytes: int | None = None
+    compaction_reclaimable_percent: float | None = None
+    compaction_minimum_required_bytes: int | None = None
+    compaction_minimum_required_percent: float | None = None
+    compaction_status: str = "UNKNOWN"
     purge_is_dry_run: bool = True
     notes: list[str] = Field(default_factory=list)
 

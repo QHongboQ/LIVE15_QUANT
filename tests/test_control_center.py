@@ -773,6 +773,81 @@ async def test_dedicated_admin_projections_are_read_only_and_typed(tmp_path: Pat
     }
 
 
+def test_archive_projection_exposes_operational_and_compression_facts(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    write_health(
+        configured.recorder_health_path,
+        NOW,
+        ws_archive={
+            "enabled": True,
+            "archive_poll_mode": "CATCH_UP",
+            "archive_next_poll_seconds": 2.0,
+            "archive_backlog_events": 10_000,
+            "archive_throughput_events_per_second": 4_500.0,
+            "verified": 36_051,
+            "failed": 0,
+            "waiting_for_replay_baseline": 0,
+            "quarantined": 8,
+            "eligible": 1_224,
+            "purged": 265_586_658,
+            "compressed": 8_000,
+            "uncompressed": 80_000,
+            "compression_ratio": 10.0,
+            "last_purge_deleted_events": 10_000,
+            "last_purge_transaction_seconds": 0.37,
+            "last_purge_reusable_bytes": 56,
+        },
+    )
+
+    archive = ControlCenterService(configured, clock=lambda: NOW).archive()
+
+    assert archive.poll_mode == "CATCH_UP"
+    assert archive.next_poll_seconds == 2.0
+    assert archive.waiting_chunks == 0
+    assert archive.uncompressed_archive_bytes == 80_000
+    assert archive.compressed_archive_bytes == 8_000
+    assert archive.compressed_bytes_saved == 72_000
+    assert archive.compression_saving_percent == 90.0
+    assert archive.purge_eligible_chunks == 1_224
+    assert archive.total_purged_events == 265_586_658
+    assert archive.last_purge_deleted_events == 10_000
+
+
+def test_archive_and_storage_missing_facts_remain_na_and_reusable_is_not_reclaimed(
+    tmp_path: Path,
+) -> None:
+    configured = settings(tmp_path)
+    write_health(
+        configured.recorder_health_path,
+        NOW,
+        ws_archive={
+            "enabled": True,
+            "freelist_reusable_bytes": 56_800_000,
+            "physical_database_bytes": 72_500_000_000,
+            "disk_free_bytes": 173_800_000_000,
+            "hot_sqlite_used_bytes": 72_450_000_000,
+            "wal_bytes": 8_400_000,
+            "cold_archive_bytes": 8_100_000_000,
+            "disk_threshold_state": "normal",
+        },
+    )
+
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    archive = service.archive()
+    storage = service.storage()
+
+    assert archive.compressed_bytes_saved is None
+    assert archive.compression_saving_percent is None
+    assert storage.sqlite_reusable_bytes == 56_800_000
+    assert storage.physical_reclaimed_bytes is None
+    assert storage.compaction_minimum_required_bytes == configured.ws_compaction_min_reclaim_bytes
+    assert storage.compaction_minimum_required_percent == 25.0
+    assert storage.compaction_status == "NOT_ELIGIBLE"
+    assert storage.raw_ws_growth_bytes_per_day is None
+    assert storage.cold_archive_growth_bytes_per_day is None
+    assert storage.net_disk_growth_bytes_per_day is None
+
+
 def test_coverage_is_bounded_by_short_thread_safe_cache(tmp_path: Path, monkeypatch) -> None:
     configured = settings(tmp_path)
     monotonic_values = iter((10.0, 20.0, 41.0))
@@ -953,6 +1028,20 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
         assert endpoint in script
     assert "purge" in script.lower()
     assert "destructive" in script.lower()
+    for label in (
+        "Adaptive cadence",
+        "Poll Mode",
+        "Next poll",
+        "Compression savings",
+        "SQLite reusable",
+        "Physical disk reclaimed",
+        "Compaction gate",
+        "Raw WS growth",
+        "Cold archive growth",
+        "Net disk growth",
+    ):
+        assert label in script
+    assert "N/A" in script
 
 
 @pytest.mark.asyncio

@@ -150,6 +150,8 @@ th { color: var(--muted); font: 700 9px/1 var(--font-ui); text-align: left; text
 th, td { padding: 12px 13px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
 tr:last-child td { border-bottom: 0; }
 tbody tr:hover { background: #10202b; }
+tr.current-row { background: #0d2a2b; }
+tr.current-row td:first-child { color: var(--teal); font-weight: 700; }
 td a { color: var(--teal); text-decoration: none; }
 .num { text-align: right; font-family: var(--font-ui); font-variant-numeric: tabular-nums; }
 .numeric, .value, .num, .quote-prices, .target-row strong, .book-row, .feature b, .bar-value {
