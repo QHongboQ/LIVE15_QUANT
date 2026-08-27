@@ -949,13 +949,27 @@ def evaluate(
 
 
 def main() -> None:
+    from live15_quant.research_data_authority import require_reproduction_only
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--output-md", type=Path, required=True)
     parser.add_argument("--full-output-json", type=Path, default=None)
     parser.add_argument("--code-sha", default=None)
+    parser.add_argument(
+        "--reproduction-only",
+        action="store_true",
+        help="acknowledge this legacy Dataset v2 command is immutable-artifact reproduction only",
+    )
     args = parser.parse_args()
+    try:
+        require_reproduction_only(
+            reproduction_only=args.reproduction_only,
+            entrypoint="FACTOR-001R",
+        )
+    except ValueError as error:
+        parser.error(str(error))
     report = evaluate(
         root=args.dataset_root,
         output_json=args.output_json,

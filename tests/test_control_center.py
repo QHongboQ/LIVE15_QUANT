@@ -920,6 +920,7 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
         "/api/coverage",
         "/api/data",
         "/api/training",
+        "/api/research-data",
         "/api/archive",
         "/api/storage",
         "/api/operations",
@@ -1047,6 +1048,7 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
         "#/analytics",
         "#/signals",
         "#/models",
+        "#/research-data",
     ):
         assert f'href="{route}"' in page
     for asset in ("BTC", "ETH", "Gold", "Silver", "XRP", "WTI Oil", "SOL", "HYPE", "DOGE", "BNB"):
@@ -1067,6 +1069,7 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
         "/api/archive",
         "/api/storage",
         "/api/operations",
+        "/api/research-data",
     ):
         assert endpoint in script
     assert "purge" in script.lower()
@@ -1085,6 +1088,40 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
     ):
         assert label in script
     assert "N/A" in script
+    assert "Research Data" in page
+    assert "DepthFeed credential required" in script
+    assert "Metadata-only exclusion" in script
+
+
+@pytest.mark.asyncio
+async def test_research_data_api_is_read_only_typed_and_holdout_metadata_only(
+    tmp_path: Path,
+) -> None:
+    configured = settings(tmp_path)
+    transport = httpx.ASGITransport(app=create_app(configured))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        response = await client.get("/api/research-data")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) >= {
+        "universe_id",
+        "freshness_policy",
+        "utc_calendar_days",
+        "market_session_days",
+        "eligible_development_days",
+        "validation_days",
+        "sources",
+        "frozen_holdout",
+        "depthfeed_status",
+    }
+    assert payload["frozen_holdout"]["payload_accessed"] is False
+    assert payload["holdout_accessed"] is False
+    serialized = response.text.lower()
+    assert "holdout_labels" not in serialized
+    assert "holdout_features" not in serialized
+    assert "holdout_performance" not in serialized
+    assert "depthfeed_api_key" not in serialized
 
 
 @pytest.mark.asyncio

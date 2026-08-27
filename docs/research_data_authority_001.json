@@ -1,0 +1,86 @@
+{
+  "report": "LIVE15_RESEARCH_DATA_AUTHORITY_001",
+  "protected_main_base_sha": "7607e93dbbbeea5e91fab2f55243a7ac9338bf34",
+  "measured_at_utc": "2026-08-27T17:37:51.627477+00:00",
+  "read_only": true,
+  "production_writes": 0,
+  "recorder_restarted": false,
+  "control_center_restarted": false,
+  "holdout": {
+    "dataset_id": "live15-dataset-v2-4bb4934bf328b6b024ff",
+    "status": "UNREVEALED_FROZEN",
+    "identity_count": 509,
+    "payload_accessed": false,
+    "labels_accessed": false,
+    "features_accessed": false,
+    "predictions_accessed": false,
+    "performance_accessed": false
+  },
+  "freshness_policy": {
+    "version": "research-freshness-v1",
+    "feature_freshness": "strict decision-time as-of; configured maximum age",
+    "training_recency": "EXPANDING development sessions; not capped by feature age",
+    "forward_oos_freshness": "strictly after frozen specification"
+  },
+  "session_semantics_version": "live15-session-v1",
+  "source_registry_version": "research-source-registry-v1",
+  "sources": [
+    {
+      "source_id": "live15_current_trainable",
+      "source_type": "OWN_RECORDER",
+      "trust_tier": "H0",
+      "earliest_timestamp": "2026-08-20T18:45:00+00:00",
+      "latest_timestamp": "2026-08-26T09:30:00+00:00",
+      "utc_calendar_days": 7,
+      "market_session_days": 7,
+      "eligible_finalized_events": 3692,
+      "eligible_decision_rows": 27124,
+      "assets": ["BNB", "BTC", "DOGE", "ETH", "Gold", "HYPE", "SOL", "Silver", "WTI Oil", "XRP"],
+      "availability": "strict_as_of_materialized_decisions"
+    },
+    {
+      "source_id": "live15_verified_archive",
+      "source_type": "OWN_VERIFIED_ARCHIVE",
+      "trust_tier": "H0",
+      "earliest_timestamp": "2026-08-21T18:05:47.174000+00:00",
+      "latest_timestamp": "2026-08-26T07:17:21.733000+00:00",
+      "utc_calendar_days": 6,
+      "market_session_days": 6,
+      "verified_or_authorized_chunks": 39473,
+      "verified_or_authorized_events": 300981710,
+      "quarantined_ranges_excluded": true
+    },
+    {
+      "source_id": "kalshi_official",
+      "source_type": "KALSHI_OFFICIAL_HISTORY",
+      "trust_tier": "H1",
+      "earliest_timestamp": "2026-03-28T00:00:00+00:00",
+      "latest_timestamp": "2026-06-26T00:00:00+00:00",
+      "utc_calendar_days": 90,
+      "market_session_days": 90,
+      "markets": 59056,
+      "trades": 886454,
+      "quality": "official history; not full historical L2"
+    },
+    {
+      "source_id": "depthfeed_kalshi_l2",
+      "source_type": "DEPTHFEED_KALSHI_L2",
+      "trust_tier": "H2",
+      "credential_status": "CONFIGURED",
+      "endpoint_configuration_status": "DEPTHFEED_BASE_URL_REQUIRED",
+      "bulk_download_performed": false,
+      "snapshots": "not acquired",
+      "ticks_delta": "not acquired; partial until overlap semantics are proven",
+      "supported_assets": ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"]
+    }
+  ],
+  "walk_forward": {
+    "default": "chronological expanding whole-event groups",
+    "purge_seconds": 600,
+    "embargo_seconds": 600,
+    "fold_count": "measured when a ResearchUniverseSnapshot is supplied to a future current-research runner"
+  },
+  "factor_or_model_run": false,
+  "research_universe_runtime": "aggregate metadata only; no Dataset v2 payload read",
+  "depthfeed_next_safe_action": "Configure DEPTHFEED_BASE_URL in the existing server-side environment/secret deployment boundary, then run the bounded H0 overlap validation before acquisition."
+}
