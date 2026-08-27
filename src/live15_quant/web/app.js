@@ -53,6 +53,15 @@ function bytes(value) {
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+function naValue(value, formatter = String) {
+  return value === null || value === undefined || value === "" ? "N/A" : formatter(value);
+}
+
+function percent(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? `${parsed.toFixed(2)}%` : "N/A";
+}
+
 function duration(value) {
   if (value === null || value === undefined) return "—";
   const total = Math.max(0, Math.floor(Number(value)));
@@ -694,12 +703,27 @@ function renderArchive() {
   if (!archive) return emptyState("Archive state unavailable", "Waiting for the archive health API.");
   const root = node("div");
   root.append(sectionHead("Archive", "Verified history and purge eligibility · dry run only"));
-  const metrics = node("div", "metric-grid");
-  append(metrics, metric("State", stateLabel(archive.state)), metric("Verified chunks", valueOrDash(archive.verified_chunks, number)), metric("Failed chunks", valueOrDash(archive.failed_chunks, number)), metric("Quarantined", valueOrDash(archive.quarantined_chunks, number)), metric("Backlog events", valueOrDash(archive.backlog_events, number)), metric("Throughput", valueOrDash(archive.throughput_events_per_second, (v) => `${number(v, 2)}/s`)));
-  root.append(metrics);
-  const panel = node("div", "panel panel-body");
-  append(panel, kv("Replay lag", age(archive.lag_seconds)), kv("Cold archive", bytes(archive.cold_archive_bytes)), kv("Purge eligible (dry run)", valueOrDash(archive.purge_eligible_events, number)), kv("Destructive actions", "Not exposed", "unsupported"));
-  panel.append(node("p", "muted", "Verified spans never cross failed or quarantined ranges. This page cannot purge or compact data.")); root.append(panel);
+  const status = node("div", "panel panel-body kv-grid");
+  append(status, kv("Archive status", stateLabel(archive.state)), kv("Poll Mode", naValue(archive.poll_mode, stateLabel)), kv("Next poll", naValue(archive.next_poll_seconds, (v) => `${number(v, 1)} s`)), kv("Backlog", naValue(archive.backlog_events, number)), kv("Throughput", naValue(archive.throughput_events_per_second, (v) => `${number(v, 2)}/s`)), kv("Verified", naValue(archive.verified_chunks, number)), kv("Failed", naValue(archive.failed_chunks, number)), kv("Waiting", naValue(archive.waiting_chunks, number)), kv("Quarantine", naValue(archive.quarantined_chunks, number))); root.append(status);
+
+  root.append(sectionHead("Adaptive cadence", "Current mode is highlighted; cadence remains read-only."));
+  const cadence = node("div", "table-wrap");
+  const cadenceTable = node("table");
+  const cadenceHead = node("tr"); ["Mode", "Interval", "Meaning"].forEach((item) => cadenceHead.append(node("th", item)));
+  const cadenceBody = node("tbody");
+  [["CATCH_UP", "2 s", "Backlog is material"], ["ACTIVE", "5 s", "Archive is active"], ["NEAR_CAUGHT_UP", "10 s", "Backlog is small"], ["IDLE", "≤60 s", "No work is pending"], ["BACKPRESSURE", "2 s defer", "Recorder pressure"]].forEach(([mode, interval, meaning]) => { const row = node("tr", mode === archive.poll_mode ? "current-row" : ""); append(row, node("td", "", mode === archive.poll_mode ? `● ${mode}` : mode), node("td", "", interval), node("td", "muted", meaning)); cadenceBody.append(row); });
+  cadenceTable.append(append(node("thead"), cadenceHead), cadenceBody); cadence.append(cadenceTable); root.append(cadence);
+
+  root.append(sectionHead("Archive compression", "Only authoritative archive byte totals are used."));
+  const compression = node("div", "panel panel-body kv-grid");
+  append(compression, kv("Uncompressed equivalent", naValue(archive.uncompressed_archive_bytes, bytes)), kv("Compressed archive", naValue(archive.compressed_archive_bytes, bytes)), kv("Compression ratio", naValue(archive.compression_ratio, (v) => `${number(v, 2)}×`)), kv("Bytes saved", naValue(archive.compressed_bytes_saved, bytes)), kv("Saving", naValue(archive.compression_saving_percent, percent))); root.append(compression);
+
+  root.append(sectionHead("Archive states", "Counts are source facts; unavailable values remain N/A."));
+  const states = node("div", "table-wrap"); const stateTable = node("table"); const stateHead = node("tr"); ["State", "Chunks", "Meaning"].forEach((item) => stateHead.append(node("th", item))); const stateBody = node("tbody");
+  [["VERIFIED", archive.verified_chunks, "Replay and checksum verified"], ["PURGE_ELIGIBLE", archive.purge_eligible_chunks, "Eligible for dry-run purge"], ["PURGED", archive.purged_chunks, "Purged chunk count"], ["QUARANTINED", archive.quarantined_chunks, "Preserved but unreplayable"], ["FAILED", archive.failed_chunks, "Verification failed"], ["WAITING", archive.waiting_chunks, "Waiting for replay baseline"]].forEach(([stateName, count, meaning]) => { const row = node("tr"); append(row, node("td", "", stateName), node("td", "num", naValue(count, number)), node("td", "muted", meaning)); stateBody.append(row); }); stateTable.append(append(node("thead"), stateHead), stateBody); states.append(stateTable); root.append(states);
+
+  root.append(sectionHead("Purge facts", "Dry-run projection only; no destructive controls."));
+  const purge = node("div", "panel panel-body kv-grid"); append(purge, kv("Purge eligible chunks", naValue(archive.purge_eligible_chunks, number)), kv("Purged chunks", naValue(archive.purged_chunks, number)), kv("Total purged events", naValue(archive.total_purged_events, number)), kv("Last deleted events", naValue(archive.last_purge_deleted_events, number)), kv("Last purge duration", naValue(archive.last_purge_duration_seconds, (v) => `${number(v, 2)} s`)), kv("Last reusable bytes", naValue(archive.last_purge_reusable_bytes, bytes))); purge.append(node("p", "muted", "Verified spans never cross failed or quarantined ranges. Purge and compaction actions are not exposed.")); root.append(purge);
   return root;
 }
 
@@ -707,12 +731,21 @@ function renderStorage() {
   const storage = state.storage;
   if (!storage) return emptyState("Storage state unavailable", "Waiting for the storage health API.");
   const root = node("div"); root.append(sectionHead("Storage", "Capacity, growth, and retention evidence"));
-  const metrics = node("div", "metric-grid");
-  append(metrics, metric("State", stateLabel(storage.state)), metric("Free", bytes(storage.disk_free_bytes)), metric("Total", bytes(storage.disk_total_bytes)), metric("Hot SQLite", bytes(storage.hot_sqlite_bytes)), metric("Cold archive", bytes(storage.cold_archive_bytes)), metric("Growth / day", valueOrDash(storage.growth_bytes_per_day, (v) => `${bytes(v)}/day`)));
-  root.append(metrics);
-  const panel = node("div", "panel panel-body");
-  append(panel, kv("WAL", bytes(storage.wal_bytes)), kv("Retention", duration(storage.retention_seconds)), kv("Purge mode", "DRY RUN", "available"));
-  panel.append(node("p", "muted", "Storage numbers are observations from the recorder heartbeat. No deletion or compaction control is available here.")); root.append(panel); return root;
+  const top = node("div", "panel panel-body kv-grid"); append(top, kv("Database", naValue(storage.hot_sqlite_bytes, bytes)), kv("WAL", naValue(storage.wal_bytes, bytes)), kv("Cold archive", naValue(storage.cold_archive_bytes, bytes)), kv("Disk free", naValue(storage.disk_free_bytes, bytes)), kv("SQLite reusable", naValue(storage.sqlite_reusable_bytes, bytes)), kv("Net growth / day", naValue(storage.net_disk_growth_bytes_per_day, (v) => `${bytes(v)}/day`))); root.append(top);
+
+  root.append(sectionHead("Storage efficiency", "Compression, SQLite reuse, and physical reclamation are distinct."));
+  const efficiency = node("div", "panel panel-body kv-grid"); append(efficiency, kv("Compression savings", naValue(storage.compression_saved_bytes, bytes)), kv("Compression saving %", naValue(storage.compression_saving_percent, percent)), kv("SQLite reusable", naValue(storage.sqlite_reusable_bytes, bytes)), kv("Physical disk reclaimed", naValue(storage.physical_reclaimed_bytes, bytes)), kv("Disk free", naValue(storage.disk_free_bytes, bytes)), kv("Hot SQLite", naValue(storage.hot_sqlite_bytes, bytes))); root.append(efficiency);
+
+  root.append(sectionHead("Purge", "Authoritative counters only."));
+  const purge = node("div", "panel panel-body kv-grid"); append(purge, kv("Purge eligible chunks", naValue(storage.purge_eligible_chunks, number)), kv("Purged chunks", naValue(storage.purged_chunks, number)), kv("Total purged events", naValue(storage.total_purged_events, number)), kv("Last deleted events", naValue(storage.last_purge_deleted_events, number)), kv("Last purge duration", naValue(storage.last_purge_duration_seconds, (v) => `${number(v, 2)} s`)), kv("Last reusable bytes", naValue(storage.last_purge_reusable_bytes, bytes))); root.append(purge);
+
+  root.append(sectionHead("Compaction gate", "Project threshold: 8 GiB and 25%; no action is exposed."));
+  const compact = node("div", "panel panel-body kv-grid"); append(compact, kv("Reclaimable", naValue(storage.compaction_reclaimable_bytes, bytes)), kv("Reclaimable %", naValue(storage.compaction_reclaimable_percent, percent)), kv("Minimum required", naValue(storage.compaction_minimum_required_bytes, bytes)), kv("Required %", naValue(storage.compaction_minimum_required_percent, percent)), kv("Status", stateLabel(storage.compaction_status))); root.append(compact);
+
+  root.append(sectionHead("Growth / trend", "No interpolation; missing observations remain N/A."));
+  const growth = node("div", "table-wrap"); const growthTable = node("table"); const growthHead = node("tr"); ["Metric", "Per hour", "Per day"].forEach((item) => growthHead.append(node("th", item))); const growthBody = node("tbody"); [["Raw WS growth", storage.raw_ws_growth_bytes_per_hour, storage.raw_ws_growth_bytes_per_day], ["Cold archive growth", storage.cold_archive_growth_bytes_per_hour, storage.cold_archive_growth_bytes_per_day], ["Net disk growth", storage.net_disk_growth_bytes_per_hour, storage.net_disk_growth_bytes_per_day]].forEach(([label, hourly, daily]) => { const row = node("tr"); append(row, node("td", "", label), node("td", "num", naValue(hourly, (v) => `${bytes(v)}/h`)), node("td", "num", naValue(daily, (v) => `${bytes(v)}/day`))); growthBody.append(row); }); growthTable.append(append(node("thead"), growthHead), growthBody); growth.append(growthTable); root.append(growth);
+
+  const note = node("div", "panel panel-body"); append(note, kv("Retention", naValue(storage.retention_seconds, duration)), kv("Purge mode", "DRY RUN", "available")); note.append(node("p", "muted", "Storage numbers are observations from the recorder heartbeat. No deletion or compaction control is available here.")); root.append(note); return root;
 }
 
 function renderOperations() {

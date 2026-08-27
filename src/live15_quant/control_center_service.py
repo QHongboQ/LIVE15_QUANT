@@ -285,18 +285,33 @@ class ControlCenterService:
         state = "disabled" if not archive.enabled else "healthy"
         if archive.failed or archive.quarantined:
             state = "attention"
+        compressed_saved, compression_percent = self._compression_savings(archive)
         return ArchiveResponse(
             generated_at=self._clock(),
             state=state,
             enabled=archive.enabled,
+            poll_mode=archive.archive_poll_mode,
+            next_poll_seconds=archive.archive_next_poll_seconds,
             verified_chunks=archive.verified,
             failed_chunks=archive.failed,
+            waiting_chunks=archive.waiting_for_replay_baseline,
             quarantined_chunks=archive.quarantined,
             backlog_events=archive.archive_backlog_events,
             throughput_events_per_second=archive.archive_throughput_events_per_second,
             lag_seconds=archive.archive_lag_seconds,
+            uncompressed_archive_bytes=archive.uncompressed,
+            compressed_archive_bytes=archive.compressed,
+            compression_ratio=archive.compression_ratio,
+            compressed_bytes_saved=compressed_saved,
+            compression_saving_percent=compression_percent,
             cold_archive_bytes=archive.cold_archive_bytes,
+            purge_eligible_chunks=archive.eligible,
+            purged_chunks=None,
+            total_purged_events=archive.purged,
             purge_eligible_events=archive.eligible,
+            last_purge_deleted_events=archive.last_purge_deleted_events,
+            last_purge_duration_seconds=archive.last_purge_transaction_seconds,
+            last_purge_reusable_bytes=archive.last_purge_reusable_bytes,
             notes=["Purge eligibility is a dry-run projection; destructive actions are absent."],
         )
 
@@ -304,20 +319,73 @@ class ControlCenterService:
         health = self.health()
         archive = health.ws_archive
         state = archive.disk_threshold_state
+        compressed_saved, compression_percent = self._compression_savings(archive)
+        reclaimable = archive.freelist_reusable_bytes
+        physical = archive.physical_database_bytes
+        reclaimable_percent = (
+            None
+            if reclaimable is None or physical is None or physical <= 0
+            else (reclaimable / physical) * 100
+        )
+        minimum_bytes = self.settings.ws_compaction_min_reclaim_bytes
+        minimum_percent = float(self.settings.ws_compaction_min_reclaim_percent)
+        if reclaimable is None or reclaimable_percent is None:
+            compaction_status = "UNKNOWN"
+        elif reclaimable >= minimum_bytes and reclaimable_percent >= minimum_percent:
+            compaction_status = "ELIGIBLE"
+        else:
+            compaction_status = "NOT_ELIGIBLE"
         return StorageResponse(
             generated_at=self._clock(),
             state=state,
             disk_total_bytes=archive.disk_total_bytes,
             disk_free_bytes=archive.disk_free_bytes,
             hot_sqlite_bytes=archive.hot_sqlite_used_bytes,
+            sqlite_reusable_bytes=reclaimable,
+            physical_reclaimed_bytes=None,
             cold_archive_bytes=archive.cold_archive_bytes,
-            wal_bytes=health.wal_bytes,
+            wal_bytes=archive.wal_bytes if archive.wal_bytes is not None else health.wal_bytes,
+            compression_saved_bytes=compressed_saved,
+            compression_saving_percent=compression_percent,
             growth_bytes_per_day=archive.net_disk_growth_bytes_per_day,
+            raw_ws_growth_bytes_per_hour=getattr(archive, "raw_ws_growth_bytes_per_hour", None),
+            raw_ws_growth_bytes_per_day=getattr(archive, "raw_ws_growth_bytes_per_day", None),
+            cold_archive_growth_bytes_per_hour=archive.cold_archive_growth_bytes_per_hour,
+            cold_archive_growth_bytes_per_day=archive.cold_archive_growth_bytes_per_day,
+            net_disk_growth_bytes_per_hour=archive.net_disk_growth_bytes_per_hour,
+            net_disk_growth_bytes_per_day=archive.net_disk_growth_bytes_per_day,
             retention_seconds=archive.hot_retention_seconds,
+            purge_eligible_chunks=archive.eligible,
+            purged_chunks=None,
+            total_purged_events=archive.purged,
+            last_purge_deleted_events=archive.last_purge_deleted_events,
+            last_purge_duration_seconds=archive.last_purge_transaction_seconds,
+            last_purge_reusable_bytes=archive.last_purge_reusable_bytes,
+            compaction_reclaimable_bytes=reclaimable,
+            compaction_reclaimable_percent=reclaimable_percent,
+            compaction_minimum_required_bytes=minimum_bytes,
+            compaction_minimum_required_percent=minimum_percent,
+            compaction_status=compaction_status,
             notes=[
-                "Retention and purge controls are intentionally absent from this read-only view."
+                "Compression savings, SQLite reusable space, and physical reclaimed "
+                "space are separate facts."
             ],
         )
+
+    @staticmethod
+    def _compression_savings(archive: WsArchiveHealth) -> tuple[int | None, float | None]:
+        uncompressed = archive.uncompressed
+        compressed = archive.compressed
+        if (
+            uncompressed is None
+            or compressed is None
+            or uncompressed <= 0
+            or compressed < 0
+            or compressed > uncompressed
+        ):
+            return None, None
+        saved = uncompressed - compressed
+        return saved, (saved / uncompressed) * 100
 
     def operations(self) -> OperationsResponse:
         health = self.health()
