@@ -58,6 +58,7 @@ live15-storage-audit = "live15_quant.cli:storage_audit_main"
 live15-ws-retention = "live15_quant.cli:ws_retention_main"
 live15-archive-maintenance = "live15_quant.cli:archive_maintenance_main"
 live15-adaptive-retention = "live15_quant.cli:adaptive_retention_main"
+live15-research-preflight = "live15_quant.cli:research_preflight_main"
 live15-ui = "live15_quant.control_center:main"
 
 [tool.setuptools.packages.find]
