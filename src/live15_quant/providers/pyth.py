@@ -56,7 +56,12 @@ class PythCredentialError(ValueError):
 
 
 class PythNetworkError(ConnectionError):
-    """A sanitized transient Hermes transport failure."""
+    """A sanitized transient Hermes transport failure with safe diagnostics."""
+
+    def __init__(self, message: str, *, category: str = "NETWORK", cause_type: str | None = None):
+        super().__init__(message)
+        self.category = category
+        self.cause_type = cause_type
 
 
 class PythRateLimitError(PythNetworkError):
@@ -203,8 +208,30 @@ class PythHermesClient:
                 timeout=(self._timeout, self._stream_timeout if stream else self._timeout),
                 stream=stream,
             )
-        except requests.RequestException:
-            raise PythNetworkError("Pyth request failed") from None
+        except requests.exceptions.SSLError as error:
+            raise PythNetworkError(
+                "Pyth request failed", category="TLS", cause_type=type(error).__name__
+            ) from None
+        except requests.exceptions.ProxyError as error:
+            raise PythNetworkError(
+                "Pyth request failed", category="PROXY", cause_type=type(error).__name__
+            ) from None
+        except requests.exceptions.ConnectTimeout as error:
+            raise PythNetworkError(
+                "Pyth request failed", category="CONNECT_TIMEOUT", cause_type=type(error).__name__
+            ) from None
+        except requests.exceptions.ReadTimeout as error:
+            raise PythNetworkError(
+                "Pyth request failed", category="READ_TIMEOUT", cause_type=type(error).__name__
+            ) from None
+        except requests.exceptions.ConnectionError as error:
+            raise PythNetworkError(
+                "Pyth request failed", category="CONNECTION", cause_type=type(error).__name__
+            ) from None
+        except requests.RequestException as error:
+            raise PythNetworkError(
+                "Pyth request failed", category="REQUEST", cause_type=type(error).__name__
+            ) from None
         if response.status_code == 429:
             retry_after = _retry_after(response.headers.get("Retry-After"))
             response.close()
@@ -212,7 +239,14 @@ class PythHermesClient:
         if response.status_code >= 400:
             status = response.status_code
             response.close()
-            raise PythNetworkError(f"Pyth request failed with HTTP {status}")
+            category = (
+                "AUTH" if status in (401, 403) else "HTTP_RATE_LIMIT" if status == 429 else "HTTP"
+            )
+            raise PythNetworkError(
+                f"Pyth request failed with HTTP {status}",
+                category=category,
+                cause_type=f"HTTP_{status}",
+            )
         return response
 
     def latest_batch(self) -> PythUpdateBatch:
@@ -262,9 +296,37 @@ class PythHermesClient:
                     source=f"{self._base_url}/v2/updates/price/stream",
                     max_source_age_seconds=self._max_source_age,
                 )
-        except (requests.RequestException, OSError):
+        except requests.exceptions.SSLError as error:
             if not self._closed:
-                raise PythNetworkError("Pyth stream disconnected") from None
+                raise PythNetworkError(
+                    "Pyth stream disconnected", category="TLS", cause_type=type(error).__name__
+                ) from None
+        except requests.exceptions.ProxyError as error:
+            if not self._closed:
+                raise PythNetworkError(
+                    "Pyth stream disconnected", category="PROXY", cause_type=type(error).__name__
+                ) from None
+        except requests.exceptions.ConnectTimeout as error:
+            if not self._closed:
+                raise PythNetworkError(
+                    "Pyth stream disconnected",
+                    category="CONNECT_TIMEOUT",
+                    cause_type=type(error).__name__,
+                ) from None
+        except requests.exceptions.ReadTimeout as error:
+            if not self._closed:
+                raise PythNetworkError(
+                    "Pyth stream disconnected",
+                    category="READ_TIMEOUT",
+                    cause_type=type(error).__name__,
+                ) from None
+        except (requests.ConnectionError, OSError) as error:
+            if not self._closed:
+                raise PythNetworkError(
+                    "Pyth stream disconnected",
+                    category="CONNECTION",
+                    cause_type=type(error).__name__,
+                ) from None
         except Exception:
             # Closing a requests response from another thread can make its iterator
             # fail in implementation-specific ways. Only suppress that during an

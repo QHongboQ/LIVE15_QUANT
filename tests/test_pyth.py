@@ -101,7 +101,7 @@ class DisconnectingResponse(FakeResponse):
 
 
 def client(tmp_path, session, **settings):
-    key_path = tmp_path / ".secrets" / "pyth.key"
+    key_path = tmp_path / ".secrets" / "pyth-api-key.txt"
     key_path.parent.mkdir(exist_ok=True)
     key_path.write_text("very-secret-value", encoding="utf-8")
     return PythHermesClient(Settings(pyth_api_key_path=key_path, **settings), session=session)
@@ -294,6 +294,23 @@ def test_stream_transport_drop_is_sanitized_for_bounded_reconnect(tmp_path) -> N
     try:
         with pytest.raises(PythNetworkError, match="stream disconnected"):
             tuple(hermes.stream_batches())
+    finally:
+        hermes.close()
+
+
+def test_transport_failure_exposes_safe_category_without_secret(tmp_path) -> None:
+    class FailingSession(FakeSession):
+        def get(self, url, **kwargs):
+            raise requests.exceptions.SSLError("certificate detail must be redacted")
+
+    hermes = client(tmp_path, FailingSession([]))
+    try:
+        with pytest.raises(PythNetworkError) as caught:
+            hermes.latest_batch()
+        assert caught.value.category == "TLS"
+        assert caught.value.cause_type == "SSLError"
+        assert "certificate detail" not in str(caught.value)
+        assert "very-secret-value" not in repr(caught.value)
     finally:
         hermes.close()
 
