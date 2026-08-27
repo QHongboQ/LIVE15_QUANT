@@ -244,6 +244,8 @@ class TrainingProjection(StrictResponse):
     status: str
     reason_code: str
     events: int | None = None
+    eligible_events: int | None = None
+    ineligible_events: int | None = None
     rows: int | None = None
     assets: int | None = None
     observed_at: datetime | None = None

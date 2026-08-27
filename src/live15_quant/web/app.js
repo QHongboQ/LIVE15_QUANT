@@ -624,6 +624,7 @@ function renderProjectionCard(titleText, projection, detailText = "") {
   const body = node("div", "panel-body");
   append(body,
     metric("Events", valueOrDash(projection?.events, number)),
+    metric("Eligible", valueOrDash(projection?.eligible_events, number)),
     metric("Rows", valueOrDash(projection?.rows, number)),
     metric("Assets", valueOrDash(projection?.assets, number)),
     metric("Reason", valueOrDash(projection?.reason_code)),
