@@ -35,6 +35,14 @@
       "market_session_days": 7,
       "eligible_finalized_events": 3692,
       "eligible_decision_rows": 27124,
+      "capability_days": {
+        "LIVE_NATIVE_DAYS": 7,
+        "PATH_TERMINAL_DAYS": 7,
+        "TRADE_SEQUENCE_DAYS": 0,
+        "L2_SNAPSHOT_DAYS": 0,
+        "L2_DELTA_DAYS": 0,
+        "FORWARD_OOS_DAYS": 0
+      },
       "assets": ["BNB", "BTC", "DOGE", "ETH", "Gold", "HYPE", "SOL", "Silver", "WTI Oil", "XRP"],
       "availability": "strict_as_of_materialized_decisions"
     },
@@ -60,6 +68,13 @@
       "market_session_days": 90,
       "markets": 59056,
       "trades": 886454,
+      "source_window_days": 90,
+      "capability_days": {
+        "PATH_TERMINAL_DAYS": 1,
+        "TRADE_SEQUENCE_DAYS": 1,
+        "L2_SNAPSHOT_DAYS": 0,
+        "L2_DELTA_DAYS": 0
+      },
       "quality": "official history; not full historical L2"
     },
     {
@@ -71,6 +86,11 @@
       "base_url": "https://api.depthfeed.com",
       "base_url_source": "DepthFeed API documentation (https://depthfeed.com/docs; adapter appends /v3)",
       "bulk_download_performed": false,
+      "provider_window_days": 7,
+      "capability_days": {
+        "L2_SNAPSHOT_DAYS": 0,
+        "L2_DELTA_DAYS": 0
+      },
       "capability_probe": {
         "market_discovery": "PASS (1 bounded market)",
         "snapshot_probe": "RATE_LIMITED_HTTP_429 (one bounded retry)",
@@ -91,5 +111,6 @@
   },
   "factor_or_model_run": false,
   "research_universe_runtime": "aggregate metadata only; no Dataset v2 payload read",
+  "capability_day_semantics": "H0/H1/H2 capability-specific day sets; no unified development-day union",
   "depthfeed_next_safe_action": "Obtain provider rate-limit capacity and an eligible snapshot plan, then rerun the bounded H0 overlap validation before any acquisition; do not retry ticks while HTTP 402 persists."
 }

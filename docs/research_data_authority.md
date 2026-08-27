@@ -58,6 +58,18 @@ or production-write control.
 The runtime authority uses read-only SQLite URI connections and process-local source-high-water
 caching. It refreshes when aggregate source identity changes and does not write runtime state.
 
+## Capability-specific coverage
+
+The API exposes day sets separately: `PATH_TERMINAL_DAYS`, `TRADE_SEQUENCE_DAYS`,
+`L2_SNAPSHOT_DAYS`, `L2_DELTA_DAYS`, `LIVE_NATIVE_DAYS`, and `FORWARD_OOS_DAYS`. H0
+`LIVE_NATIVE_DAYS` is read from the current trainable Recorder projection and grows as new
+eligible sessions arrive. H1 keeps its 90-day catalog/source window separate from measured
+trade/candle detail days (the current bounded artifact has one detailed UTC day); full historical
+L2 is unavailable. H2 records its bounded provider window separately, while acquired snapshot and
+delta day sets remain empty until payloads pass overlap validation. No source windows are unioned
+into a generic development-day total, and Dataset validation days remain a separate holdout
+metadata field.
+
 ## DepthFeed credential boundary
 
 The existing `DepthFeedHistoricalOrderbookProvider` remains the sole H2 adapter. It reads a

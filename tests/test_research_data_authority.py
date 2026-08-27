@@ -304,6 +304,81 @@ def test_same_inputs_are_deterministic_and_new_recorder_coverage_changes_univers
     assert newer.content_hash != first.content_hash
 
 
+def test_capability_days_grow_for_h0_without_unioning_h1_window() -> None:
+    h0_days = ("2026-08-20", "2026-08-21")
+    h1_window = tuple(f"2026-08-{day:02d}" for day in range(1, 31))
+    h0 = source(
+        "recorder",
+        ResearchSourceType.OWN_RECORDER,
+        TrustTier.H0,
+        first=NOW - timedelta(days=7),
+        latest=NOW,
+    )
+    h0 = replace(h0, capability_days={"LIVE_NATIVE_DAYS": h0_days, "PATH_TERMINAL_DAYS": h0_days})
+    h1 = replace(
+        source("official", ResearchSourceType.KALSHI_OFFICIAL_HISTORY, TrustTier.H1),
+        utc_calendar_days=h1_window,
+        market_session_days=h1_window,
+        capability_days={"PATH_TERMINAL_DAYS": ("2026-08-01",)},
+    )
+    snapshot = ResearchUniverseBuilder(
+        freshness_policy=policy(),
+        session_semantics=SessionSemantics("live15-session-v1"),
+        sources=(h0, h1),
+        observations=(observation("recorder", ResearchSourceType.OWN_RECORDER, TrustTier.H0),),
+        frozen_holdout=FrozenHoldoutMetadata.unrevealed("dataset-v2"),
+    ).build(cutoff_timestamp=NOW, code_git_sha="c" * 40)
+
+    assert snapshot.capability_days["LIVE_NATIVE_DAYS"] == h0_days
+    assert snapshot.capability_days["PATH_TERMINAL_DAYS"] == (
+        "2026-08-01",
+        "2026-08-20",
+        "2026-08-21",
+    )
+    assert snapshot.utc_calendar_days == ("2026-08-24",)
+    assert len(snapshot.utc_calendar_days) != len(h1_window) + len(h0_days)
+    newer_h0 = replace(
+        h0,
+        capability_days={
+            "LIVE_NATIVE_DAYS": (*h0_days, "2026-08-22"),
+            "PATH_TERMINAL_DAYS": (*h0_days, "2026-08-22"),
+        },
+    )
+    newer = ResearchUniverseBuilder(
+        freshness_policy=policy(),
+        session_semantics=SessionSemantics("live15-session-v1"),
+        sources=(newer_h0, h1),
+        observations=(observation("recorder", ResearchSourceType.OWN_RECORDER, TrustTier.H0),),
+        frozen_holdout=FrozenHoldoutMetadata.unrevealed("dataset-v2"),
+    ).build(cutoff_timestamp=NOW, code_git_sha="c" * 40)
+    assert len(newer.capability_days["LIVE_NATIVE_DAYS"]) > len(
+        snapshot.capability_days["LIVE_NATIVE_DAYS"]
+    )
+
+
+def test_h2_provider_window_can_be_seven_days_with_zero_acquired_l2() -> None:
+    h2 = replace(
+        source("depthfeed", ResearchSourceType.DEPTHFEED_KALSHI_L2, TrustTier.H2),
+        utc_calendar_days=tuple(f"2026-08-{day:02d}" for day in range(20, 27)),
+        market_session_days=tuple(f"2026-08-{day:02d}" for day in range(20, 27)),
+        capability_days={"L2_SNAPSHOT_DAYS": (), "L2_DELTA_DAYS": ()},
+        eligible_events=0,
+        eligible_observations=0,
+    )
+    snapshot = ResearchUniverseBuilder(
+        freshness_policy=policy(),
+        session_semantics=SessionSemantics("live15-session-v1"),
+        sources=(h2,),
+        observations=(),
+        frozen_holdout=FrozenHoldoutMetadata.unrevealed("dataset-v2"),
+    ).build(cutoff_timestamp=NOW, code_git_sha="d" * 40)
+
+    assert len(h2.utc_calendar_days) == 7
+    assert snapshot.capability_days["L2_SNAPSHOT_DAYS"] == ()
+    assert snapshot.capability_days["L2_DELTA_DAYS"] == ()
+    assert snapshot.validation_days == ()
+
+
 def test_holdout_metadata_rejects_payload_fields() -> None:
     with pytest.raises(TypeError, match="metadata-only"):
         FrozenHoldoutMetadata("dataset-v2", "UNREVEALED_FROZEN", payload={"label": "yes"})

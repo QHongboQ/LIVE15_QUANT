@@ -668,8 +668,11 @@ function renderResearchData() {
   const metrics = node("div", "metric-grid");
   append(metrics,
     metric("Research Universe", valueOrDash(research.universe_id)),
-    metric("Development days", number(research.eligible_development_days?.length)),
-    metric("UTC calendar days", number(research.utc_calendar_days?.length)),
+    metric("Live-native days", number(research.capability_days?.LIVE_NATIVE_DAYS?.length)),
+    metric("Path/terminal days", number(research.capability_days?.PATH_TERMINAL_DAYS?.length)),
+    metric("Trade-sequence days", number(research.capability_days?.TRADE_SEQUENCE_DAYS?.length)),
+    metric("L2 snapshot days", number(research.capability_days?.L2_SNAPSHOT_DAYS?.length)),
+    metric("L2 delta days", number(research.capability_days?.L2_DELTA_DAYS?.length)),
     metric("Eligible events", number(research.eligible_events)),
     metric("Eligible observations", number(research.eligible_observations)),
     metric("DepthFeed", valueOrDash(research.depthfeed_status))
@@ -677,13 +680,18 @@ function renderResearchData() {
   root.append(metrics, sectionHead("Research universe", "Underlying authorized sources · not a Dataset v2 partition"));
   const coverage = node("div", "detail-grid");
   const days = node("div", "panel");
-  days.append(append(node("div", "panel-head"), node("h2", "", "Canonical coverage days")));
+  days.append(append(node("div", "panel-head"), node("h2", "", "Capability-specific coverage days")));
   const daysBody = node("div", "panel-body kv-grid");
   append(daysBody,
     kv("Earliest", timestamp(research.earliest_timestamp)), kv("Latest", timestamp(research.latest_timestamp)),
     kv("UTC calendar", (research.utc_calendar_days || []).join(", ") || "N/A"),
     kv("Market sessions", (research.market_session_days || []).join(", ") || "N/A"),
-    kv("Development sessions", (research.eligible_development_days || []).join(", ") || "N/A"),
+    kv("Live-native", (research.capability_days?.LIVE_NATIVE_DAYS || []).join(", ") || "N/A"),
+    kv("Path / terminal", (research.capability_days?.PATH_TERMINAL_DAYS || []).join(", ") || "N/A"),
+    kv("Trade sequence", (research.capability_days?.TRADE_SEQUENCE_DAYS || []).join(", ") || "N/A"),
+    kv("L2 snapshots", (research.capability_days?.L2_SNAPSHOT_DAYS || []).join(", ") || "N/A"),
+    kv("L2 deltas", (research.capability_days?.L2_DELTA_DAYS || []).join(", ") || "N/A"),
+    kv("Forward OOS", (research.capability_days?.FORWARD_OOS_DAYS || []).join(", ") || "N/A"),
     kv("Validation days", (research.validation_days || []).join(", ") || "N/A")
   );
   days.append(daysBody);

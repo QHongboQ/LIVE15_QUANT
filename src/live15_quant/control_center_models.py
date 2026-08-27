@@ -392,6 +392,7 @@ class ResearchDataSourceResponse(StrictResponse):
     provenance: str
     content_identity: str
     limitations: list[str] = Field(default_factory=list)
+    capability_days: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class ResearchFreshnessPolicyResponse(StrictResponse):
@@ -437,6 +438,7 @@ class ResearchDataResponse(StrictResponse):
     frozen_holdout: FrozenHoldoutResponse
     holdout_accessed: bool = False
     depthfeed_status: str
+    capability_days: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class ArchiveResponse(StrictResponse):

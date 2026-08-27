@@ -14,7 +14,7 @@ import os
 import sqlite3
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -33,6 +33,14 @@ RESEARCH_SOURCE_REGISTRY_VERSION = "research-source-registry-v1"
 RESEARCH_UNIVERSE_SCHEMA_VERSION = "research-universe-v1"
 SESSION_SEMANTICS_VERSION = "live15-session-v1"
 _PRECEDENCE = {"H0": 0, "H1": 1, "H2": 2}
+CAPABILITY_DAY_KEYS = (
+    "PATH_TERMINAL_DAYS",
+    "TRADE_SEQUENCE_DAYS",
+    "L2_SNAPSHOT_DAYS",
+    "L2_DELTA_DAYS",
+    "LIVE_NATIVE_DAYS",
+    "FORWARD_OOS_DAYS",
+)
 
 
 def _utc(value: datetime) -> datetime:
@@ -278,6 +286,7 @@ class ResearchSourceManifest:
     provenance: str
     content_identity: str
     limitations: tuple[str, ...] = ()
+    capability_days: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.source_id or not self.content_identity:
@@ -318,6 +327,9 @@ class ResearchSourceManifest:
             "provenance": self.provenance,
             "content_identity": self.content_identity,
             "limitations": list(self.limitations),
+            "capability_days": {
+                key: list(value) for key, value in sorted(self.capability_days.items())
+            },
         }
 
 
@@ -380,6 +392,7 @@ class ResearchUniverseSnapshot:
     selected_source_ids: tuple[str, ...]
     frozen_holdout: FrozenHoldoutMetadata
     depthfeed_status: str
+    capability_days: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def total_development_days(self) -> tuple[str, ...]:
@@ -421,6 +434,9 @@ class ResearchUniverseSnapshot:
             "frozen_holdout": self.frozen_holdout.to_public_dict(),
             "holdout_accessed": False,
             "depthfeed_status": self.depthfeed_status,
+            "capability_days": {
+                key: list(value) for key, value in sorted(self.capability_days.items())
+            },
         }
 
 
@@ -502,6 +518,12 @@ class ResearchUniverseBuilder:
             "counts": (deduplicated, conflicts, quarantined, holdout_excluded),
         }
         content_hash = _hash(payload)
+        capability_days = {
+            key: tuple(
+                sorted({day for source in manifests for day in source.capability_days.get(key, ())})
+            )
+            for key in CAPABILITY_DAY_KEYS
+        }
         return ResearchUniverseSnapshot(
             universe_id=f"research-universe-{content_hash[:20]}",
             content_hash=content_hash,
@@ -543,6 +565,7 @@ class ResearchUniverseBuilder:
                 ),
                 DEPTHFEED_NOT_CONFIGURED,
             ),
+            capability_days=capability_days,
         )
 
 
@@ -679,6 +702,10 @@ class ResearchDataAuthority:
                 "VERIFIED_METADATA",
                 "LIVE15 current trainable projection",
                 _hash(aggregate),
+                capability_days={
+                    "LIVE_NATIVE_DAYS": days,
+                    "PATH_TERMINAL_DAYS": days,
+                },
             )
         except sqlite3.Error:
             return _missing_source(
@@ -734,6 +761,7 @@ class ResearchDataAuthority:
                 "LIVE15 retention manifest",
                 _hash(aggregate),
                 ("quarantined chunks are excluded",),
+                capability_days={"LIVE_NATIVE_DAYS": days},
             )
         except sqlite3.Error:
             return _missing_source(
@@ -761,6 +789,7 @@ class ResearchDataAuthority:
             if earliest is not None and isinstance(declared_days, int) and declared_days > 0
             else _day_range(earliest, latest)
         )
+        detail_days = self._official_detail_days()
         return ResearchSourceManifest(
             KALSHI_OFFICIAL,
             ResearchSourceType.KALSHI_OFFICIAL_HISTORY,
@@ -782,7 +811,42 @@ class ResearchDataAuthority:
                 "candles/trades are not full historical L2",
                 "detail scope is bounded; see HIST-003 manifest",
             ),
+            capability_days={
+                "PATH_TERMINAL_DAYS": detail_days["PATH_TERMINAL_DAYS"],
+                "TRADE_SEQUENCE_DAYS": detail_days["TRADE_SEQUENCE_DAYS"],
+            },
         )
+
+    def _official_detail_days(self) -> dict[str, tuple[str, ...]]:
+        path = self.project_root / "data" / "research" / "hist003" / "hist003_official.sqlite3"
+        connection = _readonly_connection(path)
+        if connection is None:
+            return {"PATH_TERMINAL_DAYS": (), "TRADE_SEQUENCE_DAYS": ()}
+        try:
+            trade_days = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT DISTINCT substr(created_time, 1, 10) FROM trades "
+                    "WHERE created_time IS NOT NULL ORDER BY 1"
+                )
+                if row[0]
+            )
+            candle_days = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT DISTINCT date(end_period_ts, 'unixepoch') FROM candles "
+                    "WHERE end_period_ts IS NOT NULL ORDER BY 1"
+                )
+                if row[0]
+            )
+            return {
+                "PATH_TERMINAL_DAYS": tuple(sorted(set(trade_days) | set(candle_days))),
+                "TRADE_SEQUENCE_DAYS": trade_days,
+            }
+        except sqlite3.Error:
+            return {"PATH_TERMINAL_DAYS": (), "TRADE_SEQUENCE_DAYS": ()}
+        finally:
+            connection.close()
 
     def _depthfeed_manifest(self) -> ResearchSourceManifest:
         status = depthfeed_key_status(project_root=self.project_root)
@@ -814,6 +878,10 @@ class ResearchDataAuthority:
                 "no bounded acquisition without configured credential",
                 "ticks are partial until overlap semantics are verified",
             ),
+            capability_days={
+                "L2_SNAPSHOT_DAYS": (),
+                "L2_DELTA_DAYS": (),
+            },
         )
 
     def _holdout_metadata(self) -> FrozenHoldoutMetadata:
@@ -886,8 +954,6 @@ def _with_source_coverage(snapshot: ResearchUniverseSnapshot) -> ResearchUnivers
         (item.earliest_timestamp for item in sources if item.earliest_timestamp), default=None
     )
     latest = max((item.latest_timestamp for item in sources if item.latest_timestamp), default=None)
-    utc_days = tuple(sorted({day for item in sources for day in item.utc_calendar_days}))
-    session_days = tuple(sorted({day for item in sources for day in item.market_session_days}))
     # Aggregate manifests are coverage metadata, not normalized row streams.  Summing their
     # counts would double-count Recorder data that has moved to cold archive (or an H1 overlap).
     # Until a caller supplies normalized ResearchObservation identities, report only the
@@ -900,6 +966,15 @@ def _with_source_coverage(snapshot: ResearchUniverseSnapshot) -> ResearchUnivers
         key=lambda item: (_PRECEDENCE[item.trust_tier.value], item.source_id),
         default=None,
     )
+    # Keep legacy aggregate fields tied to the highest-precedence countable source.  Never
+    # union H0/H1/H2 windows into one misleading development-day total.
+    primary_days = primary.utc_calendar_days if primary else ()
+    primary_sessions = primary.market_session_days if primary else ()
+    capability_days: dict[str, tuple[str, ...]] = {}
+    for key in CAPABILITY_DAY_KEYS:
+        capability_days[key] = tuple(
+            sorted({day for item in sources for day in item.capability_days.get(key, ())})
+        )
     payload = snapshot.to_public_dict() | {
         "aggregate_source_coverage": [item.to_public_dict() for item in sources]
     }
@@ -914,9 +989,9 @@ def _with_source_coverage(snapshot: ResearchUniverseSnapshot) -> ResearchUnivers
         source_manifests=snapshot.source_manifests,
         earliest_timestamp=earliest,
         latest_timestamp=latest,
-        utc_calendar_days=utc_days,
-        market_session_days=session_days,
-        eligible_development_days=session_days,
+        utc_calendar_days=primary_days,
+        market_session_days=primary_sessions,
+        eligible_development_days=primary_sessions,
         validation_days=snapshot.validation_days,
         assets=tuple(sorted({asset for item in sources for asset in item.assets})),
         eligible_events=primary.eligible_events if primary else 0,
@@ -928,4 +1003,5 @@ def _with_source_coverage(snapshot: ResearchUniverseSnapshot) -> ResearchUnivers
         selected_source_ids=(primary.source_id,) if primary else (),
         frozen_holdout=snapshot.frozen_holdout,
         depthfeed_status=snapshot.depthfeed_status,
+        capability_days=capability_days,
     )
