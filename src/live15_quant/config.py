@@ -493,7 +493,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             defaults.recorder_coinbase_stale_seconds,
         ),
         enable_pyth_underlying=enable_pyth_underlying,
-        pyth_hermes_base_url=PYTH_HERMES_BASE_URL,
+        pyth_hermes_base_url=source.get(
+            "LIVE15_PYTH_HERMES_BASE_URL", defaults.pyth_hermes_base_url
+        ).rstrip("/"),
         pyth_api_key_path=pyth_api_key_path,
         pyth_rest_fallback_interval_seconds=_positive_float(
             source,
