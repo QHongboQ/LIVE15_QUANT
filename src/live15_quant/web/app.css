@@ -68,6 +68,40 @@ h3 { margin-bottom: 4px; font-size: 14px; }
 .detail-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 14px 0; border-bottom: 1px solid var(--line); }
 .detail-tab { padding: 9px 12px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; font-size: 11px; }
 .detail-tab:hover, .detail-tab.active { color: var(--text); border-color: var(--teal); }
+
+/* Terminal foundation: continuous black canvas, typographic hierarchy, compact tables. */
+:root { --bg: #050505; --panel: #0b0b0d; --line: rgba(255,255,255,.08); --accent: #7567e8; --text: #f2f2f4; --muted: #85858e; }
+body { background: var(--bg); color: var(--text); }
+.app-shell { grid-template-columns: 232px minmax(0, 1fr); background: var(--bg); }
+.sidebar { background: #09090b; border-right: 1px solid var(--line); padding: 20px 12px; }
+.brand { padding: 8px 10px 22px; }
+.brand small { letter-spacing: .14em; }
+nav a { min-height: 40px; border-radius: 7px; font-size: 14px; gap: 10px; color: #a2a2aa; }
+nav a svg { width: 18px; height: 18px; flex: 0 0 18px; }
+nav a:hover { background: rgba(255,255,255,.05); color: var(--text); }
+nav a.active { background: var(--accent); color: white; }
+.nav-label { margin: 18px 10px 7px; color: #666670; font-size: 10px; letter-spacing: .16em; }
+main { min-width: 0; padding: 0 30px 48px; }
+.topbar { min-height: 72px; border-bottom: 1px solid var(--line); }
+.topbar h1 { font-size: 20px; letter-spacing: -.02em; }
+.topbar .eyebrow { font-size: 10px; }
+.metric-grid { display: flex; flex-wrap: wrap; gap: 26px; border-bottom: 1px solid var(--line); padding: 18px 0; }
+.metric { background: transparent; border: 0; padding: 0; min-width: 120px; }
+.metric .value { font-size: 18px; color: var(--text); }
+.metric .label { font-size: 10px; letter-spacing: .1em; }
+.panel, .panel-body, .market-card { background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+.table-wrap { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+table th { font-size: 10px; letter-spacing: .08em; color: #777782; }
+table td { height: 44px; font-size: 13px; border-top-color: rgba(255,255,255,.05); }
+.terminal-hero { padding: 34px 0 12px; display: grid; gap: 8px; }
+.financial-headline { font-size: clamp(44px, 6vw, 64px); line-height: .98; letter-spacing: -.05em; }
+.hero-change { color: #53c98b; font-size: 15px; }
+.terminal-chart { min-height: 300px; margin: 24px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 18px 0; background: linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px); background-size: 44px 44px; }
+.chart-title { font-size: 14px; color: var(--muted); }
+.chart-grid { height: 240px; display: grid; place-items: center; color: #686872; font-size: 12px; }
+.table-filter { width: 220px; margin: 8px 0 14px; background: #0c0c0f; border: 1px solid var(--line); color: var(--text); padding: 9px 11px; border-radius: 6px; }
+.icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+@media (max-width: 1024px) { .app-shell { grid-template-columns: 76px minmax(0,1fr); } .brand span:not(.brand-mark), nav a:not(.active) { font-size: 0; } nav a { justify-content: center; } .nav-label { font-size: 0; } main { padding: 0 20px 32px; } }
 .read-only { padding: 7px 9px; border: 1px solid #2a4d49; border-radius: 5px; color: var(--teal); background: #0d2424; }
 
 .notice { margin-bottom: 18px; padding: 11px 14px; border: 1px solid #785c27; border-radius: 7px; background: #2b2415; color: #f1ce83; font-size: 12px; }

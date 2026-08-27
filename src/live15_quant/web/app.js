@@ -167,10 +167,10 @@ function emptyState(titleText, detail) {
 }
 
 function currentRoute() {
-  const parts = (location.hash.replace(/^#\/?/, "") || "dashboard").split("/").filter(Boolean);
+  const parts = (location.hash.replace(/^#\/?/, "") || "overview").split("/").filter(Boolean);
   if (parts[0] === "markets" && parts[1]) return { name: "detail", asset: decodeURIComponent(parts.slice(1).join("/")) };
   if (["markets", "data", "training", "archive", "storage", "operations", "events", "system", "overview", "portfolio", "account", "orders", "history", "watchlist", "analytics", "signals", "models"].includes(parts[0])) return { name: parts[0] };
-  return { name: "dashboard" };
+  return { name: "overview" };
 }
 
 function setHeading(route) {
@@ -383,6 +383,12 @@ function renderAccountPage(kind = "overview") {
   const metrics = node("div", "metric-grid");
   append(metrics, metric("Balance", summary.balance_cents == null ? "N/A" : `${(summary.balance_cents / 100).toFixed(2)} USD`), metric("Portfolio value", summary.portfolio_value_cents == null ? "N/A" : `${(summary.portfolio_value_cents / 100).toFixed(2)} USD`), metric("Today P&L", summary.today_pnl_cents == null ? "N/A" : `${(summary.today_pnl_cents / 100).toFixed(2)} USD`), metric("Status", stateLabel(account.status)));
   root.append(metrics);
+  if (kind === "overview") {
+    const hero = node("div", "terminal-hero");
+    append(hero, node("span", "eyebrow", "PORTFOLIO VALUE"), node("strong", "financial-headline", summary.portfolio_value_cents == null ? "N/A" : `${(summary.portfolio_value_cents / 100).toFixed(2)} USD`), node("span", "hero-change", summary.today_pnl_cents == null ? "N/A today" : `${summary.today_pnl_cents >= 0 ? "+" : ""}${(summary.today_pnl_cents / 100).toFixed(2)} USD today`));
+    root.prepend(hero);
+    const chart = node("div", "terminal-chart"); append(chart, node("div", "chart-title", "Portfolio · synchronized evidence"), node("div", "chart-grid", "No historical chart series available · N/A")); root.append(chart);
+  }
   if (kind === "portfolio") {
     root.append(sectionHead("Positions", "Authoritative account positions; marks are not fabricated"));
     const wrap = node("div", "table-wrap"); const table = node("table"); const head = node("tr"); ["Market", "Position", "Exposure", "Realized P&L", "Mark"].forEach((x) => head.append(node("th", x === "Market" ? "" : "num", x))); const body = node("tbody");

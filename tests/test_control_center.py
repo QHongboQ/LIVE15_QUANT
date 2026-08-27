@@ -998,7 +998,7 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
         script = (await client.get("/assets/app.js")).text
 
     for route in (
-        "#/",
+        "#/overview",
         "#/dashboard",
         "#/markets",
         "#/data",
