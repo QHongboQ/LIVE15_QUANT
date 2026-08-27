@@ -9,8 +9,8 @@ const ASSET_LABELS = Object.freeze({
 
 // Recorder collection cadence is configured server-side and is independent of these
 // read-only API refresh intervals. The one-second countdown below performs no request.
-const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, system: 30000, coverage: 60000, data: 30000, training: 30000, archive: 10000, storage: 30000, operations: 10000 });
-const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, data: null, training: null, archive: null, storage: null, operations: null, events: null, system: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
+const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, system: 30000, coverage: 60000, data: 30000, training: 30000, archive: 10000, storage: 30000, operations: 10000, account: 10000 });
+const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, data: null, training: null, archive: null, storage: null, operations: null, events: null, system: null, account: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
 const lastFetched = new Map();
 const inFlight = new Map();
 
@@ -167,15 +167,15 @@ function emptyState(titleText, detail) {
 }
 
 function currentRoute() {
-  const parts = (location.hash.replace(/^#\/?/, "") || "dashboard").split("/").filter(Boolean);
+  const parts = (location.hash.replace(/^#\/?/, "") || "overview").split("/").filter(Boolean);
   if (parts[0] === "markets" && parts[1]) return { name: "detail", asset: decodeURIComponent(parts.slice(1).join("/")) };
-  if (["markets", "data", "training", "archive", "storage", "operations", "events", "system"].includes(parts[0])) return { name: parts[0] };
-  return { name: "dashboard" };
+  if (["markets", "data", "training", "archive", "storage", "operations", "events", "system", "overview", "portfolio", "account", "orders", "history", "watchlist", "analytics", "signals", "models"].includes(parts[0])) return { name: parts[0] };
+  return { name: "overview" };
 }
 
 function setHeading(route) {
   const headings = {
-    dashboard: ["OVERVIEW", "Dashboard"], markets: ["MARKET DATA", "15-Minute Markets"],
+    dashboard: ["ADMIN · OVERVIEW", "Dashboard"], overview: ["TRADING", "Overview"], portfolio: ["TRADING", "Portfolio"], account: ["TRADING", "Account"], orders: ["TRADING", "Orders"], history: ["TRADING", "History"], watchlist: ["TRADING", "Watchlist"], analytics: ["INTELLIGENCE", "Analytics"], signals: ["INTELLIGENCE", "Signals"], models: ["INTELLIGENCE", "Models"], markets: ["MARKET DATA", "15-Minute Markets"],
     data: ["DATA", "Data Pipeline"], training: ["TRAINING", "Training Truth"], archive: ["ARCHIVE", "Archive"], storage: ["STORAGE", "Storage"], operations: ["OPERATIONS", "Operations"], events: ["OPERATIONS", "Warnings / Errors"], system: ["SYSTEM", "System / Health"],
     detail: ["MARKET DETAIL", `${ASSET_LABELS[route.asset]?.[0] || route.asset} Contract`],
   };
@@ -374,6 +374,50 @@ function renderDashboard() {
   return root;
 }
 
+function renderAccountPage(kind = "overview") {
+  const account = state.account;
+  if (!account) return emptyState("Account unavailable", "Waiting for the Production account read API.");
+  const root = node("div");
+  root.append(sectionHead(kind === "portfolio" ? "Portfolio" : "Account overview", "Production · Primary · read-only"));
+  const summary = account.summary || {};
+  const metrics = node("div", "metric-grid");
+  append(metrics, metric("Balance", summary.balance_cents == null ? "N/A" : `${(summary.balance_cents / 100).toFixed(2)} USD`), metric("Portfolio value", summary.portfolio_value_cents == null ? "N/A" : `${(summary.portfolio_value_cents / 100).toFixed(2)} USD`), metric("Today P&L", summary.today_pnl_cents == null ? "N/A" : `${(summary.today_pnl_cents / 100).toFixed(2)} USD`), metric("Status", stateLabel(account.status)));
+  root.append(metrics);
+  if (kind === "overview") {
+    const hero = node("div", "terminal-hero");
+    append(hero, node("span", "eyebrow", "PORTFOLIO VALUE"), node("strong", "financial-headline", summary.portfolio_value_cents == null ? "N/A" : `${(summary.portfolio_value_cents / 100).toFixed(2)} USD`), node("span", "hero-change", summary.today_pnl_cents == null ? "N/A today" : `${summary.today_pnl_cents >= 0 ? "+" : ""}${(summary.today_pnl_cents / 100).toFixed(2)} USD today`));
+    root.prepend(hero);
+    const chart = node("div", "terminal-chart"); append(chart, node("div", "chart-title", "Portfolio · synchronized evidence"), node("div", "chart-grid", "No historical chart series available · N/A")); root.append(chart);
+  }
+  if (kind === "portfolio") {
+    root.append(sectionHead("Positions", "Authoritative account positions; marks are not fabricated"));
+    const wrap = node("div", "table-wrap"); const table = node("table"); const head = node("tr"); ["Market", "Position", "Exposure", "Realized P&L", "Mark"].forEach((x) => head.append(node("th", x === "Market" ? "" : "num", x))); const body = node("tbody");
+    (account.positions || []).forEach((p) => append(body, append(node("tr"), node("td", "", p.ticker), node("td", "num", valueOrDash(p.position, number)), node("td", "num", p.market_exposure_cents == null ? "N/A" : `${(p.market_exposure_cents / 100).toFixed(2)}`), node("td", "num", p.realized_pnl_cents == null ? "N/A" : `${(p.realized_pnl_cents / 100).toFixed(2)}`), node("td", "num", p.mark_cents == null ? "N/A" : `${(p.mark_cents / 100).toFixed(2)}`))));
+    table.append(append(node("thead"), head), body); wrap.append(table); root.append(wrap);
+  } else {
+    root.append(sectionHead("Account connectivity", "Credentials remain server-side; no order actions are exposed"));
+    root.append(node("div", "panel panel-body", account.message || "Production account reads use the official Kalshi SDK boundary."));
+  }
+  return root;
+}
+
+function renderReadOnlyShell(name) {
+  const account = state.account;
+  if (!account) return emptyState(`${name} unavailable`, "Waiting for the Production account read API.");
+  const root = node("div"); root.append(sectionHead(name, "Production · Primary · read-only"));
+  if (["Watchlist", "Analytics", "Signals", "Models"].includes(name)) {
+    const copy = { Watchlist: "Saved markets are kept locally; no remote writes are performed.", Analytics: "LIVE15 analytics are derived only from available recorder evidence.", Signals: "Approved signal outputs only; unavailable signals remain N/A.", Models: "Model registry evidence is read-only; no training or promotion controls are exposed." }[name];
+    root.append(node("div", "panel panel-body", copy));
+    const facts = node("div", "metric-grid"); append(facts, metric("Status", "N/A"), metric("Source", "LIVE15"), metric("Freshness", "N/A"), metric("Permission", "READ ONLY")); root.append(facts); return root;
+  }
+  const rows = name === "Orders" ? (account.orders || []) : name === "History" ? [...(account.fills || []), ...(account.ledger || [])] : (account.fills || []);
+  const table = node("table"); const head = node("tr"); [name === "Orders" ? "Order" : "Fill", "Market", "Status / Side", "Count", "Price", "Time"].forEach((x) => head.append(node("th", x === "Count" || x === "Price" ? "num" : "", x))); const body = node("tbody");
+  rows.forEach((item) => append(body, append(node("tr"), node("td", "", item.order_id || item.trade_id || item.reference || item.entry_type || "N/A"), node("td", "", item.ticker || "N/A"), node("td", "", item.status || item.side || item.entry_type || "N/A"), node("td", "num", valueOrDash(item.count, number)), node("td", "num", item.yes_price_cents == null ? (item.amount_cents == null ? "N/A" : `${(item.amount_cents / 100).toFixed(2)}`) : `${item.yes_price_cents}¢`), node("td", "", timestamp(item.created_at || item.observed_at)))));
+  table.append(append(node("thead"), head), body); root.append(append(node("div", "table-wrap"), table));
+  if (!rows.length) root.append(emptyState("N/A", `No verified ${name.toLowerCase()} facts are available.`));
+  return root;
+}
+
 function renderEvents() {
   const root = node("div");
   root.append(sectionHead("Warnings / errors / fatal", "Newest 100 · refresh 15s · normal ticks are omitted"));
@@ -431,6 +475,7 @@ function renderMarkets() {
   const markets = state.markets || [];
   const root = node("div");
   root.append(sectionHead("All target assets", `${markets.length}/10 · Kalshi official market data`));
+  const filter = node("input", "table-filter"); filter.type = "search"; filter.placeholder = "Filter assets or tickers…"; filter.addEventListener("input", () => { const query = filter.value.toLowerCase(); root.querySelectorAll("tbody tr").forEach((row) => { row.hidden = query && !row.textContent.toLowerCase().includes(query); }); }); root.append(filter);
   const wrap = node("div", "table-wrap");
   const table = node("table");
   const header = node("tr");
@@ -472,6 +517,20 @@ function renderDetail(route) {
   const metrics = node("div", "metric-grid");
   append(metrics, metric("Lifecycle", market.lifecycle.toUpperCase(), market.official_status || "official status missing"), countdownMetric("Time remaining", market.window_end, market.seconds_remaining), metric("Target", marketPrice(market.target)), metric("Quote age", age(market.quote_age_seconds), market.quote_status));
   root.append(metrics, sectionHead("Contract & prices", valueOrDash(market.ticker)));
+  const tabs = node("div", "detail-tabs");
+  ["Chart", "Order Book", "Position", "History", "LIVE15 Analysis"].forEach((label, index) => {
+    const tab = node("a", `detail-tab${index === 0 ? " active" : ""}`, label);
+    tab.href = index === 2 ? "#/portfolio" : `#/markets/${encodeURIComponent(route.asset)}`;
+    tabs.append(tab);
+  });
+  root.append(tabs);
+  const owned = (state.account?.positions || []).find((item) => item.ticker === market.ticker);
+  root.append(node("div", "panel panel-body", owned ? `Position ${valueOrDash(owned.position, number)} · P&L ${owned.realized_pnl_cents == null ? "N/A" : `${(owned.realized_pnl_cents / 100).toFixed(2)} USD`}` : "Position: N/A · no verified holding for this market"));
+  const chart = node("div", "panel panel-body chart-panel");
+  chart.append(node("h2", "", "Chart"), node("p", "muted", "Real synchronized quote points are shown when available; no interpolation is applied."));
+  const chartValues = [market.yes_bid, market.yes_ask, market.last_trade].filter((value) => value != null);
+  chart.append(node("div", "chart-values", chartValues.length ? chartValues.map((value) => predictionPrice(value)).join("  ·  ") : "N/A"));
+  root.append(chart);
   const detail = node("div", "detail-grid");
   const contract = node("div", "panel");
   contract.append(append(node("div", "panel-head"), node("h2", "", "Contract metadata")));
@@ -767,8 +826,11 @@ function render() {
   const route = currentRoute();
   setHeading(route);
   updateSidebar();
-  const contents = { dashboard: renderDashboard, markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem }[route.name]();
-  view.replaceChildren(contents);
+  const renderers = { dashboard: renderDashboard, overview: () => renderAccountPage("overview"), portfolio: () => renderAccountPage("portfolio"), account: () => renderAccountPage("overview"), orders: () => renderReadOnlyShell("Orders"), history: () => renderReadOnlyShell("History"), watchlist: () => renderReadOnlyShell("Watchlist"), analytics: () => renderReadOnlyShell("Analytics"), signals: () => renderReadOnlyShell("Signals"), models: () => renderReadOnlyShell("Models"), markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem };
+  let contents;
+  try { contents = renderers[route.name](); }
+  catch (error) { console.error("LIVE15 view render failed", error); contents = emptyState("Unable to render this view", "Retrying is safe; local data remains read-only."); }
+  view.replaceChildren(contents || emptyState("Unable to render this view", "No renderer is registered for this route."));
   view.setAttribute("aria-busy", "false");
   updateCountdowns();
 }
@@ -777,6 +839,7 @@ async function refresh(force = false) {
   if (document.hidden) return;
   const route = currentRoute();
   const tasks = [fetchJson("health", "/api/health", INTERVALS.health, force)];
+  if (["overview", "portfolio", "account", "orders", "history", "dashboard", "detail"].includes(route.name)) tasks.push(fetchJson("account", "/api/account?profile=production_primary", INTERVALS.account, force));
   if (["dashboard", "events", "system", "operations"].includes(route.name)) tasks.push(fetchJson("events", eventsUrl(), INTERVALS.events, force));
   if (["dashboard", "training", "data"].includes(route.name)) tasks.push(fetchJson("training", "/api/training", INTERVALS.training, force));
   if (["dashboard", "data"].includes(route.name)) tasks.push(fetchJson("data", "/api/data", INTERVALS.data, force));
@@ -799,7 +862,7 @@ async function refresh(force = false) {
   render();
 }
 
-window.addEventListener("hashchange", () => refresh(true));
+window.addEventListener("hashchange", () => { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); refresh(true); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(true); });
 setInterval(updateCountdowns, 1000);
 setInterval(() => refresh(false), 500);

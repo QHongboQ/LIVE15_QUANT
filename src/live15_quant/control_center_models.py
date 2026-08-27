@@ -57,6 +57,81 @@ class StrictResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AccountProfileResponse(StrictResponse):
+    key: str
+    label: str
+    environment: str
+    is_primary: bool = False
+
+
+class AccountSummaryResponse(StrictResponse):
+    profile: str
+    status: str
+    observed_at: datetime
+    balance_cents: int | None = None
+    portfolio_value_cents: int | None = None
+    today_pnl_cents: int | None = None
+    realized_pnl_cents: int | None = None
+    fees_cents: int | None = None
+    message: str | None = None
+
+
+class AccountPositionResponse(StrictResponse):
+    ticker: str
+    position: int | None = None
+    market_exposure_cents: int | None = None
+    realized_pnl_cents: int | None = None
+    fees_cents: int | None = None
+    mark_cents: int | None = None
+    mark_status: str = "unavailable"
+
+
+class AccountOrderResponse(StrictResponse):
+    order_id: str
+    ticker: str | None = None
+    status: str | None = None
+    side: str | None = None
+    action: str | None = None
+    count: int | None = None
+    remaining_count: int | None = None
+    yes_price_cents: int | None = None
+    no_price_cents: int | None = None
+    created_at: datetime | None = None
+
+
+class AccountFillResponse(StrictResponse):
+    trade_id: str
+    order_id: str | None = None
+    ticker: str | None = None
+    side: str | None = None
+    action: str | None = None
+    count: int | None = None
+    yes_price_cents: int | None = None
+    no_price_cents: int | None = None
+    created_at: datetime | None = None
+
+
+class AccountLedgerEntryResponse(StrictResponse):
+    entry_type: str
+    amount_cents: int | None = None
+    ticker: str | None = None
+    reference: str | None = None
+    observed_at: datetime | None = None
+    description: str | None = None
+
+
+class AccountReadResponse(StrictResponse):
+    profile: str
+    status: str
+    observed_at: datetime
+    summary: AccountSummaryResponse
+    positions: list[AccountPositionResponse] = Field(default_factory=list)
+    orders: list[AccountOrderResponse] = Field(default_factory=list)
+    fills: list[AccountFillResponse] = Field(default_factory=list)
+    ledger: list[AccountLedgerEntryResponse] = Field(default_factory=list)
+    message: str | None = None
+
+
 class WsArchiveHealth(StrictResponse):
     enabled: bool = False
     chunks: int = 0

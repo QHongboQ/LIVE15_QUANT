@@ -14,6 +14,10 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from live15_quant.config import Settings, load_settings
 from live15_quant.control_center_models import (
+    AccountFillResponse,
+    AccountOrderResponse,
+    AccountProfileResponse,
+    AccountReadResponse,
     ArchiveResponse,
     CoverageResponse,
     DataResponse,
@@ -91,6 +95,24 @@ def create_app(
     @app.get("/api/markets/{asset}", response_model=MarketResponse)
     def market(asset: Asset) -> MarketResponse:
         return boundary.market(asset)
+
+    @app.get("/api/accounts", response_model=list[AccountProfileResponse])
+    def accounts() -> list[AccountProfileResponse]:
+        return boundary.account_profiles()
+
+    @app.get("/api/account", response_model=AccountReadResponse)
+    def account(
+        profile: str = Query(default="production_primary", min_length=1, max_length=64),
+    ) -> AccountReadResponse:
+        return boundary.account(profile)
+
+    @app.get("/api/account/orders", response_model=list[AccountOrderResponse])
+    def account_orders(profile: str = "production_primary") -> list[AccountOrderResponse]:
+        return boundary.account(profile).orders
+
+    @app.get("/api/account/fills", response_model=list[AccountFillResponse])
+    def account_fills(profile: str = "production_primary") -> list[AccountFillResponse]:
+        return boundary.account(profile).fills
 
     @app.get("/api/coverage", response_model=CoverageResponse)
     def coverage() -> CoverageResponse:
