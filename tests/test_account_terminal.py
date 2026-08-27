@@ -20,7 +20,9 @@ class FakeAccountGateway:
 
 def test_production_account_projection_is_typed_and_read_only() -> None:
     service = ProductionAccountService(
-        SimpleNamespace(), gateway=FakeAccountGateway(), clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
+        SimpleNamespace(),
+        gateway=FakeAccountGateway(),
+        clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
     )
     result = service.read()
     assert result.status == "AVAILABLE"

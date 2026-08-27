@@ -897,10 +897,13 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
         "/api/recorder/pause",
         "/api/recorder/resume",
         "/api/system",
+        "/api/accounts",
+        "/api/account",
+        "/api/account/orders",
+        "/api/account/fills",
     }
     forbidden_segments = {
         "order",
-        "orders",
         "trade",
         "trading",
         "credential",
@@ -1004,6 +1007,15 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
         "#/storage",
         "#/operations",
         "#/system",
+        "#/overview",
+        "#/portfolio",
+        "#/account",
+        "#/orders",
+        "#/history",
+        "#/watchlist",
+        "#/analytics",
+        "#/signals",
+        "#/models",
     ):
         assert f'href="{route}"' in page
     for asset in ("BTC", "ETH", "Gold", "Silver", "XRP", "WTI Oil", "SOL", "HYPE", "DOGE", "BNB"):
