@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from live15_quant.control_center_models import (
     AccountFillResponse,
+    AccountLedgerEntryResponse,
     AccountOrderResponse,
     AccountPositionResponse,
     AccountProfileResponse,
@@ -108,6 +109,9 @@ class ProductionAccountService:
             positions = tuple(gateway.positions())
             orders = tuple(gateway.orders())
             fills = tuple(gateway.fills())
+            settlements = tuple(getattr(gateway, "settlements", lambda: ())())
+            deposits = tuple(getattr(gateway, "deposits", lambda: ())())
+            withdrawals = tuple(getattr(gateway, "withdrawals", lambda: ())())
         except Exception as error:
             status = (
                 "AUTH_ERROR"
@@ -124,6 +128,9 @@ class ProductionAccountService:
             balance_cents=balance_cents,
             portfolio_value_cents=portfolio_cents,
         )
+        ledger = [self._ledger(item, "SETTLEMENT") for item in settlements]
+        ledger += [self._ledger(item, "DEPOSIT") for item in deposits]
+        ledger += [self._ledger(item, "WITHDRAWAL") for item in withdrawals]
         return AccountReadResponse(
             profile=profile,
             status="AVAILABLE",
@@ -132,6 +139,7 @@ class ProductionAccountService:
             positions=[self._position(item) for item in positions],
             orders=[self._order(item) for item in orders],
             fills=[self._fill(item) for item in fills],
+            ledger=ledger,
         )
 
     def _unavailable(self, profile: str, observed: datetime, message: str) -> AccountReadResponse:
@@ -183,4 +191,15 @@ class ProductionAccountService:
             yes_price_cents=_int(item, "yes_price"),
             no_price_cents=_int(item, "no_price"),
             created_at=_dt(item, "created_time", "created_at"),
+        )
+
+    @staticmethod
+    def _ledger(item: Any, entry_type: str) -> AccountLedgerEntryResponse:
+        return AccountLedgerEntryResponse(
+            entry_type=entry_type,
+            amount_cents=_int(item, "amount", "amount_cents", "pnl", "fee"),
+            ticker=_get(item, "ticker", "market_ticker"),
+            reference=_get(item, "id", "settlement_id", "transfer_id"),
+            observed_at=_dt(item, "created_at", "created_time", "timestamp"),
+            description=_get(item, "description", "status", "result"),
         )

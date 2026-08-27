@@ -111,6 +111,15 @@ class AccountFillResponse(StrictResponse):
     created_at: datetime | None = None
 
 
+class AccountLedgerEntryResponse(StrictResponse):
+    entry_type: str
+    amount_cents: int | None = None
+    ticker: str | None = None
+    reference: str | None = None
+    observed_at: datetime | None = None
+    description: str | None = None
+
+
 class AccountReadResponse(StrictResponse):
     profile: str
     status: str
@@ -119,6 +128,7 @@ class AccountReadResponse(StrictResponse):
     positions: list[AccountPositionResponse] = Field(default_factory=list)
     orders: list[AccountOrderResponse] = Field(default_factory=list)
     fills: list[AccountFillResponse] = Field(default_factory=list)
+    ledger: list[AccountLedgerEntryResponse] = Field(default_factory=list)
     message: str | None = None
 
 

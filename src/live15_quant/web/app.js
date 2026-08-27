@@ -399,9 +399,14 @@ function renderReadOnlyShell(name) {
   const account = state.account;
   if (!account) return emptyState(`${name} unavailable`, "Waiting for the Production account read API.");
   const root = node("div"); root.append(sectionHead(name, "Production · Primary · read-only"));
-  const rows = name === "Orders" ? (account.orders || []) : (account.fills || []);
+  if (["Watchlist", "Analytics", "Signals", "Models"].includes(name)) {
+    const copy = { Watchlist: "Saved markets are kept locally; no remote writes are performed.", Analytics: "LIVE15 analytics are derived only from available recorder evidence.", Signals: "Approved signal outputs only; unavailable signals remain N/A.", Models: "Model registry evidence is read-only; no training or promotion controls are exposed." }[name];
+    root.append(node("div", "panel panel-body", copy));
+    const facts = node("div", "metric-grid"); append(facts, metric("Status", "N/A"), metric("Source", "LIVE15"), metric("Freshness", "N/A"), metric("Permission", "READ ONLY")); root.append(facts); return root;
+  }
+  const rows = name === "Orders" ? (account.orders || []) : name === "History" ? [...(account.fills || []), ...(account.ledger || [])] : (account.fills || []);
   const table = node("table"); const head = node("tr"); [name === "Orders" ? "Order" : "Fill", "Market", "Status / Side", "Count", "Price", "Time"].forEach((x) => head.append(node("th", x === "Count" || x === "Price" ? "num" : "", x))); const body = node("tbody");
-  rows.forEach((item) => append(body, append(node("tr"), node("td", "", item.order_id || item.trade_id || "N/A"), node("td", "", item.ticker || "N/A"), node("td", "", item.status || item.side || "N/A"), node("td", "num", valueOrDash(item.count, number)), node("td", "num", item.yes_price_cents == null ? "N/A" : `${item.yes_price_cents}¢`), node("td", "", timestamp(item.created_at)))));
+  rows.forEach((item) => append(body, append(node("tr"), node("td", "", item.order_id || item.trade_id || item.reference || item.entry_type || "N/A"), node("td", "", item.ticker || "N/A"), node("td", "", item.status || item.side || item.entry_type || "N/A"), node("td", "num", valueOrDash(item.count, number)), node("td", "num", item.yes_price_cents == null ? (item.amount_cents == null ? "N/A" : `${(item.amount_cents / 100).toFixed(2)}`) : `${item.yes_price_cents}¢`), node("td", "", timestamp(item.created_at || item.observed_at)))));
   table.append(append(node("thead"), head), body); root.append(append(node("div", "table-wrap"), table));
   if (!rows.length) root.append(emptyState("N/A", `No verified ${name.toLowerCase()} facts are available.`));
   return root;
@@ -464,6 +469,7 @@ function renderMarkets() {
   const markets = state.markets || [];
   const root = node("div");
   root.append(sectionHead("All target assets", `${markets.length}/10 · Kalshi official market data`));
+  const filter = node("input", "table-filter"); filter.type = "search"; filter.placeholder = "Filter assets or tickers…"; filter.addEventListener("input", () => { const query = filter.value.toLowerCase(); root.querySelectorAll("tbody tr").forEach((row) => { row.hidden = query && !row.textContent.toLowerCase().includes(query); }); }); root.append(filter);
   const wrap = node("div", "table-wrap");
   const table = node("table");
   const header = node("tr");
@@ -514,6 +520,11 @@ function renderDetail(route) {
   root.append(tabs);
   const owned = (state.account?.positions || []).find((item) => item.ticker === market.ticker);
   root.append(node("div", "panel panel-body", owned ? `Position ${valueOrDash(owned.position, number)} · P&L ${owned.realized_pnl_cents == null ? "N/A" : `${(owned.realized_pnl_cents / 100).toFixed(2)} USD`}` : "Position: N/A · no verified holding for this market"));
+  const chart = node("div", "panel panel-body chart-panel");
+  chart.append(node("h2", "", "Chart"), node("p", "muted", "Real synchronized quote points are shown when available; no interpolation is applied."));
+  const chartValues = [market.yes_bid, market.yes_ask, market.last_trade].filter((value) => value != null);
+  chart.append(node("div", "chart-values", chartValues.length ? chartValues.map((value) => predictionPrice(value)).join("  ·  ") : "N/A"));
+  root.append(chart);
   const detail = node("div", "detail-grid");
   const contract = node("div", "panel");
   contract.append(append(node("div", "panel-head"), node("h2", "", "Contract metadata")));
