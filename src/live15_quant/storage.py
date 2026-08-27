@@ -1294,17 +1294,57 @@ class RecorderStore:
             gap.recorder_session_id,
             gap.incident_id,
         )
-        # Detection time is provenance for the first materialization, not part
-        # of the immutable interval identity. Re-running the detector later is
-        # therefore idempotent while contradictory reason/threshold facts fail.
-        content_hash = _fingerprint((*values[1:7], *values[8:]))
+        # Detection time and recorder-session provenance describe the observer,
+        # not the immutable market-data fact. A clean restart may derive the
+        # same interval with a new session/incident id, so those fields must not
+        # turn an exact logical re-observation into a contradiction. Semantic
+        # fields (including the recovery endpoint, threshold, reason, and
+        # error type) remain in the fingerprint and still fail closed when they
+        # disagree.
+        content_hash = _fingerprint((*values[1:7], *values[8:12]))
         existing = self._connection.execute(
-            """SELECT content_hash FROM data_gaps
-            WHERE source=? AND asset=? AND instrument=? AND gap_start=? AND recovered=?""",
+            """SELECT source,asset,instrument,gap_start,gap_end,duration_seconds,
+                       threshold_seconds,reason,error_type,recovered,
+                       recorder_session_id,incident_id,content_hash
+              FROM data_gaps
+             WHERE source=? AND asset=? AND instrument=? AND gap_start=? AND recovered=?""",
             (values[1], values[2], values[3], values[4], values[11]),
         ).fetchone()
         if existing is not None:
-            if existing["content_hash"] == content_hash:
+            existing_semantics = _fingerprint(
+                (
+                    existing["source"],
+                    existing["asset"],
+                    existing["instrument"],
+                    existing["gap_start"],
+                    existing["gap_end"],
+                    existing["duration_seconds"],
+                    existing["threshold_seconds"],
+                    existing["reason"],
+                    existing["error_type"],
+                    existing["recovered"],
+                )
+            )
+            existing_legacy = _fingerprint(
+                (
+                    existing["source"],
+                    existing["asset"],
+                    existing["instrument"],
+                    existing["gap_start"],
+                    existing["gap_end"],
+                    existing["duration_seconds"],
+                    existing["threshold_seconds"],
+                    existing["reason"],
+                    existing["error_type"],
+                    existing["recovered"],
+                    existing["recorder_session_id"],
+                    existing["incident_id"],
+                )
+            )
+            if existing_semantics == content_hash and existing["content_hash"] in {
+                content_hash,
+                existing_legacy,
+            }:
                 return False
             raise DataGapConflictError("conflicting facts for an existing data gap")
         self._connection.execute(
