@@ -275,7 +275,9 @@ class PythHermesClient:
                     single = self._get(
                         "/v2/updates/price/latest", stream=False, feed_ids=(feed_id,)
                     )
-                except PythNetworkError:
+                except PythNetworkError as single_error:
+                    if single_error.category != "HTTP" or single_error.cause_type != "HTTP_404":
+                        raise
                     asset = next(asset for asset, (_, fid) in PYTH_FEEDS.items() if fid == feed_id)
                     batches.append(
                         PythUpdateBatch((), (PythFeedIssue("feed_unavailable", asset, feed_id),))
@@ -307,7 +309,7 @@ class PythHermesClient:
                 received=datetime.now(UTC),
                 source=f"{self._base_url}/v2/updates/price/latest",
                 max_source_age_seconds=self._max_source_age,
-                require_all=False,
+                require_all=True,
             )
         finally:
             response.close()
