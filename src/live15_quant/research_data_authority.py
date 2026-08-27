@@ -1051,4 +1051,3 @@ def _with_source_coverage(snapshot: ResearchUniverseSnapshot) -> ResearchUnivers
         depthfeed_status=snapshot.depthfeed_status,
         capability_days=capability_days,
     )
-

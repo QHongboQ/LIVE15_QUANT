@@ -364,4 +364,3 @@ def test_authority_builds_snapshot_and_canonical_evidence_from_explicit_archive_
     assert all("dataset" not in item.source_id for item in universe.source_manifests)
     assert evidence.records[0].artifact_id == selection.source_identity
     assert evidence.records[0].provenance_tier == "H0_LIVE_NATIVE"
-
