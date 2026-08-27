@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "contract": "runtime_health_ownership",
+  "components": {
+    "recorder": {
+      "ownership": "SERVICE_MANAGED",
+      "authority": ["windows_service_state", "current_recorder_heartbeat", "fatal_task"],
+      "stale_supervisor_status_is_authoritative": false
+    },
+    "control_center": {
+      "ownership": "SERVICE_MANAGED",
+      "authority": ["windows_service_state", "current_control_center_heartbeat"],
+      "stale_supervisor_status_is_authoritative": false
+    },
+    "pyth": {
+      "ownership": "IN_PROCESS_WORKER",
+      "authority": ["worker_progress:pyth", "last_additional_underlying", "source_failures"],
+      "recovery_boundary": "terminate_recorder_for_supervised_restart"
+    },
+    "kalshi_sdk_ws_shadow": {
+      "ownership": "SUPERVISOR_MANAGED",
+      "authority": ["current_supervisor_heartbeat", "child_pid_status"]
+    },
+    "current_trainable": {
+      "ownership": "SUPERVISOR_MANAGED",
+      "authority": ["current_supervisor_heartbeat", "child_pid_status"]
+    },
+    "paper_forward": {
+      "ownership": "SUPERVISOR_MANAGED",
+      "authority": ["current_supervisor_heartbeat", "child_pid_status"]
+    },
+    "demo_first_fill": {
+      "ownership": "ON_DEMAND",
+      "authority": ["current_component_status"]
+    },
+    "sdk_reliability_shadow": {
+      "ownership": "LEGACY_RETIRED",
+      "authority": ["historical_artifact_only"]
+    }
+  },
+  "rules": [
+    "PROCESS_ALIVE_IS_NOT_WORKER_HEALTHY",
+    "A_STALE_SUPERVISOR_RECEIPT_MUST_NOT_OVERRIDE_CURRENT_SERVICE_HEALTH",
+    "RECOVERY_MUST_BE_BOUNDED_AND_SUPERVISED",
+    "HISTORICAL_RETRY_COUNTERS_ARE_NOT_CURRENT_FAILURES"
+  ]
+}

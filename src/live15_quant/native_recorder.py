@@ -1150,6 +1150,7 @@ class KalshiNativeRecorder:
             tasks.append(asyncio.create_task(self._archive_ws_retention(), name="ws-archive"))
         if self._settings.enable_pyth_underlying:
             tasks.append(asyncio.create_task(self._record_pyth(), name="pyth-predictive"))
+            tasks.append(asyncio.create_task(self._monitor_pyth_liveness(), name="pyth-liveness"))
         if self._settings.enable_secondary_underlying:
             tasks.extend(
                 asyncio.create_task(
@@ -1707,19 +1708,18 @@ class KalshiNativeRecorder:
                         batch = await asyncio.to_thread(_next_pyth_batch, iterator)
                         if batch is None:
                             raise PythNetworkError("Pyth stream closed")
-                        self._accept_pyth_batch(demultiplexer.accept(batch))
-                        self._source_ok(stream_key)
-                        self._worker_advanced("pyth")
+                        accepted = self._accept_pyth_batch(demultiplexer.accept(batch))
+                        if accepted:
+                            self._source_ok(stream_key)
+                            self._worker_advanced("pyth")
                 except asyncio.CancelledError:
                     raise
                 except (RecorderStorageError, ValueError) as error:
                     if not isinstance(error, PythPayloadError):
                         raise
                     self._source_failed(stream_key, error)
-                    self._worker_advanced("pyth")
                 except PythNetworkError as error:
                     self._source_failed(stream_key, error)
-                    self._worker_advanced("pyth")
                     if isinstance(error, PythRateLimitError):
                         retry_after = error.retry_after_seconds
                         rate_limited = True
@@ -1729,19 +1729,18 @@ class KalshiNativeRecorder:
                 if not rate_limited:
                     try:
                         batch = await asyncio.to_thread(client.latest_batch)
-                        self._accept_pyth_batch(demultiplexer.accept(batch))
-                        self._source_ok("pyth:rest_fallback")
-                        self._worker_advanced("pyth")
+                        accepted = self._accept_pyth_batch(demultiplexer.accept(batch))
+                        if accepted:
+                            self._source_ok("pyth:rest_fallback")
+                            self._worker_advanced("pyth")
                     except asyncio.CancelledError:
                         raise
                     except (RecorderStorageError, ValueError) as error:
                         if not isinstance(error, PythPayloadError):
                             raise
                         self._source_failed("pyth:rest_fallback", error)
-                        self._worker_advanced("pyth")
                     except PythNetworkError as error:
                         self._source_failed("pyth:rest_fallback", error)
-                        self._worker_advanced("pyth")
                         if isinstance(error, PythRateLimitError):
                             retry_after = max(retry_after, error.retry_after_seconds)
                 delay = max(
@@ -1757,13 +1756,35 @@ class KalshiNativeRecorder:
             # to_thread here can re-raise cancellation before the SSE response closes.
             client.close()
 
-    def _accept_pyth_batch(self, batch: PythUpdateBatch) -> None:
+    async def _monitor_pyth_liveness(self) -> None:
+        """Escalate a live-but-stalled Pyth worker to the service supervisor.
+
+        Worker progress is advanced only after a valid observation batch is
+        accepted.  If neither SSE nor REST fallback produces one within the
+        existing bounded worker threshold, raising here deliberately terminates
+        the recorder so WinSW can perform one clean, supervised restart.
+        """
+
+        interval = min(5.0, max(1.0, self._settings.recorder_pyth_stale_seconds))
+        while not await self._wait(interval):
+            health = self.health()
+            if "pyth" not in health.stale_workers:
+                continue
+            error = health.source_failures.get("pyth:stream") or health.source_failures.get(
+                "pyth:rest_fallback"
+            )
+            detail = f" ({error})" if error else ""
+            raise RuntimeError(f"Pyth worker made no meaningful progress{detail}")
+
+    def _accept_pyth_batch(self, batch: PythUpdateBatch) -> int:
+        accepted = 0
         for issue in batch.issues:
             if issue.code == "duplicate":
                 continue
             key = f"pyth:{issue.asset.value}" if issue.asset is not None else "pyth:stream"
             self._source_failed(key, PythPayloadError(issue.code))
         for observation in batch.observations:
+            accepted += 1
             if self._store.append_underlying(observation):
                 self._wrote("underlying_observations")
                 self._observe_gap(
@@ -1777,6 +1798,7 @@ class KalshiNativeRecorder:
             )
             self._health.additional_underlying_freshness[observation.asset] = observation.freshness
             self._source_ok(f"pyth:{observation.asset.value}")
+        return accepted
 
     async def _record_secondary(self, asset: Asset) -> None:
         """Persist one isolated venue-native secondary stream in the same recorder."""

@@ -382,6 +382,44 @@ def test_one_pyth_asset_outage_does_not_stop_other_underlying_assets(tmp_path) -
     assert source.closed is True
 
 
+@pytest.mark.asyncio
+async def test_pyth_liveness_escalates_when_worker_makes_no_meaningful_progress(tmp_path) -> None:
+    with RecorderStore(tmp_path / "pyth-liveness.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                enable_pyth_underlying=True,
+                recorder_pyth_stale_seconds=0.01,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        recorder._wait = lambda _seconds: asyncio.sleep(0, result=False)  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="meaningful progress"):
+            await recorder._monitor_pyth_liveness()
+
+
+def test_pyth_batch_acceptance_count_distinguishes_empty_or_malformed_batches(tmp_path) -> None:
+    with RecorderStore(tmp_path / "pyth-batch.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), enable_pyth_underlying=True),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+        assert recorder._accept_pyth_batch(PythUpdateBatch(())) == 0
+        assert (
+            recorder._accept_pyth_batch(PythUpdateBatch((), (PythFeedIssue("malformed_sse_json"),)))
+            == 0
+        )
+
+
 def test_pyth_429_honors_retry_after_without_immediate_rest_fallback(tmp_path) -> None:
     source = RateLimitedUnderlying()
 
