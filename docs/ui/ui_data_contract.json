@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "service": "LIVE15 Control Center",
+  "scope": "localhost_read_only_ui",
+  "entries": [
+    {"element": "recorder_health", "endpoint": "/api/health", "source": "ControlCenterService.health", "authoritative": "recorder_heartbeat", "refresh_seconds": 2.5, "status": "LIVE"},
+    {"element": "ws_synchronization", "endpoint": "/api/health", "source": "ControlCenterService.health", "authoritative": "kalshi_ws_synchronized_count_and_seq_gaps", "refresh_seconds": 2.5, "status": "LIVE"},
+    {"element": "markets", "endpoint": "/api/markets", "source": "ControlCenterService.markets", "authoritative": "recorder_store_provider_projection", "refresh_seconds": 2.5, "status": "LIVE"},
+    {"element": "market_detail", "endpoint": "/api/markets/{asset}", "source": "ControlCenterService.market", "authoritative": "recorder_store_quote_evidence", "refresh_seconds": 2.5, "status": "LIVE"},
+    {"element": "account", "endpoint": "/api/account", "source": "ProductionAccountService.read", "authoritative": "kalshi_production_read_api", "refresh_seconds": 10, "status": "LIVE"},
+    {"element": "archive", "endpoint": "/api/archive", "source": "ControlCenterService.archive", "authoritative": "recorder_ws_archive_projection", "refresh_seconds": 10, "status": "LIVE"},
+    {"element": "storage", "endpoint": "/api/storage", "source": "ControlCenterService.storage", "authoritative": "sqlite_filesystem_metrics", "refresh_seconds": 30, "status": "LIVE"},
+    {"element": "data", "endpoint": "/api/data", "source": "ControlCenterService.data", "authoritative": "recorder_store_materializer", "refresh_seconds": 30, "status": "LIVE"},
+    {"element": "training", "endpoint": "/api/training", "source": "ControlCenterService.training", "authoritative": "settlement_and_dataset_records", "refresh_seconds": 30, "status": "LIVE"},
+    {"element": "system", "endpoint": "/api/system", "source": "ControlCenterService.system", "authoritative": "local_runtime_status", "refresh_seconds": 30, "status": "LIVE"},
+    {"element": "operations", "endpoint": "/api/operations", "source": "ControlCenterService.operations", "authoritative": "recorder_heartbeat_events", "refresh_seconds": 10, "status": "LIVE"}
+  ],
+  "failure_semantics": "clear_failed_projection_and_render_unknown_until_fresh_response"
+}

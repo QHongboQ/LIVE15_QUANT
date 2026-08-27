@@ -38,7 +38,12 @@ def test_service_xml_is_direct_python_with_bounded_failure_policy() -> None:
     assert values["executable"].endswith(".venv\\Scripts\\python.exe")
     assert values["arguments"] == "-m live15_quant.control_center"
     env = {node.attrib["name"]: node.attrib["value"] for node in service.findall("env")}
-    assert env == {"PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"}
+    assert env == {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONUTF8": "1",
+        "LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH": "%LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH%",
+        "LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH": "%LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH%",
+    }
     assert "cmd.exe" not in ElementTree.tostring(service, encoding="unicode")
     assert values["resetfailure"] == "5 min"
     assert values["startmode"] == "Automatic"
@@ -53,9 +58,26 @@ def test_service_xml_is_direct_python_with_bounded_failure_policy() -> None:
     ]
 
 
-def test_install_scripts_are_package_only() -> None:
-    for name in ("install_control_center_service.ps1", "uninstall_control_center_service.ps1"):
-        assert "intentionally disabled" in (ROOT / "tools" / name).read_text()
+def test_install_scripts_render_only_control_center_and_escape_paths() -> None:
+    install = (ROOT / "tools" / "install_control_center_service.ps1").read_text(encoding="utf-8")
+    uninstall = (ROOT / "tools" / "uninstall_control_center_service.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "LIVE15ControlCenter" in install
+    assert "LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH" in install
+    assert "LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH" in install
+    assert "SecurityElement]::Escape" in install
+    assert "LIVE15Recorder" not in install
+    assert "LIVE15Recorder" not in uninstall
+    assert "LIVE15ControlCenter" in uninstall
+
+
+def test_control_center_config_only_references_credential_paths_not_secret_contents() -> None:
+    xml = (ROOT / "deploy/windows/live15-control-center.xml").read_text(encoding="utf-8")
+    assert "%LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH%" in xml
+    assert "%LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH%" in xml
+    assert "BEGIN" not in xml
+    assert "PRIVATE KEY" not in xml
 
 
 def test_bootstrap_rejects_bad_download_without_promoting_it() -> None:

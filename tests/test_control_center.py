@@ -250,6 +250,37 @@ def test_system_exposes_live_supervisor_component_truth(tmp_path: Path) -> None:
     assert component.heartbeat_age_seconds == 0
 
 
+def test_system_fails_closed_for_stale_supervisor_receipt(tmp_path: Path) -> None:
+    configured = settings(tmp_path, ui_heartbeat_stale_seconds=30)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    stale = NOW - timedelta(seconds=31)
+    (runtime / "runtime-supervisor-status.json").write_text(
+        json.dumps(
+            {
+                "components": {
+                    "recorder": {
+                        "status": "RUNNING",
+                        "pid": os.getpid(),
+                        "started_at": stale.isoformat(),
+                        "last_heartbeat": stale.isoformat(),
+                        "expected_mode": "MANAGED_RECORDER",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    component = (
+        ControlCenterService(configured, clock=lambda: NOW).system().runtime_components["recorder"]
+    )
+
+    assert component.status == "STALE"
+    assert component.pid is None
+    assert component.process_alive is False
+
+
 @pytest.mark.asyncio
 async def test_health_exposes_bounded_ws_sync_state_without_credentials(tmp_path: Path) -> None:
     configured = settings(tmp_path)

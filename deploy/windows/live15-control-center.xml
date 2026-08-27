@@ -1,8 +1,23 @@
 <service>
-  <id>LIVE15ControlCenter</id><name>LIVE15 Control Center</name><description>Localhost-only LIVE15 Control Center.</description>
-  <executable>%BASE%\..\..\.venv\Scripts\python.exe</executable><arguments>-m live15_quant.control_center</arguments><workingdirectory>%BASE%\..\..</workingdirectory>
-  <env name="PYTHONUNBUFFERED" value="1"/><env name="PYTHONUTF8" value="1"/>
-  <startmode>Automatic</startmode><logpath>%BASE%\..\..\logs</logpath><log mode="roll"/><stoptimeout>15 sec</stoptimeout>
-  <onfailure action="restart" delay="10 sec"/><onfailure action="restart" delay="30 sec"/><onfailure action="restart" delay="60 sec"/><onfailure action="none"/><resetfailure>5 min</resetfailure>
+  <id>LIVE15ControlCenter</id>
+  <name>LIVE15 Control Center</name>
+  <description>Localhost-only LIVE15 Control Center.</description>
+  <executable>%BASE%\..\..\.venv\Scripts\python.exe</executable>
+  <arguments>-m live15_quant.control_center</arguments>
+  <workingdirectory>%BASE%\..\..</workingdirectory>
+  <env name="PYTHONUNBUFFERED" value="1" />
+  <env name="PYTHONUTF8" value="1" />
+  <env name="LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH" value="%LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH%" />
+  <env name="LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH" value="%LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH%" />
+  <startmode>Automatic</startmode>
+  <logpath>%BASE%\..\..\logs</logpath>
+  <log mode="roll" />
+  <stoptimeout>15 sec</stoptimeout>
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <onfailure action="restart" delay="60 sec" />
+  <onfailure action="none" />
+  <resetfailure>5 min</resetfailure>
 </service>
+
 
