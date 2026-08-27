@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from live15_quant.config import Settings
 from live15_quant.historical_providers import (
@@ -27,6 +28,9 @@ from live15_quant.historical_providers import (
     KALSHI_OFFICIAL,
     depthfeed_key_status,
 )
+
+if TYPE_CHECKING:
+    from live15_quant.archive_research import ArchiveResearchQuery, ArchiveResearchSelection
 
 RESEARCH_FRESHNESS_POLICY_VERSION = "research-freshness-v1"
 RESEARCH_SOURCE_REGISTRY_VERSION = "research-source-registry-v1"
@@ -287,6 +291,7 @@ class ResearchSourceManifest:
     content_identity: str
     limitations: tuple[str, ...] = ()
     capability_days: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    coverage_status: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.source_id or not self.content_identity:
@@ -330,6 +335,7 @@ class ResearchSourceManifest:
             "capability_days": {
                 key: list(value) for key, value in sorted(self.capability_days.items())
             },
+            "coverage_status": dict(sorted(self.coverage_status.items())),
         }
 
 
@@ -647,6 +653,40 @@ class ResearchDataAuthority:
         self._cached_key, self._cached_snapshot = key, snapshot
         return snapshot
 
+    def archive_research_snapshot(
+        self, query: ArchiveResearchQuery, *, code_git_sha: str
+    ) -> tuple[ResearchUniverseSnapshot, ArchiveResearchSelection]:
+        """Build a bounded RDA snapshot from explicit replay-verified archive materialization.
+
+        This is intentionally separate from :meth:`snapshot`: the normal runtime
+        registry stays aggregate-only, while research must opt into an exact range
+        and as-of cutoff.
+        """
+
+        from .archive_research import ArchiveResearchSourceAdapter, ArchiveResearchUnavailable
+
+        if self.settings.ws_archive_root is None or self.settings.ws_archive_manifest_path is None:
+            raise ArchiveResearchUnavailable("ARCHIVE_NOT_CONFIGURED")
+        selection = ArchiveResearchSourceAdapter(
+            self.settings.ws_archive_root, self.settings.ws_archive_manifest_path
+        ).materialize(query)
+        if not selection.available:
+            raise ArchiveResearchUnavailable(selection.reason or "ARCHIVE_RESEARCH_UNAVAILABLE")
+        source = selection.source_manifest()
+        observations = tuple(item.research_observation() for item in selection.materializations)
+        snapshot = ResearchUniverseBuilder(
+            freshness_policy=ResearchFreshnessPolicy(
+                FeatureFreshnessPolicy(timedelta(seconds=30)),
+                TrainingRecencyPolicy.expanding(),
+                ForwardOosFreshnessPolicy(datetime(2026, 8, 20, tzinfo=UTC)),
+            ),
+            session_semantics=SessionSemantics(),
+            sources=(source,),
+            observations=observations,
+            frozen_holdout=self._holdout_metadata(),
+        ).build(cutoff_timestamp=query.as_of_timestamp, code_git_sha=code_git_sha)
+        return snapshot, selection
+
     def _source_manifests(self) -> tuple[list[ResearchSourceManifest], FrozenHoldoutMetadata]:
         return (
             [
@@ -762,6 +802,12 @@ class ResearchDataAuthority:
                 _hash(aggregate),
                 ("quarantined chunks are excluded",),
                 capability_days={"LIVE_NATIVE_DAYS": days},
+                coverage_status={
+                    "metadata": "VERIFIED_METADATA",
+                    "replay": "REPLAY_VERIFIED",
+                    "materialization": "EXPLICIT_QUERY_REQUIRED",
+                    "selection": "NOT_SELECTED",
+                },
             )
         except sqlite3.Error:
             return _missing_source(
@@ -1005,3 +1051,4 @@ def _with_source_coverage(snapshot: ResearchUniverseSnapshot) -> ResearchUnivers
         depthfeed_status=snapshot.depthfeed_status,
         capability_days=capability_days,
     )
+
