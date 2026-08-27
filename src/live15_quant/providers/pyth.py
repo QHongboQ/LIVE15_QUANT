@@ -190,17 +190,20 @@ class PythHermesClient:
         self._closed = False
 
     @staticmethod
-    def _params() -> list[tuple[str, str]]:
-        return [("ids[]", feed_id) for _, feed_id in PYTH_FEEDS.values()]
+    def _params(feed_ids: tuple[str, ...] | None = None) -> list[tuple[str, str]]:
+        ids = feed_ids or tuple(feed_id for _, feed_id in PYTH_FEEDS.values())
+        return [("ids[]", feed_id) for feed_id in ids]
 
-    def _get(self, endpoint: str, *, stream: bool) -> requests.Response:
+    def _get(
+        self, endpoint: str, *, stream: bool, feed_ids: tuple[str, ...] | None = None
+    ) -> requests.Response:
         if self._closed:
             raise PythNetworkError("Pyth client is closed")
         self._budget.consume()
         try:
             response = self._session.get(
                 f"{self._base_url}{endpoint}",
-                params=self._params(),
+                params=self._params(feed_ids),
                 headers={
                     "Authorization": f"Bearer {self._key}",
                     "Accept": "text/event-stream" if stream else "application/json",
@@ -250,9 +253,50 @@ class PythHermesClient:
         return response
 
     def latest_batch(self) -> PythUpdateBatch:
-        """Fetch all five feeds with exactly one REST request."""
+        """Fetch the configured feeds with one REST request.
 
-        response = self._get("/v2/updates/price/latest", stream=False)
+        Hermes may legitimately omit a feed whose provider listing has changed
+        (for example, a retired commodity symbol).  Keep valid sibling feeds
+        usable and surface the omission as a feed-local issue instead of
+        converting the whole batch into a transport outage.
+        """
+
+        try:
+            response = self._get("/v2/updates/price/latest", stream=False)
+        except PythNetworkError as error:
+            # Hermes can return 404 for a batch containing a retired feed.
+            # Retry each configured feed independently so valid siblings remain
+            # available and the retired feed is represented as a local issue.
+            if error.category != "HTTP" or error.cause_type != "HTTP_404":
+                raise
+            batches: list[PythUpdateBatch] = []
+            for _, feed_id in PYTH_FEEDS.values():
+                try:
+                    single = self._get(
+                        "/v2/updates/price/latest", stream=False, feed_ids=(feed_id,)
+                    )
+                except PythNetworkError:
+                    asset = next(asset for asset, (_, fid) in PYTH_FEEDS.items() if fid == feed_id)
+                    batches.append(
+                        PythUpdateBatch((), (PythFeedIssue("feed_unavailable", asset, feed_id),))
+                    )
+                    continue
+                try:
+                    batches.append(
+                        parse_update_payload(
+                            single.json(),
+                            received=datetime.now(UTC),
+                            source=f"{self._base_url}/v2/updates/price/latest",
+                            max_source_age_seconds=self._max_source_age,
+                            require_all=False,
+                        )
+                    )
+                finally:
+                    single.close()
+            return PythUpdateBatch(
+                tuple(obs for batch in batches for obs in batch.observations),
+                tuple(issue for batch in batches for issue in batch.issues),
+            )
         try:
             try:
                 payload = response.json()
@@ -263,7 +307,7 @@ class PythHermesClient:
                 received=datetime.now(UTC),
                 source=f"{self._base_url}/v2/updates/price/latest",
                 max_source_age_seconds=self._max_source_age,
-                require_all=True,
+                require_all=False,
             )
         finally:
             response.close()

@@ -7,6 +7,7 @@
   <workingdirectory>%BASE%\..\..</workingdirectory>
   <env name="PYTHONUNBUFFERED" value="1" />
   <env name="PYTHONUTF8" value="1" />
+  <env name="LIVE15_PYTH_HERMES_BASE_URL" value="https://pyth.dourolabs.app/hermes" />
   <env name="LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET" value="true" />
   <env name="LIVE15_KALSHI_RECORDER_PROVIDER" value="sdk" />
   <env name="LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH" value="%LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH%" />
