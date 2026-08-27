@@ -151,5 +151,3 @@ def test_package_has_no_legacy_watchdog_or_recorder_lifecycle_dependency() -> No
     assert "RuntimePidLease" not in xml
     assert "runtime-supervisor" not in xml
     assert "Recorder" not in xml
-
-
