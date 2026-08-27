@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from live15_quant.config import Settings
+from live15_quant.account_service import ProductionAccountService
 from live15_quant.control_center_models import (
     ArchiveResponse,
     Availability,
@@ -45,6 +46,7 @@ class ControlCenterService:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
         controller: RecorderProcessController | None = None,
+        account_service: ProductionAccountService | None = None,
     ) -> None:
         self.settings = settings
         self.store = DashboardReadStore(
@@ -61,6 +63,7 @@ class ControlCenterService:
         self._coverage_cached_at: float | None = None
         self._coverage_cache: CoverageResponse | None = None
         self._control_lock = threading.Lock()
+        self.account_service = account_service or ProductionAccountService(settings)
         if controller is not None:
             self.controller = controller
         else:
@@ -68,6 +71,12 @@ class ControlCenterService:
                 self.controller = RecorderProcessController(settings)
             except ValueError:
                 self.controller = None
+
+    def account_profiles(self):
+        return self.account_service.profiles()
+
+    def account(self, profile: str = "production_primary"):
+        return self.account_service.read(profile)
 
     def health(self) -> HealthResponse:
         path = self.settings.recorder_health_path

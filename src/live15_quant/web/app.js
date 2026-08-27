@@ -9,8 +9,8 @@ const ASSET_LABELS = Object.freeze({
 
 // Recorder collection cadence is configured server-side and is independent of these
 // read-only API refresh intervals. The one-second countdown below performs no request.
-const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, system: 30000, coverage: 60000, data: 30000, training: 30000, archive: 10000, storage: 30000, operations: 10000 });
-const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, data: null, training: null, archive: null, storage: null, operations: null, events: null, system: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
+const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, system: 30000, coverage: 60000, data: 30000, training: 30000, archive: 10000, storage: 30000, operations: 10000, account: 10000 });
+const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, data: null, training: null, archive: null, storage: null, operations: null, events: null, system: null, account: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
 const lastFetched = new Map();
 const inFlight = new Map();
 
@@ -169,13 +169,13 @@ function emptyState(titleText, detail) {
 function currentRoute() {
   const parts = (location.hash.replace(/^#\/?/, "") || "dashboard").split("/").filter(Boolean);
   if (parts[0] === "markets" && parts[1]) return { name: "detail", asset: decodeURIComponent(parts.slice(1).join("/")) };
-  if (["markets", "data", "training", "archive", "storage", "operations", "events", "system"].includes(parts[0])) return { name: parts[0] };
+  if (["markets", "data", "training", "archive", "storage", "operations", "events", "system", "overview", "portfolio", "orders", "history", "watchlist", "analytics", "signals", "models"].includes(parts[0])) return { name: parts[0] };
   return { name: "dashboard" };
 }
 
 function setHeading(route) {
   const headings = {
-    dashboard: ["OVERVIEW", "Dashboard"], markets: ["MARKET DATA", "15-Minute Markets"],
+    dashboard: ["ADMIN · OVERVIEW", "Dashboard"], overview: ["TRADING", "Overview"], portfolio: ["TRADING", "Portfolio"], orders: ["TRADING", "Orders"], history: ["TRADING", "History"], watchlist: ["TRADING", "Watchlist"], analytics: ["INTELLIGENCE", "Analytics"], signals: ["INTELLIGENCE", "Signals"], models: ["INTELLIGENCE", "Models"], markets: ["MARKET DATA", "15-Minute Markets"],
     data: ["DATA", "Data Pipeline"], training: ["TRAINING", "Training Truth"], archive: ["ARCHIVE", "Archive"], storage: ["STORAGE", "Storage"], operations: ["OPERATIONS", "Operations"], events: ["OPERATIONS", "Warnings / Errors"], system: ["SYSTEM", "System / Health"],
     detail: ["MARKET DETAIL", `${ASSET_LABELS[route.asset]?.[0] || route.asset} Contract`],
   };
@@ -372,6 +372,31 @@ function renderDashboard() {
   append(split, operations, warnings);
   root.append(split);
   return root;
+}
+
+function renderAccountPage(kind = "overview") {
+  const account = state.account;
+  if (!account) return emptyState("Account unavailable", "Waiting for the Production account read API.");
+  const root = node("div");
+  root.append(sectionHead(kind === "portfolio" ? "Portfolio" : "Account overview", "Production · Primary · read-only"));
+  const summary = account.summary || {};
+  const metrics = node("div", "metric-grid");
+  append(metrics, metric("Balance", summary.balance_cents == null ? "N/A" : `${(summary.balance_cents / 100).toFixed(2)} USD`), metric("Portfolio value", summary.portfolio_value_cents == null ? "N/A" : `${(summary.portfolio_value_cents / 100).toFixed(2)} USD`), metric("Today P&L", summary.today_pnl_cents == null ? "N/A" : `${(summary.today_pnl_cents / 100).toFixed(2)} USD`), metric("Status", stateLabel(account.status)));
+  root.append(metrics);
+  if (kind === "portfolio") {
+    root.append(sectionHead("Positions", "Authoritative account positions; marks are not fabricated"));
+    const wrap = node("div", "table-wrap"); const table = node("table"); const head = node("tr"); ["Market", "Position", "Exposure", "Realized P&L", "Mark"].forEach((x) => head.append(node("th", x === "Market" ? "" : "num", x))); const body = node("tbody");
+    (account.positions || []).forEach((p) => append(body, append(node("tr"), node("td", "", p.ticker), node("td", "num", valueOrDash(p.position, number)), node("td", "num", p.market_exposure_cents == null ? "N/A" : `${(p.market_exposure_cents / 100).toFixed(2)}`), node("td", "num", p.realized_pnl_cents == null ? "N/A" : `${(p.realized_pnl_cents / 100).toFixed(2)}`), node("td", "num", p.mark_cents == null ? "N/A" : `${(p.mark_cents / 100).toFixed(2)}`))));
+    table.append(append(node("thead"), head), body); wrap.append(table); root.append(wrap);
+  } else {
+    root.append(sectionHead("Account connectivity", "Credentials remain server-side; no order actions are exposed"));
+    root.append(node("div", "panel panel-body", account.message || "Production account reads use the official Kalshi SDK boundary."));
+  }
+  return root;
+}
+
+function renderReadOnlyShell(name) {
+  return node("div", "panel panel-body", `${name} is read-only and will show verified Production account evidence when available.`);
 }
 
 function renderEvents() {
@@ -767,7 +792,7 @@ function render() {
   const route = currentRoute();
   setHeading(route);
   updateSidebar();
-  const contents = { dashboard: renderDashboard, markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem }[route.name]();
+  const contents = { dashboard: renderDashboard, overview: () => renderAccountPage("overview"), portfolio: () => renderAccountPage("portfolio"), orders: () => renderReadOnlyShell("Orders"), history: () => renderReadOnlyShell("History"), watchlist: () => renderReadOnlyShell("Watchlist"), analytics: () => renderReadOnlyShell("Analytics"), signals: () => renderReadOnlyShell("Signals"), models: () => renderReadOnlyShell("Models"), markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem }[route.name]();
   view.replaceChildren(contents);
   view.setAttribute("aria-busy", "false");
   updateCountdowns();
@@ -777,6 +802,7 @@ async function refresh(force = false) {
   if (document.hidden) return;
   const route = currentRoute();
   const tasks = [fetchJson("health", "/api/health", INTERVALS.health, force)];
+  if (["overview", "portfolio", "orders", "history", "dashboard"].includes(route.name)) tasks.push(fetchJson("account", "/api/account?profile=production_primary", INTERVALS.account, force));
   if (["dashboard", "events", "system", "operations"].includes(route.name)) tasks.push(fetchJson("events", eventsUrl(), INTERVALS.events, force));
   if (["dashboard", "training", "data"].includes(route.name)) tasks.push(fetchJson("training", "/api/training", INTERVALS.training, force));
   if (["dashboard", "data"].includes(route.name)) tasks.push(fetchJson("data", "/api/data", INTERVALS.data, force));

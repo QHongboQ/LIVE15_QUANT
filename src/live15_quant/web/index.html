@@ -17,11 +17,20 @@
         <span><strong>LIVE15</strong><small>CONTROL CENTER</small></span>
       </a>
       <nav aria-label="Primary navigation">
-        <div class="nav-group"><span class="nav-label">Overview</span>
-          <a href="#/dashboard" data-route="dashboard"><span aria-hidden="true">⌁</span>Dashboard</a>
+        <div class="nav-group"><span class="nav-label">Trading</span>
+          <a href="#/overview" data-route="overview"><span aria-hidden="true">⌁</span>Overview</a>
           <a href="#/markets" data-route="markets"><span aria-hidden="true">◇</span>Markets</a>
+          <a href="#/portfolio" data-route="portfolio"><span aria-hidden="true">▦</span>Portfolio</a>
+          <a href="#/orders" data-route="orders"><span aria-hidden="true">≡</span>Orders</a>
+          <a href="#/history" data-route="history"><span aria-hidden="true">◷</span>History</a>
+          <a href="#/watchlist" data-route="watchlist"><span aria-hidden="true">☆</span>Watchlist</a>
         </div>
-        <div class="nav-group"><span class="nav-label">Data</span>
+        <div class="nav-group"><span class="nav-label">Intelligence</span>
+          <a href="#/analytics" data-route="analytics"><span aria-hidden="true">◒</span>Analytics</a>
+          <a href="#/signals" data-route="signals"><span aria-hidden="true">↗</span>Signals</a>
+          <a href="#/models" data-route="models"><span aria-hidden="true">⊙</span>Models</a>
+        </div>
+        <div class="nav-group"><span class="nav-label">Admin · Data</span>
           <a href="#/data" data-route="data"><span aria-hidden="true">▥</span>Data Pipeline</a>
           <a href="#/training" data-route="training"><span aria-hidden="true">▤</span>Training Truth</a>
           <a href="#/archive" data-route="archive"><span aria-hidden="true">◫</span>Archive</a>
@@ -46,6 +55,7 @@
           <h1 id="page-title">Dashboard</h1>
         </div>
         <div class="topbar-meta">
+          <label class="account-bar">ACCOUNT <select id="account-profile" aria-label="Account profile"><option value="production_primary">Production · Primary</option></select></label>
           <span id="last-refresh">Waiting for data</span>
           <span class="read-only"><span aria-hidden="true">◉</span> READ ONLY</span>
         </div>
