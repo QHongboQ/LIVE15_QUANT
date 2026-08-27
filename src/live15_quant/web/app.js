@@ -714,6 +714,8 @@ function renderResearchData() {
   (research.sources || []).forEach((item) => append(body, append(node("tr"), node("td", "", item.source_id), node("td", "num", item.trust_tier), node("td", "num", `${timestamp(item.earliest_timestamp)} → ${timestamp(item.latest_timestamp)}`), node("td", "num", number(item.eligible_events)), node("td", "num", number(item.eligible_observations)), node("td", "num", item.verification_state))));
   table.append(append(node("thead"), head), body); wrap.append(table); root.append(wrap);
   if (research.depthfeed_status === "DEPTHFEED_INTEGRATION_READY_KEY_REQUIRED") root.append(emptyState("DepthFeed credential required", "Configure the server-side DepthFeed key through the existing secret boundary; no key is displayed or stored in this UI."));
+  if (research.depthfeed_status === "DEPTHFEED_BASE_URL_REQUIRED") root.append(emptyState("DepthFeed endpoint unavailable", "Configure the non-secret DEPTHFEED_BASE_URL through the server-side environment boundary; no credential is displayed or stored in this UI."));
+  if (research.depthfeed_status === "CONFIGURED_NO_ACQUISITION") root.append(emptyState("DepthFeed acquisition pending", "Credential and endpoint are configured; bounded overlap validation must pass before historical L2 is accepted."));
   if (stateErrors.has("researchData")) root.append(emptyState("Research Data refresh failed", "No cached value was changed; retrying remains read-only."));
   return root;
 }

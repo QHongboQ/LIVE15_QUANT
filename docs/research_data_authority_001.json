@@ -67,10 +67,19 @@
       "source_type": "DEPTHFEED_KALSHI_L2",
       "trust_tier": "H2",
       "credential_status": "CONFIGURED",
-      "endpoint_configuration_status": "DEPTHFEED_BASE_URL_REQUIRED",
+      "endpoint_configuration_status": "CONFIGURED",
+      "base_url": "https://api.depthfeed.com",
+      "base_url_source": "DepthFeed API documentation (https://depthfeed.com/docs; adapter appends /v3)",
       "bulk_download_performed": false,
-      "snapshots": "not acquired",
-      "ticks_delta": "not acquired; partial until overlap semantics are proven",
+      "capability_probe": {
+        "market_discovery": "PASS (1 bounded market)",
+        "snapshot_probe": "RATE_LIMITED_HTTP_429 (one bounded retry)",
+        "tick_probe": "PLAN_LIMIT_HTTP_402",
+        "overlap_validation": "NOT_RUN; no snapshot payload was returned",
+        "probe_timestamp_utc": "2026-08-27T18:09:44.0841481Z"
+      },
+      "snapshots": "blocked by provider rate limit (HTTP 429); no acquisition performed",
+      "ticks_delta": "blocked by provider plan (HTTP 402); no acquisition performed",
       "supported_assets": ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"]
     }
   ],
@@ -82,5 +91,5 @@
   },
   "factor_or_model_run": false,
   "research_universe_runtime": "aggregate metadata only; no Dataset v2 payload read",
-  "depthfeed_next_safe_action": "Configure DEPTHFEED_BASE_URL in the existing server-side environment/secret deployment boundary, then run the bounded H0 overlap validation before acquisition."
+  "depthfeed_next_safe_action": "Obtain provider rate-limit capacity and an eligible snapshot plan, then rerun the bounded H0 overlap validation before any acquisition; do not retry ticks while HTTP 402 persists."
 }

@@ -65,3 +65,15 @@ server-side key from the existing secret boundary and requires `DEPTHFEED_BASE_U
 serialized, logged, hashed, or exposed by the API/UI. Before any bounded acquisition, an H0
 overlap must validate market identity, timestamp/availability, snapshots, and tick/delta
 semantics. A provider response cannot manufacture a replayable native book.
+
+### DepthFeed closeout probe (2026-08-28)
+
+The provider documentation identifies `https://api.depthfeed.com/v3` as the API base. The
+LIVE15 adapter owns the `/v3` path suffix, so the server-side configuration value is the
+non-secret root `DEPTHFEED_BASE_URL=https://api.depthfeed.com`. A bounded probe authenticated
+successfully and discovered one exact Kalshi market. The snapshot request returned HTTP 429,
+including one bounded retry; no snapshot payload was accepted and no historical acquisition was
+performed. The tick request returned HTTP 402, which is recorded as a provider-plan limitation.
+Because no snapshot was returned, H0 overlap semantics (identity, timestamps, ordering,
+duplicates, and conflicts) remain unvalidated and H2 remains partial. The UI must continue to
+surface this as unavailable/partial rather than implying sequence evidence.
