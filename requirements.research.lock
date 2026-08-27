@@ -1,0 +1,3 @@
+# MVN-003 research-only environment contract. Create it outside this repository and
+# never reuse the production runtime .venv.
+-r requirements.lock
