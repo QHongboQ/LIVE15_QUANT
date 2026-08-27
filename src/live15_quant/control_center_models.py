@@ -45,6 +45,14 @@ class DatasetSnapshotStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class TrainingProjectionState(StrEnum):
+    AVAILABLE = "available"
+    UNKNOWN = "unknown"
+    STALE = "stale"
+    NOT_MATERIALIZED = "not_materialized"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
 class StrictResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -88,6 +96,11 @@ class WsArchiveHealth(StrictResponse):
     disk_free_bytes: int | None = None
     disk_threshold_state: str = "unknown"
     shadow_acceptance_passed: bool = False
+    quarantined: int = 0
+    waiting_for_replay_baseline: int = 0
+    archive_poll_mode: str | None = None
+    archive_next_poll_seconds: float | None = None
+    deferred_for_ws_backpressure: bool = False
 
 
 class HealthResponse(StrictResponse):
@@ -217,6 +230,112 @@ class CoverageResponse(StrictResponse):
     missing_feature_rates: dict[str, float | None] | None = None
     stale_feature_rates: dict[str, float | None] | None = None
     per_asset: dict[str, AssetCoverage]
+
+
+class TrainingAssetCoverage(StrictResponse):
+    events: int | None = None
+    rows: int | None = None
+    eligible_events: int | None = None
+    ineligible_events: int | None = None
+
+
+class TrainingProjection(StrictResponse):
+    state: TrainingProjectionState
+    status: str
+    reason_code: str
+    events: int | None = None
+    rows: int | None = None
+    assets: int | None = None
+    observed_at: datetime | None = None
+    source_path: str | None = None
+    per_asset: dict[str, TrainingAssetCoverage] = Field(default_factory=dict)
+
+
+class CompletedDatasetProjection(StrictResponse):
+    state: TrainingProjectionState
+    status: str
+    reason_code: str
+    build_id: str | None = None
+    dataset_version: str | None = None
+    feature_schema_version: str | None = None
+    completed_timestamp: datetime | None = None
+    events: int | None = None
+    rows: int | None = None
+    snapshot_status: DatasetSnapshotStatus = DatasetSnapshotStatus.NOT_BUILT
+    diagnostics: dict[str, object] | None = None
+    per_asset: dict[str, TrainingAssetCoverage] = Field(default_factory=dict)
+
+
+class FrozenExperimentFact(StrictResponse):
+    experiment_id: str
+    status: str
+    dataset_id: str | None = None
+    created_timestamp: datetime | None = None
+    source: str | None = None
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class TrainingResponse(StrictResponse):
+    generated_at: datetime
+    raw_finalized_pool: TrainingProjection
+    current_trainable: TrainingProjection
+    latest_completed_dataset: CompletedDatasetProjection
+    frozen_experiment_facts: list[FrozenExperimentFact] = Field(default_factory=list)
+    sequence_readiness: str = "UNKNOWN"
+
+
+class DataResponse(StrictResponse):
+    generated_at: datetime
+    recorder_state: RecorderState
+    raw_store: Availability
+    finalized_events: int | None = None
+    finalized_assets: int | None = None
+    source_as_of: datetime | None = None
+    freshness: str = "UNKNOWN"
+    notes: list[str] = Field(default_factory=list)
+
+
+class ArchiveResponse(StrictResponse):
+    generated_at: datetime
+    state: str
+    enabled: bool
+    verified_chunks: int | None = None
+    failed_chunks: int | None = None
+    quarantined_chunks: int | None = None
+    backlog_events: int | None = None
+    throughput_events_per_second: float | None = None
+    lag_seconds: float | None = None
+    cold_archive_bytes: int | None = None
+    purge_eligible_events: int | None = None
+    purge_is_dry_run: bool = True
+    notes: list[str] = Field(default_factory=list)
+
+
+class StorageResponse(StrictResponse):
+    generated_at: datetime
+    state: str
+    disk_total_bytes: int | None = None
+    disk_free_bytes: int | None = None
+    hot_sqlite_bytes: int | None = None
+    cold_archive_bytes: int | None = None
+    wal_bytes: int | None = None
+    growth_bytes_per_day: float | None = None
+    retention_seconds: float | None = None
+    purge_is_dry_run: bool = True
+    notes: list[str] = Field(default_factory=list)
+
+
+class OperationsResponse(StrictResponse):
+    generated_at: datetime
+    recorder_state: RecorderState
+    recorder_heartbeat: Availability
+    fatal_task: str | None = None
+    fatal_error_type: str | None = None
+    active_markets: int | None = None
+    pending_settlements: int | None = None
+    retries: int | None = None
+    runtime_components: dict[str, RuntimeComponentResponse] = Field(default_factory=dict)
+    recent_events: list[RecorderEventResponse] = Field(default_factory=list)
 
 
 class RuntimeComponentResponse(StrictResponse):

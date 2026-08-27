@@ -299,9 +299,11 @@ python market_stream.py
 
 ### LIVE15 Control Center
 
-`live15-ui` 默认且强制绑定 `http://127.0.0.1:8765`，提供 Dashboard 和五个只读
-API：`/api/health`、`/api/markets`、`/api/markets/{asset}`、`/api/coverage`、
-`/api/system`，以及有界、可筛选的 `/api/events` operational diagnostics。端口可用
+`live15-ui` 默认且强制绑定 `http://127.0.0.1:8765`，提供 Dashboard、Markets、Data、
+Training Truth、Archive、Storage、Operations、Warnings / Errors 与 System / Health 页面。
+只读 API 包括 `/api/health`、`/api/markets`、`/api/markets/{asset}`、`/api/data`、
+`/api/training`、`/api/archive`、`/api/storage`、`/api/operations`、`/api/coverage` 与
+有界、可筛选的 `/api/events` operational diagnostics。端口可用
 `LIVE15_UI_PORT` 或 `--port` 调整，但 host 不可配置为
 `0.0.0.0`。服务使用只读 SQLite connection、typed response models、现有
 `FeatureEngine` 和 recorder heartbeat，不复制 settlement 或 feature 公式。
@@ -324,8 +326,8 @@ key path、signature 或账户信息。heartbeat 缺失表示 recorder `stopped`
 upstream unavailable 仍只记录在对应 asset/source failure 中并继续其他任务。
 
 Milestone 7.6B 在同一个 localhost backend 上提供无构建步骤的原生 HTML/CSS/JavaScript
-Dashboard。左侧导航包含 Dashboard、Markets、Training Data、Warnings / Errors 与 System /
-Health；资产卡和
+Dashboard。左侧导航按 Overview、Data、Operations 分组；训练页分离 raw finalized pool、
+current trainable projection、latest completed snapshot 和 frozen experiment facts。资产卡和
 detail 页面展示 Kalshi quote/orderbook、Coinbase predictive underlying、现有
 `FeatureEngine` 投影及官方 finalized history。前端只格式化 typed API 字段，不计算交易或
 settlement 业务事实；missing、stale、unsupported 均显示文字状态和 `—`，不会填零。

@@ -14,12 +14,17 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from live15_quant.config import Settings, load_settings
 from live15_quant.control_center_models import (
+    ArchiveResponse,
     CoverageResponse,
+    DataResponse,
     HealthResponse,
     MarketResponse,
+    OperationsResponse,
     RecorderControlResponse,
     RecorderEventResponse,
+    StorageResponse,
     SystemResponse,
+    TrainingResponse,
 )
 from live15_quant.control_center_service import ControlCenterService
 from live15_quant.logging_config import configure_logging
@@ -90,6 +95,26 @@ def create_app(
     @app.get("/api/coverage", response_model=CoverageResponse)
     def coverage() -> CoverageResponse:
         return boundary.coverage()
+
+    @app.get("/api/data", response_model=DataResponse)
+    def data() -> DataResponse:
+        return boundary.data()
+
+    @app.get("/api/training", response_model=TrainingResponse)
+    def training() -> TrainingResponse:
+        return boundary.training()
+
+    @app.get("/api/archive", response_model=ArchiveResponse)
+    def archive() -> ArchiveResponse:
+        return boundary.archive()
+
+    @app.get("/api/storage", response_model=StorageResponse)
+    def storage() -> StorageResponse:
+        return boundary.storage()
+
+    @app.get("/api/operations", response_model=OperationsResponse)
+    def operations() -> OperationsResponse:
+        return boundary.operations()
 
     @app.get("/api/system", response_model=SystemResponse)
     def system() -> SystemResponse:
