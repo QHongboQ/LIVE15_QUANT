@@ -23,6 +23,7 @@ from live15_quant.control_center_models import (
     RecorderControlResponse,
     RecorderEventResponse,
     RecorderState,
+    ResearchDataResponse,
     RuntimeComponentResponse,
     StorageResponse,
     SystemResponse,
@@ -33,6 +34,7 @@ from live15_quant.control_center_store import DashboardReadStore
 from live15_quant.market_sessions import MarketDataState, market_data_state, market_session
 from live15_quant.models import Asset, RecorderEventSeverity
 from live15_quant.recorder_control import RecorderProcessController, process_alive
+from live15_quant.research_data_authority import ResearchDataAuthority
 from live15_quant.runtime_status import RuntimeStatusError, read_json
 
 
@@ -47,6 +49,7 @@ class ControlCenterService:
         monotonic: Callable[[], float] = time.monotonic,
         controller: RecorderProcessController | None = None,
         account_service: ProductionAccountService | None = None,
+        research_authority: ResearchDataAuthority | None = None,
     ) -> None:
         self.settings = settings
         self.store = DashboardReadStore(
@@ -64,6 +67,7 @@ class ControlCenterService:
         self._coverage_cache: CoverageResponse | None = None
         self._control_lock = threading.Lock()
         self.account_service = account_service or ProductionAccountService(settings)
+        self.research_authority = research_authority or ResearchDataAuthority(settings)
         if controller is not None:
             self.controller = controller
         else:
@@ -77,6 +81,13 @@ class ControlCenterService:
 
     def account(self, profile: str = "production_primary"):
         return self.account_service.read(profile)
+
+    def research_data(self) -> ResearchDataResponse:
+        """Return aggregate research-source metadata, never research payloads or secrets."""
+
+        return ResearchDataResponse.model_validate(
+            self.research_authority.snapshot().to_public_dict()
+        )
 
     def health(self) -> HealthResponse:
         path = self.settings.recorder_health_path

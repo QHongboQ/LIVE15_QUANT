@@ -31,6 +31,10 @@ is SDK-authoritative; the legacy WebSocket is `LEGACY_ROLLBACK_ONLY`.
 - Use chronological/event-grouped validation, not random row splits. Do not add features without
   an ablation. The current v2 baseline remains the baseline until fresh forward Challenger
   evidence exists.
+- Research coverage comes from the typed Research Data Authority, never from a Dataset v1/v2
+  partition. Keep decision-time feature freshness, development-history recency, and post-spec
+  forward OOS freshness separate; a 15-minute horizon is not a two-day history limit. See
+  `docs/research_data_authority.md`.
 
 ## Safety and high-risk zones
 

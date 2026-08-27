@@ -374,6 +374,73 @@ class DataResponse(StrictResponse):
     notes: list[str] = Field(default_factory=list)
 
 
+class ResearchDataSourceResponse(StrictResponse):
+    source_id: str
+    source_type: str
+    trust_tier: str
+    provider_version: str | None = None
+    schema_version: str
+    earliest_timestamp: datetime | None = None
+    latest_timestamp: datetime | None = None
+    utc_calendar_days: list[str] = Field(default_factory=list)
+    market_session_days: list[str] = Field(default_factory=list)
+    assets: list[str] = Field(default_factory=list)
+    eligible_events: int = 0
+    eligible_observations: int = 0
+    availability_semantics: str
+    verification_state: str
+    provenance: str
+    content_identity: str
+    limitations: list[str] = Field(default_factory=list)
+    capability_days: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class ResearchFreshnessPolicyResponse(StrictResponse):
+    version: str
+    feature_freshness: dict[str, object]
+    training_recency: dict[str, object]
+    forward_oos_freshness: dict[str, object]
+
+
+class FrozenHoldoutResponse(StrictResponse):
+    dataset_id: str
+    status: str
+    excluded_event_count: int = 0
+    excluded_time_range_count: int = 0
+    validation_days: list[str] = Field(default_factory=list)
+    payload_accessed: bool = False
+
+
+class ResearchDataResponse(StrictResponse):
+    schema_version: str
+    universe_id: str
+    content_hash: str
+    cutoff_timestamp: datetime
+    code_git_sha: str
+    freshness_policy: ResearchFreshnessPolicyResponse
+    session_semantics_version: str
+    source_registry_version: str
+    sources: list[ResearchDataSourceResponse] = Field(default_factory=list)
+    earliest_timestamp: datetime | None = None
+    latest_timestamp: datetime | None = None
+    utc_calendar_days: list[str] = Field(default_factory=list)
+    market_session_days: list[str] = Field(default_factory=list)
+    eligible_development_days: list[str] = Field(default_factory=list)
+    validation_days: list[str] = Field(default_factory=list)
+    assets: list[str] = Field(default_factory=list)
+    eligible_events: int = 0
+    eligible_observations: int = 0
+    deduplicated_observations: int = 0
+    conflicting_observations: int = 0
+    quarantined_observations: int = 0
+    holdout_excluded_observations: int = 0
+    selected_source_ids: list[str] = Field(default_factory=list)
+    frozen_holdout: FrozenHoldoutResponse
+    holdout_accessed: bool = False
+    depthfeed_status: str
+    capability_days: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class ArchiveResponse(StrictResponse):
     generated_at: datetime
     state: str
