@@ -1916,4 +1916,3 @@ def rollback_compacted_database(source: Path, rollback: Path, failed_copy: Path)
     except BaseException:
         failed_copy.replace(source)
         raise
-

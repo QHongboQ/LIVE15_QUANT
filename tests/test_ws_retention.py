@@ -937,4 +937,3 @@ def test_failed_compact_swap_automatically_rolls_back(
     with pytest.raises(OSError, match="simulated"):
         swap_compacted_database(source, compacted, rollback)
     assert source.is_file() and compacted.is_file() and not rollback.exists()
-
