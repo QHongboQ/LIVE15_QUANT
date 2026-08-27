@@ -71,9 +71,9 @@ h3 { margin-bottom: 4px; font-size: 14px; }
 
 /* Terminal foundation: continuous black canvas, typographic hierarchy, compact tables. */
 :root { --bg: #050505; --panel: #0b0b0d; --line: rgba(255,255,255,.08); --accent: #7567e8; --text: #f2f2f4; --muted: #85858e; }
-body { background: var(--bg); color: var(--text); }
-.app-shell { grid-template-columns: 232px minmax(0, 1fr); background: var(--bg); }
-.sidebar { background: #09090b; border-right: 1px solid var(--line); padding: 20px 12px; }
+body { background: var(--bg); color: var(--text); overflow-y: scroll; overflow-x: hidden; }
+.app-shell { grid-template-columns: 232px minmax(0, 1fr); background: var(--bg); min-height: 100vh; }
+.sidebar { background: #09090b; border-right: 1px solid var(--line); padding: 20px 12px; height: 100vh; position: sticky; top: 0; overflow-y: auto; overflow-x: hidden; }
 .brand { padding: 8px 10px 22px; }
 .brand small { letter-spacing: .14em; }
 nav a { min-height: 40px; border-radius: 7px; font-size: 14px; gap: 10px; color: #a2a2aa; }
@@ -81,7 +81,7 @@ nav a svg { width: 18px; height: 18px; flex: 0 0 18px; }
 nav a:hover { background: rgba(255,255,255,.05); color: var(--text); }
 nav a.active { background: var(--accent); color: white; }
 .nav-label { margin: 18px 10px 7px; color: #666670; font-size: 10px; letter-spacing: .16em; }
-main { min-width: 0; padding: 0 30px 48px; }
+main { min-width: 0; width: 100%; padding: 0 30px 48px; overflow-x: hidden; }
 .topbar { min-height: 72px; border-bottom: 1px solid var(--line); }
 .topbar h1 { font-size: 20px; letter-spacing: -.02em; }
 .topbar .eyebrow { font-size: 10px; }

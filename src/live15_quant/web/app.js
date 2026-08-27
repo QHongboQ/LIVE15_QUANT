@@ -826,8 +826,11 @@ function render() {
   const route = currentRoute();
   setHeading(route);
   updateSidebar();
-  const contents = { dashboard: renderDashboard, overview: () => renderAccountPage("overview"), portfolio: () => renderAccountPage("portfolio"), account: () => renderAccountPage("overview"), orders: () => renderReadOnlyShell("Orders"), history: () => renderReadOnlyShell("History"), watchlist: () => renderReadOnlyShell("Watchlist"), analytics: () => renderReadOnlyShell("Analytics"), signals: () => renderReadOnlyShell("Signals"), models: () => renderReadOnlyShell("Models"), markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem }[route.name]();
-  view.replaceChildren(contents);
+  const renderers = { dashboard: renderDashboard, overview: () => renderAccountPage("overview"), portfolio: () => renderAccountPage("portfolio"), account: () => renderAccountPage("overview"), orders: () => renderReadOnlyShell("Orders"), history: () => renderReadOnlyShell("History"), watchlist: () => renderReadOnlyShell("Watchlist"), analytics: () => renderReadOnlyShell("Analytics"), signals: () => renderReadOnlyShell("Signals"), models: () => renderReadOnlyShell("Models"), markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem };
+  let contents;
+  try { contents = renderers[route.name](); }
+  catch (error) { console.error("LIVE15 view render failed", error); contents = emptyState("Unable to render this view", "Retrying is safe; local data remains read-only."); }
+  view.replaceChildren(contents || emptyState("Unable to render this view", "No renderer is registered for this route."));
   view.setAttribute("aria-busy", "false");
   updateCountdowns();
 }
@@ -859,7 +862,7 @@ async function refresh(force = false) {
   render();
 }
 
-window.addEventListener("hashchange", () => refresh(true));
+window.addEventListener("hashchange", () => { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); refresh(true); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(true); });
 setInterval(updateCountdowns, 1000);
 setInterval(() => refresh(false), 500);
