@@ -169,13 +169,13 @@ function emptyState(titleText, detail) {
 function currentRoute() {
   const parts = (location.hash.replace(/^#\/?/, "") || "dashboard").split("/").filter(Boolean);
   if (parts[0] === "markets" && parts[1]) return { name: "detail", asset: decodeURIComponent(parts.slice(1).join("/")) };
-  if (["markets", "data", "training", "archive", "storage", "operations", "events", "system", "overview", "portfolio", "orders", "history", "watchlist", "analytics", "signals", "models"].includes(parts[0])) return { name: parts[0] };
+  if (["markets", "data", "training", "archive", "storage", "operations", "events", "system", "overview", "portfolio", "account", "orders", "history", "watchlist", "analytics", "signals", "models"].includes(parts[0])) return { name: parts[0] };
   return { name: "dashboard" };
 }
 
 function setHeading(route) {
   const headings = {
-    dashboard: ["ADMIN · OVERVIEW", "Dashboard"], overview: ["TRADING", "Overview"], portfolio: ["TRADING", "Portfolio"], orders: ["TRADING", "Orders"], history: ["TRADING", "History"], watchlist: ["TRADING", "Watchlist"], analytics: ["INTELLIGENCE", "Analytics"], signals: ["INTELLIGENCE", "Signals"], models: ["INTELLIGENCE", "Models"], markets: ["MARKET DATA", "15-Minute Markets"],
+    dashboard: ["ADMIN · OVERVIEW", "Dashboard"], overview: ["TRADING", "Overview"], portfolio: ["TRADING", "Portfolio"], account: ["TRADING", "Account"], orders: ["TRADING", "Orders"], history: ["TRADING", "History"], watchlist: ["TRADING", "Watchlist"], analytics: ["INTELLIGENCE", "Analytics"], signals: ["INTELLIGENCE", "Signals"], models: ["INTELLIGENCE", "Models"], markets: ["MARKET DATA", "15-Minute Markets"],
     data: ["DATA", "Data Pipeline"], training: ["TRAINING", "Training Truth"], archive: ["ARCHIVE", "Archive"], storage: ["STORAGE", "Storage"], operations: ["OPERATIONS", "Operations"], events: ["OPERATIONS", "Warnings / Errors"], system: ["SYSTEM", "System / Health"],
     detail: ["MARKET DETAIL", `${ASSET_LABELS[route.asset]?.[0] || route.asset} Contract`],
   };
@@ -396,7 +396,15 @@ function renderAccountPage(kind = "overview") {
 }
 
 function renderReadOnlyShell(name) {
-  return node("div", "panel panel-body", `${name} is read-only and will show verified Production account evidence when available.`);
+  const account = state.account;
+  if (!account) return emptyState(`${name} unavailable`, "Waiting for the Production account read API.");
+  const root = node("div"); root.append(sectionHead(name, "Production · Primary · read-only"));
+  const rows = name === "Orders" ? (account.orders || []) : (account.fills || []);
+  const table = node("table"); const head = node("tr"); [name === "Orders" ? "Order" : "Fill", "Market", "Status / Side", "Count", "Price", "Time"].forEach((x) => head.append(node("th", x === "Count" || x === "Price" ? "num" : "", x))); const body = node("tbody");
+  rows.forEach((item) => append(body, append(node("tr"), node("td", "", item.order_id || item.trade_id || "N/A"), node("td", "", item.ticker || "N/A"), node("td", "", item.status || item.side || "N/A"), node("td", "num", valueOrDash(item.count, number)), node("td", "num", item.yes_price_cents == null ? "N/A" : `${item.yes_price_cents}¢`), node("td", "", timestamp(item.created_at)))));
+  table.append(append(node("thead"), head), body); root.append(append(node("div", "table-wrap"), table));
+  if (!rows.length) root.append(emptyState("N/A", `No verified ${name.toLowerCase()} facts are available.`));
+  return root;
 }
 
 function renderEvents() {
@@ -497,6 +505,15 @@ function renderDetail(route) {
   const metrics = node("div", "metric-grid");
   append(metrics, metric("Lifecycle", market.lifecycle.toUpperCase(), market.official_status || "official status missing"), countdownMetric("Time remaining", market.window_end, market.seconds_remaining), metric("Target", marketPrice(market.target)), metric("Quote age", age(market.quote_age_seconds), market.quote_status));
   root.append(metrics, sectionHead("Contract & prices", valueOrDash(market.ticker)));
+  const tabs = node("div", "detail-tabs");
+  ["Chart", "Order Book", "Position", "History", "LIVE15 Analysis"].forEach((label, index) => {
+    const tab = node("a", `detail-tab${index === 0 ? " active" : ""}`, label);
+    tab.href = index === 2 ? "#/portfolio" : `#/markets/${encodeURIComponent(route.asset)}`;
+    tabs.append(tab);
+  });
+  root.append(tabs);
+  const owned = (state.account?.positions || []).find((item) => item.ticker === market.ticker);
+  root.append(node("div", "panel panel-body", owned ? `Position ${valueOrDash(owned.position, number)} · P&L ${owned.realized_pnl_cents == null ? "N/A" : `${(owned.realized_pnl_cents / 100).toFixed(2)} USD`}` : "Position: N/A · no verified holding for this market"));
   const detail = node("div", "detail-grid");
   const contract = node("div", "panel");
   contract.append(append(node("div", "panel-head"), node("h2", "", "Contract metadata")));
@@ -792,7 +809,7 @@ function render() {
   const route = currentRoute();
   setHeading(route);
   updateSidebar();
-  const contents = { dashboard: renderDashboard, overview: () => renderAccountPage("overview"), portfolio: () => renderAccountPage("portfolio"), orders: () => renderReadOnlyShell("Orders"), history: () => renderReadOnlyShell("History"), watchlist: () => renderReadOnlyShell("Watchlist"), analytics: () => renderReadOnlyShell("Analytics"), signals: () => renderReadOnlyShell("Signals"), models: () => renderReadOnlyShell("Models"), markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem }[route.name]();
+  const contents = { dashboard: renderDashboard, overview: () => renderAccountPage("overview"), portfolio: () => renderAccountPage("portfolio"), account: () => renderAccountPage("overview"), orders: () => renderReadOnlyShell("Orders"), history: () => renderReadOnlyShell("History"), watchlist: () => renderReadOnlyShell("Watchlist"), analytics: () => renderReadOnlyShell("Analytics"), signals: () => renderReadOnlyShell("Signals"), models: () => renderReadOnlyShell("Models"), markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem }[route.name]();
   view.replaceChildren(contents);
   view.setAttribute("aria-busy", "false");
   updateCountdowns();
@@ -802,7 +819,7 @@ async function refresh(force = false) {
   if (document.hidden) return;
   const route = currentRoute();
   const tasks = [fetchJson("health", "/api/health", INTERVALS.health, force)];
-  if (["overview", "portfolio", "orders", "history", "dashboard"].includes(route.name)) tasks.push(fetchJson("account", "/api/account?profile=production_primary", INTERVALS.account, force));
+  if (["overview", "portfolio", "account", "orders", "history", "dashboard", "detail"].includes(route.name)) tasks.push(fetchJson("account", "/api/account?profile=production_primary", INTERVALS.account, force));
   if (["dashboard", "events", "system", "operations"].includes(route.name)) tasks.push(fetchJson("events", eventsUrl(), INTERVALS.events, force));
   if (["dashboard", "training", "data"].includes(route.name)) tasks.push(fetchJson("training", "/api/training", INTERVALS.training, force));
   if (["dashboard", "data"].includes(route.name)) tasks.push(fetchJson("data", "/api/data", INTERVALS.data, force));

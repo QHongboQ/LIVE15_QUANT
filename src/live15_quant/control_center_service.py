@@ -8,8 +8,8 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
-from live15_quant.config import Settings
 from live15_quant.account_service import ProductionAccountService
+from live15_quant.config import Settings
 from live15_quant.control_center_models import (
     ArchiveResponse,
     Availability,
