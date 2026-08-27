@@ -254,6 +254,67 @@ def test_batch_rest_uses_one_request_for_all_five_feeds(tmp_path) -> None:
     assert response.closed and session.closed
 
 
+def test_batch_404_decomposes_only_feed_local_http_404(tmp_path) -> None:
+    responses = [FakeResponse({}, status_code=404)]
+    for asset in PYTH_ASSETS:
+        responses.append(
+            FakeResponse({}, status_code=404)
+            if asset is Asset.WTI_OIL
+            else FakeResponse(payload((asset,)))
+        )
+    hermes = client(tmp_path, FakeSession(responses))
+    try:
+        batch = hermes.latest_batch()
+        assert {item.asset for item in batch.observations} == {
+            Asset.GOLD,
+            Asset.SILVER,
+            Asset.HYPE,
+            Asset.BNB,
+        }
+        assert [(issue.code, issue.asset) for issue in batch.issues] == [
+            ("feed_unavailable", Asset.WTI_OIL)
+        ]
+    finally:
+        hermes.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "category"),
+    [(401, "AUTH"), (429, "HTTP_RATE_LIMIT")],
+)
+def test_single_feed_non_404_errors_propagate_during_decomposition(
+    tmp_path, status: int, category: str
+) -> None:
+    responses = [FakeResponse({}, status_code=404), FakeResponse({}, status_code=status)]
+    hermes = client(tmp_path, FakeSession(responses))
+    try:
+        with pytest.raises(PythNetworkError) as caught:
+            hermes.latest_batch()
+        if status == 429:
+            assert isinstance(caught.value, PythRateLimitError)
+        else:
+            assert caught.value.category == category
+    finally:
+        hermes.close()
+
+
+def test_single_feed_tls_error_propagates_during_decomposition(tmp_path) -> None:
+    class FailingSession(FakeSession):
+        def get(self, url, **kwargs):
+            if not self.calls:
+                self.calls.append({"url": url, **kwargs})
+                return FakeResponse({}, status_code=404)
+            raise requests.exceptions.SSLError("redacted")
+
+    hermes = client(tmp_path, FailingSession([]))
+    try:
+        with pytest.raises(PythNetworkError) as caught:
+            hermes.latest_batch()
+        assert caught.value.category == "TLS"
+    finally:
+        hermes.close()
+
+
 def test_one_sse_connection_demuxes_multiple_events_and_closes(tmp_path) -> None:
     lines = [
         f"data:{json.dumps(payload((Asset.GOLD, Asset.SILVER)))}",

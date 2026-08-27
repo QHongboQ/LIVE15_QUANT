@@ -44,6 +44,11 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.enable_secondary_underlying is False
     assert settings.pyth_api_key_path is None
     assert settings.pyth_hermes_base_url == PYTH_HERMES_BASE_URL
+
+
+def test_load_settings_allows_pyth_hermes_endpoint_override() -> None:
+    settings = load_settings({"LIVE15_PYTH_HERMES_BASE_URL": "https://pyth.dourolabs.app/hermes/"})
+    assert settings.pyth_hermes_base_url == "https://pyth.dourolabs.app/hermes"
     assert settings.enable_adaptive_ws_retention is True
     assert settings.adaptive_retention_min_seconds == 3600
     assert settings.adaptive_retention_max_seconds == 21600
