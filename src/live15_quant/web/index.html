@@ -17,11 +17,21 @@
         <span><strong>LIVE15</strong><small>CONTROL CENTER</small></span>
       </a>
       <nav aria-label="Primary navigation">
-        <a href="#/" data-route="dashboard"><span aria-hidden="true">⌁</span>Dashboard</a>
-        <a href="#/markets" data-route="markets"><span aria-hidden="true">◇</span>Markets</a>
-        <a href="#/training" data-route="training"><span aria-hidden="true">▤</span>Training Data</a>
-        <a href="#/events" data-route="events"><span aria-hidden="true">⚠</span>Warnings / Errors</a>
-        <a href="#/system" data-route="system"><span aria-hidden="true">◎</span>System / Health</a>
+        <div class="nav-group"><span class="nav-label">Overview</span>
+          <a href="#/dashboard" data-route="dashboard"><span aria-hidden="true">⌁</span>Dashboard</a>
+          <a href="#/markets" data-route="markets"><span aria-hidden="true">◇</span>Markets</a>
+        </div>
+        <div class="nav-group"><span class="nav-label">Data</span>
+          <a href="#/data" data-route="data"><span aria-hidden="true">▥</span>Data Pipeline</a>
+          <a href="#/training" data-route="training"><span aria-hidden="true">▤</span>Training Truth</a>
+          <a href="#/archive" data-route="archive"><span aria-hidden="true">◫</span>Archive</a>
+          <a href="#/storage" data-route="storage"><span aria-hidden="true">▱</span>Storage</a>
+        </div>
+        <div class="nav-group"><span class="nav-label">Operations</span>
+          <a href="#/operations" data-route="operations"><span aria-hidden="true">◈</span>Operations</a>
+          <a href="#/events" data-route="events"><span aria-hidden="true">⚠</span>Warnings / Errors</a>
+          <a href="#/system" data-route="system"><span aria-hidden="true">◎</span>System / Health</a>
+        </div>
       </nav>
       <div class="sidebar-foot">
         <span class="status-line" id="sidebar-status"><span class="status-icon">○</span>Connecting</span>

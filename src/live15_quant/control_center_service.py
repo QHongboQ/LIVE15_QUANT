@@ -10,17 +10,22 @@ from datetime import UTC, datetime, timedelta
 
 from live15_quant.config import Settings
 from live15_quant.control_center_models import (
+    ArchiveResponse,
     Availability,
     CoverageResponse,
+    DataResponse,
     HealthResponse,
     MarketResponse,
+    OperationsResponse,
     RecorderControlAction,
     RecorderControlOutcome,
     RecorderControlResponse,
     RecorderEventResponse,
     RecorderState,
     RuntimeComponentResponse,
+    StorageResponse,
     SystemResponse,
+    TrainingResponse,
     WsArchiveHealth,
 )
 from live15_quant.control_center_store import DashboardReadStore
@@ -45,6 +50,7 @@ class ControlCenterService:
         self.store = DashboardReadStore(
             settings.recorder_data_path,
             settings.feature_store_path,
+            current_trainable_path=settings.current_trainable_path,
             coinbase_stale_seconds=settings.recorder_coinbase_stale_seconds,
             pyth_stale_seconds=settings.recorder_pyth_stale_seconds,
             secondary_stale_seconds=settings.recorder_secondary_stale_seconds,
@@ -252,6 +258,82 @@ class ControlCenterService:
             self._coverage_cache = response
             self._coverage_cached_at = now
             return response
+
+    def training(self) -> TrainingResponse:
+        payload = self.store.training()
+        return TrainingResponse(generated_at=self._clock(), **payload)
+
+    def data(self) -> DataResponse:
+        health = self.health()
+        pool = self.store.training()["raw_finalized_pool"]
+        return DataResponse(
+            generated_at=self._clock(),
+            recorder_state=health.recorder_state,
+            raw_store=Availability.AVAILABLE
+            if self.settings.recorder_data_path.is_file()
+            else Availability.UNAVAILABLE,
+            finalized_events=pool.get("events"),
+            finalized_assets=pool.get("assets"),
+            source_as_of=pool.get("observed_at"),
+            freshness=pool.get("status", "UNKNOWN"),
+            notes=["Finalized settlement truth is read-only; trainability is shown separately."],
+        )
+
+    def archive(self) -> ArchiveResponse:
+        health = self.health()
+        archive = health.ws_archive
+        state = "disabled" if not archive.enabled else "healthy"
+        if archive.failed or archive.quarantined:
+            state = "attention"
+        return ArchiveResponse(
+            generated_at=self._clock(),
+            state=state,
+            enabled=archive.enabled,
+            verified_chunks=archive.verified,
+            failed_chunks=archive.failed,
+            quarantined_chunks=archive.quarantined,
+            backlog_events=archive.archive_backlog_events,
+            throughput_events_per_second=archive.archive_throughput_events_per_second,
+            lag_seconds=archive.archive_lag_seconds,
+            cold_archive_bytes=archive.cold_archive_bytes,
+            purge_eligible_events=archive.eligible,
+            notes=["Purge eligibility is a dry-run projection; destructive actions are absent."],
+        )
+
+    def storage(self) -> StorageResponse:
+        health = self.health()
+        archive = health.ws_archive
+        state = archive.disk_threshold_state
+        return StorageResponse(
+            generated_at=self._clock(),
+            state=state,
+            disk_total_bytes=archive.disk_total_bytes,
+            disk_free_bytes=archive.disk_free_bytes,
+            hot_sqlite_bytes=archive.hot_sqlite_used_bytes,
+            cold_archive_bytes=archive.cold_archive_bytes,
+            wal_bytes=health.wal_bytes,
+            growth_bytes_per_day=archive.net_disk_growth_bytes_per_day,
+            retention_seconds=archive.hot_retention_seconds,
+            notes=[
+                "Retention and purge controls are intentionally absent from this read-only view."
+            ],
+        )
+
+    def operations(self) -> OperationsResponse:
+        health = self.health()
+        events = self.recorder_events(limit=20)
+        return OperationsResponse(
+            generated_at=self._clock(),
+            recorder_state=health.recorder_state,
+            recorder_heartbeat=health.heartbeat_status,
+            fatal_task=health.fatal_task,
+            fatal_error_type=health.fatal_error_type,
+            active_markets=sum(value is not None for value in health.current_markets.values()),
+            pending_settlements=health.active_settlement_followups,
+            retries=sum(health.retry_counts.values()),
+            runtime_components=self._runtime_components(),
+            recent_events=events,
+        )
 
     def system(self) -> SystemResponse:
         health = self.health()

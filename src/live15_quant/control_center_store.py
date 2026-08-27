@@ -50,12 +50,14 @@ class DashboardReadStore:
         raw_path: Path,
         feature_path: Path,
         *,
+        current_trainable_path: Path | None = None,
         coinbase_stale_seconds: float = 30.0,
         pyth_stale_seconds: float = 15.0,
         secondary_stale_seconds: float = 10.0,
     ) -> None:
         self.raw_path = raw_path
         self.feature_path = feature_path
+        self.current_trainable_path = current_trainable_path
         self.coinbase_stale_seconds = coinbase_stale_seconds
         self.pyth_stale_seconds = pyth_stale_seconds
         self.secondary_stale_seconds = secondary_stale_seconds
@@ -567,6 +569,228 @@ class DashboardReadStore:
             }
         except sqlite3.Error:
             return self._empty_coverage("feature_store_error", finalized)
+        finally:
+            connection.close()
+
+    def training(self) -> dict[str, Any]:
+        """Return separate, read-only projections for each training truth layer.
+
+        A completed dataset build is immutable evidence; it is intentionally not used as
+        the current trainable pool.  Missing projections remain ``None`` and carry an
+        explicit reason instead of being represented as zero.
+        """
+
+        return {
+            "raw_finalized_pool": self._raw_finalized_pool(),
+            "current_trainable": self._current_trainable_projection(),
+            "latest_completed_dataset": self._completed_dataset_projection(),
+            "frozen_experiment_facts": [],
+        }
+
+    def _raw_finalized_pool(self) -> dict[str, Any]:
+        counts = {asset.value: 0 for asset in Asset}
+        connection = self._open(self.raw_path)
+        base = {
+            "state": "unknown",
+            "status": "unknown",
+            "reason_code": "RAW_FINALIZED_POOL_UNAVAILABLE",
+            "events": None,
+            "eligible_events": None,
+            "ineligible_events": None,
+            "rows": None,
+            "assets": None,
+            "observed_at": None,
+            "source_path": str(self.raw_path),
+            "per_asset": {},
+        }
+        if connection is None:
+            return base
+        try:
+            if not self._table_exists(connection, "kalshi_settlements"):
+                return base
+            rows = connection.execute(
+                "SELECT asset,COUNT(*) AS events,MAX(settlement_timestamp) AS observed_at "
+                "FROM kalshi_settlements GROUP BY asset"
+            ).fetchall()
+            latest: str | None = None
+            for row in rows:
+                asset = str(row["asset"])
+                if asset in counts:
+                    counts[asset] = int(row["events"])
+                candidate = row["observed_at"]
+                if isinstance(candidate, str) and (latest is None or candidate > latest):
+                    latest = candidate
+            total = sum(counts.values())
+            return {
+                "state": "available",
+                "status": "available",
+                "reason_code": "RAW_FINALIZED_POOL_READ_ONLY",
+                "events": total,
+                "eligible_events": total,
+                "ineligible_events": 0,
+                "rows": total,
+                "assets": sum(value > 0 for value in counts.values()),
+                "observed_at": latest,
+                "source_path": str(self.raw_path),
+                "per_asset": {
+                    asset: {"events": value, "rows": value, "eligible_events": value}
+                    for asset, value in counts.items()
+                },
+            }
+        except sqlite3.Error:
+            return base
+        finally:
+            connection.close()
+
+    def _current_trainable_projection(self) -> dict[str, Any]:
+        path = self.current_trainable_path
+        base = {
+            "state": "unknown",
+            "status": "unknown",
+            "reason_code": "CURRENT_TRAINABLE_UNAVAILABLE",
+            "events": None,
+            "eligible_events": None,
+            "ineligible_events": None,
+            "rows": None,
+            "assets": None,
+            "observed_at": None,
+            "source_path": str(path) if path is not None else None,
+            "per_asset": {},
+        }
+        if path is None:
+            return base
+        connection = self._open(path)
+        if connection is None:
+            return base
+        try:
+            required = {"current_trainable_events", "current_trainable_rows"}
+            tables = {
+                str(row[0])
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            if not required.issubset(tables):
+                return {
+                    **base,
+                    "reason_code": "CURRENT_TRAINABLE_SCHEMA_UNAVAILABLE",
+                    "status": "schema_unavailable",
+                }
+            event_rows = connection.execute(
+                "SELECT asset,COUNT(*) AS events,SUM(CASE WHEN eligibility_status='eligible' "
+                "THEN 1 ELSE 0 END) AS eligible_events,"
+                "SUM(CASE WHEN eligibility_status!='eligible' THEN 1 ELSE 0 END) "
+                "AS ineligible_events FROM current_trainable_events GROUP BY asset"
+            ).fetchall()
+            row_counts = connection.execute(
+                "SELECT asset,COUNT(*) AS rows FROM current_trainable_rows GROUP BY asset"
+            ).fetchall()
+            per_asset: dict[str, dict[str, int]] = {}
+            for row in event_rows:
+                asset = str(row["asset"])
+                per_asset[asset] = {
+                    "events": int(row["events"]),
+                    "eligible_events": int(row["eligible_events"] or 0),
+                    "ineligible_events": int(row["ineligible_events"] or 0),
+                }
+            for row in row_counts:
+                per_asset.setdefault(str(row["asset"]), {})["rows"] = int(row["rows"])
+            checkpoint = None
+            if "current_trainable_checkpoint" in tables:
+                checkpoint = connection.execute(
+                    "SELECT last_evaluated_timestamp FROM current_trainable_checkpoint "
+                    "WHERE singleton=1"
+                ).fetchone()
+            return {
+                "state": "available",
+                "status": "available",
+                "reason_code": "CURRENT_TRAINABLE_MATERIALIZED",
+                "events": sum(int(row["events"]) for row in event_rows),
+                "eligible_events": sum(int(row["eligible_events"] or 0) for row in event_rows),
+                "ineligible_events": sum(int(row["ineligible_events"] or 0) for row in event_rows),
+                "rows": sum(int(row["rows"]) for row in row_counts),
+                "assets": len({str(row["asset"]) for row in event_rows}),
+                "observed_at": checkpoint["last_evaluated_timestamp"] if checkpoint else None,
+                "source_path": str(path),
+                "per_asset": per_asset,
+            }
+        except sqlite3.Error:
+            return base
+        finally:
+            connection.close()
+
+    def _completed_dataset_projection(self) -> dict[str, Any]:
+        base = {
+            "state": "unknown",
+            "status": "source_unavailable",
+            "reason_code": "FEATURE_STORE_UNAVAILABLE",
+            "build_id": None,
+            "dataset_version": None,
+            "feature_schema_version": None,
+            "completed_timestamp": None,
+            "events": None,
+            "rows": None,
+            "snapshot_status": "unknown",
+            "diagnostics": None,
+            "per_asset": {},
+        }
+        connection = self._open(self.feature_path)
+        if connection is None:
+            return base
+        try:
+            row = connection.execute(
+                "SELECT * FROM dataset_builds WHERE status='complete' "
+                "ORDER BY completed_timestamp DESC,created_timestamp DESC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return {
+                    **base,
+                    "state": "not_materialized",
+                    "status": "not_materialized",
+                    "reason_code": "DATASET_SNAPSHOT_NOT_BUILT",
+                    "snapshot_status": "not_built",
+                }
+            diagnostics = _json(row["diagnostics_json"], {})
+            diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+            per_asset: dict[str, dict[str, int]] = {}
+            for item in connection.execute(
+                "SELECT asset,COUNT(DISTINCT ticker) AS events,COUNT(*) AS rows "
+                "FROM training_examples WHERE build_id=? GROUP BY asset",
+                (row["build_id"],),
+            ):
+                per_asset[str(item["asset"])] = {
+                    "events": int(item["events"]),
+                    "rows": int(item["rows"]),
+                }
+            rows = sum(item["rows"] for item in per_asset.values())
+            events = sum(item["events"] for item in per_asset.values())
+            snapshot_status = "unknown"
+            source_snapshot = _json(row["source_snapshot_json"], {})
+            if isinstance(source_snapshot, dict):
+                settlement = source_snapshot.get("kalshi_settlements")
+                if isinstance(settlement, dict):
+                    source_count = settlement.get("count")
+                    if isinstance(source_count, int):
+                        raw = self._raw_finalized_pool()
+                        raw_events = raw.get("events")
+                        snapshot_status = "current" if raw_events == source_count else "outdated"
+            state = "stale" if snapshot_status == "outdated" else "available"
+            return {
+                "state": state,
+                "status": "available" if state == "available" else "stale",
+                "reason_code": "COMPLETED_DATASET_SNAPSHOT_STALE"
+                if state == "stale"
+                else "COMPLETED_DATASET_SNAPSHOT",
+                "build_id": str(row["build_id"]),
+                "dataset_version": str(row["dataset_version"]),
+                "feature_schema_version": str(row["feature_schema_version"]),
+                "completed_timestamp": row["completed_timestamp"],
+                "events": events,
+                "rows": rows,
+                "snapshot_status": snapshot_status,
+                "diagnostics": diagnostics,
+                "per_asset": per_asset,
+            }
+        except sqlite3.Error:
+            return base
         finally:
             connection.close()
 

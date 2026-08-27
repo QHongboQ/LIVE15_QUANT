@@ -9,8 +9,8 @@ const ASSET_LABELS = Object.freeze({
 
 // Recorder collection cadence is configured server-side and is independent of these
 // read-only API refresh intervals. The one-second countdown below performs no request.
-const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, system: 30000, coverage: 60000 });
-const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, events: null, system: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
+const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, system: 30000, coverage: 60000, data: 30000, training: 30000, archive: 10000, storage: 30000, operations: 10000 });
+const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, data: null, training: null, archive: null, storage: null, operations: null, events: null, system: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
 const lastFetched = new Map();
 const inFlight = new Map();
 
@@ -160,14 +160,14 @@ function emptyState(titleText, detail) {
 function currentRoute() {
   const parts = (location.hash.replace(/^#\/?/, "") || "dashboard").split("/").filter(Boolean);
   if (parts[0] === "markets" && parts[1]) return { name: "detail", asset: decodeURIComponent(parts.slice(1).join("/")) };
-  if (["markets", "training", "events", "system"].includes(parts[0])) return { name: parts[0] };
+  if (["markets", "data", "training", "archive", "storage", "operations", "events", "system"].includes(parts[0])) return { name: parts[0] };
   return { name: "dashboard" };
 }
 
 function setHeading(route) {
   const headings = {
     dashboard: ["OVERVIEW", "Dashboard"], markets: ["MARKET DATA", "15-Minute Markets"],
-    training: ["DATASET", "Training Data"], events: ["OPERATIONS", "Warnings / Errors"], system: ["OPERATIONS", "System / Health"],
+    data: ["DATA", "Data Pipeline"], training: ["TRAINING", "Training Truth"], archive: ["ARCHIVE", "Archive"], storage: ["STORAGE", "Storage"], operations: ["OPERATIONS", "Operations"], events: ["OPERATIONS", "Warnings / Errors"], system: ["SYSTEM", "System / Health"],
     detail: ["MARKET DETAIL", `${ASSET_LABELS[route.asset]?.[0] || route.asset} Contract`],
   };
   [eyebrow.textContent, title.textContent] = headings[route.name];
@@ -316,16 +316,26 @@ function renderDashboard() {
       controlButton("Resume Collection", "resume", ["paused", "stopped", "error"].includes(recorderState))));
   root.append(controls);
 
-  const coverage = state.coverage || {};
+  const training = state.training || {};
+  const rawPool = training.raw_finalized_pool || {};
+  const currentPool = training.current_trainable || {};
   const eventCounts = (state.events || []).reduce((counts, item) => { counts[item.severity] = (counts[item.severity] || 0) + 1; return counts; }, {});
   const summary = node("div", "metric-grid");
-  append(summary, metric("Finalized events", number(coverage.finalized_events)), metric("Trainable events", number(coverage.trainable_events)), metric("Warnings", number(eventCounts.warning || 0)), metric("Errors / fatal", number((eventCounts.error || 0) + (eventCounts.fatal || 0))));
+  append(summary, metric("Finalized events", valueOrDash(rawPool.events, number)), metric("Current trainable rows", valueOrDash(currentPool.rows, number)), metric("Warnings", number(eventCounts.warning || 0)), metric("Errors / fatal", number((eventCounts.error || 0) + (eventCounts.fatal || 0))));
   root.append(sectionHead("Recorder summary", "Operational events are bounded"), summary);
 
-  root.append(sectionHead("Live 15-minute markets", `${markets.length}/10 assets · refresh 2.5s`));
-  const grid = node("div", "market-grid");
-  markets.forEach((market) => grid.append(marketCard(market)));
-  root.append(markets.length ? grid : emptyState("Markets unavailable", "No market projections are available."));
+  root.append(sectionHead("Live 15-minute markets", `${markets.length}/10 assets · details in Markets`));
+  const marketTable = node("table");
+  const marketHead = node("tr");
+  ["Asset", "Lifecycle", "Ticker", "Quote", "Underlying", "Remaining"].forEach((item) => marketHead.append(node("th", item === "Asset" ? "" : item === "Remaining" ? "num" : "", item)));
+  const marketBody = node("tbody");
+  markets.forEach((market) => {
+    const link = node("a", "", ASSET_LABELS[market.asset]?.[0] || market.asset);
+    link.href = `#/markets/${encodeURIComponent(market.asset)}`;
+    append(marketBody, append(node("tr"), append(node("td"), link), append(node("td"), badge(market.lifecycle)), node("td", "ticker", valueOrDash(market.ticker)), append(node("td"), badge(market.quote_status)), append(node("td"), badge(market.underlying_status, stateLabel(market.underlying_status))), countdown(market.window_end, market.seconds_remaining, "td", "num")));
+  });
+  marketTable.append(append(node("thead"), marketHead), marketBody);
+  root.append(markets.length ? append(node("div", "table-wrap"), marketTable) : emptyState("Markets unavailable", "No market projections are available."));
 
   root.append(sectionHead("Operations snapshot"));
   const split = node("div", "split-grid");
@@ -606,11 +616,125 @@ function renderSystem() {
   return root;
 }
 
+function renderProjectionCard(titleText, projection, detailText = "") {
+  const panel = node("div", "panel projection-card");
+  const head = node("div", "panel-head");
+  append(head, node("h2", "", titleText), badge(projection?.state || "unknown", stateLabel(projection?.status || "UNKNOWN")));
+  panel.append(head);
+  const body = node("div", "panel-body");
+  append(body,
+    metric("Events", valueOrDash(projection?.events, number)),
+    metric("Eligible", valueOrDash(projection?.eligible_events, number)),
+    metric("Rows", valueOrDash(projection?.rows, number)),
+    metric("Assets", valueOrDash(projection?.assets, number)),
+    metric("Reason", valueOrDash(projection?.reason_code)),
+  );
+  if (detailText) body.append(node("p", "muted", detailText));
+  panel.append(body);
+  return panel;
+}
+
+function renderData() {
+  const data = state.data;
+  const training = state.training;
+  if (!data || !training) return emptyState("Data projections unavailable", "Waiting for the read-only data APIs.");
+  const root = node("div");
+  root.append(sectionHead("Data pipeline", "Source truth and derived layers are intentionally separated."));
+  const summary = node("div", "metric-grid");
+  append(summary, metric("Finalized events", valueOrDash(data.finalized_events, number)), metric("Finalized assets", valueOrDash(data.finalized_assets, number)), metric("Raw store", stateLabel(data.raw_store)), metric("Observed through", timestamp(data.source_as_of)));
+  root.append(summary);
+  const grid = node("div", "detail-grid");
+  grid.append(renderProjectionCard("Raw finalized pool", training.raw_finalized_pool, "Official settlement rows. This is not the current trainable projection."));
+  grid.append(renderProjectionCard("Current trainable projection", training.current_trainable, "Mutable materializer output; unavailable means N/A, never zero."));
+  root.append(grid, sectionHead("Data contract", "Missing, stale, and unavailable values remain explicit."));
+  const contract = node("div", "panel panel-body prose");
+  contract.append(node("p", "", "Raw finalized settlement truth is authoritative. Trainability is a separate projection with its own checkpoint and schema."));
+  contract.append(node("p", "", "No settlement, future row, or synthetic value is exposed as a predictive feature by this view."));
+  root.append(contract);
+  return root;
+}
+
+function renderTrainingV2() {
+  const training = state.training;
+  if (!training) return emptyState("Training truth unavailable", "Waiting for the typed training API.");
+  const root = node("div");
+  const snapshot = training.latest_completed_dataset || {};
+  root.append(sectionHead("Training truth", "Read-only evidence layers · no training controls"));
+  const banner = node("div", `callout state-${normalizeState(snapshot.state || "unknown")}`);
+  append(banner, node("strong", "", snapshot.status ? stateLabel(snapshot.status) : "UNKNOWN"), node("span", "", valueOrDash(snapshot.reason_code)));
+  root.append(banner);
+  const layers = node("div", "detail-grid");
+  layers.append(renderProjectionCard("Raw finalized pool", training.raw_finalized_pool, "New finalized events remain visible even when a snapshot is stale."));
+  layers.append(renderProjectionCard("Current trainable", training.current_trainable, "Mutable, checkpointed materializer output."));
+  const snapshotPanel = node("div", "panel projection-card");
+  snapshotPanel.append(append(node("div", "panel-head"), node("h2", "", "Latest completed snapshot"), badge(snapshot.snapshot_status || "unknown")));
+  const snapshotBody = node("div", "panel-body metric-grid");
+  append(snapshotBody, metric("Build", valueOrDash(snapshot.build_id)), metric("Dataset", valueOrDash(snapshot.dataset_version)), metric("Rows", valueOrDash(snapshot.rows, number)), metric("Events", valueOrDash(snapshot.events, number)), metric("Completed", timestamp(snapshot.completed_timestamp)));
+  snapshotPanel.append(snapshotBody); layers.append(snapshotPanel);
+  root.append(layers);
+  root.append(sectionHead("Frozen experiment facts", "Only explicitly persisted experiment records appear here."));
+  const facts = node("div", "panel panel-body");
+  if (!training.frozen_experiment_facts?.length) facts.append(emptyState("N/A", "No frozen experiment fact records are persisted in the local read-only store."));
+  (training.frozen_experiment_facts || []).forEach((fact) => facts.append(append(node("div", "book-row"), node("span", "", fact.experiment_id), badge(fact.status), node("span", "muted", valueOrDash(fact.dataset_id)))));
+  root.append(facts);
+  root.append(sectionHead("Per-asset current projection", "Rows and events are reported independently."));
+  const table = node("table");
+  const head = node("tr"); ["Asset", "Events", "Rows", "Eligible", "Ineligible"].forEach((item) => head.append(node("th", item === "Asset" ? "" : "num", item)));
+  const body = node("tbody");
+  for (const asset of Object.keys(ASSET_LABELS)) {
+    const item = training.current_trainable?.per_asset?.[asset] || {};
+    append(body, append(node("tr"), node("td", "", ASSET_LABELS[asset][0]), node("td", "num", valueOrDash(item.events, number)), node("td", "num", valueOrDash(item.rows, number)), node("td", "num", valueOrDash(item.eligible_events, number)), node("td", "num", valueOrDash(item.ineligible_events, number))));
+  }
+  table.append(append(node("thead"), head), body); root.append(append(node("div", "table-wrap"), table));
+  return root;
+}
+
+function renderArchive() {
+  const archive = state.archive;
+  if (!archive) return emptyState("Archive state unavailable", "Waiting for the archive health API.");
+  const root = node("div");
+  root.append(sectionHead("Archive", "Verified history and purge eligibility · dry run only"));
+  const metrics = node("div", "metric-grid");
+  append(metrics, metric("State", stateLabel(archive.state)), metric("Verified chunks", valueOrDash(archive.verified_chunks, number)), metric("Failed chunks", valueOrDash(archive.failed_chunks, number)), metric("Quarantined", valueOrDash(archive.quarantined_chunks, number)), metric("Backlog events", valueOrDash(archive.backlog_events, number)), metric("Throughput", valueOrDash(archive.throughput_events_per_second, (v) => `${number(v, 2)}/s`)));
+  root.append(metrics);
+  const panel = node("div", "panel panel-body");
+  append(panel, kv("Replay lag", age(archive.lag_seconds)), kv("Cold archive", bytes(archive.cold_archive_bytes)), kv("Purge eligible (dry run)", valueOrDash(archive.purge_eligible_events, number)), kv("Destructive actions", "Not exposed", "unsupported"));
+  panel.append(node("p", "muted", "Verified spans never cross failed or quarantined ranges. This page cannot purge or compact data.")); root.append(panel);
+  return root;
+}
+
+function renderStorage() {
+  const storage = state.storage;
+  if (!storage) return emptyState("Storage state unavailable", "Waiting for the storage health API.");
+  const root = node("div"); root.append(sectionHead("Storage", "Capacity, growth, and retention evidence"));
+  const metrics = node("div", "metric-grid");
+  append(metrics, metric("State", stateLabel(storage.state)), metric("Free", bytes(storage.disk_free_bytes)), metric("Total", bytes(storage.disk_total_bytes)), metric("Hot SQLite", bytes(storage.hot_sqlite_bytes)), metric("Cold archive", bytes(storage.cold_archive_bytes)), metric("Growth / day", valueOrDash(storage.growth_bytes_per_day, (v) => `${bytes(v)}/day`)));
+  root.append(metrics);
+  const panel = node("div", "panel panel-body");
+  append(panel, kv("WAL", bytes(storage.wal_bytes)), kv("Retention", duration(storage.retention_seconds)), kv("Purge mode", "DRY RUN", "available"));
+  panel.append(node("p", "muted", "Storage numbers are observations from the recorder heartbeat. No deletion or compaction control is available here.")); root.append(panel); return root;
+}
+
+function renderOperations() {
+  const operations = state.operations;
+  if (!operations) return emptyState("Operations state unavailable", "Waiting for the operations API.");
+  const root = node("div"); root.append(sectionHead("Operations", "Recorder lifecycle, bounded controls, and recent events"));
+  const metrics = node("div", "metric-grid");
+  append(metrics, metric("Recorder", stateLabel(operations.recorder_state)), metric("Heartbeat", stateLabel(operations.recorder_heartbeat)), metric("Active markets", valueOrDash(operations.active_markets, number)), metric("Pending settlements", valueOrDash(operations.pending_settlements, number)), metric("Retries", valueOrDash(operations.retries, number)));
+  root.append(metrics);
+  const control = node("div", "panel panel-body"); control.append(node("p", "muted", "Recorder controls remain the only mutating operations and are localhost-bound."));
+  const controls = node("div", "control-actions"); const st = operations.recorder_state;
+  append(controls, controlButton("Start Collection", "start", ["stopped", "error"].includes(st)), controlButton("Pause Collection", "pause", ["running", "stale"].includes(st)), controlButton("Resume Collection", "resume", ["paused", "stopped", "error"].includes(st))); control.append(controls); root.append(control);
+  root.append(sectionHead("Recent bounded events", "Newest 20")); const events = node("div", "panel panel-body warning-list");
+  if (!operations.recent_events?.length) events.append(emptyState("No recent events", "The recorder event stream is empty."));
+  (operations.recent_events || []).forEach((item) => events.append(append(node("div", "warning-item"), badge(item.severity), node("span", "", `${item.event_type} · ${valueOrDash(item.message)}`)))); root.append(events); return root;
+}
+
 function render() {
   const route = currentRoute();
   setHeading(route);
   updateSidebar();
-  const contents = { dashboard: renderDashboard, markets: renderMarkets, detail: () => renderDetail(route), training: renderTraining, events: renderEvents, system: renderSystem }[route.name]();
+  const contents = { dashboard: renderDashboard, markets: renderMarkets, detail: () => renderDetail(route), data: renderData, training: renderTrainingV2, archive: renderArchive, storage: renderStorage, operations: renderOperations, events: renderEvents, system: renderSystem }[route.name]();
   view.replaceChildren(contents);
   view.setAttribute("aria-busy", "false");
   updateCountdowns();
@@ -620,8 +744,12 @@ async function refresh(force = false) {
   if (document.hidden) return;
   const route = currentRoute();
   const tasks = [fetchJson("health", "/api/health", INTERVALS.health, force)];
-  if (["dashboard", "events", "system"].includes(route.name)) tasks.push(fetchJson("events", eventsUrl(), INTERVALS.events, force));
-  if (["dashboard", "training"].includes(route.name)) tasks.push(fetchJson("coverage", "/api/coverage", INTERVALS.coverage, force));
+  if (["dashboard", "events", "system", "operations"].includes(route.name)) tasks.push(fetchJson("events", eventsUrl(), INTERVALS.events, force));
+  if (["dashboard", "training", "data"].includes(route.name)) tasks.push(fetchJson("training", "/api/training", INTERVALS.training, force));
+  if (["dashboard", "data"].includes(route.name)) tasks.push(fetchJson("data", "/api/data", INTERVALS.data, force));
+  if (["dashboard", "archive"].includes(route.name)) tasks.push(fetchJson("archive", "/api/archive", INTERVALS.archive, force));
+  if (["dashboard", "storage"].includes(route.name)) tasks.push(fetchJson("storage", "/api/storage", INTERVALS.storage, force));
+  if (["dashboard", "operations"].includes(route.name)) tasks.push(fetchJson("operations", "/api/operations", INTERVALS.operations, force));
   if (["dashboard", "markets", "system"].includes(route.name)) tasks.push(fetchJson("markets", "/api/markets", INTERVALS.markets, force));
   if (route.name === "system") tasks.push(fetchJson("system", "/api/system", INTERVALS.system, force));
   if (route.name === "detail") {

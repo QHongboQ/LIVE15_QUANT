@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 import tomllib
 from datetime import UTC, datetime, timedelta
@@ -597,6 +598,181 @@ def test_coverage_distinguishes_unevaluated_events_from_rejections(tmp_path: Pat
     assert coverage.per_asset["BTC"].unevaluated_finalized_events == 1
 
 
+def _write_current_trainable_fixture(path: Path, *, rows: int = 2) -> None:
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE current_trainable_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE current_trainable_checkpoint (
+            singleton INTEGER PRIMARY KEY,
+            last_settlement_row_id INTEGER NOT NULL,
+            last_evaluated_timestamp TEXT NOT NULL,
+            materializer_schema_version INTEGER NOT NULL,
+            evaluator_version TEXT NOT NULL,
+            recorder_schema_version INTEGER NOT NULL,
+            source_identity TEXT NOT NULL,
+            source_limits_json TEXT NOT NULL
+        );
+        CREATE TABLE current_trainable_events (
+            settlement_row_id INTEGER PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            asset TEXT NOT NULL,
+            series TEXT NOT NULL,
+            event_ticker TEXT NOT NULL,
+            window_start TEXT NOT NULL,
+            window_end TEXT NOT NULL,
+            settlement_timestamp TEXT NOT NULL,
+            eligibility_status TEXT NOT NULL,
+            exclusion_reasons_json TEXT NOT NULL,
+            source_limits_json TEXT NOT NULL,
+            materialized_timestamp TEXT NOT NULL,
+            content_hash TEXT NOT NULL
+        );
+        CREATE TABLE current_trainable_rows (
+            id INTEGER PRIMARY KEY,
+            settlement_row_id INTEGER NOT NULL,
+            asset TEXT NOT NULL,
+            series TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            window_start TEXT NOT NULL,
+            window_end TEXT NOT NULL,
+            decision_timestamp TEXT NOT NULL,
+            time_remaining_seconds TEXT NOT NULL,
+            target TEXT NOT NULL,
+            label TEXT NOT NULL,
+            features_json TEXT NOT NULL,
+            provenance_json TEXT NOT NULL,
+            materialized_timestamp TEXT NOT NULL,
+            content_hash TEXT NOT NULL
+        );
+        """
+    )
+    connection.executemany(
+        "INSERT INTO current_trainable_metadata VALUES (?, ?)",
+        [
+            ("schema_version", "1"),
+            ("dataset_version", "1.2.0"),
+            ("feature_schema_version", "1.0.0"),
+        ],
+    )
+    connection.execute(
+        "INSERT INTO current_trainable_checkpoint VALUES "
+        "(1, 10, ?, 1, 'evaluator-v1', 10, 'source-hash', '{}')",
+        (NOW.isoformat(),),
+    )
+    connection.execute(
+        "INSERT INTO current_trainable_events VALUES "
+        "(10, 'KXBTC15M-E', 'BTC', 'KXBTC15M', 'KXBTC15M-E', ?, ?, ?, "
+        "'eligible', '{}', '{}', ?, 'event-hash')",
+        (
+            NOW.isoformat(),
+            (NOW + timedelta(minutes=15)).isoformat(),
+            (NOW + timedelta(minutes=15)).isoformat(),
+            NOW.isoformat(),
+        ),
+    )
+    for row_id in range(1, rows + 1):
+        connection.execute(
+            "INSERT INTO current_trainable_rows VALUES "
+            "(?, 10, 'BTC', 'KXBTC15M', 'KXBTC15M-E', ?, ?, ?, '60', "
+            "'100', 'yes', '{}', '{}', ?, ?)",
+            (
+                row_id,
+                NOW.isoformat(),
+                (NOW + timedelta(minutes=15)).isoformat(),
+                NOW.isoformat(),
+                NOW.isoformat(),
+                f"hash-{row_id}",
+            ),
+        )
+    connection.commit()
+    connection.close()
+
+
+def test_training_projection_separates_raw_current_snapshot_and_frozen_facts(
+    tmp_path: Path,
+) -> None:
+    configured = settings(tmp_path, current_trainable_path=tmp_path / "current.sqlite3")
+    _write_current_trainable_fixture(configured.current_trainable_path)
+    finalized = provider().parse_market(
+        Asset.BTC,
+        raw_market(Asset.BTC, status="finalized", result="yes"),
+        NOW + timedelta(minutes=16),
+    )
+    assert finalized.settlement is not None
+    with RecorderStore(configured.recorder_data_path) as raw:
+        raw.append_kalshi_settlement(finalized.settlement)
+        source_snapshot = raw.training_source_snapshot()
+    with FeatureStore(configured.feature_store_path) as feature:
+        feature.begin_build("frozen-build", {"mode": "pooled"}, source_snapshot)
+        feature.complete_build("frozen-build", {"rows_count": 7, "events_count": 3})
+
+    projection = ControlCenterService(configured, clock=lambda: NOW).training()
+
+    assert projection.raw_finalized_pool.status == "available"
+    assert projection.raw_finalized_pool.events == 1
+    assert projection.current_trainable.status == "available"
+    assert projection.current_trainable.rows == 2
+    assert projection.latest_completed_dataset.build_id == "frozen-build"
+    assert projection.latest_completed_dataset.status == "available"
+    assert projection.frozen_experiment_facts == []
+
+
+def test_training_missing_projection_is_unknown_not_zero(tmp_path: Path) -> None:
+    configured = settings(tmp_path, current_trainable_path=tmp_path / "missing.sqlite3")
+    projection = ControlCenterService(configured, clock=lambda: NOW).training()
+
+    assert projection.current_trainable.status == "unknown"
+    assert projection.current_trainable.reason_code == "CURRENT_TRAINABLE_UNAVAILABLE"
+    assert projection.current_trainable.rows is None
+    assert projection.current_trainable.events is None
+
+
+def test_training_api_exposes_dedicated_read_only_projection(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    transport = httpx.ASGITransport(app=create_app(configured))
+
+    async def request() -> httpx.Response:
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            return await client.get("/api/training")
+
+    response = asyncio.run(request())
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) >= {
+        "raw_finalized_pool",
+        "current_trainable",
+        "latest_completed_dataset",
+        "frozen_experiment_facts",
+    }
+    assert payload["current_trainable"]["rows"] is None
+
+
+@pytest.mark.asyncio
+async def test_dedicated_admin_projections_are_read_only_and_typed(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    transport = httpx.ASGITransport(app=create_app(configured))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        responses = await asyncio.gather(
+            client.get("/api/data"),
+            client.get("/api/archive"),
+            client.get("/api/storage"),
+            client.get("/api/operations"),
+        )
+
+    assert all(response.status_code == 200 for response in responses)
+    assert set(responses[0].json()) >= {"raw_store", "finalized_events", "freshness"}
+    assert set(responses[1].json()) >= {"state", "purge_is_dry_run", "quarantined_chunks"}
+    assert responses[1].json()["purge_is_dry_run"] is True
+    assert set(responses[2].json()) >= {"disk_free_bytes", "purge_is_dry_run"}
+    assert responses[3].json()["recorder_heartbeat"] in {
+        "available",
+        "unavailable",
+        "stale",
+        "error",
+    }
+
+
 def test_coverage_is_bounded_by_short_thread_safe_cache(tmp_path: Path, monkeypatch) -> None:
     configured = settings(tmp_path)
     monotonic_values = iter((10.0, 20.0, 41.0))
@@ -636,6 +812,11 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
         "/api/markets",
         "/api/markets/{asset}",
         "/api/coverage",
+        "/api/data",
+        "/api/training",
+        "/api/archive",
+        "/api/storage",
+        "/api/operations",
         "/api/events",
         "/api/recorder/start",
         "/api/recorder/pause",
@@ -738,7 +919,17 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
         page = (await client.get("/")).text
         script = (await client.get("/assets/app.js")).text
 
-    for route in ("#/", "#/markets", "#/training", "#/system"):
+    for route in (
+        "#/",
+        "#/dashboard",
+        "#/markets",
+        "#/data",
+        "#/training",
+        "#/archive",
+        "#/storage",
+        "#/operations",
+        "#/system",
+    ):
         assert f'href="{route}"' in page
     for asset in ("BTC", "ETH", "Gold", "Silver", "XRP", "WTI Oil", "SOL", "HYPE", "DOGE", "BNB"):
         assert asset in script
@@ -752,6 +943,16 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
     assert "Exact source" in script
     assert "eventFilters" in script
     assert "await pending.catch" in script
+    for endpoint in (
+        "/api/data",
+        "/api/training",
+        "/api/archive",
+        "/api/storage",
+        "/api/operations",
+    ):
+        assert endpoint in script
+    assert "purge" in script.lower()
+    assert "destructive" in script.lower()
 
 
 @pytest.mark.asyncio
