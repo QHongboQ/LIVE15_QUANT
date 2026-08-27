@@ -7,6 +7,7 @@ dependency.  Its small interface is a vetted research input plus a deterministic
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import hashlib
 import json
 import os

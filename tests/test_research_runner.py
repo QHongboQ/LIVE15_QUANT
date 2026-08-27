@@ -275,6 +275,12 @@ def test_own_live_pid_is_recognized() -> None:
     assert runner_module._ExperimentLease._is_live(__import__("os").getpid()) is True
 
 
+def test_windows_process_identity_reports_current_process(monkeypatch) -> None:
+    monkeypatch.setattr(runner_module, "_IS_WINDOWS", True)
+
+    assert runner_module._windows_process_identity(__import__("os").getpid()) is not None
+
+
 def test_lease_release_never_deletes_a_replaced_owner_lock(tmp_path) -> None:
     paths = runner(tmp_path).paths_for("token-lock")
     lease = runner_module._ExperimentLease(paths.lock_path, {"experiment_id": "token-lock"})
