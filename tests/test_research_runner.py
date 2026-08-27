@@ -7,6 +7,7 @@ from hashlib import sha256
 
 import pytest
 
+from live15_quant import research_runner as runner_module
 from live15_quant.canonical_evidence import (
     CoverageScope,
     EvidenceRecord,
@@ -145,6 +146,8 @@ def test_fresh_experiment_creates_only_attributed_isolated_output(tmp_path) -> N
     assert result.status == "COMPLETE"
     assert result.completed_units == ("unit-000", "unit-001", "unit-002", "unit-003")
     assert result.experiment_dir == tmp_path / "research-output" / "experiments" / "experiment-a"
+    assert (result.experiment_dir / "metrics").is_dir()
+    assert (result.experiment_dir / "logs").is_dir()
     manifest = json.loads((result.experiment_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["input"]["research_universe_id"].startswith("research-universe-")
     assert manifest["holdout_accessed"] is False
@@ -216,6 +219,36 @@ def test_corrupt_checkpoint_and_conflicting_experiment_id_fail_closed(tmp_path) 
         runner(tmp_path).run("identity-a", input_contract, HashWorkAdapter(2), seed=1)
 
 
+def test_semantically_invalid_checkpoint_and_budget_exhaustion_fail_closed(
+    tmp_path, monkeypatch
+) -> None:
+    input_contract = approved_input()
+    subject = runner(
+        tmp_path, config=ResearchRunConfig(max_work_units=1, checkpoint_interval_units=1)
+    )
+    partial = subject.run("invalid-checkpoint", input_contract, HashWorkAdapter(2), seed=3)
+    checkpoint_path = partial.experiment_dir / "checkpoints" / "current.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["payload"]["results"] = []
+    checkpoint["checksum"] = runner_module._hash(checkpoint["payload"])
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    with pytest.raises(CheckpointCorruptError, match="results"):
+        subject.run("invalid-checkpoint", input_contract, HashWorkAdapter(2), seed=3, resume=True)
+
+    monkeypatch.setattr(runner_module, "_current_python_memory_bytes", lambda: 2)
+    memory_limited = runner(
+        tmp_path / "memory", config=ResearchRunConfig(max_work_units=1, max_memory_bytes=1)
+    )
+    with pytest.raises(ResearchRunnerError, match="memory"):
+        memory_limited.run("memory", input_contract, HashWorkAdapter(1), seed=3)
+
+    output_limited = runner(
+        tmp_path / "output", config=ResearchRunConfig(max_work_units=1, max_output_bytes=1)
+    )
+    with pytest.raises(ResearchRunnerError, match="output"):
+        output_limited.run("output", input_contract, HashWorkAdapter(1), seed=3)
+
+
 def test_lock_rejects_live_writer_and_recovers_stale_owner(tmp_path) -> None:
     subject = runner(tmp_path)
     paths = subject.paths_for("lock-a")
@@ -225,6 +258,17 @@ def test_lock_rejects_live_writer_and_recovers_stale_owner(tmp_path) -> None:
         subject.run("lock-a", approved_input(), HashWorkAdapter(1), seed=1)
     paths.lock_path.write_text(json.dumps({"pid": 999_999_999}), encoding="utf-8")
     assert subject.run("lock-a", approved_input(), HashWorkAdapter(1), seed=1).status == "COMPLETE"
+
+
+def test_lease_release_never_deletes_a_replaced_owner_lock(tmp_path) -> None:
+    paths = runner(tmp_path).paths_for("token-lock")
+    lease = runner_module._ExperimentLease(paths.lock_path, {"experiment_id": "token-lock"})
+    lease.acquire()
+    paths.lock_path.write_text(
+        json.dumps({"pid": 999_999_999, "token": "new-owner"}), encoding="utf-8"
+    )
+    lease.release()
+    assert paths.lock_path.exists()
 
 
 def test_protected_output_and_holdout_access_are_rejected(tmp_path) -> None:
@@ -312,3 +356,25 @@ def test_cli_runs_only_from_typed_snapshot_into_explicit_isolated_root(
     )
 
     assert json.loads(capsys.readouterr().out)["status"] == "COMPLETE"
+
+
+def test_cli_rejects_repository_root_output(tmp_path, monkeypatch) -> None:
+    snapshot = tmp_path / "approved-research-input.json"
+    write_research_input_snapshot(snapshot, approved_input())
+    project_root = tmp_path / "project"
+    monkeypatch.setattr(
+        "live15_quant.cli.__file__", str(project_root / "src" / "live15_quant" / "cli.py")
+    )
+    with pytest.raises(ResearchRunnerPathError, match="protected"):
+        research_preflight_main(
+            [
+                "--snapshot",
+                str(snapshot),
+                "--experiment",
+                "repo-output",
+                "--output",
+                str(project_root),
+                "--code-revision",
+                "test-code-sha",
+            ]
+        )
