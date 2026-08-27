@@ -219,6 +219,8 @@ class RecorderProcessController:
                     "LIVE15_KALSHI_DEMO_API_KEY_ID",
                     "LIVE15_KALSHI_DEMO_API_KEY_ID_FILE",
                     "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH",
+                    "LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH",
+                    "LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH",
                 ):
                     environment.pop(name, None)
             flags = 0

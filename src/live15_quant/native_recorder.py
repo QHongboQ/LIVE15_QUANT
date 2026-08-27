@@ -132,6 +132,10 @@ logger = logging.getLogger(__name__)
 _LIVE_WS_PROJECTION_DEPTH = 16
 
 
+class PythWorkerUnhealthyError(RuntimeError):
+    """A critical Pyth worker exhausted its bounded recovery budget."""
+
+
 def _next_pyth_batch(iterator: Iterator[PythUpdateBatch]) -> PythUpdateBatch | None:
     return next(iterator, None)
 
@@ -202,6 +206,7 @@ class KalshiNativeHealth:
     market_closed_sources: tuple[str, ...]
     underlying_market_states: dict[Asset, MarketDataState]
     worker_progress: dict[str, datetime]
+    worker_health: dict[str, dict[str, object]]
     stale_workers: tuple[str, ...]
     event_loop_lag_seconds: float
     last_finalized_settlement: dict[Asset, str]
@@ -285,6 +290,7 @@ class KalshiNativeHealth:
             },
             "worker_progress": timestamps(self.worker_progress),
             "worker_progress_age_seconds": ages(self.worker_progress),
+            "worker_health": self.worker_health,
             "stale_workers": self.stale_workers,
             "event_loop_lag_seconds": self.event_loop_lag_seconds,
             "last_finalized_settlement": {
@@ -362,6 +368,7 @@ class _MutableHealth:
     consecutive_failures: dict[str, int] = field(default_factory=dict)
     source_failures: dict[str, str] = field(default_factory=dict)
     worker_progress: dict[str, datetime] = field(default_factory=dict)
+    worker_health: dict[str, dict[str, object]] = field(default_factory=dict)
     event_loop_lag_seconds: float = 0.0
     last_finalized: dict[Asset, str] = field(default_factory=dict)
     written_records: int = 0
@@ -817,6 +824,7 @@ class KalshiNativeRecorder:
             ),
             underlying_market_states=pyth_states,
             worker_progress=dict(self._health.worker_progress),
+            worker_health=self._worker_health_projection(observed),
             stale_workers=stale_workers,
             event_loop_lag_seconds=self._health.event_loop_lag_seconds,
             last_finalized_settlement=dict(self._health.last_finalized),
@@ -949,7 +957,75 @@ class KalshiNativeRecorder:
         return thresholds
 
     def _worker_advanced(self, key: str, observed: datetime | None = None) -> None:
-        self._health.worker_progress[key] = observed or self._utc_now()
+        timestamp = observed or self._utc_now()
+        self._health.worker_progress[key] = timestamp
+        entry = self._health.worker_health.setdefault(key, {})
+        entry.update(
+            {
+                "last_progress_timestamp": timestamp,
+                "current_state": "RUNNING",
+                "next_retry_at": None,
+            }
+        )
+
+    def _worker_observed(self, key: str, observed: datetime | None = None) -> None:
+        timestamp = observed or self._utc_now()
+        self._worker_advanced(key, timestamp)
+        self._health.worker_health[key].update(
+            {
+                "last_successful_observation_timestamp": timestamp,
+                "consecutive_failures": 0,
+                "current_state": "HEALTHY",
+                "last_error_type": None,
+            }
+        )
+
+    def _worker_retry(self, key: str, error: BaseException, delay_seconds: float) -> None:
+        entry = self._health.worker_health.setdefault(key, {})
+        failures = int(entry.get("consecutive_failures", 0)) + 1
+        entry.update(
+            {
+                "consecutive_failures": failures,
+                "current_state": "RECONNECTING",
+                "last_error_type": type(error).__name__,
+                "next_retry_at": self._utc_now() + timedelta(seconds=max(0.0, delay_seconds)),
+            }
+        )
+
+    def _worker_unhealthy(self, key: str, error: BaseException) -> None:
+        entry = self._health.worker_health.setdefault(key, {})
+        entry.update(
+            {
+                "current_state": "UNHEALTHY",
+                "last_error_type": type(error).__name__,
+                "next_retry_at": None,
+            }
+        )
+
+    def _worker_health_projection(self, observed: datetime) -> dict[str, dict[str, object]]:
+        keys = {*self._expected_worker_thresholds(), *self._health.worker_health}
+        result: dict[str, dict[str, object]] = {}
+        for key in sorted(keys):
+            entry = self._health.worker_health.get(key, {})
+            progress = entry.get("last_progress_timestamp", self._health.worker_progress.get(key))
+            success = entry.get("last_successful_observation_timestamp")
+            retry = entry.get("next_retry_at")
+            result[key] = {
+                "last_progress_timestamp": (
+                    progress.isoformat() if isinstance(progress, datetime) else None
+                ),
+                "last_successful_observation_timestamp": success.isoformat()
+                if isinstance(success, datetime)
+                else None,
+                "consecutive_failures": int(entry.get("consecutive_failures", 0)),
+                "current_state": str(entry.get("current_state", "STARTING")),
+                "last_error_type": entry.get("last_error_type"),
+                "next_retry_at": retry.isoformat() if isinstance(retry, datetime) else None,
+                "age_seconds": max(0.0, (observed - progress).total_seconds())
+                if isinstance(progress, datetime)
+                else None,
+            }
+        return result
 
     def _observe_gap(
         self,
@@ -1692,34 +1768,43 @@ class KalshiNativeRecorder:
                 return
 
     async def _record_pyth(self) -> None:
-        """Consume one five-feed SSE stream, with one batch-REST request per outage cycle."""
+        """Use bounded stream recreation and REST fallback for the critical Pyth worker."""
 
         demultiplexer = PythFeedDemultiplexer()
         stream_key = "pyth:stream"
-        client = self._underlying_factory()
-        try:
-            while not self._stop_event.is_set():
+        outage_started = self._monotonic()
+        recovery_attempts = 0
+        while not self._stop_event.is_set():
+            client = self._underlying_factory()
+            try:
                 retry_after = 0.0
                 rate_limited = False
+                accepted_observations = 0
+                cycle_error: BaseException | None = None
                 try:
                     iterator = client.stream_batches()
                     while not self._stop_event.is_set():
                         batch = await asyncio.to_thread(_next_pyth_batch, iterator)
                         if batch is None:
                             raise PythNetworkError("Pyth stream closed")
-                        self._accept_pyth_batch(demultiplexer.accept(batch))
-                        self._source_ok(stream_key)
-                        self._worker_advanced("pyth")
+                        accepted_observations += self._accept_pyth_batch(
+                            demultiplexer.accept(batch)
+                        )
+                        if accepted_observations:
+                            self._source_ok(stream_key)
+                            self._worker_observed("pyth")
+                            outage_started = self._monotonic()
+                            recovery_attempts = 0
                 except asyncio.CancelledError:
                     raise
                 except (RecorderStorageError, ValueError) as error:
                     if not isinstance(error, PythPayloadError):
                         raise
+                    cycle_error = error
                     self._source_failed(stream_key, error)
-                    self._worker_advanced("pyth")
                 except PythNetworkError as error:
+                    cycle_error = error
                     self._source_failed(stream_key, error)
-                    self._worker_advanced("pyth")
                     if isinstance(error, PythRateLimitError):
                         retry_after = error.retry_after_seconds
                         rate_limited = True
@@ -1729,35 +1814,76 @@ class KalshiNativeRecorder:
                 if not rate_limited:
                     try:
                         batch = await asyncio.to_thread(client.latest_batch)
-                        self._accept_pyth_batch(demultiplexer.accept(batch))
-                        self._source_ok("pyth:rest_fallback")
-                        self._worker_advanced("pyth")
+                        accepted_observations += self._accept_pyth_batch(
+                            demultiplexer.accept(batch)
+                        )
+                        if accepted_observations:
+                            self._source_ok("pyth:rest_fallback")
+                            self._worker_observed("pyth")
+                            outage_started = self._monotonic()
+                            recovery_attempts = 0
                     except asyncio.CancelledError:
                         raise
                     except (RecorderStorageError, ValueError) as error:
                         if not isinstance(error, PythPayloadError):
                             raise
+                        cycle_error = error
                         self._source_failed("pyth:rest_fallback", error)
-                        self._worker_advanced("pyth")
                     except PythNetworkError as error:
+                        cycle_error = error
                         self._source_failed("pyth:rest_fallback", error)
-                        self._worker_advanced("pyth")
                         if isinstance(error, PythRateLimitError):
                             retry_after = max(retry_after, error.retry_after_seconds)
-                delay = max(
-                    retry_after,
-                    self._retry_delay(
-                        stream_key, self._settings.pyth_rest_fallback_interval_seconds
-                    ),
-                )
-                if await self._wait(delay):
-                    return
-        finally:
-            # Must run even while this task is already cancelled; awaiting another
-            # to_thread here can re-raise cancellation before the SSE response closes.
-            client.close()
 
-    def _accept_pyth_batch(self, batch: PythUpdateBatch) -> None:
+                if not accepted_observations:
+                    recovery_attempts += 1
+                    delay = max(
+                        retry_after,
+                        self._retry_delay(
+                            stream_key, self._settings.pyth_rest_fallback_interval_seconds
+                        ),
+                    )
+                    error = cycle_error or PythNetworkError(
+                        "Pyth produced no accepted observations"
+                    )
+                    self._worker_retry("pyth", error, delay)
+                    if self._pyth_recovery_exhausted(outage_started, recovery_attempts):
+                        fatal = PythWorkerUnhealthyError(
+                            "Pyth worker exhausted bounded recovery without accepted observations"
+                        )
+                        self._worker_unhealthy("pyth", fatal)
+                        raise fatal
+                    if await self._wait(delay):
+                        return
+            finally:
+                # A fresh client is required for each outage cycle.  This closes a
+                # wedged SSE response before the next bounded reconnect attempt.
+                client.close()
+
+    def _pyth_recovery_exhausted(self, outage_started: float, attempts: int) -> bool:
+        if attempts < self._settings.pyth_recovery_max_attempts:
+            return False
+        if (
+            self._monotonic() - outage_started
+            < self._settings.pyth_recovery_critical_timeout_seconds
+        ):
+            return False
+        # Metals and WTI are session-aware. BNB/HYPE are crypto and therefore
+        # remain critical when enabled even while commodities are closed.
+        observed = self._utc_now()
+        return any(
+            market_data_state(
+                asset,
+                checked_at=observed,
+                latest_received=None,
+                max_age=timedelta(seconds=self._settings.recorder_pyth_stale_seconds),
+            )
+            is not MarketDataState.MARKET_CLOSED
+            for asset in PYTH_FEEDS
+        )
+
+    def _accept_pyth_batch(self, batch: PythUpdateBatch) -> int:
+        accepted = 0
         for issue in batch.issues:
             if issue.code == "duplicate":
                 continue
@@ -1777,6 +1903,8 @@ class KalshiNativeRecorder:
             )
             self._health.additional_underlying_freshness[observation.asset] = observation.freshness
             self._source_ok(f"pyth:{observation.asset.value}")
+            accepted += 1
+        return accepted
 
     async def _record_secondary(self, asset: Asset) -> None:
         """Persist one isolated venue-native secondary stream in the same recorder."""
