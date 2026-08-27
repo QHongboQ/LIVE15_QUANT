@@ -13,6 +13,7 @@ const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, eve
 const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, data: null, training: null, archive: null, storage: null, operations: null, events: null, system: null, account: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
 const lastFetched = new Map();
 const inFlight = new Map();
+const stateErrors = new Map();
 
 const view = document.querySelector("#view");
 const notice = document.querySelector("#global-notice");
@@ -169,7 +170,7 @@ function emptyState(titleText, detail) {
 function currentRoute() {
   const parts = (location.hash.replace(/^#\/?/, "") || "overview").split("/").filter(Boolean);
   if (parts[0] === "markets" && parts[1]) return { name: "detail", asset: decodeURIComponent(parts.slice(1).join("/")) };
-  if (["markets", "data", "training", "archive", "storage", "operations", "events", "system", "overview", "portfolio", "account", "orders", "history", "watchlist", "analytics", "signals", "models"].includes(parts[0])) return { name: parts[0] };
+  if (["dashboard", "markets", "data", "training", "archive", "storage", "operations", "events", "system", "overview", "portfolio", "account", "orders", "history", "watchlist", "analytics", "signals", "models"].includes(parts[0])) return { name: parts[0] };
   return { name: "overview" };
 }
 
@@ -248,9 +249,21 @@ async function fetchJson(key, url, interval, force = false) {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
       state[key] = payload;
+      stateErrors.delete(key);
       lastFetched.set(key, Date.now());
       lastRefresh.textContent = `Updated ${new Date().toLocaleTimeString([], { hour12: false })}`;
       return payload;
+    } catch (error) {
+      // A failed refresh must never present an older payload as current truth.
+      // Clearing the projection makes the renderer fail closed until a fresh
+      // response arrives; the notice below still explains the transient error.
+      if (key.startsWith("detail:")) {
+        if (state.detailAsset === key.slice("detail:".length)) state.detail = null;
+      } else if (Object.prototype.hasOwnProperty.call(state, key)) {
+        state[key] = null;
+      }
+      stateErrors.set(key, { message: error instanceof Error ? error.message : "unknown error", observedAt: Date.now() });
+      throw error;
     } finally {
       clearTimeout(timeout);
       inFlight.delete(key);
@@ -262,7 +275,11 @@ async function fetchJson(key, url, interval, force = false) {
 
 function updateSidebar() {
   const health = state.health;
-  if (!health) return;
+  if (!health) {
+    sidebarStatus.className = "status-line state-unknown";
+    sidebarStatus.replaceChildren(node("span", "status-icon", "◆"), document.createTextNode("Recorder unknown"));
+    return;
+  }
   const status = normalizeState(health.recorder_state);
   sidebarStatus.className = `status-line state-${status}`;
   sidebarStatus.replaceChildren(node("span", "status-icon", status === "running" ? "●" : "◆"), document.createTextNode(`Recorder ${status}`));
@@ -651,13 +668,13 @@ function renderSystem() {
   if (!health || !system) return emptyState("System data unavailable", "Waiting for health and system APIs.");
   const root = node("div");
   const metrics = node("div", "metric-grid");
-  append(metrics, metric("Heartbeat", health.heartbeat_status.toUpperCase(), `${age(health.heartbeat_age_seconds)} ago`), metric("Raw store", system.raw_store.toUpperCase()), metric("Feature store", system.feature_store.toUpperCase()), metric("API mode", system.api_mode.toUpperCase(), system.bind_host));
+  append(metrics, metric("Heartbeat", health.heartbeat_status.toUpperCase(), `${age(health.heartbeat_age_seconds)} ago`), metric("WS synchronized assets", valueOrDash(health.kalshi_ws_synchronized_count, number), stateLabel(health.kalshi_ws_connection_state)), metric("WS sequence gaps", valueOrDash(health.kalshi_ws_seq_gaps, number)), metric("Raw store", system.raw_store.toUpperCase()), metric("Feature store", system.feature_store.toUpperCase()), metric("API mode", system.api_mode.toUpperCase(), system.bind_host));
   root.append(metrics, sectionHead("Recorder health", `Observed ${timestamp(health.observed_at)}`));
   const detail = node("div", "detail-grid");
   const heartbeat = node("div", "panel");
   heartbeat.append(append(node("div", "panel-head"), node("h2", "", "Heartbeat & storage"), badge(health.recorder_state)));
   const heartbeatGrid = node("div", "panel-body kv-grid");
-  append(heartbeatGrid, kv("Recorder state", health.recorder_state, health.recorder_state), kv("Reported status", health.status, health.status), kv("Uptime", duration(health.uptime_seconds)), kv("Last activity", timestamp(health.observed_at)), kv("Database size", bytes(health.database_bytes)), kv("WAL size", bytes(health.wal_bytes)), kv("Rows written", number(health.written_records)), kv("Settlement pending", number(health.active_settlement_followups)), kv("Fatal task", valueOrDash(health.fatal_task)), kv("Fatal error", valueOrDash(health.fatal_error_type)));
+  append(heartbeatGrid, kv("Recorder state", health.recorder_state, health.recorder_state), kv("Reported status", health.status, health.status), kv("WS synchronized assets", valueOrDash(health.kalshi_ws_synchronized_count, number)), kv("WS sequence gaps", valueOrDash(health.kalshi_ws_seq_gaps, number)), kv("Uptime", duration(health.uptime_seconds)), kv("Last activity", timestamp(health.observed_at)), kv("Database size", bytes(health.database_bytes)), kv("WAL size", bytes(health.wal_bytes)), kv("Rows written", number(health.written_records)), kv("Settlement pending", number(health.active_settlement_followups)), kv("Fatal task", valueOrDash(health.fatal_task)), kv("Fatal error", valueOrDash(health.fatal_error_type)));
   heartbeat.append(heartbeatGrid);
   const sources = node("div", "panel");
   sources.append(append(node("div", "panel-head"), node("h2", "", "Retries & source failures"), badge(warningItems(health).length ? "warning" : "healthy")));
@@ -858,7 +875,7 @@ async function refresh(force = false) {
   }
   const results = await Promise.allSettled(tasks);
   const failures = results.filter((result) => result.status === "rejected");
-  showNotice(failures.length ? `Some local data could not refresh (${failures.length} request${failures.length === 1 ? "" : "s"}). Last valid values are retained.` : "");
+  showNotice(failures.length ? `Some local data could not refresh (${failures.length} request${failures.length === 1 ? "" : "s"}). Unavailable values are shown until refreshed.` : "");
   render();
 }
 

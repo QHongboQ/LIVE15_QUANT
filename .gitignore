@@ -36,3 +36,6 @@ secrets/
 *.key
 *.pem
 .local-tools/
+!.local-tools/
+.local-tools/*
+!.local-tools/Start LIVE15.cmd

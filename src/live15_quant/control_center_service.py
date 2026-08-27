@@ -449,14 +449,19 @@ class ControlCenterService:
             started = self._optional_aware_datetime(raw.get("started_at"))
             heartbeat = self._optional_aware_datetime(raw.get("last_heartbeat"))
             age = max(0.0, (checked_at - heartbeat).total_seconds()) if heartbeat else None
+            fresh = age is not None and age <= self.settings.ui_heartbeat_stale_seconds
+            # The legacy supervisor receipt is only a current-runtime source while its
+            # heartbeat is fresh.  A stale PID may be reused by an unrelated process, so
+            # fail closed instead of projecting historical RUNNING state as live truth.
+            effective_pid = pid if fresh else None
             result[name] = RuntimeComponentResponse(
-                status=str(raw.get("status", "UNKNOWN")),
-                pid=pid,
+                status=str(raw.get("status", "UNKNOWN")) if fresh else "STALE",
+                pid=effective_pid,
                 started_at=started,
                 last_heartbeat=heartbeat,
                 heartbeat_age_seconds=age,
                 last_error=self._optional_string(raw.get("last_error")),
-                process_alive=pid is not None and process_alive(pid),
+                process_alive=fresh and pid is not None and process_alive(pid),
                 expected_mode=self._optional_string(raw.get("expected_mode")),
             )
         return result

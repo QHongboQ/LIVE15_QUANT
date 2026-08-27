@@ -482,3 +482,16 @@ def test_windows_launcher_is_fixed_and_does_not_require_powershell() -> None:
     assert "powershell" not in lowered
     assert "%*" not in script
     assert "0.0.0.0" not in script
+
+
+def test_desktop_launcher_uses_only_authoritative_control_center_service() -> None:
+    script = (Path(__file__).parents[1] / ".local-tools" / "Start LIVE15.cmd").read_text(
+        encoding="utf-8"
+    )
+    lowered = script.lower()
+    assert "live15controlcenter" in lowered
+    assert "sc.exe start live15controlcenter" in lowered
+    assert 'for /f "tokens=4"' in lowered
+    assert "start_runtime_supervisor.cmd" not in lowered
+    assert "managed_control_center" not in lowered
+    assert "127.0.0.1:8765/api/system" in lowered
