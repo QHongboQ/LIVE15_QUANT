@@ -1551,6 +1551,37 @@ def test_archive_retention_waits_for_current_ws_books_to_synchronize(tmp_path) -
         assert recorder._retention_core_healthy() is True
 
 
+def test_archive_poll_schedule_is_bounded_and_backlog_aware(tmp_path) -> None:
+    with RecorderStore(tmp_path / "archive-cadence.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                products=("BTC-USD",),
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            now=lambda: NOW,
+        )
+
+        assert recorder._archive_poll_schedule(backlog_events=10_000) == ("CATCH_UP", 2.0)
+        assert recorder._archive_poll_schedule(backlog_events=2_500) == ("ACTIVE", 5.0)
+        assert recorder._archive_poll_schedule(backlog_events=1) == ("NEAR_CAUGHT_UP", 10.0)
+        assert recorder._archive_poll_schedule(
+            backlog_events=0, eligibility_status="WAITING_FOR_SOURCE_DATA"
+        ) == ("IDLE", 60.0)
+        assert recorder._archive_poll_schedule(
+            backlog_events=0,
+            eligibility_status="WAITING_FOR_RETENTION_ELIGIBILITY",
+            next_eligible_at=NOW + timedelta(seconds=15),
+        ) == ("IDLE", 15.0)
+        assert recorder._archive_poll_schedule(backlog_events=0, backpressure=True) == (
+            "BACKPRESSURE",
+            2.0,
+        )
+
+
 @pytest.mark.asyncio
 async def test_malformed_ws_market_isolated_and_official_snapshot_recovers_recorder(
     tmp_path,
