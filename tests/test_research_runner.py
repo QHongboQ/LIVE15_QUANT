@@ -260,6 +260,21 @@ def test_lock_rejects_live_writer_and_recovers_stale_owner(tmp_path) -> None:
     assert subject.run("lock-a", approved_input(), HashWorkAdapter(1), seed=1).status == "COMPLETE"
 
 
+def test_windows_stale_pid_probe_never_calls_os_kill(tmp_path, monkeypatch) -> None:
+    def unexpected_kill(*_args: object) -> None:
+        raise AssertionError("Windows liveness probe must not signal a process")
+
+    monkeypatch.setattr(runner_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(runner_module, "_windows_process_identity", lambda _pid: None)
+    monkeypatch.setattr(runner_module.os, "kill", unexpected_kill)
+
+    assert runner_module._ExperimentLease._is_live(999_999_999) is False
+
+
+def test_own_live_pid_is_recognized() -> None:
+    assert runner_module._ExperimentLease._is_live(__import__("os").getpid()) is True
+
+
 def test_lease_release_never_deletes_a_replaced_owner_lock(tmp_path) -> None:
     paths = runner(tmp_path).paths_for("token-lock")
     lease = runner_module._ExperimentLease(paths.lock_path, {"experiment_id": "token-lock"})

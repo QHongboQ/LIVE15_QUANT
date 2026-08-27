@@ -6,6 +6,7 @@ dependency.  Its small interface is a vetted research input plus a deterministic
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -44,6 +45,56 @@ from live15_quant.research_data_authority import (
 CHECKPOINT_SCHEMA_VERSION = 1
 MANIFEST_SCHEMA_VERSION = 1
 RESEARCH_INPUT_SNAPSHOT_SCHEMA_VERSION = 1
+_IS_WINDOWS = os.name == "nt"
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_ERROR_ACCESS_DENIED = 5
+
+
+def _windows_process_identity(pid: int) -> str | None:
+    """Return a live Windows process creation identity without delivering a signal."""
+    if pid <= 0:
+        return None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD)
+    open_process.restype = ctypes.wintypes.HANDLE
+    handle = open_process(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
+            return "ACCESS_DENIED"
+        return None
+    try:
+        exit_code = ctypes.wintypes.DWORD()
+        get_exit_code = kernel32.GetExitCodeProcess
+        get_exit_code.argtypes = (ctypes.wintypes.HANDLE, ctypes.c_void_p)
+        get_exit_code.restype = ctypes.wintypes.BOOL
+        if not get_exit_code(handle, ctypes.byref(exit_code)) or exit_code.value != _STILL_ACTIVE:
+            return None
+        creation = ctypes.wintypes.FILETIME()
+        exit_time = ctypes.wintypes.FILETIME()
+        kernel_time = ctypes.wintypes.FILETIME()
+        user_time = ctypes.wintypes.FILETIME()
+        get_times = kernel32.GetProcessTimes
+        get_times.argtypes = (
+            ctypes.wintypes.HANDLE,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        )
+        get_times.restype = ctypes.wintypes.BOOL
+        if not get_times(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel_time),
+            ctypes.byref(user_time),
+        ):
+            return "ACCESS_DENIED"
+        return str((creation.dwHighDateTime << 32) | creation.dwLowDateTime)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class ResearchRunnerError(RuntimeError):
@@ -481,9 +532,16 @@ class _ExperimentLease:
         self.token = uuid.uuid4().hex
 
     @staticmethod
-    def _is_live(pid: int) -> bool:
+    def _is_live(pid: int, expected_process_identity: str | None = None) -> bool:
         if pid <= 0:
             return False
+        if _IS_WINDOWS:
+            observed = _windows_process_identity(pid)
+            if observed is None:
+                return False
+            if expected_process_identity and observed != expected_process_identity:
+                return False
+            return True
         try:
             os.kill(pid, 0)
         except PermissionError:
@@ -498,6 +556,7 @@ class _ExperimentLease:
             "pid": os.getpid(),
             "identity": self.identity,
             "token": self.token,
+            "process_identity": _windows_process_identity(os.getpid()) if _IS_WINDOWS else None,
             "created_monotonic": time.monotonic(),
         }
         try:
@@ -511,10 +570,12 @@ class _ExperimentLease:
                 existing = json.loads(self.path.read_text(encoding="utf-8"))
                 pid = int(existing.get("pid", 0))
                 stale_token = existing.get("token")
+                process_identity = existing.get("process_identity")
             except (OSError, ValueError, json.JSONDecodeError):
                 pid = 0
                 stale_token = None
-            if self._is_live(pid):
+                process_identity = None
+            if self._is_live(pid, process_identity if isinstance(process_identity, str) else None):
                 raise ExperimentLockError("experiment has an active local writer") from None
             try:
                 current = json.loads(self.path.read_text(encoding="utf-8"))
