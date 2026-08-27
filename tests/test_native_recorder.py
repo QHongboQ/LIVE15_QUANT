@@ -27,10 +27,15 @@ from live15_quant.models import (
     UnderlyingObservation,
     UnderlyingProvider,
 )
-from live15_quant.native_recorder import KalshiNativeRecorder, _aggregate_current_health
+from live15_quant.native_recorder import (
+    KalshiNativeRecorder,
+    PythWorkerUnhealthyError,
+    _aggregate_current_health,
+)
 from live15_quant.providers.kalshi import KalshiPublicApiError, KalshiTargetUnavailableError
 from live15_quant.providers.pyth import (
     PythFeedIssue,
+    PythNetworkError,
     PythRateLimitError,
     PythUpdateBatch,
 )
@@ -194,6 +199,19 @@ class BuggyUnderlying:
 
     def latest_batch(self):
         raise AssertionError("correctness failures must not reach REST fallback")
+
+    def close(self):
+        return None
+
+
+class PersistentlyFailingUnderlying:
+    def stream_batches(self):
+        if False:
+            yield None
+        raise PythNetworkError("simulated Pyth stream failure")
+
+    def latest_batch(self):
+        raise PythNetworkError("simulated Pyth REST failure")
 
     def close(self):
         return None
@@ -429,6 +447,35 @@ def test_pyth_programming_error_fails_recorder_loudly(tmp_path) -> None:
                 await asyncio.wait_for(recorder.run(), 1)
             assert recorder.health().fatal_task == "pyth-predictive"
             assert recorder.health().fatal_error_type == "RuntimeError"
+
+    asyncio.run(scenario())
+
+
+def test_pyth_prolonged_failure_escalates_after_bounded_recovery(tmp_path) -> None:
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    enable_pyth_underlying=True,
+                    pyth_rest_fallback_interval_seconds=0.001,
+                    pyth_recovery_critical_timeout_seconds=0.001,
+                    pyth_recovery_max_attempts=2,
+                    recorder_health_path=tmp_path / "health.json",
+                ),
+                store,
+                discovery=FakeDiscovery(()),
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                underlying_factory=PersistentlyFailingUnderlying,
+                now=lambda: NOW,
+            )
+            with pytest.raises(PythWorkerUnhealthyError, match="exhausted bounded recovery"):
+                await asyncio.wait_for(recorder._record_pyth(), 1)
+            worker = recorder.health().worker_health["pyth"]
+            assert worker["current_state"] == "UNHEALTHY"
+            assert worker["last_successful_observation_timestamp"] is None
+            assert worker["consecutive_failures"] >= 2
 
     asyncio.run(scenario())
 

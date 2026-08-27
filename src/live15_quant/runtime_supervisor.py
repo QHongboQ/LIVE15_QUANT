@@ -20,12 +20,7 @@ from typing import Any
 
 from live15_quant.config import Settings, load_settings
 from live15_quant.kalshi_gateway.client import KalshiGatewayError, production_runtime_environment
-from live15_quant.recorder_control import (
-    WINDOWS_BACKGROUND_FLAGS,
-    ManagedRecorderState,
-    RecorderProcessController,
-    process_alive,
-)
+from live15_quant.recorder_control import WINDOWS_BACKGROUND_FLAGS, process_alive
 from live15_quant.runtime_status import (
     RuntimePidLease,
     RuntimeStatusError,
@@ -49,10 +44,16 @@ class ManagedChild:
     failures: int = 0
     next_launch_monotonic: float = 0.0
     healthy_since_monotonic: float | None = None
+    automatic: bool = False
+    paused_reason: str | None = None
 
 
 class RuntimeSupervisor:
-    """Start dependencies in order and restart independent services with backoff."""
+    """Supervise only explicitly registered auxiliary child processes.
+
+    Recorder and Control Center are independent WinSW services.  This class is
+    deliberately unable to start, stop, or restart either service.
+    """
 
     def __init__(
         self,
@@ -62,7 +63,6 @@ class RuntimeSupervisor:
         monotonic: Any = time.monotonic,
         sleep: Any = time.sleep,
         popen: Any = subprocess.Popen,
-        controller: Any = None,
     ) -> None:
         self.settings = settings
         self.root = (root or Path.cwd()).resolve()
@@ -73,7 +73,6 @@ class RuntimeSupervisor:
         self._monotonic = monotonic
         self._sleep = sleep
         self._popen = popen
-        self.controller = controller or RecorderProcessController(settings)
         self.started_at = utc_timestamp()
         self.children = {
             "kalshi_sdk_ws_shadow": ManagedChild(
@@ -82,13 +81,8 @@ class RuntimeSupervisor:
                 self.runtime / "kalshi-sdk-ws-shadow-status.json",
                 self.logs / "kalshi_sdk_ws_shadow.log",
                 self.logs / "kalshi_sdk_ws_shadow.error.log",
-            ),
-            "current_trainable": ManagedChild(
-                "current_trainable",
-                "live15_quant.managed_trainable",
-                self.runtime / "current-trainable-status.json",
-                self.logs / "current_trainable_worker.log",
-                self.logs / "current_trainable_worker.error.log",
+                automatic=False,
+                paused_reason="ON_DEMAND",
             ),
             "paper_forward": ManagedChild(
                 "paper_forward",
@@ -96,20 +90,11 @@ class RuntimeSupervisor:
                 self.runtime / "paper-forward-status.json",
                 self.logs / "paper_forward_worker.log",
                 self.logs / "paper_forward_worker.error.log",
-            ),
-            "control_center": ManagedChild(
-                "control_center",
-                "live15_quant.managed_control_center",
-                self.runtime / "control-center-status.json",
-                self.logs / "control_center.log",
-                self.logs / "control_center.error.log",
+                automatic=False,
+                paused_reason="PAUSED_BY_DESIGN",
             ),
         }
         self._last_components: dict[str, dict[str, object]] = {}
-        self._recorder_seen_running = False
-        self._recorder_failures = 0
-        self._recorder_next_launch = 0.0
-        self._recorder_healthy_since: float | None = None
 
     def run(self) -> None:
         self.runtime.mkdir(parents=True, exist_ok=True)
@@ -127,25 +112,9 @@ class RuntimeSupervisor:
             self._sleep(2.0)
 
     def tick(self) -> dict[str, dict[str, object]]:
-        recorder = self._ensure_recorder()
-        recorder_healthy = recorder["status"] == "HEALTHY"
-        recorder_readable = recorder["status"] in {"HEALTHY", "RUNNING", "STARTING"}
-        control_center = self._ensure_child(self.children["control_center"], allowed=True)
-        kalshi_sdk_ws_shadow = self._ensure_child(
-            self.children["kalshi_sdk_ws_shadow"], allowed=recorder_readable
-        )
-        current_trainable = self._ensure_child(
-            self.children["current_trainable"], allowed=recorder_readable
-        )
-        paper = self._ensure_child(self.children["paper_forward"], allowed=recorder_healthy)
-        first_fill = self._first_fill_status()
         components = {
-            "recorder": recorder,
-            "kalshi_sdk_ws_shadow": kalshi_sdk_ws_shadow,
-            "current_trainable": current_trainable,
-            "paper_forward": paper,
-            "control_center": control_center,
-            "demo_first_fill": first_fill,
+            name: self._ensure_child(child, allowed=child.automatic)
+            for name, child in self.children.items()
         }
         self._last_components = components
         atomic_json(
@@ -165,17 +134,7 @@ class RuntimeSupervisor:
         return components
 
     def stop_components(self) -> None:
-        # Paper and Control Center observe the shared stop receipt and exit cleanly.
-        try:
-            self.controller.pause()
-        except (RuntimeError, TimeoutError) as error:
-            logger.warning(
-                "Recorder did not confirm graceful supervisor stop",
-                extra={
-                    "event": "supervisor_recorder_stop_failed",
-                    "error_type": type(error).__name__,
-                },
-            )
+        # Auxiliary workers observe the shared stop receipt and exit cleanly.
         deadline = self._monotonic() + 30.0
         while self._monotonic() < deadline:
             live = False
@@ -189,8 +148,6 @@ class RuntimeSupervisor:
         final_components = {
             name: self._component_projection(child) for name, child in self.children.items()
         }
-        final_components["recorder"] = self._recorder_projection()
-        final_components["demo_first_fill"] = self._first_fill_status()
         atomic_json(
             self.status_path,
             {
@@ -206,91 +163,13 @@ class RuntimeSupervisor:
             },
         )
 
-    def _ensure_recorder(self) -> dict[str, object]:
-        status = self.controller.status()
-        if status.state not in {ManagedRecorderState.RUNNING, ManagedRecorderState.STARTING}:
-            now = self._monotonic()
-            if now < self._recorder_next_launch:
-                projection = self._recorder_projection()
-                projection.update(
-                    {
-                        "status": "BACKOFF",
-                        "restart_after_seconds": self._recorder_next_launch - now,
-                    }
-                )
-                return projection
-            if self._recorder_seen_running and self._recorder_next_launch == 0:
-                self._recorder_failures += 1
-                delay = min(60.0, 5.0 * (2 ** min(self._recorder_failures - 1, 4)))
-                self._recorder_next_launch = now + delay
-                projection = self._recorder_projection()
-                projection.update({"status": "BACKOFF", "restart_after_seconds": delay})
-                return projection
-            self._recorder_next_launch = 0.0
-            try:
-                self.controller.resume()
-            except (RuntimeError, TimeoutError) as error:
-                return {
-                    "status": "ERROR",
-                    "pid": None,
-                    "started_at": None,
-                    "last_heartbeat": None,
-                    "heartbeat_age_seconds": None,
-                    "last_error": type(error).__name__,
-                    "process_alive": False,
-                    "expected_mode": "MANAGED_RECORDER",
-                    "status_path": str(self.settings.recorder_health_path.resolve()),
-                    "receipt_path": str(self.settings.recorder_control_path.resolve()),
-                    "log_path": None,
-                }
-        projection = self._recorder_projection()
-        if projection["status"] == "HEALTHY":
-            self._recorder_seen_running = True
-            if self._recorder_healthy_since is None:
-                self._recorder_healthy_since = self._monotonic()
-            elif self._monotonic() - self._recorder_healthy_since >= 60:
-                self._recorder_failures = 0
-                self._recorder_next_launch = 0.0
-        else:
-            self._recorder_healthy_since = None
-        return projection
-
-    def _recorder_projection(self) -> dict[str, object]:
-        managed = self.controller.status()
-        health = self._read_component(self.settings.recorder_health_path)
-        observed = _aware_timestamp(health.get("observed_at") if health else None)
-        age = (datetime.now(UTC) - observed).total_seconds() if observed else None
-        alive = managed.pid is not None and process_alive(managed.pid)
-        healthy = (
-            alive
-            and health is not None
-            and health.get("status") == "healthy"
-            and age is not None
-            and -1.0 <= age <= self.settings.ui_heartbeat_stale_seconds
-            and health.get("fatal_task") is None
-            and health.get("fatal_error_type") is None
-        )
-        return {
-            "status": "HEALTHY" if healthy else managed.state.value.upper(),
-            "pid": managed.pid,
-            "started_at": health.get("started_at") if health else None,
-            "last_heartbeat": health.get("observed_at") if health else None,
-            "heartbeat_age_seconds": max(0.0, age) if age is not None else None,
-            "last_error": health.get("fatal_error_type") if health else None,
-            "process_alive": alive,
-            "expected_mode": "MANAGED_RECORDER",
-            "status_path": str(self.settings.recorder_health_path.resolve()),
-            "receipt_path": str(self.settings.recorder_control_path.resolve()),
-            "log_path": None,
-        }
-
     def _ensure_child(self, child: ManagedChild, *, allowed: bool) -> dict[str, object]:
         projection = self._component_projection(child)
         if not allowed:
             projection.update(
                 {
-                    "status": "WAITING_DEPENDENCY",
-                    "last_error": "RECORDER_NOT_HEALTHY",
+                    "status": child.paused_reason or "ON_DEMAND",
+                    "last_error": None,
                 }
             )
             return projection
@@ -358,8 +237,6 @@ class RuntimeSupervisor:
                     / {
                         "kalshi_sdk_ws_shadow": "kalshi-sdk-ws-shadow.pid",
                         "paper_forward": "paper-forward.pid",
-                        "current_trainable": "current-trainable.pid",
-                        "control_center": "control-center.pid",
                     }[child.name]
                 ).resolve()
             ),
@@ -452,8 +329,6 @@ class RuntimeSupervisor:
                     / {
                         "kalshi_sdk_ws_shadow": "kalshi-sdk-ws-shadow.pid",
                         "paper_forward": "paper-forward.pid",
-                        "current_trainable": "current-trainable.pid",
-                        "control_center": "control-center.pid",
                     }[child.name]
                 ).resolve()
             ),
@@ -478,8 +353,6 @@ class RuntimeSupervisor:
         return {
             "kalshi_sdk_ws_shadow": "SDK_WS_SHADOW_NO_RECORDER_WRITES",
             "paper_forward": "PAPER_SHADOW_LOCAL_ONLY",
-            "current_trainable": "INCREMENTAL_CURRENT_TRAINABLE_NO_TRAINING",
-            "control_center": "LOCALHOST_READ_ONLY_WITH_BOUNDED_RECORDER_CONTROL",
         }[name]
 
     def _first_fill_status(self) -> dict[str, object]:

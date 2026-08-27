@@ -1,0 +1,19 @@
+<service>
+  <id>LIVE15RuntimeSupervisor</id>
+  <name>LIVE15 Runtime Supervisor</name>
+  <description>Supervisor for explicitly registered LIVE15 auxiliary workers only.</description>
+  <executable>%BASE%\..\..\.venv\Scripts\python.exe</executable>
+  <arguments>-m live15_quant.runtime_supervisor</arguments>
+  <workingdirectory>%BASE%\..\..</workingdirectory>
+  <env name="PYTHONUNBUFFERED" value="1" />
+  <env name="PYTHONUTF8" value="1" />
+  <startmode>Automatic</startmode>
+  <logpath>%BASE%\..\..\logs</logpath>
+  <log mode="roll" />
+  <stoptimeout>15 sec</stoptimeout>
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <onfailure action="restart" delay="60 sec" />
+  <onfailure action="none" />
+  <resetfailure>5 min</resetfailure>
+</service>

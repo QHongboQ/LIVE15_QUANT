@@ -62,6 +62,8 @@ class Settings:
     pyth_stream_read_timeout_seconds: float = 20.0
     pyth_request_budget_per_10_seconds: int = 8
     recorder_pyth_stale_seconds: float = 15.0
+    pyth_recovery_critical_timeout_seconds: float = 180.0
+    pyth_recovery_max_attempts: int = 6
     enable_secondary_underlying: bool = False
     recorder_secondary_stale_seconds: float = 10.0
     native_discovery_poll_interval_seconds: float = 15.0
@@ -511,6 +513,17 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         ),
         recorder_pyth_stale_seconds=_positive_float(
             source, "LIVE15_RECORDER_PYTH_STALE_SECONDS", defaults.recorder_pyth_stale_seconds
+        ),
+        pyth_recovery_critical_timeout_seconds=_positive_float(
+            source,
+            "LIVE15_PYTH_RECOVERY_CRITICAL_TIMEOUT_SECONDS",
+            defaults.pyth_recovery_critical_timeout_seconds,
+        ),
+        pyth_recovery_max_attempts=_bounded_positive_int(
+            source,
+            "LIVE15_PYTH_RECOVERY_MAX_ATTEMPTS",
+            defaults.pyth_recovery_max_attempts,
+            100,
         ),
         enable_secondary_underlying=_boolean(
             source,

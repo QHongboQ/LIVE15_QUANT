@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "principle": "ONE COMPONENT ONE OWNER ONE HEALTH TRUTH ONE RECOVERY AUTHORITY",
+  "components": [
+    {
+      "component": "LIVE15Recorder",
+      "owner_type": "SERVICE_MANAGED",
+      "owner_id": "WinSW:LIVE15Recorder",
+      "heartbeat_source": "data/health.json",
+      "process_source": "Windows service LIVE15Recorder",
+      "health_source": "Windows service state plus current recorder heartbeat",
+      "restart_authority": "WinSW:LIVE15Recorder",
+      "criticality": "CRITICAL",
+      "run_mode": "ALWAYS_ON"
+    },
+    {
+      "component": "LIVE15ControlCenter",
+      "owner_type": "SERVICE_MANAGED",
+      "owner_id": "WinSW:LIVE15ControlCenter",
+      "heartbeat_source": "runtime/control-center-status.json",
+      "process_source": "Windows service LIVE15ControlCenter",
+      "health_source": "Windows service state plus current control-center heartbeat",
+      "restart_authority": "WinSW:LIVE15ControlCenter",
+      "criticality": "DEGRADED_BUT_PROCESS_CAN_CONTINUE",
+      "run_mode": "ALWAYS_ON"
+    },
+    {
+      "component": "LIVE15RuntimeSupervisor",
+      "owner_type": "SERVICE_MANAGED",
+      "owner_id": "WinSW:LIVE15RuntimeSupervisor",
+      "heartbeat_source": "runtime/runtime-supervisor-status.json",
+      "process_source": "Windows service LIVE15RuntimeSupervisor",
+      "health_source": "Windows service state plus current supervisor heartbeat",
+      "restart_authority": "WinSW:LIVE15RuntimeSupervisor",
+      "criticality": "DEGRADED_BUT_PROCESS_CAN_CONTINUE",
+      "run_mode": "ALWAYS_ON"
+    },
+    {
+      "component": "current_trainable",
+      "owner_type": "SUPERVISOR_MANAGED",
+      "owner_id": "LIVE15RuntimeSupervisor",
+      "heartbeat_source": "runtime/current-trainable-status.json",
+      "process_source": "supervisor child PID",
+      "health_source": "current supervisor heartbeat plus child PID plus child heartbeat",
+      "restart_authority": "LIVE15RuntimeSupervisor",
+      "criticality": "CRITICAL",
+      "run_mode": "ON_DEMAND"
+    },
+    {
+      "component": "paper_forward",
+      "owner_type": "SUPERVISOR_MANAGED",
+      "owner_id": "LIVE15RuntimeSupervisor",
+      "heartbeat_source": "runtime/paper-forward-status.json",
+      "process_source": "supervisor child PID",
+      "health_source": "current supervisor heartbeat plus child PID plus child heartbeat",
+      "restart_authority": "LIVE15RuntimeSupervisor",
+      "criticality": "DEGRADED_BUT_PROCESS_CAN_CONTINUE",
+      "run_mode": "PAUSED_BY_DESIGN"
+    },
+    {
+      "component": "kalshi_sdk_ws_shadow",
+      "owner_type": "SUPERVISOR_MANAGED",
+      "owner_id": "LIVE15RuntimeSupervisor",
+      "heartbeat_source": "runtime/kalshi-sdk-ws-shadow-status.json",
+      "process_source": "supervisor child PID",
+      "health_source": "current supervisor heartbeat plus child PID plus child heartbeat",
+      "restart_authority": "LIVE15RuntimeSupervisor",
+      "criticality": "DEGRADED_BUT_PROCESS_CAN_CONTINUE",
+      "run_mode": "ON_DEMAND"
+    },
+    {
+      "component": "pyth",
+      "owner_type": "IN_PROCESS_WORKER",
+      "owner_id": "LIVE15Recorder",
+      "heartbeat_source": "data/health.json worker_health.pyth",
+      "process_source": "LIVE15Recorder",
+      "health_source": "parent alive plus accepted Pyth observation progress and session-aware availability",
+      "restart_authority": "LIVE15Recorder then WinSW:LIVE15Recorder",
+      "criticality": "CRITICAL",
+      "run_mode": "ALWAYS_ON_WHEN_ENABLED"
+    },
+    {
+      "component": "coinbase",
+      "owner_type": "IN_PROCESS_WORKER",
+      "owner_id": "LIVE15Recorder",
+      "heartbeat_source": "data/health.json worker_health.coinbase",
+      "process_source": "LIVE15Recorder",
+      "health_source": "parent alive plus accepted observation progress",
+      "restart_authority": "LIVE15Recorder then WinSW:LIVE15Recorder",
+      "criticality": "CRITICAL",
+      "run_mode": "ALWAYS_ON"
+    }
+  ]
+}
