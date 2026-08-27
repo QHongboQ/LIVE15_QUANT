@@ -1115,6 +1115,7 @@ async def test_research_data_api_is_read_only_typed_and_holdout_metadata_only(
         "frozen_holdout",
         "depthfeed_status",
     }
+    assert all("coverage_status" in source for source in payload["sources"])
     assert payload["frozen_holdout"]["payload_accessed"] is False
     assert payload["holdout_accessed"] is False
     serialized = response.text.lower()

@@ -393,6 +393,7 @@ class ResearchDataSourceResponse(StrictResponse):
     content_identity: str
     limitations: list[str] = Field(default_factory=list)
     capability_days: dict[str, list[str]] = Field(default_factory=dict)
+    coverage_status: dict[str, str] = Field(default_factory=dict)
 
 
 class ResearchFreshnessPolicyResponse(StrictResponse):
