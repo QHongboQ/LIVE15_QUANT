@@ -615,6 +615,169 @@ def test_waiting_prefix_reconciles_after_snapshot_arrives(tmp_path: Path) -> Non
     assert manifest.metrics()["failed"] == 0
 
 
+def test_waiting_prefix_reconciles_after_market_rollover_epoch(
+    tmp_path: Path,
+) -> None:
+    service, manifest = _service(tmp_path)
+    with sqlite3.connect(service.source_database) as connection:
+        connection.execute("DELETE FROM kalshi_ws_orderbook_events WHERE id=2")
+    waiting = service.run_once(now=NOW).chunk
+    assert waiting is not None
+    assert waiting.state is ArchiveState.WAITING_FOR_REPLAY_BASELINE
+
+    store = RecorderStore(service.source_database)
+    snapshot_time = NOW - timedelta(hours=7)
+    rollover_tickers = (
+        "KXETH15M-26AUG221230-15",
+        TICKER.replace("221215", "221230"),
+    )
+    for sequence, ticker in enumerate(rollover_tickers, start=1):
+        store.append_kalshi_ws_orderbook_event(
+            KalshiOrderBookSnapshot(
+                connection_id="connection-rollover",
+                subscription_id=7,
+                sequence=sequence,
+                ticker=ticker,
+                market_id=f"market-rollover-{sequence}",
+                yes_bids=(),
+                no_bids=(),
+                source_timestamp=snapshot_time,
+                socket_received_timestamp=snapshot_time + timedelta(seconds=sequence),
+                parse_timestamp=snapshot_time + timedelta(seconds=sequence, microseconds=1),
+            ),
+            sync_status_after=(
+                KalshiBookSyncStatus.SYNCHRONIZED
+                if sequence == len(rollover_tickers)
+                else KalshiBookSyncStatus.UNSYNCHRONIZED
+            ),
+        )
+    store.append_kalshi_ws_orderbook_event(
+        KalshiOrderBookDelta(
+            connection_id="connection-rollover",
+            subscription_id=7,
+            sequence=3,
+            ticker=rollover_tickers[1],
+            market_id="market-rollover-2",
+            side=KalshiBookSide.YES,
+            price=Decimal("0.5000"),
+            quantity_delta=Decimal("0.0001"),
+            source_timestamp=snapshot_time + timedelta(seconds=3),
+            socket_received_timestamp=snapshot_time + timedelta(seconds=3),
+            parse_timestamp=snapshot_time + timedelta(seconds=3, microseconds=1),
+        ),
+        sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED,
+    )
+    store.close()
+
+    reconciled = service.run_once(now=NOW).chunk
+    assert reconciled is not None
+    assert reconciled.state is ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING
+    assert manifest.last_event_id() == reconciled.last_event_id
+
+    resumed = None
+    quarantined_suffixes = []
+    while resumed is None or resumed.state is ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING:
+        resumed = service.run_once(now=NOW).chunk
+        assert resumed is not None
+        if resumed.state is ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING:
+            quarantined_suffixes.append(resumed)
+    assert resumed.state is ArchiveState.PURGE_ELIGIBLE
+    assert resumed.first_event_id > reconciled.last_event_id
+    assert all(item.last_event_id < resumed.first_event_id for item in quarantined_suffixes)
+    assert manifest.metrics()["failed"] == 0
+
+
+def test_subscription_transition_without_authoritative_snapshot_stays_waiting(
+    tmp_path: Path,
+) -> None:
+    service, manifest = _service(tmp_path)
+    with sqlite3.connect(service.source_database) as connection:
+        connection.execute("DELETE FROM kalshi_ws_orderbook_events WHERE id=2")
+    waiting = service.run_once(now=NOW).chunk
+    assert waiting is not None
+    store = RecorderStore(service.source_database)
+    observed = NOW - timedelta(hours=7)
+    store.append_kalshi_ws_orderbook_event(
+        KalshiOrderBookDelta(
+            connection_id="connection-transition",
+            subscription_id=8,
+            sequence=1,
+            ticker=TICKER,
+            market_id="market-transition",
+            side=KalshiBookSide.YES,
+            price=Decimal("0.5000"),
+            quantity_delta=Decimal("0.0001"),
+            source_timestamp=observed,
+            socket_received_timestamp=observed,
+            parse_timestamp=observed + timedelta(microseconds=1),
+        ),
+        sync_status_after=KalshiBookSyncStatus.UNSYNCHRONIZED,
+    )
+    store.close()
+    with pytest.raises(WsRetentionError, match="blocks later retention"):
+        service.run_once(now=NOW)
+    assert manifest.chunks()[0].state is ArchiveState.WAITING_FOR_REPLAY_BASELINE
+
+
+def test_new_market_id_delta_without_snapshot_stays_waiting(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    with sqlite3.connect(service.source_database) as connection:
+        connection.execute("DELETE FROM kalshi_ws_orderbook_events WHERE id=2")
+    waiting = service.run_once(now=NOW).chunk
+    assert waiting is not None
+    store = RecorderStore(service.source_database)
+    observed = NOW - timedelta(hours=7)
+    store.append_kalshi_ws_orderbook_event(
+        KalshiOrderBookDelta(
+            connection_id="connection-1",
+            subscription_id=2,
+            sequence=32,
+            ticker=TICKER,
+            market_id="new-market-without-snapshot",
+            side=KalshiBookSide.YES,
+            price=Decimal("0.5000"),
+            quantity_delta=Decimal("0.0001"),
+            source_timestamp=observed,
+            socket_received_timestamp=observed,
+            parse_timestamp=observed + timedelta(microseconds=1),
+        ),
+        sync_status_after=KalshiBookSyncStatus.UNSYNCHRONIZED,
+    )
+    store.close()
+    with pytest.raises(WsRetentionError, match="blocks later retention"):
+        service.run_once(now=NOW)
+    assert manifest.chunks()[0].state is ArchiveState.WAITING_FOR_REPLAY_BASELINE
+
+
+def test_malformed_new_epoch_sequence_stays_waiting(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    with sqlite3.connect(service.source_database) as connection:
+        connection.execute("DELETE FROM kalshi_ws_orderbook_events WHERE id=2")
+    waiting = service.run_once(now=NOW).chunk
+    assert waiting is not None
+    store = RecorderStore(service.source_database)
+    observed = NOW - timedelta(hours=7)
+    store.append_kalshi_ws_orderbook_event(
+        KalshiOrderBookSnapshot(
+            connection_id="connection-malformed",
+            subscription_id=9,
+            sequence=2,
+            ticker=TICKER.replace("221215", "221230"),
+            market_id="malformed-market",
+            yes_bids=(),
+            no_bids=(),
+            source_timestamp=observed,
+            socket_received_timestamp=observed,
+            parse_timestamp=observed + timedelta(microseconds=1),
+        ),
+        sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED,
+    )
+    store.close()
+    with pytest.raises(WsRetentionError, match="blocks later retention"):
+        service.run_once(now=NOW)
+    assert manifest.chunks()[0].state is ArchiveState.WAITING_FOR_REPLAY_BASELINE
+
+
 def test_unrelated_boundary_snapshot_does_not_quarantine_prefix(tmp_path: Path) -> None:
     service, _manifest = _service(tmp_path)
     with sqlite3.connect(service.source_database) as connection:

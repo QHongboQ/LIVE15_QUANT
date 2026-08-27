@@ -1188,7 +1188,16 @@ class WsArchiveService:
         expected_families: set[str] | None = None,
         maximum_records: int = 250_000,
     ) -> KalshiWsOrderBookEventRecord | None:
-        """Find the next coherent snapshot without treating it as an earlier baseline."""
+        """Find a coherent same-epoch or new-epoch snapshot boundary.
+
+        A normal reconnect/contract rollover starts a new sequence epoch.  The
+        first snapshot in that epoch may be for a ticker whose contract has
+        already rolled, so matching the obsolete ticker/market pair is not a
+        safe requirement.  We still require a structurally complete snapshot
+        run: sequence one, one identity, contiguous sequence numbers, at least
+        one ticker family from the waiting prefix, and an authoritative
+        synchronized snapshot before any delta is accepted.
+        """
 
         if expected_identity is None:
             return None
@@ -1203,33 +1212,93 @@ class WsArchiveService:
                 (event_id, maximum_records),
             )
             identity = expected_identity
+            epoch_start: KalshiWsOrderBookEventRecord | None = None
+            epoch_sequence: int | None = None
+            epoch_has_expected_family = False
+            epoch_synchronized = False
             for row in rows:
                 record = RecorderStore._kalshi_ws_event_record(row)
                 current = (record.connection_id, record.subscription_id)
-                if identity is None:
-                    identity = current
-                if current != identity:
+                if epoch_start is None:
+                    if current == identity:
+                        if (
+                            record.event_kind is KalshiWsEventKind.SNAPSHOT
+                            and record.socket_received_timestamp < cutoff
+                            and expected_ticker is not None
+                            and expected_market_id is not None
+                            and record.ticker == expected_ticker
+                            and record.market_id == expected_market_id
+                        ):
+                            return record
+                        continue
                     if (
                         record.event_kind is KalshiWsEventKind.SNAPSHOT
                         and record.sequence == 1
                         and record.socket_received_timestamp < cutoff
-                        and (
+                    ):
+                        epoch_start = record
+                        epoch_sequence = record.sequence
+                        epoch_has_expected_family = (
                             expected_families is None
                             or _ticker_family(record.ticker) in expected_families
                         )
-                    ):
-                        return record
-                    identity = current
+                        epoch_synchronized = record.sync_status_after.value == "synchronized"
+                        if epoch_has_expected_family and epoch_synchronized:
+                            return record
                     continue
-                if record.event_kind is KalshiWsEventKind.SNAPSHOT:
+
+                if current != (epoch_start.connection_id, epoch_start.subscription_id):
+                    epoch_start = None
+                    epoch_sequence = None
+                    epoch_has_expected_family = False
+                    epoch_synchronized = False
                     if (
-                        record.socket_received_timestamp < cutoff
-                        and expected_ticker is not None
-                        and expected_market_id is not None
-                        and record.ticker == expected_ticker
-                        and record.market_id == expected_market_id
+                        current != identity
+                        and record.event_kind is KalshiWsEventKind.SNAPSHOT
+                        and record.sequence == 1
+                        and record.socket_received_timestamp < cutoff
                     ):
-                        return record
+                        epoch_start = record
+                        epoch_sequence = record.sequence
+                        epoch_has_expected_family = (
+                            expected_families is None
+                            or _ticker_family(record.ticker) in expected_families
+                        )
+                        epoch_synchronized = record.sync_status_after.value == "synchronized"
+                        if epoch_has_expected_family and epoch_synchronized:
+                            return record
+                    continue
+
+                if epoch_sequence is None or record.sequence != epoch_sequence + 1:
+                    epoch_start = None
+                    epoch_sequence = None
+                    epoch_has_expected_family = False
+                    epoch_synchronized = False
+                    continue
+                epoch_sequence = record.sequence
+                if record.event_kind is KalshiWsEventKind.SNAPSHOT:
+                    if record.socket_received_timestamp >= cutoff:
+                        epoch_start = None
+                        epoch_sequence = None
+                        epoch_has_expected_family = False
+                        epoch_synchronized = False
+                        continue
+                    epoch_has_expected_family = epoch_has_expected_family or (
+                        expected_families is None
+                        or _ticker_family(record.ticker) in expected_families
+                    )
+                    epoch_synchronized = epoch_synchronized or (
+                        record.sync_status_after.value == "synchronized"
+                    )
+                    if epoch_has_expected_family and epoch_synchronized:
+                        return epoch_start
+                elif not epoch_synchronized:
+                    # Deltas before the new epoch is authoritative are
+                    # ambiguous and must not unlock a waiting prefix.
+                    epoch_start = None
+                    epoch_sequence = None
+                    epoch_has_expected_family = False
+                    epoch_synchronized = False
         finally:
             connection.close()
         return None
