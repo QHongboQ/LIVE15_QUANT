@@ -9,9 +9,10 @@ Authority and its evidence artifacts.
 
 ## Current phase
 
-**Production deployment / bounded proof gate.** CTX-002 is merged and closed.
-DEP-001 is next, but current-main deployment and post-deployment proof remain a
-separately human-approved gate.
+**Pre-training reliability/storage closeout plus current-main deployment proof gate.**
+The release-pipeline prerequisites are merged, Control Center truth/performance
+hardening is merged, and two upstream reliability tasks are active before the
+formal long-run training GO/NO-GO gate.
 
 ## Completed foundations
 
@@ -20,40 +21,63 @@ separately human-approved gate.
 - runtime ownership design;
 - Terminal V3;
 - HOT/COLD archive foundation;
-- full Skills/context system implementation.
+- full Skills/context system implementation;
+- auditable SHA-pinned release/rollback pipeline including first-deploy legacy
+  rollback bootstrap compatibility (PR #45 + PR #46);
+- NIGHT-001 H2 materialization/readiness boundary and bounded real H2 snapshot
+  acquisition path (PR #47 + PR #48);
+- Control Center truth, polling, and archive-observability hardening (PR #49).
 
 ## Workstream orientation
 
 | Area | State | Authoritative source |
 | --- | --- | --- |
-| Production runtime closeout | **HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
-| Recorder/archive data truth | Active, fail-closed | `docs/continuous_recorder.md`, retention manifest, current health |
+| Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
+| Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
+| Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
 | Hard Risk / Production writes | Human-authorized only | `PROJECT_CHARTER.md`, `AGENTS.md` |
 
-## Current runtime limits and gates
+## Current runtime and research limits
 
-- The current read-only receipt shows all three WinSW services running; Recorder
-  is 10/10 synchronized with zero sequence gaps and no fatal task. It is
-  honestly `degraded` because exact WTI and its Pyth stream are unavailable.
-  The feed-local circuit breaker is the intended guarded behavior; no substitute
-  feed may be chosen.
-- Service ACL delegation and the generic Pyth-worker diagnosis are resolved
-  code/operational history, not active blockers. See `BUG_REGISTRY.md`.
-- Current-main deployment is **not proven**: the non-editable installed package
-  has bounded provenance at an earlier protected-main hash, while the deployed
-  commit for `origin/main` cannot be determined from this receipt. Merged is not
-  deployed or verified. **NOT DEPLOYED.**
+- The last bounded read-only runtime receipt showed all three WinSW services
+  running; Recorder was 10/10 synchronized with zero sequence gaps and no fatal
+  task, with an honest exact-WTI/Pyth feed-local degradation. That receipt does
+  not prove the newly merged protected-main code is deployed.
+- `MERGED != DEPLOYED` and `DEPLOYED != VERIFIED`. PR #46 and PR #49 are merged
+  code only; no current-main deployment claim is made here.
+- `H2-TRAIN-003` is not an independent active development lane. Its previous
+  BLOCKED result exposed a Kalshi WS/DataGap authority problem; the real H2
+  revalidation is now an acceptance step inside `WS-RESYNC-001 + GAP-002`.
+- H2 capability remains granular. Real snapshot readiness, snapshot-sequence
+  readiness, delta/tick readiness, and each microstructure model family remain
+  independently gated. DepthFeed HTTP 402 plan restrictions must not be hidden.
+- `ST-005` is not resolved merely because UI-013 can display catch-up state. It
+  still requires measured throughput/catch-up evidence and a valid 60-minute
+  proof with Recorder safety intact.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
-  **NO TRAINING_STARTED**. **PRODUCTION WRITES 0.**
+  **NO TRAINING_STARTED**. Frozen holdout remains opaque. **PRODUCTION WRITES 0.**
 
 ## Immediate sequence
 
-1. only with human approval, perform DEP-001 current-main deployment and bounded
-   runtime proof;
-2. after that proof, authorize the read-only ST-005 trend if still needed;
-3. evaluate TRN-001 formal GO/NO-GO gates without reading the frozen holdout.
+1. complete `WS-RESYNC-001 + GAP-002`, including precise dirty-interval closure,
+   self-healing snapshot recovery, clean-segment authority, and the bounded real
+   H2 revalidation inside that task;
+2. complete `ST-005` archive/purge throughput recovery and valid 60-minute
+   catch-up proof; these two tasks may proceed independently and in parallel;
+3. reconcile/merge those tasks onto the then-current protected main;
+4. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is
+   READY may a separate explicit human approval authorize deployment/restart and
+   bounded runtime proof;
+5. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` without reading the frozen
+   holdout;
+6. start formal overnight training only after explicit `TRAINING_GO`.
+
+Validated H2 is additive authority: formal research may use H0 + H1 + validated
+H2. An H2 capability that remains unvalidated or plan-restricted must be excluded
+rather than fabricated; it does not automatically invalidate unrelated model
+families that have sufficient authorized evidence.
 
 ## Update policy
 
