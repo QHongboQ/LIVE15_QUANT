@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,19 @@ from live15_quant.release_pipeline import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_current_source_archive_excludes_local_tooling() -> None:
+    """A release archive must not carry mutable checkout tooling."""
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", "--worktree-attributes", "HEAD"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    with tarfile.open(fileobj=io.BytesIO(archive)) as payload:
+        assert all(not member.name.startswith(".local-tools/") for member in payload.getmembers())
 
 
 def _git(repository: Path, *args: str) -> str:
