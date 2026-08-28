@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
@@ -29,11 +30,15 @@ from live15_quant.models import (
 )
 from live15_quant.native_recorder import (
     KalshiNativeRecorder,
+    PythFeedAvailability,
     PythWorkerUnhealthyError,
     _aggregate_current_health,
+    _PythFeedCircuitBreaker,
 )
 from live15_quant.providers.kalshi import KalshiPublicApiError, KalshiTargetUnavailableError
 from live15_quant.providers.pyth import (
+    PYTH_FEEDS,
+    PythFeedDemultiplexer,
     PythFeedIssue,
     PythNetworkError,
     PythRateLimitError,
@@ -156,7 +161,8 @@ class AssetIsolatedUnderlying:
             (PythFeedIssue("malformed_price", Asset.SILVER, "silver"),),
         )
 
-    def stream_batches(self):
+    def stream_batches(self, *, feed_ids=None):
+        del feed_ids
         self.stream_calls += 1
         if self.stream_calls >= 2:
             self.second_stream_attempted.set()
@@ -165,11 +171,59 @@ class AssetIsolatedUnderlying:
         self.first_stream_closed.set()
         return
 
-    def latest_batch(self):
+    def latest_batch(self, *, feed_ids=None):
+        del feed_ids
         return self.batch()
 
     def close(self):
         self.closed = True
+
+
+class FeedLocalUnavailableUnderlying:
+    """One inactive feed rejects a shared request but must not poison siblings."""
+
+    def __init__(self) -> None:
+        self.stream_feed_sets: list[tuple[str, ...]] = []
+        self.siblings_streamed = threading.Event()
+        self.release = threading.Event()
+
+    @staticmethod
+    def _healthy_batch() -> PythUpdateBatch:
+        observations = tuple(
+            UnderlyingObservation(
+                asset=asset,
+                provider=UnderlyingProvider.PYTH_HERMES,
+                symbol=f"test:{asset.value}",
+                feed_id=asset.name.lower(),
+                price=Decimal("100"),
+                source_timestamp=NOW,
+                received_timestamp=NOW,
+                confidence=None,
+                provenance="official-test",
+                freshness=FreshnessState.FRESH,
+            )
+            for asset in (Asset.GOLD, Asset.SILVER, Asset.HYPE, Asset.BNB)
+        )
+        return PythUpdateBatch(
+            observations,
+            (PythFeedIssue("feed_unavailable", Asset.WTI_OIL, PYTH_FEEDS[Asset.WTI_OIL][1]),),
+        )
+
+    def stream_batches(self, *, feed_ids=None):
+        requested = tuple(feed_ids or ())
+        self.stream_feed_sets.append(requested)
+        if not requested or PYTH_FEEDS[Asset.WTI_OIL][1] in requested:
+            raise PythNetworkError("shared stream rejected by unavailable WTI feed")
+        self.siblings_streamed.set()
+        yield PythUpdateBatch(self._healthy_batch().observations)
+        self.release.wait(timeout=1)
+
+    def latest_batch(self, *, feed_ids=None):
+        del feed_ids
+        return self._healthy_batch()
+
+    def close(self):
+        return None
 
 
 class RateLimitedUnderlying:
@@ -177,13 +231,15 @@ class RateLimitedUnderlying:
         self.latest_calls = 0
         self.rate_limited = threading.Event()
 
-    def stream_batches(self):
+    def stream_batches(self, *, feed_ids=None):
+        del feed_ids
         if False:
             yield None
         self.rate_limited.set()
         raise PythRateLimitError(0.05)
 
-    def latest_batch(self):
+    def latest_batch(self, *, feed_ids=None):
+        del feed_ids
         self.latest_calls += 1
         return PythUpdateBatch(())
 
@@ -192,12 +248,14 @@ class RateLimitedUnderlying:
 
 
 class BuggyUnderlying:
-    def stream_batches(self):
+    def stream_batches(self, *, feed_ids=None):
+        del feed_ids
         if False:
             yield None
         raise RuntimeError("programming defect")
 
-    def latest_batch(self):
+    def latest_batch(self, *, feed_ids=None):
+        del feed_ids
         raise AssertionError("correctness failures must not reach REST fallback")
 
     def close(self):
@@ -205,12 +263,14 @@ class BuggyUnderlying:
 
 
 class PersistentlyFailingUnderlying:
-    def stream_batches(self):
+    def stream_batches(self, *, feed_ids=None):
+        del feed_ids
         if False:
             yield None
         raise PythNetworkError("simulated Pyth stream failure")
 
-    def latest_batch(self):
+    def latest_batch(self, *, feed_ids=None):
+        del feed_ids
         raise PythNetworkError("simulated Pyth REST failure")
 
     def close(self):
@@ -398,6 +458,243 @@ def test_one_pyth_asset_outage_does_not_stop_other_underlying_assets(tmp_path) -
 
     asyncio.run(scenario())
     assert source.closed is True
+
+
+def test_confirmed_unavailable_pyth_feed_isolated_from_shared_sse(tmp_path) -> None:
+    source = FeedLocalUnavailableUnderlying()
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    enable_pyth_underlying=True,
+                    pyth_rest_fallback_interval_seconds=0.01,
+                    recorder_health_interval_seconds=1,
+                    recorder_health_path=tmp_path / "health.json",
+                ),
+                store,
+                discovery=FakeDiscovery(()),
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                underlying_factory=lambda: source,
+                now=lambda: NOW,
+            )
+            task = asyncio.create_task(recorder.run())
+            await wait_for_thread_event(source.siblings_streamed, "healthy Pyth sibling stream")
+            source.release.set()
+            recorder.request_stop()
+            await asyncio.wait_for(task, 1)
+            health = recorder.health()
+            assert health.source_failures["pyth:WTI Oil"] == "UPSTREAM_UNAVAILABLE"
+            assert health.worker_health["pyth"]["current_state"] == "HEALTHY"
+            assert health.fatal_task is None
+
+    asyncio.run(scenario())
+    assert len(source.stream_feed_sets) >= 2
+    assert PYTH_FEEDS[Asset.WTI_OIL][1] in source.stream_feed_sets[0]
+    assert all(
+        PYTH_FEEDS[Asset.WTI_OIL][1] not in feed_ids for feed_ids in source.stream_feed_sets[1:]
+    )
+
+
+def test_pyth_feed_circuit_breaker_reprobes_exact_feed_at_bounded_cadence() -> None:
+    clock = [100.0]
+    circuit = _PythFeedCircuitBreaker(300.0, lambda: clock[0])
+
+    circuit.confirm_unavailable(Asset.WTI_OIL)
+    assert circuit.states[Asset.WTI_OIL] is PythFeedAvailability.CONFIRMED_UNAVAILABLE
+    assert PYTH_FEEDS[Asset.WTI_OIL][1] not in circuit.active_feed_ids()
+    assert circuit.due_reprobes() == ()
+
+    clock[0] += 300.0
+    assert circuit.due_reprobes() == (Asset.WTI_OIL,)
+    assert circuit.states[Asset.WTI_OIL] is PythFeedAvailability.REPROBE_PENDING
+    assert PYTH_FEEDS[Asset.WTI_OIL][1] not in circuit.active_feed_ids()
+
+    circuit.reprobe_failed(Asset.WTI_OIL)
+    assert circuit.due_reprobes() == ()
+    circuit.restore(Asset.WTI_OIL)
+    assert circuit.states[Asset.WTI_OIL] is PythFeedAvailability.ACTIVE
+    assert PYTH_FEEDS[Asset.WTI_OIL][1] in circuit.active_feed_ids()
+
+
+def test_pyth_reprobe_restores_only_the_exact_configured_feed(tmp_path) -> None:
+    class RestoredFeedSource:
+        def __init__(self) -> None:
+            self.requests: list[tuple[str, ...] | None] = []
+
+        def latest_batch(self, *, feed_ids=None):
+            self.requests.append(feed_ids)
+            return PythUpdateBatch(
+                (
+                    UnderlyingObservation(
+                        asset=Asset.WTI_OIL,
+                        provider=UnderlyingProvider.PYTH_HERMES,
+                        symbol=PYTH_FEEDS[Asset.WTI_OIL][0],
+                        feed_id=PYTH_FEEDS[Asset.WTI_OIL][1],
+                        price=Decimal("100"),
+                        source_timestamp=NOW,
+                        received_timestamp=NOW,
+                        confidence=None,
+                        provenance="official-test",
+                        freshness=FreshnessState.FRESH,
+                    ),
+                )
+            )
+
+        def close(self):
+            return None
+
+    source = RestoredFeedSource()
+    clock = [0.0]
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(products=("BTC-USD",), enable_pyth_underlying=True),
+                store,
+                discovery=FakeDiscovery(()),
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                underlying_factory=lambda: source,
+                now=lambda: NOW,
+                monotonic=lambda: clock[0],
+            )
+            circuit = _PythFeedCircuitBreaker(300.0, lambda: clock[0])
+            circuit.confirm_unavailable(Asset.WTI_OIL)
+            recorder._source_unavailable(
+                "pyth:WTI Oil",
+                PythFeedIssue("feed_unavailable", Asset.WTI_OIL, PYTH_FEEDS[Asset.WTI_OIL][1]),
+            )
+            recorder._source_failed("pyth:reprobe", PythNetworkError("transient re-probe failure"))
+            clock[0] = 300.0
+            await recorder._reprobe_unavailable_pyth_feeds(circuit, PythFeedDemultiplexer())
+            assert circuit.states[Asset.WTI_OIL] is PythFeedAvailability.ACTIVE
+            assert "pyth:WTI Oil" not in recorder.health().source_failures
+            assert "pyth:reprobe" not in recorder.health().source_failures
+
+    asyncio.run(scenario())
+    assert source.requests == [(PYTH_FEEDS[Asset.WTI_OIL][1],)]
+
+
+def test_pyth_unavailable_issue_with_wrong_feed_id_does_not_open_circuit(tmp_path) -> None:
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(products=("BTC-USD",), enable_pyth_underlying=True),
+                store,
+                discovery=FakeDiscovery(()),
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                underlying_factory=AssetIsolatedUnderlying,
+                now=lambda: NOW,
+            )
+            circuit = _PythFeedCircuitBreaker(300.0, time.monotonic)
+            recorder._accept_pyth_batch(
+                PythUpdateBatch(
+                    (),
+                    (PythFeedIssue("feed_unavailable", Asset.WTI_OIL, "not-the-configured-feed"),),
+                ),
+                circuit=circuit,
+            )
+            assert circuit.states[Asset.WTI_OIL] is PythFeedAvailability.ACTIVE
+            assert recorder.health().source_failures["pyth:WTI Oil"] == "PythPayloadError"
+
+    asyncio.run(scenario())
+
+
+def test_pyth_reprobe_timer_runs_while_shared_stream_is_quiet(tmp_path) -> None:
+    class UnavailableProbeSource:
+        def __init__(self) -> None:
+            self.requests: list[tuple[str, ...] | None] = []
+            self.probed = threading.Event()
+
+        def latest_batch(self, *, feed_ids=None):
+            self.requests.append(feed_ids)
+            self.probed.set()
+            return PythUpdateBatch(
+                (),
+                (PythFeedIssue("feed_unavailable", Asset.WTI_OIL, PYTH_FEEDS[Asset.WTI_OIL][1]),),
+            )
+
+        def close(self):
+            return None
+
+    source = UnavailableProbeSource()
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(products=("BTC-USD",), enable_pyth_underlying=True),
+                store,
+                discovery=FakeDiscovery(()),
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                underlying_factory=lambda: source,
+                now=lambda: NOW,
+            )
+            circuit = _PythFeedCircuitBreaker(0.01, time.monotonic)
+            circuit.confirm_unavailable(Asset.WTI_OIL)
+            task = asyncio.create_task(
+                recorder._run_pyth_reprobes(circuit, PythFeedDemultiplexer())
+            )
+            await wait_for_thread_event(source.probed, "bounded exact Pyth re-probe")
+            recorder.request_stop()
+            await asyncio.wait_for(task, 1)
+            assert circuit.states[Asset.WTI_OIL] is PythFeedAvailability.CONFIRMED_UNAVAILABLE
+
+    asyncio.run(scenario())
+    assert source.requests == [(PYTH_FEEDS[Asset.WTI_OIL][1],)]
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected_error"),
+    [
+        (lambda: PythNetworkError("authentication failed", category="AUTH"), "PythNetworkError"),
+        (lambda: PythNetworkError("TLS failed", category="TLS"), "PythNetworkError"),
+        (lambda: PythRateLimitError(1.0), "PythRateLimitError"),
+    ],
+)
+def test_pyth_reprobe_global_fault_remains_visible_without_reenabling_feed(
+    tmp_path, factory, expected_error
+) -> None:
+    class FailingProbeSource:
+        def latest_batch(self, *, feed_ids=None):
+            del feed_ids
+            raise factory()
+
+        def close(self):
+            return None
+
+    clock = [0.0]
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(products=("BTC-USD",), enable_pyth_underlying=True),
+                store,
+                discovery=FakeDiscovery(()),
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                underlying_factory=FailingProbeSource,
+                now=lambda: NOW,
+                monotonic=lambda: clock[0],
+            )
+            circuit = _PythFeedCircuitBreaker(300.0, lambda: clock[0])
+            circuit.confirm_unavailable(Asset.WTI_OIL)
+            recorder._source_unavailable(
+                "pyth:WTI Oil",
+                PythFeedIssue("feed_unavailable", Asset.WTI_OIL, PYTH_FEEDS[Asset.WTI_OIL][1]),
+            )
+            clock[0] = 300.0
+            await recorder._reprobe_unavailable_pyth_feeds(circuit, PythFeedDemultiplexer())
+            health = recorder.health()
+            assert circuit.states[Asset.WTI_OIL] is PythFeedAvailability.CONFIRMED_UNAVAILABLE
+            assert health.source_failures["pyth:WTI Oil"] == "UPSTREAM_UNAVAILABLE"
+            assert health.source_failures["pyth:reprobe"] == expected_error
+
+    asyncio.run(scenario())
 
 
 def test_pyth_429_honors_retry_after_without_immediate_rest_fallback(tmp_path) -> None:

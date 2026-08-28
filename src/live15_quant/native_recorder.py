@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 from typing import Protocol
 
 import requests
@@ -101,6 +102,7 @@ from live15_quant.providers.low_latency import (
 from live15_quant.providers.pyth import (
     PYTH_FEEDS,
     PythFeedDemultiplexer,
+    PythFeedIssue,
     PythHermesClient,
     PythNetworkError,
     PythPayloadError,
@@ -136,6 +138,68 @@ class PythWorkerUnhealthyError(RuntimeError):
     """A critical Pyth worker exhausted its bounded recovery budget."""
 
 
+class PythFeedAvailability(StrEnum):
+    """Feed-local availability without hiding an unavailable configured source."""
+
+    ACTIVE = "ACTIVE"
+    CONFIRMED_UNAVAILABLE = "CONFIRMED_UNAVAILABLE"
+    REPROBE_PENDING = "REPROBE_PENDING"
+
+
+@dataclass(slots=True)
+class _PythFeedCircuitBreaker:
+    """Exclude only confirmed-unavailable feeds from the shared Pyth SSE request."""
+
+    reprobe_interval_seconds: float
+    monotonic: Callable[[], float]
+    states: dict[Asset, PythFeedAvailability] = field(
+        default_factory=lambda: {asset: PythFeedAvailability.ACTIVE for asset in PYTH_FEEDS}
+    )
+    next_reprobe_at: dict[Asset, float] = field(default_factory=dict)
+
+    def active_feed_ids(self) -> tuple[str, ...]:
+        return tuple(
+            feed_id
+            for asset, (_, feed_id) in PYTH_FEEDS.items()
+            if self.states.get(asset) is PythFeedAvailability.ACTIVE
+        )
+
+    def confirm_unavailable(self, asset: Asset) -> bool:
+        changed = self.states.get(asset) is not PythFeedAvailability.CONFIRMED_UNAVAILABLE
+        self.states[asset] = PythFeedAvailability.CONFIRMED_UNAVAILABLE
+        self.next_reprobe_at[asset] = self.monotonic() + self.reprobe_interval_seconds
+        return changed
+
+    def due_reprobes(self) -> tuple[Asset, ...]:
+        now = self.monotonic()
+        due = tuple(
+            asset
+            for asset, state in self.states.items()
+            if state is PythFeedAvailability.CONFIRMED_UNAVAILABLE
+            and now >= self.next_reprobe_at.get(asset, now)
+        )
+        for asset in due:
+            self.states[asset] = PythFeedAvailability.REPROBE_PENDING
+        return due
+
+    def seconds_until_reprobe(self) -> float | None:
+        deadlines = [
+            deadline
+            for asset, deadline in self.next_reprobe_at.items()
+            if self.states.get(asset) is PythFeedAvailability.CONFIRMED_UNAVAILABLE
+        ]
+        if not deadlines:
+            return None
+        return max(0.0, min(deadlines) - self.monotonic())
+
+    def reprobe_failed(self, asset: Asset) -> None:
+        self.confirm_unavailable(asset)
+
+    def restore(self, asset: Asset) -> None:
+        self.states[asset] = PythFeedAvailability.ACTIVE
+        self.next_reprobe_at.pop(asset, None)
+
+
 def _next_pyth_batch(iterator: Iterator[PythUpdateBatch]) -> PythUpdateBatch | None:
     return next(iterator, None)
 
@@ -161,9 +225,11 @@ class RobinhoodReference(Protocol):
 
 
 class UnderlyingSource(Protocol):
-    def stream_batches(self) -> Iterator[PythUpdateBatch]: ...
+    def stream_batches(
+        self, *, feed_ids: tuple[str, ...] | None = None
+    ) -> Iterator[PythUpdateBatch]: ...
 
-    def latest_batch(self) -> PythUpdateBatch: ...
+    def latest_batch(self, *, feed_ids: tuple[str, ...] | None = None) -> PythUpdateBatch: ...
 
     def close(self) -> None: ...
 
@@ -1554,6 +1620,32 @@ class KalshiNativeRecorder:
                 },
             )
 
+    def _source_unavailable(self, key: str, issue: PythFeedIssue) -> None:
+        """Record a confirmed exact-feed outage without transport retry semantics."""
+
+        if self._health.source_failures.get(key) == "UPSTREAM_UNAVAILABLE":
+            return
+        self._health.consecutive_failures.pop(key, None)
+        self._health.source_failures[key] = "UPSTREAM_UNAVAILABLE"
+        self._store.append_recorder_event(
+            observed_timestamp=self._utc_now(),
+            severity=RecorderEventSeverity.WARNING,
+            event_type=RecorderEventType.SOURCE_UNAVAILABLE,
+            asset=issue.asset,
+            source=key,
+            error_type="UPSTREAM_UNAVAILABLE",
+            message="Configured Pyth feed is unavailable; isolated re-probe scheduled",
+            dedup_key=f"source-unavailable:{key}:UPSTREAM_UNAVAILABLE",
+        )
+        logger.warning(
+            "Recorder Pyth feed is confirmed unavailable",
+            extra={
+                "event": "recorder_pyth_feed_unavailable",
+                "source_key": key,
+                "feed_id": issue.feed_id,
+            },
+        )
+
     def _source_ok(self, key: str) -> None:
         self._health.consecutive_failures.pop(key, None)
         self._health.source_failures.pop(key, None)
@@ -1771,93 +1863,149 @@ class KalshiNativeRecorder:
         """Use bounded stream recreation and REST fallback for the critical Pyth worker."""
 
         demultiplexer = PythFeedDemultiplexer()
+        circuit = _PythFeedCircuitBreaker(
+            self._settings.pyth_unavailable_reprobe_interval_seconds,
+            self._monotonic,
+        )
         stream_key = "pyth:stream"
         outage_started = self._monotonic()
         recovery_attempts = 0
-        while not self._stop_event.is_set():
-            client = self._underlying_factory()
-            try:
-                retry_after = 0.0
-                rate_limited = False
-                accepted_observations = 0
-                cycle_error: BaseException | None = None
+        reprobe_task = asyncio.create_task(
+            self._run_pyth_reprobes(circuit, demultiplexer), name="pyth-unavailable-reprobe"
+        )
+        try:
+            while not self._stop_event.is_set():
+                client = self._underlying_factory()
                 try:
-                    iterator = client.stream_batches()
-                    while not self._stop_event.is_set():
-                        batch = await asyncio.to_thread(_next_pyth_batch, iterator)
-                        if batch is None:
-                            raise PythNetworkError("Pyth stream closed")
-                        accepted_observations += self._accept_pyth_batch(
-                            demultiplexer.accept(batch)
-                        )
-                        if accepted_observations:
-                            self._source_ok(stream_key)
-                            self._worker_observed("pyth")
-                            outage_started = self._monotonic()
-                            recovery_attempts = 0
-                except asyncio.CancelledError:
-                    raise
-                except (RecorderStorageError, ValueError) as error:
-                    if not isinstance(error, PythPayloadError):
-                        raise
-                    cycle_error = error
-                    self._source_failed(stream_key, error)
-                except PythNetworkError as error:
-                    cycle_error = error
-                    self._source_failed(stream_key, error)
-                    if isinstance(error, PythRateLimitError):
-                        retry_after = error.retry_after_seconds
-                        rate_limited = True
-
-                if self._stop_event.is_set():
-                    return
-                if not rate_limited:
+                    retry_after = 0.0
+                    rate_limited = False
+                    accepted_observations = 0
+                    cycle_error: BaseException | None = None
                     try:
-                        batch = await asyncio.to_thread(client.latest_batch)
-                        accepted_observations += self._accept_pyth_batch(
-                            demultiplexer.accept(batch)
-                        )
-                        if accepted_observations:
-                            self._source_ok("pyth:rest_fallback")
-                            self._worker_observed("pyth")
-                            outage_started = self._monotonic()
-                            recovery_attempts = 0
+                        iterator = client.stream_batches(feed_ids=circuit.active_feed_ids())
+                        while not self._stop_event.is_set():
+                            batch = await asyncio.to_thread(_next_pyth_batch, iterator)
+                            if batch is None:
+                                raise PythNetworkError("Pyth stream closed")
+                            accepted_observations += self._accept_pyth_batch(
+                                demultiplexer.accept(batch), circuit=circuit
+                            )
+                            if accepted_observations:
+                                self._source_ok(stream_key)
+                                self._worker_observed("pyth")
+                                outage_started = self._monotonic()
+                                recovery_attempts = 0
                     except asyncio.CancelledError:
                         raise
                     except (RecorderStorageError, ValueError) as error:
                         if not isinstance(error, PythPayloadError):
                             raise
                         cycle_error = error
-                        self._source_failed("pyth:rest_fallback", error)
+                        self._source_failed(stream_key, error)
                     except PythNetworkError as error:
                         cycle_error = error
-                        self._source_failed("pyth:rest_fallback", error)
+                        self._source_failed(stream_key, error)
                         if isinstance(error, PythRateLimitError):
+                            rate_limited = True
                             retry_after = max(retry_after, error.retry_after_seconds)
 
-                if not accepted_observations:
-                    recovery_attempts += 1
-                    delay = max(
-                        retry_after,
-                        self._retry_delay(
-                            stream_key, self._settings.pyth_rest_fallback_interval_seconds
-                        ),
-                    )
-                    error = cycle_error or PythNetworkError(
-                        "Pyth produced no accepted observations"
-                    )
-                    self._worker_retry("pyth", error, delay)
-                    if self._pyth_recovery_exhausted(outage_started, recovery_attempts):
-                        fatal = PythWorkerUnhealthyError(
-                            "Pyth worker exhausted bounded recovery without accepted observations"
-                        )
-                        self._worker_unhealthy("pyth", fatal)
-                        raise fatal
-                    if await self._wait(delay):
+                    if self._stop_event.is_set():
                         return
+                    if not rate_limited:
+                        try:
+                            batch = await asyncio.to_thread(
+                                client.latest_batch, feed_ids=circuit.active_feed_ids()
+                            )
+                            accepted_observations += self._accept_pyth_batch(
+                                demultiplexer.accept(batch), circuit=circuit
+                            )
+                            if accepted_observations:
+                                self._source_ok("pyth:rest_fallback")
+                                self._worker_observed("pyth")
+                                outage_started = self._monotonic()
+                                recovery_attempts = 0
+                        except asyncio.CancelledError:
+                            raise
+                        except (RecorderStorageError, ValueError) as error:
+                            if not isinstance(error, PythPayloadError):
+                                raise
+                            cycle_error = error
+                            self._source_failed("pyth:rest_fallback", error)
+                        except PythNetworkError as error:
+                            cycle_error = error
+                            self._source_failed("pyth:rest_fallback", error)
+                            if isinstance(error, PythRateLimitError):
+                                retry_after = max(retry_after, error.retry_after_seconds)
+
+                    if not accepted_observations:
+                        recovery_attempts += 1
+                        delay = max(
+                            retry_after,
+                            self._retry_delay(
+                                stream_key, self._settings.pyth_rest_fallback_interval_seconds
+                            ),
+                        )
+                        error = cycle_error or PythNetworkError(
+                            "Pyth produced no accepted observations"
+                        )
+                        self._worker_retry("pyth", error, delay)
+                        if self._pyth_recovery_exhausted(outage_started, recovery_attempts):
+                            fatal = PythWorkerUnhealthyError(
+                                "Pyth worker exhausted bounded recovery "
+                                "without accepted observations"
+                            )
+                            self._worker_unhealthy("pyth", fatal)
+                            raise fatal
+                        if await self._wait(delay):
+                            return
+                finally:
+                    # A fresh client is required for each outage cycle.  This closes a
+                    # wedged SSE response before the next bounded reconnect attempt.
+                    client.close()
+        finally:
+            reprobe_task.cancel()
+            await asyncio.gather(reprobe_task, return_exceptions=True)
+
+    async def _run_pyth_reprobes(
+        self, circuit: _PythFeedCircuitBreaker, demultiplexer: PythFeedDemultiplexer
+    ) -> None:
+        """Schedule exact-feed re-probes even when the surviving SSE stream is quiet."""
+
+        while not self._stop_event.is_set():
+            await self._reprobe_unavailable_pyth_feeds(circuit, demultiplexer)
+            due_in = circuit.seconds_until_reprobe()
+            if await self._wait(1.0 if due_in is None else min(1.0, due_in)):
+                return
+
+    async def _reprobe_unavailable_pyth_feeds(
+        self, circuit: _PythFeedCircuitBreaker, demultiplexer: PythFeedDemultiplexer
+    ) -> None:
+        """Recheck one exact inactive feed at a bounded cadence outside shared SSE."""
+
+        for asset in circuit.due_reprobes():
+            client = self._underlying_factory()
+            feed_id = PYTH_FEEDS[asset][1]
+            try:
+                batch = await asyncio.to_thread(client.latest_batch, feed_ids=(feed_id,))
+                accepted = self._accept_pyth_batch(demultiplexer.accept(batch), circuit=circuit)
+                if accepted == 0 or circuit.states[asset] is not PythFeedAvailability.ACTIVE:
+                    circuit.reprobe_failed(asset)
+                else:
+                    # A successful exact-feed response resolves only the shared
+                    # re-probe transport incident; the feed-specific health key
+                    # is cleared by _accept_pyth_batch.
+                    self._source_ok("pyth:reprobe")
+            except asyncio.CancelledError:
+                raise
+            except (RecorderStorageError, ValueError) as error:
+                if not isinstance(error, PythPayloadError):
+                    raise
+                circuit.reprobe_failed(asset)
+                self._source_failed("pyth:reprobe", error)
+            except PythNetworkError as error:
+                circuit.reprobe_failed(asset)
+                self._source_failed("pyth:reprobe", error)
             finally:
-                # A fresh client is required for each outage cycle.  This closes a
-                # wedged SSE response before the next bounded reconnect attempt.
                 client.close()
 
     def _pyth_recovery_exhausted(self, outage_started: float, attempts: int) -> bool:
@@ -1882,12 +2030,24 @@ class KalshiNativeRecorder:
             for asset in PYTH_FEEDS
         )
 
-    def _accept_pyth_batch(self, batch: PythUpdateBatch) -> int:
+    def _accept_pyth_batch(
+        self, batch: PythUpdateBatch, *, circuit: _PythFeedCircuitBreaker | None = None
+    ) -> int:
         accepted = 0
         for issue in batch.issues:
             if issue.code == "duplicate":
                 continue
             key = f"pyth:{issue.asset.value}" if issue.asset is not None else "pyth:stream"
+            if (
+                issue.code == "feed_unavailable"
+                and issue.asset is not None
+                and issue.feed_id is not None
+                and issue.feed_id.lower().removeprefix("0x") == PYTH_FEEDS[issue.asset][1]
+            ):
+                if circuit is not None:
+                    circuit.confirm_unavailable(issue.asset)
+                self._source_unavailable(key, issue)
+                continue
             self._source_failed(key, PythPayloadError(issue.code))
         for observation in batch.observations:
             if self._store.append_underlying(observation):
@@ -1903,6 +2063,8 @@ class KalshiNativeRecorder:
             )
             self._health.additional_underlying_freshness[observation.asset] = observation.freshness
             self._source_ok(f"pyth:{observation.asset.value}")
+            if circuit is not None:
+                circuit.restore(observation.asset)
             accepted += 1
         return accepted
 

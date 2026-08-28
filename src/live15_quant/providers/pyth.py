@@ -191,7 +191,11 @@ class PythHermesClient:
 
     @staticmethod
     def _params(feed_ids: tuple[str, ...] | None = None) -> list[tuple[str, str]]:
-        ids = feed_ids or tuple(feed_id for _, feed_id in PYTH_FEEDS.values())
+        ids = (
+            feed_ids
+            if feed_ids is not None
+            else tuple(feed_id for _, feed_id in PYTH_FEEDS.values())
+        )
         return [("ids[]", feed_id) for feed_id in ids]
 
     def _get(
@@ -252,7 +256,7 @@ class PythHermesClient:
             )
         return response
 
-    def latest_batch(self) -> PythUpdateBatch:
+    def latest_batch(self, *, feed_ids: tuple[str, ...] | None = None) -> PythUpdateBatch:
         """Fetch the configured feeds with one REST request.
 
         Hermes may legitimately omit a feed whose provider listing has changed
@@ -262,7 +266,7 @@ class PythHermesClient:
         """
 
         try:
-            response = self._get("/v2/updates/price/latest", stream=False)
+            response = self._get("/v2/updates/price/latest", stream=False, feed_ids=feed_ids)
         except PythNetworkError as error:
             # Hermes can return 404 for a batch containing a retired feed.
             # Retry each configured feed independently so valid siblings remain
@@ -270,7 +274,12 @@ class PythHermesClient:
             if error.category != "HTTP" or error.cause_type != "HTTP_404":
                 raise
             batches: list[PythUpdateBatch] = []
-            for _, feed_id in PYTH_FEEDS.values():
+            requested_ids = (
+                feed_ids
+                if feed_ids is not None
+                else tuple(feed_id for _, feed_id in PYTH_FEEDS.values())
+            )
+            for feed_id in requested_ids:
                 try:
                     single = self._get(
                         "/v2/updates/price/latest", stream=False, feed_ids=(feed_id,)
@@ -314,10 +323,12 @@ class PythHermesClient:
         finally:
             response.close()
 
-    def stream_batches(self) -> Iterator[PythUpdateBatch]:
-        """Yield demultiplexable events from one five-feed SSE connection."""
+    def stream_batches(
+        self, *, feed_ids: tuple[str, ...] | None = None
+    ) -> Iterator[PythUpdateBatch]:
+        """Yield demultiplexable events from one selected-feed SSE connection."""
 
-        response = self._get("/v2/updates/price/stream", stream=True)
+        response = self._get("/v2/updates/price/stream", stream=True, feed_ids=feed_ids)
         with self._response_lock:
             self._active_response = response
         data_lines: list[str] = []
