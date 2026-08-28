@@ -166,9 +166,6 @@ class SdkProductionRecorderHost:
     async def _watch_universe(
         self,
         initial: Mapping[Asset, str],
-        session: Any,
-        orderbook_client_id: int,
-        gateway: KalshiWebSocketGateway,
         stop: asyncio.Event,
         changed: asyncio.Event,
     ) -> None:
@@ -178,19 +175,12 @@ class SdkProductionRecorderHost:
             updated = dict(self._universe())
             if updated == expected:
                 continue
-            # The existing Reliability Adapter is bound to one 10-market
-            # universe.  A 15m rollover therefore remains a safe session
-            # boundary until its explicit universe-replacement contract is
-            # added.  Do not create a second subscription or locally route
-            # frames here; request the server-side deletion first so the
-            # current authoritative stream is closed fail-closed.
-            removed = tuple(sorted(set(expected.values()) - set(updated.values())))
-            if removed:
-                await gateway.update_orderbook_subscription(
-                    session,
-                    client_id=orderbook_client_id,
-                    delete_tickers=removed,
-                )
+            # A 15m ticker replacement is a strict SDK-session boundary.  The
+            # pinned SDK's update_subscription waits for its command reply by
+            # calling recv(), which races its active receive loop.  Request
+            # orderly session replacement instead: context exit closes the
+            # old transport, and the new session subscribes to the complete
+            # universe with fresh SDK-owned snapshots and SIDs.
             changed.set()
             return
 
@@ -274,7 +264,6 @@ class SdkProductionRecorderHost:
             ticker = await session.subscribe_ticker(tickers=tickers, maxsize=2_000)
             lifecycle = await session.subscribe_market_lifecycle(tickers=tickers, maxsize=1_000)
             orderbook = await session.subscribe_orderbook_delta(tickers=tickers, maxsize=10_000)
-            orderbook_client_id = gateway.orderbook_subscription_id(session)
             # Keep the SDK's one durable subscription queue empty.  The
             # callback above is the sole LIVE15 orderbook handoff and runs
             # during SDK dispatch, before future deltas mutate a snapshot's
@@ -296,9 +285,6 @@ class SdkProductionRecorderHost:
                 asyncio.create_task(
                     self._watch_universe(
                         asset_to_ticker,
-                        session,
-                        orderbook_client_id,
-                        gateway,
                         stop,
                         changed,
                     ),
