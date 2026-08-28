@@ -37,12 +37,12 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 | RUN-004 | legacy-unknown / 2026-08-28 | `agent/archive-mvn003-integration-001` | #38 | `79e4f708` | — |
 | UI-012 | legacy-unknown / 2026-08-28 | `agent/live15-intentional-auxiliary-health-projection-001` | #39 | `7f790fb8` | — |
 | KWS-001 | legacy-unknown / 2026-08-28 | `agent/kalshi-ws-rollover-resync-fix-final` | #40 | `cce1ebc1` | — |
-| CTX-002 | legacy-unknown / 2026-08-28 | `agent/ctx-002-project-brain-reconciliation` | #42 | — (unmerged) | N/A |
+| CTX-002 | legacy-unknown / 2026-08-28 | `agent/ctx-002-project-brain-reconciliation` | #42 | `1e0fd39dbc7f6f69f710de8d45e809faf9368937` | N/A |
 
 ## Current reconciliation basis
 
-- Merged-code authority: `origin/main` at `cce1ebc1ad7e29fb85fea9f86d9f1b9cb924fb17`
-  (PR #40) when CTX-002 was reconciled.
+- Merged-code authority: `origin/main` at `1e0fd39dbc7f6f69f710de8d45e809faf9368937`
+  (PR #42). CTX-002 is merged; this does not prove Production deployment.
 - Legacy evidence: `origin/agent/ctx-002-recovery-source:LEGACY_RECOVERY_2026-08-27.md`
   (PR #41, unmerged temporary recovery source). It informs this ledger but is
   not a competing authority.
@@ -74,7 +74,7 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 
 | Task ID | Title / area | Status / result | Evidence / blocker | Important notes and next action | Human gate |
 | --- | --- | --- | --- | --- | --- |
-| CTX-002 | Project Brain recovery and reconciliation / context | PR_OPEN | PR #42; legacy source PR #41 | Await review and human approval; do not merge automatically. | Human merge |
+| CTX-002 | Project Brain recovery and reconciliation / context | CLOSED / MERGED | PR #42; merge `1e0fd39d` | Context/documentation only; deployed commit N/A. Legacy source PR #41 remains temporary evidence, not canonical Project Brain. | None |
 | DEP-001 | Current-main Production deployment and bounded proof / deployment | BLOCKED | Current installed package receipt cannot prove `cce1ebc`; runtime health alone is insufficient | Requires explicit approval; then deploy/prove only the reviewed current main. | Deploy/restart |
 | ST-005 | 60-minute archive/purge catch-up trend / storage | BLOCKED | Prior run stopped safely during unsynchronized WS; not rerun here | Requires approved read-only run after valid runtime proof; never auto-start. | Runtime/read-only authorization |
 | TRN-001 | `LONG_RUN_TRAINING_FINAL_GO_NO_GO` / training gate | PLANNED / `NO_GO` | No formal gate execution evidence | Do not train until data/runtime/resource/anti-overfit gates pass; holdout remains opaque. | Training/holdout |
