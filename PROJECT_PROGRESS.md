@@ -17,6 +17,28 @@ TRAINING_GO`. Evidence paths contain volatile receipts, PIDs, and measurements;
 this file stores only their durable implication. Close an important task by
 updating this ledger only if its status, result, caution, or next action changed.
 
+## Reconciled task metadata
+
+These fields apply to the completed-task rows below. `legacy-unknown` avoids
+inventing a start date; every row was last reconciled by CTX-002 on 2026-08-28.
+A dash in `Deployed commit` is deliberately **not** a deployment claim.
+
+| Task | Started / updated | Branch | PR | Merge commit | Deployed commit |
+| --- | --- | --- | --- | --- | --- |
+| RD-001 | legacy-unknown / 2026-08-28 | `agent/research-data-authority-001` | #29 | `080e7804` | — |
+| RT-OWN-001 | legacy-unknown / 2026-08-28 | `agent/automation-self-healing-001` | #30 | `cd5d64d9` | — |
+| OPS-010 | legacy-unknown / 2026-08-28 | `agent/runtime-blocker-root-fix-001` | #31 | `5c46af86` | — |
+| CTX-001 | legacy-unknown / 2026-08-28 | `agent/full-agent-skills-context-001` | #32 | `e788a235` | N/A |
+| PYTH-001 | legacy-unknown / 2026-08-28 | `agent/pyth-hermes-endpoint-fix` | #33 | `17ba78bb` | — |
+| GAP-001 | legacy-unknown / 2026-08-28 | `agent/data-gap-restart-idempotency` | #34 | `c2ded1d4` | — |
+| MVN-003 | legacy-unknown / 2026-08-28 | `agent/mvn-003-isolated-research-runner-001` | #35 | `c8afe5e2` | — |
+| AR-RD-001 | legacy-unknown / 2026-08-28 | `agent/archive-research-source-adapter-001` | #36 | `53380072` | — |
+| PYTH-002 | legacy-unknown / 2026-08-28 | `agent/live15-pyth-feed-local-circuit-breaker-001` | #37 | `eeed2e5b` | — |
+| RUN-004 | legacy-unknown / 2026-08-28 | `agent/archive-mvn003-integration-001` | #38 | `79e4f708` | — |
+| UI-012 | legacy-unknown / 2026-08-28 | `agent/live15-intentional-auxiliary-health-projection-001` | #39 | `7f790fb8` | — |
+| KWS-001 | legacy-unknown / 2026-08-28 | `agent/kalshi-ws-rollover-resync-fix-final` | #40 | `cce1ebc1` | — |
+| CTX-002 | legacy-unknown / 2026-08-28 | `agent/ctx-002-project-brain-reconciliation` | pending | `493c34b` | N/A |
+
 ## Current reconciliation basis
 
 - Merged-code authority: `origin/main` at `cce1ebc1ad7e29fb85fea9f86d9f1b9cb924fb17`
@@ -36,6 +58,7 @@ updating this ledger only if its status, result, caution, or next action changed
 | AR-003 | Baseline-gap classification and quarantine / archive | MERGED / guarded | PR #21, #26 | No new deployment claim | Preserve raw quarantined evidence; never invent replay baselines. | Retention destruction |
 | RD-001 | Research Data Authority / data | MERGED / COMPLETE | PR #29 `080e7804` | Not a deployment claim | H0/H1/H2 registry and universe remain coverage authority. | Research policy |
 | RT-OWN-001 | One-owner runtime governance / ops | MERGED / COMPLETE | PR #30 `cd5d64d9` | Current services observed running; code deployment not inferred | Recorder, Control Center, Supervisor each remain WinSW-owned. | Runtime changes |
+| OPS-010 | Service ACL and diagnostics / ops | MERGED / RESOLVED | PR #31 `5c46af86` | No deployment claim | Corrected Codex ACE is guarded history, not an active blocker. | Runtime changes |
 | CTX-001 | Skills and Git Project Brain / context | MERGED / COMPLETE | PR #32 `e788a235` | N/A | CTX-002 adds task recovery, not a second brain. | None |
 | PYTH-001 | Hermes compatibility / provider | MERGED / COMPLETE | PR #33 `17ba78bb` | Not a current-main proof | Exact WTI has no authoritative replacement. | Provider policy |
 | GAP-001 | Restart-idempotent DataGap / data | MERGED / GUARDED | PR #34 `c2ded1d4` | Historical runtime closeout exists; current deployment unproven | Logical identity excludes mutable provenance; semantic conflicts fail closed. | Data truth |

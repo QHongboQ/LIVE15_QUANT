@@ -41,6 +41,8 @@ approval. **Mutations: 0.**
 | Recent merged work | PR #29–#40 are task-indexed in `PROJECT_PROGRESS.md`; their merged state is not deployment proof. |
 | Deployed and verified | Only bounded runtime evidence can establish deployment/verification. Terminal V3 has historical proof; current-main deployment is unproven. |
 | Training permission | **NO TRAINING_GO**. RUN-004 technical PASS does not authorize long training. |
+| Frozen holdout | `UNREVEALED_FROZEN`; do not read, infer, tune against, or leak its payload. |
+| Verified work | UI-010 has historical Terminal V3 proof and ST-006 is a verified read-only `TEMPORARY_BACKLOG` classification; neither proves current-main deployment. |
 | Active limits | Exact WTI Pyth source is unavailable and feed-locally isolated; service ACL and generic Pyth-worker incidents are resolved history. |
 | H0/H1/H2 | Native Recorder/verified archive; official historical evidence; validated credentialed historical L2. |
 | ResearchUniverse | Registry-based authorized source coverage, with deterministic precedence, deduplication, and conflict quarantine. |

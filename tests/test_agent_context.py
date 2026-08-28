@@ -9,6 +9,7 @@ def test_project_brain_has_compact_bootstrap_and_required_pointers() -> None:
     charter = (ROOT / "PROJECT_CHARTER.md").read_text(encoding="utf-8")
     context = (ROOT / "CONTEXT.md").read_text(encoding="utf-8")
     current_state = (ROOT / "CURRENT_STATE.md").read_text(encoding="utf-8")
+    progress = (ROOT / "PROJECT_PROGRESS.md").read_text(encoding="utf-8")
 
     estimated_tokens = int(
         (
@@ -16,10 +17,11 @@ def test_project_brain_has_compact_bootstrap_and_required_pointers() -> None:
             + len(charter.split())
             + len(context.split())
             + len(current_state.split())
+            + len(progress.split())
         )
         * 1.35
     )
-    assert estimated_tokens <= 3_000
+    assert estimated_tokens <= 5_000
     for pointer in (
         "PROJECT_CHARTER.md",
         "CONTEXT.md",
@@ -104,5 +106,8 @@ def test_strategy_drift_and_new_session_recovery_contract() -> None:
         "separately WinSW-owned services",
         "PROJECT_PROGRESS.md",
         "docs/adr/README.md",
+        "UNREVEALED_FROZEN",
+        "ST-006",
+        "NO TRAINING_GO",
     ):
         assert answer in simulation
