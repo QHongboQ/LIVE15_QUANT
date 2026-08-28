@@ -24,6 +24,11 @@ boundaries fail-closed.
   registry and `ResearchUniverseSnapshot`.
 - Recorder raw truth, archive quarantine, sequence integrity, and settlement
   lineage fail closed.
+- Any factor/model/Router/threshold/promotion claim of tradable edge must use
+  full economic cost accounting under `docs/economic_cost_accounting.md`,
+  including executable prices, spread/slippage/fill effects, venue fees,
+  applicable tax policy/reserve, and other material real costs. Unknown material
+  costs may not silently default to zero.
 - Hard Risk is independent; Production writes remain disabled unless a human
   explicitly authorizes them.
 
