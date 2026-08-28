@@ -225,6 +225,8 @@ def test_system_exposes_live_supervisor_component_truth(tmp_path: Path) -> None:
     (runtime / "runtime-supervisor-status.json").write_text(
         json.dumps(
             {
+                "status": "RUNNING",
+                "last_heartbeat": NOW.isoformat(),
                 "components": {
                     "paper_forward": {
                         "status": "RUNNING",
@@ -235,7 +237,7 @@ def test_system_exposes_live_supervisor_component_truth(tmp_path: Path) -> None:
                         "process_alive": True,
                         "expected_mode": "PAPER_SHADOW_LOCAL_ONLY",
                     }
-                }
+                },
             }
         ),
         encoding="utf-8",
@@ -250,6 +252,48 @@ def test_system_exposes_live_supervisor_component_truth(tmp_path: Path) -> None:
     assert component.heartbeat_age_seconds == 0
 
 
+@pytest.mark.parametrize(
+    ("name", "status"),
+    [
+        ("kalshi_sdk_ws_shadow", "ON_DEMAND"),
+        ("paper_forward", "PAUSED_BY_DESIGN"),
+    ],
+)
+def test_system_preserves_intentional_auxiliary_state_despite_old_child_heartbeat(
+    tmp_path: Path, name: str, status: str
+) -> None:
+    configured = settings(tmp_path, ui_heartbeat_stale_seconds=30)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    stale = NOW - timedelta(seconds=31)
+    (runtime / "runtime-supervisor-status.json").write_text(
+        json.dumps(
+            {
+                "status": "RUNNING",
+                "last_heartbeat": NOW.isoformat(),
+                "components": {
+                    name: {
+                        "status": status,
+                        "pid": os.getpid(),
+                        "started_at": stale.isoformat(),
+                        "last_heartbeat": stale.isoformat(),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    component = (
+        ControlCenterService(configured, clock=lambda: NOW).system().runtime_components[name]
+    )
+
+    assert component.status == status
+    assert component.pid is None
+    assert component.process_alive is False
+    assert component.heartbeat_age_seconds == 31
+
+
 def test_system_fails_closed_for_stale_supervisor_receipt(tmp_path: Path) -> None:
     configured = settings(tmp_path, ui_heartbeat_stale_seconds=30)
     runtime = tmp_path / "runtime"
@@ -258,6 +302,8 @@ def test_system_fails_closed_for_stale_supervisor_receipt(tmp_path: Path) -> Non
     (runtime / "runtime-supervisor-status.json").write_text(
         json.dumps(
             {
+                "status": "RUNNING",
+                "last_heartbeat": NOW.isoformat(),
                 "components": {
                     "recorder": {
                         "status": "RUNNING",
@@ -266,7 +312,7 @@ def test_system_fails_closed_for_stale_supervisor_receipt(tmp_path: Path) -> Non
                         "last_heartbeat": stale.isoformat(),
                         "expected_mode": "MANAGED_RECORDER",
                     }
-                }
+                },
             }
         ),
         encoding="utf-8",
@@ -279,6 +325,49 @@ def test_system_fails_closed_for_stale_supervisor_receipt(tmp_path: Path) -> Non
     assert component.status == "STALE"
     assert component.pid is None
     assert component.process_alive is False
+
+
+def test_system_fails_closed_when_supervisor_receipt_is_stale(tmp_path: Path) -> None:
+    configured = settings(tmp_path, ui_heartbeat_stale_seconds=30)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    stale = NOW - timedelta(seconds=31)
+    (runtime / "runtime-supervisor-status.json").write_text(
+        json.dumps(
+            {
+                "status": "RUNNING",
+                "last_heartbeat": stale.isoformat(),
+                "components": {
+                    "paper_forward": {
+                        "status": "PAUSED_BY_DESIGN",
+                        "pid": os.getpid(),
+                        "started_at": NOW.isoformat(),
+                        "last_heartbeat": NOW.isoformat(),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    component = (
+        ControlCenterService(configured, clock=lambda: NOW)
+        .system()
+        .runtime_components["paper_forward"]
+    )
+
+    assert component.status == "STALE"
+    assert component.pid is None
+    assert component.process_alive is False
+
+
+def test_system_hides_components_from_malformed_supervisor_receipt(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "runtime-supervisor-status.json").write_text("[]", encoding="utf-8")
+
+    assert ControlCenterService(configured, clock=lambda: NOW).system().runtime_components == {}
 
 
 @pytest.mark.asyncio

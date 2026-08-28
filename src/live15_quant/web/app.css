@@ -161,7 +161,7 @@ table td { height: 44px; font-size: 13px; border-top-color: rgba(255,255,255,.05
 .state-warning, .state-degraded, .state-paused, .state-upcoming, .state-pending { color: var(--yellow); }
 .state-error, .state-storage_error { color: var(--red); }
 .state-stale { color: var(--purple); }
-.state-missing, .state-unavailable, .state-unsupported, .state-stopped, .state-market_closed { color: #8193a1; }
+.state-missing, .state-unavailable, .state-unsupported, .state-stopped, .state-market_closed, .state-on_demand, .state-paused_by_design { color: #8193a1; }
 .state-unknown, .state-not_materialized, .state-insufficient_data { color: #9da8b2; }
 .state-attention, .state-failed { color: var(--yellow); }
 
