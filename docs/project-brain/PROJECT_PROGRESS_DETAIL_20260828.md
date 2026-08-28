@@ -90,6 +90,21 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 
 H2 is optional-by-validation, not optional-by-claim: formal research may use H0 + H1 + **validated** H2. Unvalidated or plan-restricted H2 capability is excluded rather than fabricated; it must not block unrelated valid model families without evidence.
 
+## Frozen-holdout accidental-exposure governance incident
+
+During WS-RESYNC-001 + GAP-002 closeout, an over-broad local artifact search
+displayed frozen-holdout rows. The search was immediately stopped. The exposed
+content was not used in the WS/GAP/H2 implementation, regression thresholds,
+parameter selection, or code changes; the WS technical acceptance therefore
+remains independent of the incident.
+
+The prior frozen-holdout `UNREVEALED` status is no longer valid, and this task
+must not claim zero holdout access. Do not reopen, sample, print, search, or
+otherwise inspect the frozen holdout to establish scope. No dataset is modified
+or deleted, no training split is created, and no training is authorized. Before
+`TRN-001`, complete a separate holdout-contamination remediation/replacement
+decision under the training/holdout human gate.
+
 ## Reconciliation classification
 
 | Legacy category | CTX-002 disposition |

@@ -57,7 +57,12 @@ formal long-run training GO/NO-GO gate.
   still requires measured throughput/catch-up evidence and a valid 60-minute
   proof with Recorder safety intact.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
-  **NO TRAINING_STARTED**. Frozen holdout remains opaque. **PRODUCTION WRITES 0.**
+  **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
+  frozen-holdout rows and was stopped immediately. The former `UNREVEALED`
+  status is invalid; no exposed content informed WS/GAP/H2 implementation,
+  test thresholds, parameters, or code changes. Do not reopen the holdout to
+  measure scope. A separate contamination-remediation/replacement decision is
+  required before `TRN-001`. **PRODUCTION WRITES 0.**
 
 ## Immediate sequence
 
@@ -70,9 +75,10 @@ formal long-run training GO/NO-GO gate.
 4. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is
    READY may a separate explicit human approval authorize deployment/restart and
    bounded runtime proof;
-5. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` without reading the frozen
-   holdout;
-6. start formal overnight training only after explicit `TRAINING_GO`.
+5. complete the separate holdout-contamination remediation/replacement decision
+   without reopening the frozen holdout;
+6. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` only after that decision;
+7. start formal overnight training only after explicit `TRAINING_GO`.
 
 Validated H2 is additive authority: formal research may use H0 + H1 + validated
 H2. An H2 capability that remains unvalidated or plan-restricted must be excluded

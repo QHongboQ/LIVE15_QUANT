@@ -33,15 +33,17 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | H2-TRAIN-003 | BLOCKED / historical | Preserve prior blocker evidence. Do not continue as an independent development branch unless WS-RESYNC leaves a new smallest blocker. | Training/holdout |
 | ST-005 | CODE_READY_PENDING_60MIN_PROOF | Code and offline validation now expose fail-closed, comparable 60-second archive/ingress evidence; formal runtime proof has not run. | Requires approved read-only 60-minute proof after a valid runtime/deployment gate; no restart or storage mutation |
 | DEP-001 | PLANNED | DEP-PKG-002 blocker removed. Next action: Phase A current-main read-only preflight. Deployment/restart requires separate explicit `DEP001_DEPLOY_APPROVED`. | Deploy/restart |
-| TRN-001 | PLANNED / NO_GO | `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run. Frozen holdout remains opaque; formal overnight training requires explicit `TRAINING_GO`. | Training/holdout |
+| TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
 
 ## Route to formal overnight training
 
 1. finish/reconcile `WS-RESYNC-001 + GAP-002`;
 2. finish/reconcile `ST-005`;
 3. rerun `DEP-001` Phase A read-only preflight, then only with separate human approval deploy and prove reviewed protected main;
-4. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` without reading frozen holdout;
-5. start formal overnight training only on explicit `TRAINING_GO`.
+4. complete a separate holdout-contamination remediation/replacement decision
+   without reopening the frozen holdout;
+5. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` only after that decision;
+6. start formal overnight training only on explicit `TRAINING_GO`.
 
 H2 is optional-by-validation: formal research may use H0 + H1 + **validated** H2. Unvalidated or plan-restricted H2 capability is excluded rather than fabricated and must not block unrelated valid model families without evidence.
 
