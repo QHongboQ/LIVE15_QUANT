@@ -9,8 +9,8 @@ const ASSET_LABELS = Object.freeze({
 
 // Recorder collection cadence is configured server-side and is independent of these
 // read-only API refresh intervals. The one-second countdown below performs no request.
-const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, system: 30000, coverage: 60000, data: 30000, training: 30000, researchData: 60000, archive: 10000, storage: 30000, operations: 10000, account: 10000 });
-const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, data: null, training: null, researchData: null, archive: null, storage: null, operations: null, events: null, system: null, account: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
+const INTERVALS = Object.freeze({ health: 2500, markets: 2500, detail: 2500, events: 15000, eventSummary: 15000, system: 30000, coverage: 60000, data: 30000, training: 30000, researchData: 60000, archive: 10000, storage: 30000, operations: 10000, account: 10000 });
+const state = { health: null, markets: null, detail: null, detailAsset: null, coverage: null, data: null, training: null, researchData: null, archive: null, storage: null, operations: null, events: null, eventSummary: null, system: null, account: null, controlBusy: false, eventFilters: { severity: "", asset: "", source: "", hours: "24" } };
 const lastFetched = new Map();
 const inFlight = new Map();
 const stateErrors = new Map();
@@ -356,10 +356,11 @@ function renderDashboard() {
   const training = state.training || {};
   const rawPool = training.raw_finalized_pool || {};
   const currentPool = training.current_trainable || {};
-  const eventCounts = (state.events || []).reduce((counts, item) => { counts[item.severity] = (counts[item.severity] || 0) + 1; return counts; }, {});
+  const eventSummary = state.eventSummary || {};
+  const eventTotalsAvailable = eventSummary.availability === "available";
   const summary = node("div", "metric-grid");
-  append(summary, metric("Finalized events", valueOrDash(rawPool.events, number)), metric("Current trainable rows", valueOrDash(currentPool.rows, number)), metric("Warnings", number(eventCounts.warning || 0)), metric("Errors / fatal", number((eventCounts.error || 0) + (eventCounts.fatal || 0))));
-  root.append(sectionHead("Recorder summary", "Operational events are bounded"), summary);
+  append(summary, metric("Finalized events", valueOrDash(rawPool.events, number)), metric("Legacy/local trainable rows", valueOrDash(currentPool.rows, number)), metric("Warnings", eventTotalsAvailable ? number(eventSummary.warnings) : "—", eventTotalsAvailable ? null : stateLabel(eventSummary.availability || "unavailable")), metric("Errors / fatal", eventTotalsAvailable ? number((eventSummary.errors ?? 0) + (eventSummary.fatals ?? 0)) : "—", eventTotalsAvailable ? null : stateLabel(eventSummary.availability || "unavailable")));
+  root.append(sectionHead("Recorder summary", "Exact warnings/errors/fatals over the last 24 hours"), summary);
 
   root.append(sectionHead("Live 15-minute markets", `${markets.length}/10 assets · details in Markets`));
   const marketTable = node("table");
@@ -380,7 +381,7 @@ function renderDashboard() {
   operations.append(append(node("div", "panel-head"), node("h2", "", "Lifecycle & settlement")));
   const operationMetrics = node("div", "panel-body metric-grid");
   const active = Object.values(health.current_markets || {}).filter(Boolean).length;
-  append(operationMetrics, metric("Active markets", `${active}/10`), metric("Settlement pending", number(health.active_settlement_followups)), metric("Finalized assets", `${Object.keys(health.last_finalized_settlement || {}).length}/10`), metric("Retries", number(Object.values(health.retry_counts || {}).reduce((sum, item) => sum + item, 0))));
+  append(operationMetrics, metric("Active markets", `${active}/10`), metric("Settlement pending", number(health.active_settlement_followups)), metric("Finalized assets", `${Object.keys(health.last_finalized_settlement || {}).length}/10`), metric("Current health issues", number((health.current_health_issues || []).length)));
   operations.append(operationMetrics);
   const settlements = node("div", "settlement-strip");
   for (const asset of Object.keys(ASSET_LABELS)) {
@@ -497,6 +498,11 @@ function eventsUrl() {
   if (state.eventFilters.source) parameters.set("source", state.eventFilters.source);
   if (state.eventFilters.hours) parameters.set("since", new Date(Date.now() - Number(state.eventFilters.hours) * 3600000).toISOString());
   return `/api/events?${parameters}`;
+}
+
+function dashboardEventSummaryUrl() {
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  return `/api/events/summary?since=${encodeURIComponent(since)}`;
 }
 
 function renderMarkets() {
@@ -755,14 +761,26 @@ function renderSystem() {
   append(heartbeatGrid, kv("Recorder state", health.recorder_state, health.recorder_state), kv("Reported status", health.status, health.status), kv("WS synchronized assets", valueOrDash(health.kalshi_ws_synchronized_count, number)), kv("WS sequence gaps", valueOrDash(health.kalshi_ws_seq_gaps, number)), kv("Uptime", duration(health.uptime_seconds)), kv("Last activity", timestamp(health.observed_at)), kv("Database size", bytes(health.database_bytes)), kv("WAL size", bytes(health.wal_bytes)), kv("Rows written", number(health.written_records)), kv("Settlement pending", number(health.active_settlement_followups)), kv("Fatal task", valueOrDash(health.fatal_task)), kv("Fatal error", valueOrDash(health.fatal_error_type)));
   heartbeat.append(heartbeatGrid);
   const sources = node("div", "panel");
-  sources.append(append(node("div", "panel-head"), node("h2", "", "Retries & source failures"), badge(warningItems(health).length ? "warning" : "healthy")));
+  sources.append(append(node("div", "panel-head"), node("h2", "", "Current health"), badge(warningItems(health).length ? "warning" : "healthy")));
   const sourceBody = node("div", "panel-body");
-  const retryEntries = Object.entries(health.retry_counts || {});
   const failureEntries = Object.entries(health.source_failures || {});
-  if (!retryEntries.length && !failureEntries.length) sourceBody.append(emptyState("✓ No active failures", "No retry or source-failure state reported."));
-  retryEntries.forEach(([source, count]) => sourceBody.append(append(node("div", "book-row"), node("span", "", source), node("span", "", `${count} retries`))));
+  if (!(health.current_health_issues || []).length && !failureEntries.length) sourceBody.append(emptyState("✓ No active failures", "No current source, worker, or recorder health issue is reported."));
+  (health.current_health_issues || []).forEach((issue) => sourceBody.append(append(node("div", "warning-item"), node("span", "icon", "◆"), node("span", "", issue))));
+  (health.stale_sources || []).forEach((source) => sourceBody.append(append(node("div", "warning-item"), node("span", "icon", "◆"), node("span", "", `STALE SOURCE · ${source}`))));
+  (health.stale_workers || []).forEach((worker) => sourceBody.append(append(node("div", "warning-item"), node("span", "icon", "◆"), node("span", "", `STALE WORKER · ${worker}`))));
   failureEntries.forEach(([source, reason]) => sourceBody.append(append(node("div", "warning-item"), node("span", "icon", "◆"), node("span", "", `${source}: ${reason}`))));
   sources.append(sourceBody); append(detail, heartbeat, sources); root.append(detail);
+  root.append(sectionHead("Current worker health", "Current state, consecutive failures, last error, and next retry"));
+  const workers = node("div", "table-wrap"); const workerTable = node("table"); const workerHead = node("tr"); ["Worker", "State", "Failures", "Last error", "Next retry"].forEach((item) => workerHead.append(node("th", item === "Worker" ? "" : "num", item))); const workerBody = node("tbody");
+  Object.entries(health.worker_health || {}).forEach(([name, worker]) => append(workerBody, append(node("tr"), node("td", "", name), append(node("td"), badge(worker.current_state)), node("td", "num", number(worker.consecutive_failures)), node("td", "", valueOrDash(worker.last_error_type)), node("td", "num", timestamp(worker.next_retry_at)))));
+  workerTable.append(append(node("thead"), workerHead), workerBody); workers.append(workerTable); root.append(workers);
+  root.append(sectionHead("Historical diagnostics", "Lifetime counters are not current-health indicators"));
+  const historical = node("div", "panel panel-body warning-list");
+  const retryEntries = Object.entries(health.retry_counts || {});
+  if (!retryEntries.length) historical.append(emptyState("No historical retries", "No retained reconnect or retry incidents are recorded."));
+  retryEntries.forEach(([source, count]) => historical.append(append(node("div", "book-row"), node("span", "", source), node("span", "", `${count} lifetime retries`))));
+  historical.append(append(node("div", "book-row"), node("span", "", "Kalshi WS reconnects"), node("span", "", number(health.kalshi_ws_reconnect_count))), append(node("div", "book-row"), node("span", "", "Kalshi WS resyncs"), node("span", "", number(health.kalshi_ws_resync_count))));
+  root.append(historical);
   const runtimeComponents = Object.entries(system.runtime_components || {});
   root.append(sectionHead("Runtime components", "Supervisor-owned process and heartbeat truth"));
   const runtimeGrid = node("div", "metric-grid");
@@ -858,7 +876,8 @@ function renderArchive() {
   const root = node("div");
   root.append(sectionHead("Archive", "Verified history and purge eligibility · dry run only"));
   const status = node("div", "panel panel-body kv-grid");
-  append(status, kv("Archive status", stateLabel(archive.state)), kv("Poll Mode", naValue(archive.poll_mode, stateLabel)), kv("Next poll", naValue(archive.next_poll_seconds, (v) => `${number(v, 1)} s`)), kv("Backlog", naValue(archive.backlog_events, number)), kv("Throughput", naValue(archive.throughput_events_per_second, (v) => `${number(v, 2)}/s`)), kv("Verified", naValue(archive.verified_chunks, number)), kv("Failed", naValue(archive.failed_chunks, number)), kv("Waiting", naValue(archive.waiting_chunks, number)), kv("Quarantine", naValue(archive.quarantined_chunks, number))); root.append(status);
+  append(status, kv("Archive status", stateLabel(archive.state)), kv("Catch-up status", stateLabel(archive.catch_up_status), archive.catch_up_status), kv("Poll Mode", naValue(archive.poll_mode, stateLabel)), kv("Next poll", naValue(archive.next_poll_seconds, (v) => `${number(v, 1)} s`)), kv("Backlog", naValue(archive.backlog_events, number)), kv("Backlog capped", archive.backlog_capped ? "YES" : "NO"), kv("Deferred for WS backpressure", archive.deferred_for_ws_backpressure ? "YES" : "NO"), kv("Input WS rate", naValue(archive.input_ws_events_per_second, (v) => `${number(v, 2)}/s`)), kv("Verified throughput", naValue(archive.throughput_events_per_second, (v) => `${number(v, 2)}/s`)), kv("Catch-up ratio", naValue(archive.catch_up_ratio, (v) => `${number(v, 2)}×`)), kv("Backlog slope", naValue(archive.backlog_slope_events_per_second, (v) => `${number(v, 2)}/s`)), kv("Catch-up ETA", naValue(archive.catch_up_eta_seconds, duration)), kv("Verified", naValue(archive.verified_chunks, number)), kv("Failed", naValue(archive.failed_chunks, number)), kv("Waiting", naValue(archive.waiting_chunks, number)), kv("Quarantine", naValue(archive.quarantined_chunks, number))); root.append(status);
+  root.append(node("div", "notice", "ST-005 archive/purge throughput proof remains unresolved. TEMPORARY_BACKLOG is not throughput proof."));
 
   root.append(sectionHead("Adaptive cadence", "Current mode is highlighted; cadence remains read-only."));
   const cadence = node("div", "table-wrap");
@@ -885,7 +904,7 @@ function renderStorage() {
   const storage = state.storage;
   if (!storage) return emptyState("Storage state unavailable", "Waiting for the storage health API.");
   const root = node("div"); root.append(sectionHead("Storage", "Capacity, growth, and retention evidence"));
-  const top = node("div", "panel panel-body kv-grid"); append(top, kv("Database", naValue(storage.hot_sqlite_bytes, bytes)), kv("WAL", naValue(storage.wal_bytes, bytes)), kv("Cold archive", naValue(storage.cold_archive_bytes, bytes)), kv("Disk free", naValue(storage.disk_free_bytes, bytes)), kv("SQLite reusable", naValue(storage.sqlite_reusable_bytes, bytes)), kv("Net growth / day", naValue(storage.net_disk_growth_bytes_per_day, (v) => `${bytes(v)}/day`))); root.append(top);
+  const top = node("div", "panel panel-body kv-grid"); append(top, kv("Storage threshold", stateLabel(storage.state), storage.state), kv("Database", naValue(storage.hot_sqlite_bytes, bytes)), kv("WAL", naValue(storage.wal_bytes, bytes)), kv("Cold archive", naValue(storage.cold_archive_bytes, bytes)), kv("Disk free", naValue(storage.disk_free_bytes, bytes)), kv("SQLite reusable", naValue(storage.sqlite_reusable_bytes, bytes)), kv("Net growth / day", naValue(storage.net_disk_growth_bytes_per_day, (v) => `${bytes(v)}/day`))); root.append(top);
 
   root.append(sectionHead("Storage efficiency", "Compression, SQLite reuse, and physical reclamation are distinct."));
   const efficiency = node("div", "panel panel-body kv-grid"); append(efficiency, kv("Compression savings", naValue(storage.compression_saved_bytes, bytes)), kv("Compression saving %", naValue(storage.compression_saving_percent, percent)), kv("SQLite reusable", naValue(storage.sqlite_reusable_bytes, bytes)), kv("Physical disk reclaimed", naValue(storage.physical_reclaimed_bytes, bytes)), kv("Disk free", naValue(storage.disk_free_bytes, bytes)), kv("Hot SQLite", naValue(storage.hot_sqlite_bytes, bytes))); root.append(efficiency);
@@ -934,13 +953,14 @@ async function refresh(force = false) {
   if (document.hidden) return;
   const route = currentRoute();
   const tasks = [fetchJson("health", "/api/health", INTERVALS.health, force)];
-  if (["overview", "portfolio", "account", "orders", "history", "dashboard", "detail"].includes(route.name)) tasks.push(fetchJson("account", "/api/account?profile=production_primary", INTERVALS.account, force));
-  if (["dashboard", "events", "system", "operations"].includes(route.name)) tasks.push(fetchJson("events", eventsUrl(), INTERVALS.events, force));
-  if (["dashboard", "training", "data"].includes(route.name)) tasks.push(fetchJson("training", "/api/training", INTERVALS.training, force));
+  if (["overview", "portfolio", "account", "orders", "history", "detail"].includes(route.name)) tasks.push(fetchJson("account", "/api/account?profile=production_primary", INTERVALS.account, force));
+  if (route.name === "events") tasks.push(fetchJson("events", eventsUrl(), INTERVALS.events, force));
+  if (route.name === "dashboard") tasks.push(fetchJson("eventSummary", dashboardEventSummaryUrl(), INTERVALS.eventSummary, force));
+  if (["dashboard", "training"].includes(route.name)) tasks.push(fetchJson("training", "/api/training", INTERVALS.training, force));
   if (route.name === "research-data") tasks.push(fetchJson("researchData", "/api/research-data", INTERVALS.researchData, force));
-  if (["dashboard", "data"].includes(route.name)) tasks.push(fetchJson("data", "/api/data", INTERVALS.data, force));
-  if (["dashboard", "archive"].includes(route.name)) tasks.push(fetchJson("archive", "/api/archive", INTERVALS.archive, force));
-  if (["dashboard", "storage"].includes(route.name)) tasks.push(fetchJson("storage", "/api/storage", INTERVALS.storage, force));
+  if (route.name === "data") tasks.push(fetchJson("data", "/api/data", INTERVALS.data, force));
+  if (route.name === "archive") tasks.push(fetchJson("archive", "/api/archive", INTERVALS.archive, force));
+  if (route.name === "storage") tasks.push(fetchJson("storage", "/api/storage", INTERVALS.storage, force));
   if (["dashboard", "operations"].includes(route.name)) tasks.push(fetchJson("operations", "/api/operations", INTERVALS.operations, force));
   if (["dashboard", "markets", "system"].includes(route.name)) tasks.push(fetchJson("markets", "/api/markets", INTERVALS.markets, force));
   if (route.name === "system") tasks.push(fetchJson("system", "/api/system", INTERVALS.system, force));
@@ -952,14 +972,16 @@ async function refresh(force = false) {
       return payload;
     }));
   }
+  const fetchedBefore = new Map(lastFetched);
   const results = await Promise.allSettled(tasks);
   const failures = results.filter((result) => result.status === "rejected");
   showNotice(failures.length ? `Some local data could not refresh (${failures.length} request${failures.length === 1 ? "" : "s"}). Unavailable values are shown until refreshed.` : "");
-  render();
+  const refreshed = [...lastFetched].some(([key, value]) => fetchedBefore.get(key) !== value);
+  if (force || refreshed || failures.length) render();
 }
 
 window.addEventListener("hashchange", () => { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); refresh(true); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(true); });
 setInterval(updateCountdowns, 1000);
-setInterval(() => refresh(false), 500);
+setInterval(() => refresh(false), 1000);
 refresh(true);

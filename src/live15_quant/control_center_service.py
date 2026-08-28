@@ -15,6 +15,7 @@ from live15_quant.control_center_models import (
     Availability,
     CoverageResponse,
     DataResponse,
+    EventSummaryResponse,
     HealthResponse,
     MarketResponse,
     OperationsResponse,
@@ -28,6 +29,7 @@ from live15_quant.control_center_models import (
     StorageResponse,
     SystemResponse,
     TrainingResponse,
+    WorkerHealthResponse,
     WsArchiveHealth,
 )
 from live15_quant.control_center_store import DashboardReadStore
@@ -115,13 +117,35 @@ class ControlCenterService:
                 if market_session(asset) is None:
                     continue
                 source = f"pyth:{asset.value}"
-                state = market_data_state(
-                    asset,
-                    checked_at=checked_at,
-                    latest_received=last_underlying.get(asset.value),
-                    max_age=timedelta(seconds=self.settings.recorder_pyth_stale_seconds),
-                    source_available=source not in source_failures,
-                )
+                # Current recorder heartbeats already compute this typed state from
+                # the exact source availability and session calendar.  Do not dilute
+                # that authority with a second projection here.
+                if asset.value in underlying_states:
+                    continue
+                # Older heartbeat receipts did not carry an authoritative underlying
+                # state or receive cursor.  Preserve the store's explicit freshness
+                # projection for those receipts instead of inventing an outage.
+                if (
+                    asset.value not in underlying_states
+                    and asset.value not in last_underlying
+                    and source not in source_failures
+                ):
+                    state = market_data_state(
+                        asset,
+                        checked_at=checked_at,
+                        latest_received=None,
+                        max_age=timedelta(seconds=self.settings.recorder_pyth_stale_seconds),
+                    )
+                    if state is not MarketDataState.MARKET_CLOSED:
+                        continue
+                else:
+                    state = market_data_state(
+                        asset,
+                        checked_at=checked_at,
+                        latest_received=last_underlying.get(asset.value),
+                        max_age=timedelta(seconds=self.settings.recorder_pyth_stale_seconds),
+                        source_available=source not in source_failures,
+                    )
                 underlying_states[asset.value] = state.value
                 if state is MarketDataState.MARKET_CLOSED:
                     stale_sources = [value for value in stale_sources if value != source]
@@ -152,12 +176,14 @@ class ControlCenterService:
                 ),
                 last_finalized_settlement=self._string_map(raw.get("last_finalized_settlement")),
                 retry_counts=self._int_map(raw.get("retry_counts")),
+                current_health_issues=self._string_list(raw.get("current_health_issues")),
                 source_failures=source_failures,
                 stale_sources=stale_sources,
                 market_closed_sources=market_closed_sources,
                 underlying_market_states=underlying_states,
                 worker_progress=self._datetime_map(raw.get("worker_progress")),
                 worker_progress_age_seconds=self._float_map(raw.get("worker_progress_age_seconds")),
+                worker_health=self._worker_health(raw.get("worker_health")),
                 stale_workers=stale_workers,
                 event_loop_lag_seconds=self._optional_float(raw.get("event_loop_lag_seconds")),
                 fatal_task=self._optional_string(raw.get("fatal_task")),
@@ -247,23 +273,29 @@ class ControlCenterService:
 
     def markets(self) -> list[MarketResponse]:
         health = self.health()
-        responses: list[MarketResponse] = []
-        for asset in Asset:
-            payload = self.store.asset(
-                asset, self._clock(), health.current_markets.get(asset.value)
-            )
-            if health.underlying_market_states.get(asset.value) == "market_closed":
-                payload["underlying_status"] = "market_closed"
-            responses.append(MarketResponse.model_validate(payload))
-        return responses
+        payloads = self.store.summaries(self._clock(), health.current_markets)
+        return [
+            MarketResponse.model_validate(self._apply_underlying_state(payload, health, asset))
+            for asset, payload in zip(Asset, payloads, strict=True)
+        ]
 
     def market(self, asset: Asset) -> MarketResponse:
         health = self.health()
         payload = self.store.asset(asset, self._clock(), health.current_markets.get(asset.value))
-        if health.underlying_market_states.get(asset.value) == "market_closed":
-            payload["underlying_status"] = "market_closed"
+        payload = self._apply_underlying_state(payload, health, asset)
         payload["previous_events"] = self.store.previous_events(asset)
         return MarketResponse.model_validate(payload)
+
+    @staticmethod
+    def _apply_underlying_state(
+        payload: dict[str, object], health: HealthResponse, asset: Asset
+    ) -> dict[str, object]:
+        """Health's current source authority overrides only the list/detail display state."""
+
+        state = health.underlying_market_states.get(asset.value)
+        if state in {"healthy", "market_closed", "stale", "source_unavailable"}:
+            payload["underlying_status"] = state
+        return payload
 
     def coverage(self) -> CoverageResponse:
         # Coverage aggregates immutable completed builds and finalized settlements. Cache
@@ -287,7 +319,7 @@ class ControlCenterService:
 
     def data(self) -> DataResponse:
         health = self.health()
-        pool = self.store.training()["raw_finalized_pool"]
+        pool = self.store.raw_finalized_pool()
         return DataResponse(
             generated_at=self._clock(),
             recorder_state=health.recorder_state,
@@ -319,7 +351,14 @@ class ControlCenterService:
             waiting_chunks=archive.waiting_for_replay_baseline,
             quarantined_chunks=archive.quarantined,
             backlog_events=archive.archive_backlog_events,
+            backlog_capped=archive.archive_backlog_capped,
+            deferred_for_ws_backpressure=archive.deferred_for_ws_backpressure,
             throughput_events_per_second=archive.archive_throughput_events_per_second,
+            input_ws_events_per_second=archive.input_ws_events_per_second,
+            catch_up_ratio=archive.archive_catch_up_ratio,
+            backlog_slope_events_per_second=archive.archive_backlog_slope_events_per_second,
+            catch_up_eta_seconds=archive.archive_catch_up_eta_seconds,
+            catch_up_status=archive.archive_catch_up_status,
             lag_seconds=archive.archive_lag_seconds,
             uncompressed_archive_bytes=archive.uncompressed,
             compressed_archive_bytes=archive.compressed,
@@ -561,6 +600,27 @@ class ControlCenterService:
             for row in rows
         ]
 
+    def event_summary(
+        self,
+        *,
+        asset: Asset | None,
+        source: str | None,
+        since: datetime,
+    ) -> EventSummaryResponse:
+        checked_at = self._clock().astimezone(UTC)
+        if since > checked_at or checked_at - since > timedelta(hours=24):
+            raise ValueError("event summary window must be within the last 24 hours")
+        counts = self.store.event_summary(asset=asset, source=source, since=since, until=checked_at)
+        return EventSummaryResponse(
+            window_start=since.astimezone(UTC),
+            window_end=checked_at,
+            availability=Availability.AVAILABLE if counts is not None else Availability.UNAVAILABLE,
+            warnings=None if counts is None else counts.get("warning", 0),
+            errors=None if counts is None else counts.get("error", 0),
+            fatals=None if counts is None else counts.get("fatal", 0),
+            sample_truncated=False,
+        )
+
     @staticmethod
     def _optional_int(value: object) -> int | None:
         return value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -642,6 +702,40 @@ class ControlCenterService:
         return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
     @staticmethod
+    def _worker_health(value: object) -> dict[str, WorkerHealthResponse]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, WorkerHealthResponse] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not isinstance(item, dict):
+                continue
+            consecutive = item.get("consecutive_failures", 0)
+            result[key] = WorkerHealthResponse(
+                current_state=str(item.get("current_state", "unknown")),
+                consecutive_failures=(
+                    consecutive
+                    if (
+                        isinstance(consecutive, int)
+                        and not isinstance(consecutive, bool)
+                        and consecutive >= 0
+                    )
+                    else 0
+                ),
+                last_error_type=ControlCenterService._optional_string(item.get("last_error_type")),
+                next_retry_at=ControlCenterService._optional_aware_datetime(
+                    item.get("next_retry_at")
+                ),
+                last_progress_timestamp=ControlCenterService._optional_aware_datetime(
+                    item.get("last_progress_timestamp")
+                ),
+                last_successful_observation_timestamp=ControlCenterService._optional_aware_datetime(
+                    item.get("last_successful_observation_timestamp")
+                ),
+                age_seconds=ControlCenterService._optional_float(item.get("age_seconds")),
+            )
+        return result
+
+    @staticmethod
     def _ws_archive_health(value: object) -> WsArchiveHealth:
         """Project an evolving recorder heartbeat onto the stable public API schema.
 
@@ -654,6 +748,30 @@ class ControlCenterService:
         if not isinstance(value, dict):
             return WsArchiveHealth()
         allowed = WsArchiveHealth.model_fields
-        return WsArchiveHealth.model_validate(
+        archive = WsArchiveHealth.model_validate(
             {key: item for key, item in value.items() if key in allowed}
+        )
+        incoming = archive.input_ws_events_per_second
+        throughput = archive.archive_throughput_events_per_second
+        backlog = archive.archive_backlog_events
+        if incoming is None or incoming <= 0 or throughput < 0:
+            return archive
+        ratio = throughput / incoming
+        slope = throughput - incoming
+        if ratio < 1:
+            status = "FALLING_BEHIND"
+        elif backlog > 0 and slope > 0:
+            status = "CATCHING_UP"
+        elif backlog == 0 and ratio >= 1:
+            status = "KEEPING_UP"
+        else:
+            status = "UNKNOWN"
+        eta = backlog / slope if backlog > 0 and slope > 0 else None
+        return archive.model_copy(
+            update={
+                "archive_catch_up_ratio": ratio,
+                "archive_backlog_slope_events_per_second": slope,
+                "archive_catch_up_eta_seconds": eta,
+                "archive_catch_up_status": status,
+            }
         )

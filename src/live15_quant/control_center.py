@@ -21,6 +21,7 @@ from live15_quant.control_center_models import (
     ArchiveResponse,
     CoverageResponse,
     DataResponse,
+    EventSummaryResponse,
     HealthResponse,
     MarketResponse,
     OperationsResponse,
@@ -160,6 +161,19 @@ def create_app(
         return boundary.recorder_events(
             limit=limit, severity=severity, asset=asset, source=source, since=since
         )
+
+    @app.get("/api/events/summary", response_model=EventSummaryResponse)
+    def event_summary(
+        since: datetime | None = None,
+        asset: Asset | None = None,
+        source: str | None = Query(default=None, min_length=1, max_length=160),
+    ) -> EventSummaryResponse:
+        if since is None or since.tzinfo is None or since.utcoffset() is None:
+            raise HTTPException(status_code=422, detail="event time filter must include timezone")
+        try:
+            return boundary.event_summary(asset=asset, source=source, since=since)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     def control(action: str, request: Request) -> Response:
         client = request.client.host if request.client is not None else ""

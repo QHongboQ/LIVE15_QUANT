@@ -87,16 +87,67 @@ class DashboardReadStore:
     def asset(
         self, asset: Asset, now: datetime, current_ticker: str | None = None
     ) -> dict[str, Any]:
+        """Return the explicit detail projection, including bounded feature computation."""
+
         connection = self._open(self.raw_path)
         if connection is None:
             return self._missing_asset(asset, "raw_store_unavailable")
+        try:
+            return self._asset(
+                connection, asset, now, current_ticker, include_features=True, include_detail=True
+            )
+        finally:
+            connection.close()
+
+    def summaries(
+        self, now: datetime, current_markets: dict[str, str | None]
+    ) -> list[dict[str, Any]]:
+        """Return lightweight market cards using one read-only connection per request.
+
+        This intentionally excludes FeatureEngine work: it is a list projection, not a
+        decision/readiness projection.  Detail requests continue to own that bounded work.
+        """
+
+        connection = self._open(self.raw_path)
+        if connection is None:
+            return [self._missing_asset(asset, "raw_store_unavailable") for asset in Asset]
+        try:
+            return [
+                self._asset(
+                    connection,
+                    asset,
+                    now,
+                    current_markets.get(asset.value),
+                    include_features=False,
+                    include_detail=False,
+                )
+                for asset in Asset
+            ]
+        finally:
+            connection.close()
+
+    def _asset(
+        self,
+        connection: sqlite3.Connection,
+        asset: Asset,
+        now: datetime,
+        current_ticker: str | None,
+        *,
+        include_features: bool,
+        include_detail: bool,
+    ) -> dict[str, Any]:
         try:
             market = self._market_row(connection, asset, now, current_ticker)
             if market is None:
                 return self._missing_asset(asset, "market_missing")
             ticker = str(market["ticker"])
+            quote_columns = (
+                "*"
+                if include_detail
+                else "yes_bid,yes_ask,no_bid,no_ask,last_trade,source_timestamp,received_timestamp"
+            )
             quote = connection.execute(
-                """SELECT * FROM kalshi_prediction_quotes WHERE ticker=?
+                f"""SELECT {quote_columns} FROM kalshi_prediction_quotes WHERE ticker=?
                 ORDER BY received_timestamp DESC, id DESC LIMIT 1""",
                 (ticker,),
             ).fetchone()
@@ -120,8 +171,10 @@ class DashboardReadStore:
                 Asset.HYPE: UnderlyingProvider.HYPERLIQUID_PERP,
             }.get(asset)
             secondary = None
-            if secondary_provider is not None and self._table_exists(
-                connection, "secondary_underlying_observations"
+            if (
+                include_detail
+                and secondary_provider is not None
+                and self._table_exists(connection, "secondary_underlying_observations")
             ):
                 secondary = connection.execute(
                     """SELECT * FROM secondary_underlying_observations
@@ -223,8 +276,14 @@ class DashboardReadStore:
                     str(quote["received_timestamp"]) if quote is not None else None
                 ),
                 "orderbook_status": "available" if quote is not None else "missing",
-                "yes_bid_depth": _json(quote["yes_bid_depth"], []) if quote is not None else [],
-                "no_bid_depth": _json(quote["no_bid_depth"], []) if quote is not None else [],
+                "yes_bid_depth": (
+                    _json(quote["yes_bid_depth"], [])
+                    if quote is not None and include_detail
+                    else []
+                ),
+                "no_bid_depth": (
+                    _json(quote["no_bid_depth"], []) if quote is not None and include_detail else []
+                ),
                 "underlying_provider": (
                     UnderlyingProvider.COINBASE.value
                     if product is not None
@@ -283,13 +342,11 @@ class DashboardReadStore:
                     else None
                 ),
                 "settlement_followup": "pending" if now >= end else "not_due",
-                "features": self._features(connection, market, now),
+                "features": self._features(connection, market, now) if include_features else {},
                 "availability": "available",
             }
         except (sqlite3.Error, ValueError, RecorderStorageError):
             return self._missing_asset(asset, "store_error")
-        finally:
-            connection.close()
 
     @staticmethod
     def _market_row(
@@ -893,6 +950,52 @@ class DashboardReadStore:
             return []
         finally:
             connection.close()
+
+    def event_summary(
+        self,
+        *,
+        asset: Asset | None,
+        source: str | None,
+        since: datetime,
+        until: datetime,
+    ) -> dict[str, int] | None:
+        """Return exact severity totals from the indexed, explicitly bounded event window."""
+
+        if source is not None and (not source or len(source) > 160):
+            raise ValueError("invalid event source filter")
+        connection = self._open(self.raw_path)
+        if connection is None:
+            return None
+        try:
+            if not self._table_exists(connection, "recorder_events"):
+                return None
+            clauses = [
+                "observed_timestamp>=?",
+                "observed_timestamp<=?",
+                "severity IN ('warning','error','fatal')",
+            ]
+            parameters: list[object] = [_timestamp(since), _timestamp(until)]
+            if asset is not None:
+                clauses.append("asset=?")
+                parameters.append(asset.value)
+            if source is not None:
+                clauses.append("source=?")
+                parameters.append(source)
+            rows = connection.execute(
+                "SELECT severity,COUNT(*) AS count FROM recorder_events "
+                f"WHERE {' AND '.join(clauses)} GROUP BY severity",
+                parameters,
+            )
+            return {str(row["severity"]): int(row["count"]) for row in rows}
+        except sqlite3.Error:
+            return None
+        finally:
+            connection.close()
+
+    def raw_finalized_pool(self) -> dict[str, Any]:
+        """Expose only the raw-finalized read projection needed by ``/api/data``."""
+
+        return self._raw_finalized_pool()
 
 
 def _optional_nonnegative_int(value: object) -> int | None:
