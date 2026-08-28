@@ -9,9 +9,9 @@ Authority and its evidence artifacts.
 
 ## Current phase
 
-**Project Brain reconciliation / Production closeout gate.** CTX-002 is the
-active documentation task. The runtime is running, but current-main deployment
-and post-deployment proof remain a separately human-approved gate.
+**Production deployment / bounded proof gate.** CTX-002 is merged and closed.
+DEP-001 is next, but current-main deployment and post-deployment proof remain a
+separately human-approved gate.
 
 ## Completed foundations
 
@@ -44,16 +44,16 @@ and post-deployment proof remain a separately human-approved gate.
 - Current-main deployment is **not proven**: the non-editable installed package
   has bounded provenance at an earlier protected-main hash, while the deployed
   commit for `origin/main` cannot be determined from this receipt. Merged is not
-  deployed or verified.
-- `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO**.
+  deployed or verified. **NOT DEPLOYED.**
+- `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
+  **NO TRAINING_STARTED**. **PRODUCTION WRITES 0.**
 
 ## Immediate sequence
 
-1. finish CTX-002 through protected-main review;
-2. only with human approval, perform DEP-001 current-main deployment and bounded
+1. only with human approval, perform DEP-001 current-main deployment and bounded
    runtime proof;
-3. after that proof, authorize the read-only ST-005 trend if still needed;
-4. evaluate TRN-001 gates without reading the frozen holdout.
+2. after that proof, authorize the read-only ST-005 trend if still needed;
+3. evaluate TRN-001 formal GO/NO-GO gates without reading the frozen holdout.
 
 ## Update policy
 
