@@ -145,7 +145,9 @@ def _write_runtime_receipt(
         "pid": os.getpid(),
         "parent_pid": os.getppid(),
         "interpreter_path": sys.executable,
-        "working_directory": str(app),
+        # Runtime state belongs to the mutable Production root.  Only module
+        # imports originate in the immutable release payload.
+        "working_directory": str(production_root),
         "module_root": str(app / "src" / "live15_quant"),
         "deployment_release_id": manifest["release_id"],
         "deployment_git_sha": manifest["git_commit_sha"],
@@ -166,7 +168,9 @@ def run_component(component: str, production_root: Path | None = None) -> None:
     root = (production_root or Path(__file__).resolve().parents[1]).resolve()
     bootstrap = _bootstrap_identity(root)
     app, manifest, manifest_hash = resolve_active_release(root)
-    os.chdir(app)
+    # Keep relative data/, runtime/, and log paths outside the immutable
+    # payload.  ``sys.path`` below remains the sole application-code boundary.
+    os.chdir(root)
     # Release payloads are immutable inventories.  Application imports must
     # not create ``__pycache__`` entries that would invalidate that inventory.
     sys.dont_write_bytecode = True

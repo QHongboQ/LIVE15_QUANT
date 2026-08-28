@@ -108,6 +108,18 @@ def test_build_records_exact_sha_and_deterministic_manifest(tmp_path: Path) -> N
     ).read_text()
 
 
+def test_verify_package_rejects_runtime_created_data_inside_payload(tmp_path: Path) -> None:
+    repository, commit = _repository(tmp_path)
+    release_root = tmp_path / "production"
+    identity = build_release(repository=repository, git_sha=commit, release_root=release_root)
+    payload_data = release_root / "releases" / identity.release_id / "app/data"
+    payload_data.mkdir()
+    (payload_data / "live15.sqlite3").write_bytes(b"runtime mutation")
+
+    with pytest.raises(ReleaseError, match="mutable path is forbidden in release: data"):
+        verify_package(release_root=release_root, release_id=identity.release_id)
+
+
 def test_build_omits_export_ignored_local_tools_directory(tmp_path: Path) -> None:
     repository, _ = _repository(tmp_path)
     local_tools = repository / ".local-tools"
@@ -226,7 +238,7 @@ def test_runtime_provenance_requires_active_release_paths(tmp_path: Path) -> Non
                 "pid": 99,
                 "parent_pid": 1,
                 "interpreter_path": str(interpreter),
-                "working_directory": str(app),
+                "working_directory": str(release_root),
                 "module_root": str(app / "src/live15_quant"),
                 "deployment_release_id": identity.release_id,
                 "deployment_git_sha": identity.git_commit_sha,

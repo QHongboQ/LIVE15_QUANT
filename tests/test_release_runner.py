@@ -101,11 +101,54 @@ def test_runner_does_not_leak_its_component_arguments_to_the_application(
 
     monkeypatch.setattr(release_runner.importlib, "import_module", lambda _: Component)
     monkeypatch.setattr(sys, "argv", ["release_runner.py", "--component", "recorder"])
-    # ``run_component`` intentionally changes into the immutable app directory
-    # for a service process. Keep that process-global effect contained to this
-    # direct unit invocation so later tests retain the repository cwd.
+    # Service code must retain the mutable Production root as its cwd; only
+    # imports are allowed to originate from the immutable release payload.
     monkeypatch.chdir(tmp_path)
 
     release_runner.run_component("recorder", tmp_path)
 
     assert seen_argv == ["release_runner.py"]
+    assert Path.cwd() == tmp_path
+
+
+@pytest.mark.parametrize(
+    ("component", "function_name"),
+    [("recorder", "recorder_main"), ("control-center", "main"), ("runtime-supervisor", "main")],
+)
+def test_component_relative_runtime_writes_stay_outside_immutable_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, component: str, function_name: str
+) -> None:
+    """All components keep relative mutable paths below the Production root."""
+
+    production = tmp_path / "production"
+    app = production / "releases/release/app"
+    (app / "src/live15_quant").mkdir(parents=True)
+    before = sorted(path.relative_to(app).as_posix() for path in app.rglob("*") if path.is_file())
+
+    monkeypatch.setattr(release_runner, "_bootstrap_identity", lambda _: {})
+    monkeypatch.setattr(
+        release_runner,
+        "resolve_active_release",
+        lambda _: (app, {"release_id": "release"}, "manifest"),
+    )
+    monkeypatch.setattr(release_runner, "_write_runtime_receipt", lambda *args: None)
+
+    class Component:
+        @staticmethod
+        def recorder_main() -> None:
+            Path("data/recorder.marker").parent.mkdir(parents=True, exist_ok=True)
+            Path("data/recorder.marker").write_text("runtime\n", encoding="utf-8")
+
+        @staticmethod
+        def main() -> None:
+            Path(f"data/{component}.marker").parent.mkdir(parents=True, exist_ok=True)
+            Path(f"data/{component}.marker").write_text("runtime\n", encoding="utf-8")
+
+    monkeypatch.setattr(release_runner.importlib, "import_module", lambda _: Component)
+    monkeypatch.chdir(tmp_path)
+
+    release_runner.run_component(component, production)
+
+    after = sorted(path.relative_to(app).as_posix() for path in app.rglob("*") if path.is_file())
+    assert after == before
+    assert list((production / "data").glob("*.marker"))

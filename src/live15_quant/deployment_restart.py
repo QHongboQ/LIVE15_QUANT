@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from live15_quant.release_pipeline import ReleaseError, verify_runtime_provenance
+from live15_quant.release_pipeline import ReleaseError, active_release, verify_runtime_provenance
 
 
 class RestartGateError(RuntimeError):
@@ -90,6 +90,7 @@ class WinSWLogEvidence(Protocol):
 
 
 ProvenanceVerifier = Callable[..., object]
+LegacyVerifier = Callable[..., object]
 
 
 @dataclass(frozen=True)
@@ -366,6 +367,8 @@ def _transition_service_verified(
     expectation: RestartExpectation,
     *,
     allow_stopped_recovery: bool,
+    modern_contract: bool,
+    verify_legacy: LegacyVerifier | None = None,
     dependencies: RestartDependencies | None = None,
 ) -> RestartResult:
     """Run the canonical fail-closed restart or stopped-service recovery transition.
@@ -379,6 +382,10 @@ def _transition_service_verified(
         raise RestartGateError("INVALID_RESTART_TIMEOUT")
     if expectation.component != _expected_component(expectation.service_name):
         raise RestartGateError("SERVICE_COMPONENT_MISMATCH")
+    if modern_contract and expectation.expected_git_sha == "UNPROVEN":
+        raise RestartGateError("LEGACY_CONTRACT_REQUIRED")
+    if not modern_contract and expectation.expected_git_sha != "UNPROVEN":
+        raise RestartGateError("LEGACY_CONTRACT_REQUIRES_UNPROVEN")
     dependencies = dependencies or default_dependencies()
     audit_path = expectation.evidence_directory / f"service-restart-{expectation.component}.json"
     stages: list[dict[str, str]] = []
@@ -525,38 +532,53 @@ def _transition_service_verified(
         generation["winsw_service_mode_launch"] = winsw_launch
         record("WINSW_SERVICE_MODE_START_CONFIRMED", dependencies.now())
 
-        receipt_path = (
-            expectation.release_root / "runtime" / f"release-runtime-{expectation.component}.json"
-        )
-        runner_pid, receipt_hash = _wait_for_runner_receipt(
-            path=receipt_path,
-            start_requested_at=start_requested_at,
-            new_pid=running.pid,
-            dependencies=dependencies,
-            timeout_seconds=expectation.timeout_seconds,
-            poll_interval_seconds=expectation.poll_interval_seconds,
-            observe_generation=observe_generation,
-        )
-        audit["release_runner_receipt"] = {
-            "path": str(receipt_path),
-            "sha256": receipt_hash,
-            "runner_pid": runner_pid,
-        }
-        record("RELEASE_RUNNER_RECEIPT_CONFIRMED", dependencies.now())
-
-        observe_generation()
-        try:
-            dependencies.verify_provenance(
-                release_root=expectation.release_root,
-                service_name=expectation.service_name,
-                service_pid=running.pid,
-                runner_pid=runner_pid,
-                service_config_path=expectation.service_config_path,
-                expected_git_sha=expectation.expected_git_sha,
+        if modern_contract:
+            receipt_path = (
+                expectation.release_root
+                / "runtime"
+                / f"release-runtime-{expectation.component}.json"
             )
-        except (ReleaseError, OSError, ValueError, RuntimeError) as error:
-            raise RestartGateError(f"PROVENANCE_CONFIRMATION_FAILED: {error}") from error
-        record("PROVENANCE_CONFIRMED", dependencies.now())
+            runner_pid, receipt_hash = _wait_for_runner_receipt(
+                path=receipt_path,
+                start_requested_at=start_requested_at,
+                new_pid=running.pid,
+                dependencies=dependencies,
+                timeout_seconds=expectation.timeout_seconds,
+                poll_interval_seconds=expectation.poll_interval_seconds,
+                observe_generation=observe_generation,
+            )
+            audit["release_runner_receipt"] = {
+                "path": str(receipt_path),
+                "sha256": receipt_hash,
+                "runner_pid": runner_pid,
+            }
+            record("RELEASE_RUNNER_RECEIPT_CONFIRMED", dependencies.now())
+            observe_generation()
+            try:
+                dependencies.verify_provenance(
+                    release_root=expectation.release_root,
+                    service_name=expectation.service_name,
+                    service_pid=running.pid,
+                    runner_pid=runner_pid,
+                    service_config_path=expectation.service_config_path,
+                    expected_git_sha=expectation.expected_git_sha,
+                )
+            except (ReleaseError, OSError, ValueError, RuntimeError) as error:
+                raise RestartGateError(f"PROVENANCE_CONFIRMATION_FAILED: {error}") from error
+            record("PROVENANCE_CONFIRMED", dependencies.now())
+        else:
+            try:
+                verifier = verify_legacy or _verify_legacy_unproven
+                verifier(
+                    release_root=expectation.release_root,
+                    service_name=expectation.service_name,
+                    service_pid=running.pid,
+                    service_config_path=expectation.service_config_path,
+                    expected_git_sha=expectation.expected_git_sha,
+                )
+            except (ReleaseError, OSError, ValueError, RuntimeError) as error:
+                raise RestartGateError(f"LEGACY_CONTRACT_CONFIRMATION_FAILED: {error}") from error
+            record("LEGACY_UNPROVEN_CONFIRMED", dependencies.now())
         observe_generation()
         audit["final_status"] = "PASS"
         _atomic_json(audit_path, audit)
@@ -586,7 +608,10 @@ def restart_service_verified(
     """Restart a currently running service through the canonical transition gate."""
 
     return _transition_service_verified(
-        expectation, allow_stopped_recovery=False, dependencies=dependencies
+        expectation,
+        allow_stopped_recovery=False,
+        modern_contract=True,
+        dependencies=dependencies,
     )
 
 
@@ -601,5 +626,52 @@ def recover_service_verified(
     """
 
     return _transition_service_verified(
-        expectation, allow_stopped_recovery=True, dependencies=dependencies
+        expectation,
+        allow_stopped_recovery=True,
+        modern_contract=True,
+        dependencies=dependencies,
+    )
+
+
+def _verify_legacy_unproven(**kwargs: object) -> None:
+    release_root = kwargs["release_root"]
+    expected_git_sha = kwargs["expected_git_sha"]
+    if not isinstance(release_root, Path) or expected_git_sha != "UNPROVEN":
+        raise ReleaseError("legacy transition identity is invalid")
+    identity = active_release(release_root=release_root)
+    if identity is None or identity.git_commit_sha != "UNPROVEN":
+        raise ReleaseError("active release is not a verified LEGACY_UNPROVEN artifact")
+
+
+def restart_legacy_service_verified(
+    expectation: RestartExpectation,
+    *,
+    verify_legacy: LegacyVerifier | None = None,
+    dependencies: RestartDependencies | None = None,
+) -> RestartResult:
+    """Restart a legacy sidecar without fabricating modern runner provenance."""
+
+    return _transition_service_verified(
+        expectation,
+        allow_stopped_recovery=False,
+        modern_contract=False,
+        verify_legacy=verify_legacy,
+        dependencies=dependencies,
+    )
+
+
+def recover_legacy_service_verified(
+    expectation: RestartExpectation,
+    *,
+    verify_legacy: LegacyVerifier | None = None,
+    dependencies: RestartDependencies | None = None,
+) -> RestartResult:
+    """Recover a stopped legacy service with the same generation evidence."""
+
+    return _transition_service_verified(
+        expectation,
+        allow_stopped_recovery=True,
+        modern_contract=False,
+        verify_legacy=verify_legacy,
+        dependencies=dependencies,
     )

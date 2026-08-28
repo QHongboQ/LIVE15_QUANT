@@ -593,10 +593,14 @@ def verify_runtime_provenance(
             raise ReleaseError(f"runner receipt {label} is missing")
         observed = Path(raw_path)
         try:
-            if label != "interpreter":
+            if label == "working directory":
+                if observed.resolve() != release_root.resolve():
+                    raise ValueError
+            elif label == "module root":
                 observed.resolve().relative_to(app_root)
         except ValueError as error:
-            raise ReleaseError(f"runtime {label} is outside active release") from error
+            boundary = "Production root" if label == "working directory" else "active release"
+            raise ReleaseError(f"runtime {label} is outside {boundary}") from error
     if not Path(str(receipt["interpreter_path"])).is_file():
         raise ReleaseError("runtime interpreter path is missing")
     return identity
