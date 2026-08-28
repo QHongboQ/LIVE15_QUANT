@@ -3,7 +3,7 @@
   <name>LIVE15 Control Center</name>
   <description>Localhost-only LIVE15 Control Center.</description>
   <executable>%BASE%\..\..\.venv\Scripts\python.exe</executable>
-  <arguments>-m live15_quant.control_center</arguments>
+  <arguments>%BASE%\..\..\bootstrap\release_runner.py --component control-center</arguments>
   <workingdirectory>%BASE%\..\..</workingdirectory>
   <env name="PYTHONUNBUFFERED" value="1" />
   <env name="PYTHONUTF8" value="1" />

@@ -3,7 +3,7 @@
   <name>LIVE15 Recorder</name>
   <description>Authoritative LIVE15 market-data Recorder.</description>
   <executable>%BASE%\..\..\.venv\Scripts\python.exe</executable>
-  <arguments>-c &quot;from live15_quant.cli import recorder_main; recorder_main()&quot;</arguments>
+  <arguments>%BASE%\..\..\bootstrap\release_runner.py --component recorder</arguments>
   <workingdirectory>%BASE%\..\..</workingdirectory>
   <env name="PYTHONUNBUFFERED" value="1" />
   <env name="PYTHONUTF8" value="1" />
