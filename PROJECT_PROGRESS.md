@@ -31,7 +31,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | --- | --- | --- | --- |
 | WS-RESYNC-001 + GAP-002 | IN_PROGRESS | Kalshi self-healing: dirty-book detection → official `get_snapshot` → bounded resubscribe/reconnect → verified snapshot → precise gap closure/clean segment. H2-TRAIN-003 revalidation is acceptance work, not a separate active lane. | Runtime/deployment for live rollout |
 | H2-TRAIN-003 | BLOCKED / historical | Preserve prior blocker evidence. Do not continue as an independent development branch unless WS-RESYNC leaves a new smallest blocker. | Training/holdout |
-| ST-005 | IN_PROGRESS | Prove archive/purge processing > incoming, backlog decline, controlled DB growth, verified archive, and zero attributable WS gap/sync loss over a valid 60-minute run. | Runtime/read-only proof; storage mutation separately gated |
+| ST-005 | CODE_READY_PENDING_60MIN_PROOF | Code and offline validation now expose fail-closed, comparable 60-second archive/ingress evidence; formal runtime proof has not run. | Requires approved read-only 60-minute proof after a valid runtime/deployment gate; no restart or storage mutation |
 | DEP-001 | PLANNED | DEP-PKG-002 blocker removed. Next action: Phase A current-main read-only preflight. Deployment/restart requires separate explicit `DEP001_DEPLOY_APPROVED`. | Deploy/restart |
 | TRN-001 | PLANNED / NO_GO | `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run. Frozen holdout remains opaque; formal overnight training requires explicit `TRAINING_GO`. | Training/holdout |
 

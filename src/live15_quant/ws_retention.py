@@ -99,6 +99,14 @@ class ArchiveRunResult:
     events_per_second: float
     backlog_events: int
 
+    @property
+    def processed_events(self) -> int:
+        """Exact rows archived by this completed run, never a float reconstruction."""
+
+        if self.chunk is None or self.chunk.state is not ArchiveState.PURGE_ELIGIBLE:
+            return 0
+        return self.chunk.event_count
+
 
 @dataclass(frozen=True, slots=True)
 class RetentionEligibility:

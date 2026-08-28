@@ -151,7 +151,10 @@ class WsArchiveHealth(StrictResponse):
     archive_backlog_events: int = 0
     archive_backlog_capped: bool = False
     input_ws_events_per_second: float | None = None
-    archive_throughput_events_per_second: float = 0.0
+    input_ws_observation_window_seconds: float | None = None
+    archive_throughput_events_per_second: float | None = None
+    archive_throughput_observation_window_seconds: float | None = None
+    archive_rate_observed_at: datetime | None = None
     archive_catch_up_ratio: float | None = None
     archive_backlog_slope_events_per_second: float | None = None
     archive_catch_up_eta_seconds: float | None = None
@@ -488,6 +491,9 @@ class ArchiveResponse(StrictResponse):
     deferred_for_ws_backpressure: bool = False
     throughput_events_per_second: float | None = None
     input_ws_events_per_second: float | None = None
+    input_ws_observation_window_seconds: float | None = None
+    throughput_observation_window_seconds: float | None = None
+    rate_observed_at: datetime | None = None
     catch_up_ratio: float | None = None
     backlog_slope_events_per_second: float | None = None
     catch_up_eta_seconds: float | None = None
