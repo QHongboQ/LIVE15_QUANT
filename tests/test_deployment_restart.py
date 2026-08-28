@@ -11,10 +11,12 @@ import pytest
 
 from live15_quant.deployment_restart import (
     FileWinSWLogs,
+    ProcessSnapshot,
     RestartDependencies,
     RestartExpectation,
     RestartGateError,
     ServiceSnapshot,
+    WindowsProcessInspector,
     WinSWLogCursor,
     recover_legacy_service_verified,
     recover_service_verified,
@@ -89,6 +91,17 @@ class FakeWinSWLogs:
         return self.launch
 
 
+class FakeProcesses:
+    def __init__(self, snapshots: dict[int, ProcessSnapshot]) -> None:
+        self.snapshots = snapshots
+
+    def inspect(self, pid: int) -> ProcessSnapshot:
+        try:
+            return self.snapshots[pid]
+        except KeyError as error:
+            raise RestartGateError(f"PROCESS_OBSERVATION_FAILURE: PID {pid}") from error
+
+
 class GenerationChangingWinSWLogs(FakeWinSWLogs):
     def __init__(self, launch: str | None, scm: FakeScm, replacement: ServiceSnapshot) -> None:
         super().__init__(launch)
@@ -103,15 +116,39 @@ class GenerationChangingWinSWLogs(FakeWinSWLogs):
         return launch
 
 
-def _expectation(tmp_path: Path) -> RestartExpectation:
+def test_native_windows_process_inspector_observes_current_process() -> None:
+    snapshot = WindowsProcessInspector().inspect(os.getpid())
+
+    assert snapshot.pid == os.getpid()
+    assert snapshot.parent_pid > 0
+    assert snapshot.executable_path.is_file()
+    assert snapshot.created_at.tzinfo is UTC
+
+
+def _expectation(tmp_path: Path, *, venv_redirector: bool = False) -> RestartExpectation:
     winsw = tmp_path / "winsw"
     winsw.mkdir()
     config = winsw / "LIVE15Recorder.xml"
-    config.write_text("<service><id>LIVE15Recorder</id></service>", encoding="utf-8")
+    launcher = tmp_path / "venv/Scripts/python.exe"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_bytes(b"venv-launcher")
+    base = tmp_path / "base-python/python.exe"
+    base.parent.mkdir(parents=True)
+    base.write_bytes(b"base-python")
+    configured = base
+    if venv_redirector:
+        (launcher.parent.parent / "pyvenv.cfg").write_text(
+            f"home = {base.parent}\n", encoding="utf-8"
+        )
+        configured = launcher
+    config.write_text(
+        f"<service><id>LIVE15Recorder</id><executable>{configured}</executable></service>",
+        encoding="utf-8",
+    )
     (winsw / "LIVE15Recorder.exe").write_bytes(b"winsw")
     wrapper_log = tmp_path / "LIVE15Recorder.wrapper.log"
     wrapper_log.write_text("old log\n", encoding="utf-8")
-    return RestartExpectation(
+    expectation = RestartExpectation(
         service_name="LIVE15Recorder",
         component="recorder",
         release_root=tmp_path,
@@ -123,6 +160,7 @@ def _expectation(tmp_path: Path) -> RestartExpectation:
         timeout_seconds=3.0,
         poll_interval_seconds=1.0,
     )
+    return expectation
 
 
 def _snapshots(tmp_path: Path) -> tuple[ServiceSnapshot, ServiceSnapshot, ServiceSnapshot]:
@@ -143,16 +181,78 @@ def _write_runner_receipt(
 ) -> Path:
     receipt = expectation.release_root / "runtime/release-runtime-recorder.json"
     receipt.parent.mkdir(parents=True, exist_ok=True)
-    receipt.write_text(json.dumps({"pid": pid, "parent_pid": parent_pid}), encoding="utf-8")
+    launcher, base = _configured_paths(expectation)
+    receipt.write_text(
+        json.dumps(
+            {
+                "pid": pid,
+                "parent_pid": parent_pid,
+                "interpreter_path": str(launcher),
+                "base_executable": str(base),
+            }
+        ),
+        encoding="utf-8",
+    )
     if modified_at is not None:
         timestamp = modified_at.timestamp()
         os.utime(receipt, (timestamp, timestamp))
     return receipt
 
 
+def _configured_paths(expectation: RestartExpectation) -> tuple[Path, Path]:
+    launcher = expectation.release_root / "venv/Scripts/python.exe"
+    base = expectation.release_root / "base-python/python.exe"
+    return (launcher, base) if (launcher.parent.parent / "pyvenv.cfg").is_file() else (base, base)
+
+
+def _processes(
+    expectation: RestartExpectation,
+    *,
+    service_pid: int = 202,
+    runner_pid: int = 303,
+    runner_parent_pid: int | None = None,
+    redirects: bool = False,
+    created_at: datetime = datetime(2026, 8, 30, tzinfo=UTC),
+) -> FakeProcesses:
+    launcher, base = _configured_paths(expectation)
+    parent = runner_parent_pid if runner_parent_pid is not None else service_pid
+    snapshots = {
+        service_pid: ProcessSnapshot(
+            service_pid, 1, expectation.service_config_path.with_suffix(".exe"), created_at
+        ),
+        runner_pid: ProcessSnapshot(
+            runner_pid, parent, base if redirects else launcher, created_at
+        ),
+    }
+    if redirects:
+        snapshots[parent] = ProcessSnapshot(parent, service_pid, launcher, created_at)
+    return FakeProcesses(snapshots)
+
+
 def _dependencies(
-    scm: FakeScm, logs: FakeWinSWLogs, clock: FakeClock, provenance=None
+    scm: FakeScm,
+    logs: FakeWinSWLogs,
+    clock: FakeClock,
+    provenance=None,
+    processes: FakeProcesses | None = None,
 ) -> RestartDependencies:
+    if processes is None:
+        image = Path(scm.current.image_path.strip('"'))
+        root = image.parent.parent
+        processes = _processes(
+            RestartExpectation(
+                service_name="LIVE15Recorder",
+                component="recorder",
+                release_root=root,
+                evidence_directory=root / "runtime/deployment-evidence/deployment",
+                service_config_path=image.with_suffix(".xml"),
+                expected_config_sha256="",
+                wrapper_log_path=root / "LIVE15Recorder.wrapper.log",
+                expected_git_sha="a" * 40,
+                timeout_seconds=3.0,
+                poll_interval_seconds=1.0,
+            )
+        )
     return RestartDependencies(
         scm=scm,
         winsw_logs=logs,
@@ -160,11 +260,12 @@ def _dependencies(
         monotonic=clock.monotonic,
         sleep=clock.sleep,
         verify_provenance=provenance or (lambda **_: None),
+        processes=processes,
     )
 
 
 def test_stop_command_success_but_service_remains_running_fails_closed(tmp_path: Path) -> None:
-    expectation = _expectation(tmp_path)
+    expectation = _expectation(tmp_path, venv_redirector=True)
     before, _, after_start = _snapshots(tmp_path)
     clock = FakeClock()
     scm = FakeScm(before=before, after_stop=before, after_start=after_start)
@@ -182,7 +283,7 @@ def test_stop_command_success_but_service_remains_running_fails_closed(tmp_path:
 
 
 def test_stopped_service_with_old_process_still_alive_fails_closed(tmp_path: Path) -> None:
-    expectation = _expectation(tmp_path)
+    expectation = _expectation(tmp_path, venv_redirector=True)
     before, stopped, after_start = _snapshots(tmp_path)
     scm = FakeScm(
         before=before,
@@ -286,7 +387,7 @@ def test_parent_pid_mismatch_is_rejected_before_provenance(tmp_path: Path) -> No
     before, stopped, started = _snapshots(tmp_path)
     scm = FakeScm(before=before, after_stop=stopped, after_start=started)
 
-    with pytest.raises(RestartGateError, match="RUNNER_PARENT_PID_MISMATCH"):
+    with pytest.raises(RestartGateError, match="PROCESS_CHAIN_RUNNER_PARENT_MISMATCH"):
         restart_service_verified(
             expectation,
             dependencies=_dependencies(
@@ -382,7 +483,10 @@ def test_failed_candidate_then_stopped_rollback_recovers_through_same_gate(tmp_p
     result = recover_service_verified(
         expectation,
         dependencies=_dependencies(
-            scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock()
+            scm,
+            FakeWinSWLogs("Starting WinSW in service mode"),
+            FakeClock(),
+            processes=_processes(expectation, service_pid=recovered.pid),
         ),
     )
 
@@ -475,6 +579,115 @@ def test_valid_new_service_and_fresh_receipt_passes_and_writes_nonempty_audit(
     assert audit.is_file() and audit.stat().st_size > 0
     assert json.loads(audit.read_text(encoding="utf-8"))["final_status"] == "PASS"
     assert not list(audit.parent.glob(".service-restart-recorder.json.*.tmp"))
+
+
+def test_exact_configured_windows_venv_redirector_is_the_only_allowed_intermediate(
+    tmp_path: Path,
+) -> None:
+    expectation = _expectation(tmp_path, venv_redirector=True)
+    redirector_pid = 404
+    _write_runner_receipt(
+        expectation, parent_pid=redirector_pid, modified_at=datetime(2026, 8, 30, tzinfo=UTC)
+    )
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    calls: list[dict[str, object]] = []
+
+    restart_service_verified(
+        expectation,
+        dependencies=_dependencies(
+            scm,
+            FakeWinSWLogs("Starting WinSW in service mode"),
+            FakeClock(),
+            provenance=lambda **kwargs: calls.append(kwargs),
+            processes=_processes(
+                expectation,
+                runner_parent_pid=redirector_pid,
+                redirects=True,
+            ),
+        ),
+    )
+
+    audit = json.loads(
+        (expectation.evidence_directory / "service-restart-recorder.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert calls[0]["runner_parent_pid"] == redirector_pid
+    assert audit["process_chain"]["mode"] == "WINDOWS_VENV_REDIRECTOR"
+    assert audit["process_chain"]["redirector_pid"] == redirector_pid
+
+
+def test_second_unverified_intermediate_fails_closed(tmp_path: Path) -> None:
+    expectation = _expectation(tmp_path, venv_redirector=True)
+    redirector_pid = 404
+    _write_runner_receipt(
+        expectation, parent_pid=redirector_pid, modified_at=datetime(2026, 8, 30, tzinfo=UTC)
+    )
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    processes = _processes(expectation, runner_parent_pid=redirector_pid, redirects=True)
+    processes.snapshots[redirector_pid] = ProcessSnapshot(
+        redirector_pid,
+        505,
+        _configured_paths(expectation)[0],
+        datetime(2026, 8, 30, tzinfo=UTC),
+    )
+
+    with pytest.raises(RestartGateError, match="PROCESS_CHAIN_REDIRECTOR_PARENT_MISMATCH"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm,
+                FakeWinSWLogs("Starting WinSW in service mode"),
+                FakeClock(),
+                processes=processes,
+            ),
+        )
+
+
+def test_redirector_requires_receipt_base_executable_from_configured_venv(tmp_path: Path) -> None:
+    expectation = _expectation(tmp_path, venv_redirector=True)
+    receipt = _write_runner_receipt(
+        expectation, parent_pid=404, modified_at=datetime(2026, 8, 30, tzinfo=UTC)
+    )
+    value = json.loads(receipt.read_text(encoding="utf-8"))
+    value["base_executable"] = str(expectation.release_root / "wrong/python.exe")
+    receipt.write_text(json.dumps(value), encoding="utf-8")
+    timestamp = datetime(2026, 8, 30, tzinfo=UTC).timestamp()
+    os.utime(receipt, (timestamp, timestamp))
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+
+    with pytest.raises(RestartGateError, match="PROCESS_CHAIN_RECEIPT_BASE_EXECUTABLE_MISMATCH"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm,
+                FakeWinSWLogs("Starting WinSW in service mode"),
+                FakeClock(),
+                processes=_processes(expectation, runner_parent_pid=404, redirects=True),
+            ),
+        )
+
+
+def test_pid_reuse_or_stale_process_snapshot_fails_closed(tmp_path: Path) -> None:
+    expectation = _expectation(tmp_path)
+    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    processes = _processes(expectation, created_at=datetime(2026, 8, 28, tzinfo=UTC))
+
+    with pytest.raises(RestartGateError, match="PROCESS_CHAIN_WINSW_STALE_OR_PID_REUSED"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm,
+                FakeWinSWLogs("Starting WinSW in service mode"),
+                FakeClock(),
+                processes=processes,
+            ),
+        )
 
 
 def test_legacy_rollback_uses_explicit_legacy_contract_without_modern_receipt(

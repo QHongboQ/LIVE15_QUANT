@@ -238,6 +238,7 @@ def test_runtime_provenance_requires_active_release_paths(tmp_path: Path) -> Non
                 "pid": 99,
                 "parent_pid": 1,
                 "interpreter_path": str(interpreter),
+                "base_executable": str(interpreter),
                 "working_directory": str(release_root),
                 "module_root": str(app / "src/live15_quant"),
                 "deployment_release_id": identity.release_id,
@@ -265,6 +266,7 @@ def test_runtime_provenance_requires_active_release_paths(tmp_path: Path) -> Non
             service_name="LIVE15Recorder",
             service_pid=1,
             runner_pid=99,
+            runner_parent_pid=1,
             service_config_path=service_xml,
             expected_git_sha=identity.git_commit_sha,
         )
@@ -279,6 +281,7 @@ def test_runtime_provenance_requires_active_release_paths(tmp_path: Path) -> Non
             service_name="LIVE15Recorder",
             service_pid=1,
             runner_pid=99,
+            runner_parent_pid=1,
             service_config_path=service_xml,
             expected_git_sha=identity.git_commit_sha,
         )
@@ -294,6 +297,7 @@ def test_runtime_provenance_requires_active_release_paths(tmp_path: Path) -> Non
             service_name="LIVE15Recorder",
             service_pid=1,
             runner_pid=99,
+            runner_parent_pid=1,
             service_config_path=service_xml,
             expected_git_sha=identity.git_commit_sha,
         )
@@ -309,6 +313,7 @@ def test_runtime_provenance_requires_active_release_paths(tmp_path: Path) -> Non
             service_name="LIVE15Recorder",
             service_pid=1,
             runner_pid=100,
+            runner_parent_pid=1,
             service_config_path=service_xml,
             expected_git_sha=identity.git_commit_sha,
         )
