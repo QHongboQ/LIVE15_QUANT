@@ -36,14 +36,16 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_current_source_archive_excludes_local_tooling() -> None:
     """A release archive must not carry mutable checkout tooling."""
     archive = subprocess.run(
-        ["git", "archive", "--format=tar", "--worktree-attributes", "HEAD"],
+        ["git", "archive", "--format=tar", "HEAD"],
         cwd=ROOT,
         check=True,
         capture_output=True,
     ).stdout
 
     with tarfile.open(fileobj=io.BytesIO(archive)) as payload:
-        assert all(not member.name.startswith(".local-tools/") for member in payload.getmembers())
+        members = {member.name.rstrip("/") for member in payload.getmembers()}
+    assert ".local-tools" not in members
+    assert all(not member.startswith(".local-tools/") for member in members)
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -104,6 +106,41 @@ def test_build_records_exact_sha_and_deterministic_manifest(tmp_path: Path) -> N
     assert (second_root / "releases" / other.release_id / "release-manifest.json").read_text() == (
         release_root / "releases" / identity.release_id / "release-manifest.json"
     ).read_text()
+
+
+def test_build_omits_export_ignored_local_tools_directory(tmp_path: Path) -> None:
+    repository, _ = _repository(tmp_path)
+    local_tools = repository / ".local-tools"
+    local_tools.mkdir()
+    (local_tools / "Start LIVE15.cmd").write_text("@echo off\n")
+    (repository / ".gitattributes").write_text(
+        ".local-tools export-ignore\n.local-tools/** export-ignore\n"
+    )
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-m", "ignore local tools in release archive")
+
+    identity = build_release(
+        repository=repository,
+        git_sha=_git(repository, "rev-parse", "HEAD"),
+        release_root=tmp_path / "releases",
+    )
+
+    assert not (
+        tmp_path / "releases" / "releases" / identity.release_id / "app/.local-tools"
+    ).exists()
+
+
+@pytest.mark.parametrize("boundary", [".local-tools", "data"])
+def test_verify_package_rejects_empty_prohibited_top_level_directory(
+    tmp_path: Path, boundary: str
+) -> None:
+    repository, commit = _repository(tmp_path)
+    release_root = tmp_path / "releases"
+    identity = build_release(repository=repository, git_sha=commit, release_root=release_root)
+    (release_root / "releases" / identity.release_id / "app" / boundary).mkdir()
+
+    with pytest.raises(ReleaseError, match="mutable path"):
+        verify_package(release_root=release_root, release_id=identity.release_id)
 
 
 def test_dirty_or_wrong_sha_is_rejected(tmp_path: Path) -> None:

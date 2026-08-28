@@ -173,6 +173,11 @@ def _manifest_path(release_directory: Path) -> Path:
 
 
 def _file_inventory(app_root: Path) -> list[dict[str, str]]:
+    for top_level in PROHIBITED_TOP_LEVEL:
+        prohibited_path = app_root / top_level
+        if prohibited_path.exists() or prohibited_path.is_symlink():
+            raise ReleaseError(f"mutable path is forbidden in release: {top_level}")
+
     inventory: list[dict[str, str]] = []
     for path in sorted(item for item in app_root.rglob("*") if item.is_file()):
         relative = path.relative_to(app_root).as_posix()
