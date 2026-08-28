@@ -24,6 +24,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | H2-TRAIN-001 / NIGHT-001 | MERGED / PARTIAL | PR #47 `7fe9f17a` | H2 code/materialization boundary exists; real H2 remains validation-gated. |
 | H2-TRAIN-002 | MERGED / BLOCKED | PR #48 `6bb24775` | Real snapshot acquisition works; delta endpoint plan-restricted; prior H0 overlap blocked by gap authority. |
 | UI-013 | MERGED / COMPLETE | PR #49 `30fcdd85` | Control Center truth/performance/observability hardened; ST-005 itself remains unresolved. |
+| DEV-TOOLING-GH-001 | VERIFIED / AVAILABLE | Windows development host | GitHub CLI (`gh`) is installed and authenticated; Codex may use it for PR, Actions/CI, issue, review, and GitHub API workflows. Human merge gates and no-auto-merge policy remain unchanged. |
 
 ## Active and gated work
 
@@ -52,5 +53,6 @@ H2 is optional-by-validation: formal research may use H0 + H1 + **validated** H2
 
 - Complex Codex tasks normally specify Terra / High, goal, authority, prohibitions, acceptance, validation and return format.
 - Upstream First: official docs → pinned dependency source/tests → GitHub Issues/PR → mature/reference implementation → broader web → local reproduction → narrow fix → regression → Checker → CI.
+- GitHub CLI (`gh`) is available and authenticated on the Windows development host. Prefer it for PR creation/status, Actions/CI inspection, issue/review workflows, and GitHub API queries when working locally; this convenience does not relax protected-main, human-review, or no-auto-merge rules.
 - Production-root hygiene: pytest, Checker, and Codex temporary/test artifacts must not create ad-hoc top-level directories under `D:\LIVE15_QUANT`; use a dedicated temp root outside Production by default, or an explicitly approved excluded mutable path such as `runtime/tmp`. Unknown exceptions remain fail-closed and must not be silently added to capture exclusions.
 - Record one true smallest blocker only after safe investigation. Never create a second project-memory system.
