@@ -32,12 +32,22 @@ PREVIOUS_POINTER = "previous-release.json"
 BOOTSTRAP_DIRECTORY = "bootstrap"
 BOOTSTRAP_RUNNER = "release_runner.py"
 BOOTSTRAP_MANIFEST = "bootstrap-manifest.json"
+WORKTREES_DIRECTORY = ".worktrees"
 PROHIBITED_TOP_LEVEL = frozenset(
     {"data", "runtime", "logs", ".secrets", "current", "rollback", ".venv", ".git", ".local-tools"}
 )
 # A legacy install can already contain the new control plane.  It is not part
 # of the historical application snapshot and must remain separately staged.
-LEGACY_CAPTURE_EXCLUDED_TOP_LEVEL = PROHIBITED_TOP_LEVEL | {BOOTSTRAP_DIRECTORY}
+# Exclusion is applied by copytree before it descends into an entry: only these
+# known mutable/control-plane boundaries are excluded; unknown top-level paths
+# remain visible to the capture.
+LEGACY_CAPTURE_EXCLUDED_TOP_LEVEL = PROHIBITED_TOP_LEVEL | {
+    BOOTSTRAP_DIRECTORY,
+    RELEASES_DIRECTORY,
+    ACTIVE_POINTER,
+    PREVIOUS_POINTER,
+    WORKTREES_DIRECTORY,
+}
 
 
 class ReleaseError(RuntimeError):
