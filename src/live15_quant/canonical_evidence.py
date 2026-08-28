@@ -157,6 +157,31 @@ class EvidenceRecord:
         return max(0, int(value.get("days", 0))) if isinstance(value, Mapping) else 0
 
     @property
+    def snapshot_sequence_days(self) -> int:
+        value = self.microstructure_availability.get("snapshot_sequence", {})
+        return max(0, int(value.get("days", 0))) if isinstance(value, Mapping) else 0
+
+    @property
+    def delta_sequence_days(self) -> int:
+        value = self.microstructure_availability.get("delta_sequence", {})
+        return max(0, int(value.get("days", 0))) if isinstance(value, Mapping) else 0
+
+    @property
+    def microstructure_training_ready_days(self) -> int:
+        value = self.microstructure_availability.get("training_ready", {})
+        return max(0, int(value.get("days", 0))) if isinstance(value, Mapping) else 0
+
+    @property
+    def h2_overlap_validated(self) -> bool:
+        value = self.microstructure_availability.get("overlap", {})
+        return bool(
+            isinstance(value, Mapping)
+            and value.get("validated") is True
+            and isinstance(value.get("artifact_id"), str)
+            and value["artifact_id"]
+        )
+
+    @property
     def target_days(self) -> int:
         return max(0, int(self.target_availability.get("days", 0)))
 
@@ -268,6 +293,27 @@ class CanonicalEvidenceSnapshot:
             "h1_delta_days": self._aggregate_days(h1, "delta_days"),
             "h2_delta_days": self._aggregate_days(h2, "delta_days"),
         }
+        snapshot_sequences = {
+            "h0_snapshot_sequence_days": self._aggregate_days(h0, "snapshot_sequence_days"),
+            "h1_snapshot_sequence_days": self._aggregate_days(h1, "snapshot_sequence_days"),
+            "h2_snapshot_sequence_days": self._aggregate_days(h2, "snapshot_sequence_days"),
+        }
+        delta_sequences = {
+            "h0_delta_sequence_days": self._aggregate_days(h0, "delta_sequence_days"),
+            "h1_delta_sequence_days": self._aggregate_days(h1, "delta_sequence_days"),
+            "h2_delta_sequence_days": self._aggregate_days(h2, "delta_sequence_days"),
+        }
+        training_ready = {
+            "h0_microstructure_training_ready_days": self._aggregate_days(
+                h0, "microstructure_training_ready_days"
+            ),
+            "h1_microstructure_training_ready_days": self._aggregate_days(
+                h1, "microstructure_training_ready_days"
+            ),
+            "h2_microstructure_training_ready_days": self._aggregate_days(
+                h2, "microstructure_training_ready_days"
+            ),
+        }
         all_path_days = {
             day for record in self.records if record.path_days > 0 for day in record.coverage_days
         }
@@ -285,7 +331,21 @@ class CanonicalEvidenceSnapshot:
             snapshots.values(), default=0
         )
         deltas["combined_delta_days"] = len(all_delta_days) or max(deltas.values(), default=0)
-        return {**path, **snapshots, **deltas}
+        snapshot_sequences["combined_snapshot_sequence_days"] = max(
+            snapshot_sequences.values(), default=0
+        )
+        delta_sequences["combined_delta_sequence_days"] = max(delta_sequences.values(), default=0)
+        training_ready["combined_microstructure_training_ready_days"] = max(
+            training_ready.values(), default=0
+        )
+        return {
+            **path,
+            **snapshots,
+            **deltas,
+            **snapshot_sequences,
+            **delta_sequences,
+            **training_ready,
+        }
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -520,6 +580,55 @@ def training_preflight(
                 snapshot.snapshot_id,
                 (),
                 ("DELTA_EVIDENCE_REQUIRED",),
+                cutoff,
+            )
+    elif family in {"mlplob", "microstructure_mlp"}:
+        sources = tuple(
+            record
+            for record in snapshot.records
+            if record.snapshot_days > 0
+            and record.microstructure_training_ready_days > 0
+            and (record.provenance_tier != H2 or record.h2_overlap_validated)
+        )
+        if not sources:
+            return TrainingPreflightResult(
+                PreflightStatus.BLOCKED,
+                model_family,
+                snapshot.snapshot_id,
+                (),
+                ("MATERIALIZED_SNAPSHOT_EVIDENCE_REQUIRED",),
+                cutoff,
+            )
+    elif family in {"deeplob", "deep_lob"}:
+        sources = tuple(
+            record
+            for record in snapshot.records
+            if record.snapshot_sequence_days > 0
+            and (record.provenance_tier != H2 or record.h2_overlap_validated)
+        )
+        if not sources:
+            return TrainingPreflightResult(
+                PreflightStatus.BLOCKED,
+                model_family,
+                snapshot.snapshot_id,
+                (),
+                ("SNAPSHOT_SEQUENCE_EVIDENCE_REQUIRED",),
+                cutoff,
+            )
+    elif family == "tlob":
+        sources = tuple(
+            record
+            for record in snapshot.records
+            if record.delta_sequence_days > 0
+            and (record.provenance_tier != H2 or record.h2_overlap_validated)
+        )
+        if not sources:
+            return TrainingPreflightResult(
+                PreflightStatus.BLOCKED,
+                model_family,
+                snapshot.snapshot_id,
+                (),
+                ("H2_DELTA_SEQUENCE_UNAVAILABLE",),
                 cutoff,
             )
     else:
