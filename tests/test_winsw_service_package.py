@@ -31,6 +31,18 @@ def test_bootstrap_fails_closed_on_checksum_mismatch() -> None:
     assert "Move-Item" in script
 
 
+def test_bootstrap_script_index_blob_is_lf_normalized() -> None:
+    """Keep the CRLF worktree policy from making a clean Windows checkout dirty."""
+    result = subprocess.run(
+        ["git", "show", ":tools/bootstrap_winsw.ps1"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+
+    assert b"\r" not in result.stdout
+
+
 def test_service_xml_is_direct_python_with_bounded_failure_policy() -> None:
     service = ElementTree.parse(ROOT / "deploy/windows/live15-control-center.xml").getroot()
     values = {child.tag: (child.text or "") for child in service}
