@@ -33,7 +33,7 @@ formal long-run training GO/NO-GO gate.
 | Area | State | Authoritative source |
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
-| Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
+| Archive/purge throughput | **BLOCKED_PENDING_CURRENT_MAIN_DEPLOYMENT** | `ST-005` preflight evidence and current runtime identity |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
@@ -53,9 +53,13 @@ formal long-run training GO/NO-GO gate.
 - H2 capability remains granular. Real snapshot readiness, snapshot-sequence
   readiness, delta/tick readiness, and each microstructure model family remain
   independently gated. DepthFeed HTTP 402 plan restrictions must not be hidden.
-- `ST-005` is not resolved merely because UI-013 can display catch-up state. It
-  still requires measured throughput/catch-up evidence and a valid 60-minute
-  proof with Recorder safety intact.
+- `ST-005` is not resolved merely because UI-013 can display catch-up state. A
+  read-only current-main preflight is
+  `ST_005_PROOF_BLOCKED_PENDING_DEPLOYMENT`: the installed service SHA is not
+  proven current-main and its health receipt lacks the merged comparable ingress
+  and effective-processing metrics. See
+  `docs/evidence/st-005-current-main-preflight-20260828.md`. No 60-minute
+  window was started.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
   **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
   frozen-holdout rows and was stopped immediately. The former `UNREVEALED`
@@ -69,8 +73,9 @@ formal long-run training GO/NO-GO gate.
 1. complete `WS-RESYNC-001 + GAP-002`, including precise dirty-interval closure,
    self-healing snapshot recovery, clean-segment authority, and the bounded real
    H2 revalidation inside that task;
-2. complete `ST-005` archive/purge throughput recovery and valid 60-minute
-   catch-up proof; these two tasks may proceed independently and in parallel;
+2. with separate human authorization, deploy a SHA-verifiable current-main
+   runtime, then rerun the ST-005 read-only preflight before any valid 60-minute
+   catch-up proof; this is independent of WS implementation reconciliation;
 3. reconcile/merge those tasks onto the then-current protected main;
 4. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is
    READY may a separate explicit human approval authorize deployment/restart and
