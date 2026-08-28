@@ -80,12 +80,6 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 | DEP-001 | Current-main Production deployment and bounded proof / deployment | BLOCKED | Current installed Production package has not been proven to match current protected `origin/main`; runtime health alone is insufficient | With explicit human approval, deploy and prove the then-current reviewed protected main. | Deploy/restart |
 | ST-005 | 60-minute archive/purge catch-up trend / storage | BLOCKED | Prior run stopped safely during unsynchronized WS; not rerun here | Requires approved read-only run after valid runtime proof; never auto-start. | Runtime/read-only authorization |
 | TRN-001 | `LONG_RUN_TRAINING_FINAL_GO_NO_GO` / training gate | PLANNED / `NO_GO` | No formal gate execution evidence | Do not train until data/runtime/resource/anti-overfit gates pass; holdout remains opaque. | Training/holdout |
-| DATA-GLOBAL-001 | Global current-training authority / data | PLANNED | Approved roadmap | Train only from H0/H1/validated-H2 via RDA/CES immutable snapshots; Dataset v1/v2 are reproduction-only. | Data/model policy |
-| H2-TRAIN-001 | DepthFeed L2 training materialization / data | PLANNED | Approved roadmap | Complete verified H2 → deterministic microstructure/sequence materialization; snapshot and delta readiness stay separate. | Data/provider policy |
-| AUTO-RD-001 | Autonomous factor/model Challenger factory / research | PLANNED | Approved roadmap | AlphaGPT/RD-Agent(Q)-inspired offline generation; promotion still requires leakage, walk-forward, after-cost and fresh forward gates. | Model/factor promotion |
-| ADAPT-001 | Drift-safe adaptive retraining / models | PLANNED | Approved roadmap | Slow retraining loop with recency/regime/quality weighting, drift triggers, Champion/Challenger, rollback; no tick-by-tick weight mutation. | Retraining/promotion |
-| MODEL-ENSEMBLE-001 | Multi-expert model/router evolution / models | PLANNED | Approved roadmap | Terminal + Path + Microstructure + Regime/Router + Factor + Uncertainty → EV → Hard Risk; details in roadmap. | Model policy |
-| DEC-ACT-001 | Conservative first-live action surface / decision | PLANNED | Approved roadmap | Start with 8 actions; keep ADD/REDUCE disabled until separately validated. | Strategy/risk/execution |
 | DATA-004 | Independent UTC-day and regime coverage / data | PLANNED | Research Data Authority | More rows are not independent evidence. | Data policy |
 | FAC-002 / FAC-003 | Decision-time-safe factor evidence / factors | PLANNED | Fixed-set evidence and chronological validation required | Ablate, use grouped validation/BH-FDR; do not widen search first. | Research policy |
 | VAL-001 | Chronological anti-overfit gate / validation | PLANNED | Model vNext contract | Require event grouping, purge/embargo, cost stress, opaque holdout. | Holdout |
@@ -95,8 +89,6 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 | RISK-001 / EXE-001 / EXE-002 / SEC-001 | Hard Risk, execution, reconciliation, security / production | PLANNED | Required before any real-money pilot | Production writes remain 0; unknown reconciliation fails closed. | Hard Risk/execution/security |
 | PROD-001 | Tiny 1-contract pilot / production | PLANNED | Requires all preceding forward/risk/security evidence | Not authorized by paper, merge, or training alone. | Explicit human approval |
 | SESS-001 / OPS-002 / ST-004 / AI-001 / AI-002 / CLOUD-001 / DF-001 | Optimization and optional future lanes | PLANNED | Roadmap only | Do not displace the current data/runtime/training gates. | Varies |
-
-Approved model/data evolution details: `docs/roadmap/model_data_evolution_20260827.md`.
 
 ## Reconciliation classification
 
