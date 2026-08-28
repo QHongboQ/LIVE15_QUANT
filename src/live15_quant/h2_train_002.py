@@ -163,16 +163,39 @@ def select_recent_h0_overlap_target(
               AND l.window_end >= ? AND l.window_end <= ?
               AND NOT EXISTS (
                   SELECT 1 FROM data_gaps AS g
-                  WHERE g.instrument IN (l.ticker, l.series)
+                  WHERE g.source = 'kalshi_ws'
+                    AND g.instrument IN (l.ticker, l.series)
                     AND g.gap_start < l.window_end
-                    AND COALESCE(g.gap_end, ?) > l.window_start
+                    AND (
+                        (
+                            g.recovered = 1
+                            AND g.detected_at <= ?
+                            AND g.gap_end > l.window_start
+                        )
+                        OR (
+                            g.recovered = 0 AND NOT EXISTS (
+                                SELECT 1 FROM data_gaps AS closed
+                                WHERE closed.source = g.source
+                                  AND closed.asset = g.asset
+                                  AND closed.instrument = g.instrument
+                                  AND closed.gap_start = g.gap_start
+                                  AND closed.recovered = 1
+                                  AND closed.detected_at <= ?
+                            )
+                        )
+                    )
               )
             GROUP BY l.ticker, l.event_ticker, l.asset, l.series, l.window_start, l.window_end
             ORDER BY CASE WHEN l.asset = 'BTC' AND l.series = 'KXBTC15M' THEN 0 ELSE 1 END,
                      l.window_end DESC, l.ticker ASC
             LIMIT 1
             """,
-            (cutoff.isoformat(), observed_now.isoformat(), observed_now.isoformat()),
+            (
+                cutoff.isoformat(),
+                observed_now.isoformat(),
+                observed_now.isoformat(),
+                observed_now.isoformat(),
+            ),
         ).fetchone()
     if row is None:
         return None

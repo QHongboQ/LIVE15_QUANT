@@ -15,6 +15,7 @@ source of detail.
 | Stale UI/runtime truth | A stale receipt must not override current service health; UI exposes stale telemetry rather than a false failure. **GUARDED**. | `tests/test_runtime_ownership.py`, Control Center runtime tests | `docs/adr/0003-runtime-ownership.md` |
 | Intentional auxiliary health projection | Historical child PID/heartbeat must not turn `ON_DEMAND` or `PAUSED_BY_DESIGN` auxiliaries into false STALE failures; stale RUNNING remains strict. **GUARDED**. | PR #39; `tests/test_runtime_ownership.py` | `docs/adr/0003-runtime-ownership.md` |
 | Dataset-history confusion | Dataset partitions do not define current research coverage or authorize holdout access. **GUARDED**. | `tests/test_research_data_authority.py` | `docs/adr/0002-research-data-authority.md` |
+| Frozen-holdout accidental exposure | A broad local artifact search displayed frozen-holdout rows, then stopped immediately. **CONTAINED / REMEDIATION REQUIRED**: prior `UNREVEALED` status is invalid; content did not inform WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Never reopen the holdout to quantify scope; require a separate remediation/replacement decision before `TRN-001` or training. | `PROJECT_PROGRESS.md`; `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260828.md` | `PROJECT_CHARTER.md` |
 
 If no regression test is possible, record the reason beside the smallest
 reproducible evidence artifact; do not substitute prose for an executable test.

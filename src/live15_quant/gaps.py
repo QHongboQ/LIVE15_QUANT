@@ -32,6 +32,9 @@ class GapReason(StrEnum):
     RUNTIME_STALL = "runtime_stall_gap"
     SOURCE_OUTAGE = "source_outage"
     RECONNECT = "reconnect_gap"
+    SEQUENCE_GAP = "sequence_gap"
+    PAYLOAD_INVALID = "payload_invalid"
+    BOOK_INVARIANT = "book_invariant"
 
 
 class InferenceReadinessStatus(StrEnum):
