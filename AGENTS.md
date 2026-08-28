@@ -82,8 +82,14 @@ Use `setup-matt-pocock-skills` only to change the configured workflow. The
 project uses GitHub issues and a single-context documentation layout; see
 `docs/agents/issue-tracker.md` and `docs/agents/domain.md`.
 
-For normal work, load only the relevant skill from `.agents/skills/`, then one
-context pointer:
+For normal work, load only the relevant skill from `.agents/skills/`, then the
+normal shared-brain bootstrap order:
+
+`AGENTS.md` → `PROJECT_CHARTER.md` → `CONTEXT.md` → `CURRENT_STATE.md` →
+`PROJECT_PROGRESS.md` → only the relevant ADR, `BUG_REGISTRY.md`, or evidence.
+
+Git Project Brain is the shared external brain for ChatGPT and Codex; chat
+history is never durable project memory. Then use the relevant pointer:
 
 - strategy/authority → `PROJECT_CHARTER.md`;
 - vocabulary/architecture routing → `CONTEXT.md`;
@@ -106,3 +112,14 @@ document at session start.
 
 Do not create competing project instruction systems or duplicate the full project history in
 another Markdown file.
+
+## Durable task closeout
+
+Before closing an important task, decide whether it changed durable project
+state. Record only the authority that changed: task status/result/next action
+in `PROJECT_PROGRESS.md`; whole-project phase in `CURRENT_STATE.md`; a durable
+bug in `BUG_REGISTRY.md`; a strategy or architecture decision in the charter or
+ADR; and vocabulary/routing in `CONTEXT.md`. Complex LIVE15 task specifications
+normally state Terra/High, goal, authority, prohibitions, acceptance,
+validation, and return format. Use the Upstream First sequence in the relevant
+diagnosis skill before inventing a local fix.

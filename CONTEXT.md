@@ -3,6 +3,11 @@
 This is a vocabulary and pointer map, not a project history. Read only the
 linked detail that matches the task.
 
+Normal shared-brain bootstrap is `AGENTS.md` → `PROJECT_CHARTER.md` → this
+file → `CURRENT_STATE.md` → `PROJECT_PROGRESS.md` → only relevant detail.
+`PROJECT_PROGRESS.md` is task history; `CURRENT_STATE.md` is compact present
+orientation. Git is the ChatGPT/Codex shared external brain, not chat history.
+
 ## Architecture map
 
 `Kalshi SDK → immutable LIVE15 gateway → Reliability → Recorder/RecorderStore →
@@ -27,6 +32,7 @@ policy, storage, lifecycle, datasets, models, paper, risk, and UI. Detail:
 | Training recency | Development history over sessions/weeks | `docs/research_data_authority.md` |
 | Forward OOS freshness | Evidence strictly after a frozen specification | `docs/research_data_authority.md` |
 | Runtime owner | The single service/component authority permitted to restart a component | `docs/runtime_ownership_and_self_healing.md` |
+| Project progress | Durable task state, evidence links, cautions, and next action; never live telemetry | `PROJECT_PROGRESS.md` |
 
 ## Fast routing
 
