@@ -10,8 +10,10 @@ from types import SimpleNamespace
 import pytest
 
 from live15_quant.config import Settings
-from live15_quant.gaps import GapSource, configured_streams, detect_gaps
+from live15_quant.gaps import GapReason, GapSource, configured_streams, detect_gaps
 from live15_quant.kalshi_ws import (
+    KalshiAtomicOrderBookCoordinator,
+    KalshiAtomicSessionProcessor,
     KalshiBookSide,
     KalshiBookSyncStatus,
     KalshiCommandAcknowledged,
@@ -266,6 +268,11 @@ async def test_recorder_uses_only_synchronized_ws_and_closes_sequence_gap(tmp_pa
         assert len(
             tuple(gap for gap in store.active_data_gaps() if gap.source is GapSource.KALSHI_WS)
         ) == len(Asset)
+        assert {
+            gap.reason
+            for gap in store.active_data_gaps()
+            if gap.source is GapSource.KALSHI_WS
+        } == {GapReason.SEQUENCE_GAP}
         source.allow_resync.set()
         await asyncio.wait_for(source.resync_complete.wait(), 1)
         recorder._flush_kalshi_ws_pending()
@@ -274,6 +281,8 @@ async def test_recorder_uses_only_synchronized_ws_and_closes_sequence_gap(tmp_pa
         assert len(health.kalshi_ws_synchronized_markets) == len(Asset)
         assert health.kalshi_ws_seq_gaps == 1
         assert health.kalshi_ws_resync_count == 1
+        assert health.kalshi_ws_payload_recoveries == 0
+        assert health.kalshi_ws_invariant_recoveries == 0
         assert health.kalshi_ws_queue_high_watermark == 3
         assert store.count("kalshi_ws_orderbook_events") == 21
         assert store.count("kalshi_prediction_quotes") == 0
@@ -389,6 +398,62 @@ async def test_partial_initial_snapshot_set_has_bounded_reconnect(tmp_path) -> N
         clock[0] += 2.0
         assert await recorder._enforce_kalshi_ws_liveness(NOW)
         assert source.reconnect_requests == 1
+
+
+@pytest.mark.asyncio
+async def test_stalled_dirty_subscription_escalates_snapshot_resubscribe_then_reconnect(
+    tmp_path,
+) -> None:
+    source = FakeProductionWs()
+    discoveries = tuple(discovery_for(asset) for asset in Asset)
+    clock = [100.0]
+    with RecorderStore(tmp_path / "recovery-ladder.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                enable_kalshi_production_websocket=True,
+                kalshi_websocket_stale_seconds=10,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(discoveries),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            kalshi_ws_factory=lambda: source,
+            now=lambda: NOW,
+            monotonic=lambda: clock[0],
+        )
+        for item in discoveries:
+            recorder._accept_discovery(item)
+        recorder._kalshi_ws = source
+        tickers = tuple(market.ticker for market in recorder._health.current.values())
+        coordinator = KalshiAtomicOrderBookCoordinator("connection-1", tickers)
+        processor = KalshiAtomicSessionProcessor(
+            coordinator, recorder._send_kalshi_ws_payload, monotonic=lambda: clock[0]
+        )
+        await processor.process(source._snapshot(tickers[0], 1, 0))
+        await processor.process(source._delta(tickers[0], 3))
+        recorder._kalshi_ws_coordinator = coordinator
+        recorder._kalshi_ws_processor = processor
+        recorder._health.kalshi_ws_state = KalshiWsRuntimeState.UNSYNCHRONIZED
+        recorder._kalshi_ws_waiting_since_monotonic = clock[0]
+
+        clock[0] += 11
+        assert await recorder._enforce_kalshi_ws_liveness(NOW)
+        assert [command["cmd"] for command in source.commands] == [
+            "update_subscription",
+            "update_subscription",
+        ]
+        assert recorder.health().kalshi_ws_snapshot_retries == 1
+
+        clock[0] += 11
+        assert await recorder._enforce_kalshi_ws_liveness(NOW)
+        assert source.commands[-1]["cmd"] == "subscribe"
+        assert recorder.health().kalshi_ws_resubscribe_requests == 1
+
+        clock[0] += 11
+        assert await recorder._enforce_kalshi_ws_liveness(NOW)
+        assert source.reconnect_requests == 1
+        assert recorder.health().kalshi_ws_ladder_reconnect_requests == 1
         assert recorder.health().kalshi_ws_connection_state is KalshiWsRuntimeState.RECONNECTING
         assert not recorder._health.kalshi_ws_synchronized
 

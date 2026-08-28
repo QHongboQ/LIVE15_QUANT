@@ -2002,6 +2002,8 @@ async def test_malformed_ws_market_isolated_and_official_snapshot_recovers_recor
     assert health.fatal_task is None and health.fatal_error_type is None
     assert health.source_failures == {}
     assert health.retry_counts["kalshi_ws"] == 1
+    assert health.kalshi_ws_payload_recoveries == 1
+    assert health.kalshi_ws_invariant_recoveries == 0
     assert any(event.error_type == "KalshiWsPayloadIssue" for event in diagnostics)
 
 

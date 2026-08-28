@@ -25,6 +25,7 @@ from live15_quant.kalshi_ws import (
     KalshiCommandAcknowledged,
     KalshiOrderBookDelta,
     KalshiOrderBookSnapshot,
+    KalshiRecoveryStage,
     KalshiSequenceGapError,
     KalshiSubscribed,
     KalshiSubscriptionRollover,
@@ -160,6 +161,41 @@ def test_official_payload_parser_preserves_decimal_and_timestamp_semantics() -> 
     assert delta_message.source_timestamp == NOW
 
 
+def test_unified_yes_price_payload_is_normalized_once_to_canonical_no_leg_prices() -> None:
+    """The wire subscription is unified yes-leg; LIVE15 remains no-leg internally."""
+
+    parsed_snapshot = parse_kalshi_server_message(
+        snapshot_payload(),
+        connection_id="connection-1",
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+    parsed_delta = parse_kalshi_server_message(
+        {
+            "type": "orderbook_delta",
+            "sid": 2,
+            "seq": 11,
+            "msg": {
+                "market_ticker": BTC,
+                "market_id": MARKET_ID,
+                # `use_yes_price=true`: this is 48c YES-leg, therefore 52c NO-leg.
+                "price_dollars": "0.4800",
+                "delta_fp": "2.00",
+                "side": "no",
+                "ts_ms": 1787313600000,
+            },
+        },
+        connection_id="connection-1",
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+    assert isinstance(parsed_snapshot, KalshiOrderBookSnapshot)
+    assert isinstance(parsed_delta, KalshiOrderBookDelta)
+    assert parsed_snapshot.no_bids == (OrderBookLevel(Decimal("0.5200"), Decimal("8.00")),)
+    assert parsed_delta.side is KalshiBookSide.NO
+    assert parsed_delta.price == Decimal("0.5200")
+
+
 def test_ticker_is_typed_but_not_claimed_as_sequenced_orderbook() -> None:
     parsed = parse_kalshi_server_message(
         {
@@ -241,7 +277,7 @@ def test_get_snapshot_resynchronizes_after_gap() -> None:
         coordinator.accept(delta(13))
     command = update_subscription_command(9, 2, "get_snapshot", (BTC,)).as_object()
     assert command["params"] == {
-        "sid": 2,
+        "sids": [2],
         "market_tickers": [BTC],
         "action": "get_snapshot",
     }
@@ -292,6 +328,84 @@ async def test_session_processor_requests_one_snapshot_and_measures_resync() -> 
     assert processor.diagnostics.requests == 1
     assert processor.diagnostics.completed == 1
     assert processor.diagnostics.last_duration_seconds == 0.25
+
+
+@pytest.mark.asyncio
+async def test_stalled_resync_uses_bounded_snapshot_resubscribe_reconnect_ladder() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    sent: list[str] = []
+
+    async def sender(payload: str) -> None:
+        sent.append(payload)
+
+    processor = KalshiAtomicSessionProcessor(coordinator, sender)
+    await processor.process(snapshot())
+    await processor.process(delta(13))
+
+    assert await processor.advance_recovery() is KalshiRecoveryStage.SNAPSHOT_RETRY
+    assert len(sent) == 2
+    assert json.loads(sent[-1])["params"]["action"] == "get_snapshot"
+    assert await processor.advance_recovery() is KalshiRecoveryStage.RESUBSCRIBE
+    command = processor.resubscribe_command().as_object()
+    assert command["cmd"] == "subscribe"
+    assert await processor.advance_recovery() is KalshiRecoveryStage.RECONNECT
+    processor.mark_reconnect_requested()
+    assert processor.diagnostics.snapshot_retries == 1
+    assert processor.diagnostics.resubscribe_requests == 1
+    assert processor.diagnostics.reconnect_requests == 1
+
+
+@pytest.mark.asyncio
+async def test_subscription_identity_conflict_requires_new_subscription_not_old_sid_snapshot(
+) -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+    sent: list[str] = []
+
+    async def sender(payload: str) -> None:
+        sent.append(payload)
+
+    processor = KalshiAtomicSessionProcessor(coordinator, sender)
+    await processor.process(snapshot())
+    conflicting = replace(delta(), subscription_id=3)
+    assert await processor.process(conflicting) is None
+    command = processor.resubscribe_command().as_object()
+    assert command["cmd"] == "subscribe"
+    assert await processor.process(delta()) is None
+    assert processor.accept_subscribed(KalshiSubscribed(1000, 3, "orderbook_delta"))
+    assert await processor.process(replace(snapshot(20), subscription_id=3)) is not None
+    assert sent == []
+    assert processor.diagnostics.identity_recoveries == 1
+
+
+@pytest.mark.asyncio
+async def test_malformed_payload_with_wrong_sid_requires_new_subscription() -> None:
+    coordinator = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,))
+
+    async def sender(_payload: str) -> None:
+        return None
+
+    processor = KalshiAtomicSessionProcessor(coordinator, sender)
+    await processor.process(snapshot())
+    issue = KalshiWsPayloadIssue(
+        connection_id="connection-1",
+        message_type="orderbook_delta",
+        channel=None,
+        subscription_id=3,
+        sequence=11,
+        ticker=BTC,
+        parser_stage="data_payload",
+        reason="malformed payload",
+        schema_keys=("top:type",),
+        payload_shape_hash="0123456789abcdef",
+        affects_orderbook=True,
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+
+    await processor.recover_payload_issue(issue)
+
+    assert processor.resubscribe_command().as_object()["cmd"] == "subscribe"
+    assert processor.diagnostics.identity_recoveries == 1
 
 
 @pytest.mark.asyncio
@@ -467,7 +581,7 @@ def test_rollover_adds_successor_before_removing_predecessor() -> None:
         request_id=21, subscription_id=2, successor=BTC_NEXT
     ).as_object()
     assert remove["params"] == {
-        "sid": 2,
+        "sids": [2],
         "market_tickers": [BTC],
         "action": "delete_markets",
     }
@@ -483,7 +597,7 @@ def test_subscribe_command_is_market_data_only() -> None:
         "params": {
             "channels": ["orderbook_delta", "ticker"],
             "market_tickers": [BTC],
-            "use_yes_price": False,
+            "use_yes_price": True,
         },
     }
     serialized = json.dumps(command).lower()

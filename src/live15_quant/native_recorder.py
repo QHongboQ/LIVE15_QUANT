@@ -55,6 +55,7 @@ from live15_quant.kalshi_ws import (
     KalshiCommandAcknowledged,
     KalshiOrderBookDelta,
     KalshiOrderBookSnapshot,
+    KalshiRecoveryStage,
     KalshiServerMessage,
     KalshiSubscribed,
     KalshiSubscriptionCommand,
@@ -286,6 +287,12 @@ class KalshiNativeHealth:
     kalshi_ws_last_books: dict[Asset, datetime]
     kalshi_ws_seq_gaps: int
     kalshi_ws_resync_count: int
+    kalshi_ws_payload_recoveries: int
+    kalshi_ws_invariant_recoveries: int
+    kalshi_ws_identity_recoveries: int
+    kalshi_ws_snapshot_retries: int
+    kalshi_ws_resubscribe_requests: int
+    kalshi_ws_ladder_reconnect_requests: int
     kalshi_ws_reconnect_count: int
     kalshi_ws_queue_high_watermark: int
     kalshi_ws_queue_capacity: int
@@ -375,6 +382,12 @@ class KalshiNativeHealth:
             "kalshi_ws_book_age_seconds": ages(self.kalshi_ws_last_books),
             "kalshi_ws_seq_gaps": self.kalshi_ws_seq_gaps,
             "kalshi_ws_resync_count": self.kalshi_ws_resync_count,
+            "kalshi_ws_payload_recoveries": self.kalshi_ws_payload_recoveries,
+            "kalshi_ws_invariant_recoveries": self.kalshi_ws_invariant_recoveries,
+            "kalshi_ws_identity_recoveries": self.kalshi_ws_identity_recoveries,
+            "kalshi_ws_snapshot_retries": self.kalshi_ws_snapshot_retries,
+            "kalshi_ws_resubscribe_requests": self.kalshi_ws_resubscribe_requests,
+            "kalshi_ws_ladder_reconnect_requests": self.kalshi_ws_ladder_reconnect_requests,
             "kalshi_ws_reconnect_count": self.kalshi_ws_reconnect_count,
             "kalshi_ws_queue_high_watermark": self.kalshi_ws_queue_high_watermark,
             "kalshi_ws_queue_capacity": self.kalshi_ws_queue_capacity,
@@ -450,6 +463,12 @@ class _MutableHealth:
     kalshi_ws_last_books: dict[Asset, datetime] = field(default_factory=dict)
     kalshi_ws_seq_gaps: int = 0
     kalshi_ws_resync_count: int = 0
+    kalshi_ws_payload_recoveries: int = 0
+    kalshi_ws_invariant_recoveries: int = 0
+    kalshi_ws_identity_recoveries: int = 0
+    kalshi_ws_snapshot_retries: int = 0
+    kalshi_ws_resubscribe_requests: int = 0
+    kalshi_ws_ladder_reconnect_requests: int = 0
     kalshi_ws_reconnect_count: int = 0
     kalshi_ws_receive_persist_latency_ms: str | None = None
     ws_archive_metrics: dict[str, object] = field(default_factory=dict)
@@ -568,6 +587,7 @@ class KalshiNativeRecorder:
                 else KalshiProductionReadOnlyWebSocket.from_settings(settings)
             )
         self._kalshi_ws_coordinator: KalshiAtomicOrderBookCoordinator | None = None
+        self._kalshi_ws_processor: KalshiAtomicSessionProcessor | None = None
         self._kalshi_ws_waiting_since_monotonic: float | None = None
         self._kalshi_ws_books: dict[Asset, SynchronizedKalshiOrderBook] = {}
         # One compact as-of book per configured forward decision bucket is enough
@@ -904,6 +924,14 @@ class KalshiNativeRecorder:
             kalshi_ws_last_books=dict(self._health.kalshi_ws_last_books),
             kalshi_ws_seq_gaps=self._health.kalshi_ws_seq_gaps,
             kalshi_ws_resync_count=self._health.kalshi_ws_resync_count,
+            kalshi_ws_payload_recoveries=self._health.kalshi_ws_payload_recoveries,
+            kalshi_ws_invariant_recoveries=self._health.kalshi_ws_invariant_recoveries,
+            kalshi_ws_identity_recoveries=self._health.kalshi_ws_identity_recoveries,
+            kalshi_ws_snapshot_retries=self._health.kalshi_ws_snapshot_retries,
+            kalshi_ws_resubscribe_requests=self._health.kalshi_ws_resubscribe_requests,
+            kalshi_ws_ladder_reconnect_requests=(
+                self._health.kalshi_ws_ladder_reconnect_requests
+            ),
             kalshi_ws_reconnect_count=(
                 int(getattr(self._kalshi_ws.diagnostics, "reconnects", 0))
                 if self._kalshi_ws is not None
@@ -2238,6 +2266,25 @@ class KalshiNativeRecorder:
         )
         if not transport_stale and not snapshot_stalled:
             return False
+        processor = self._kalshi_ws_processor
+        if snapshot_stalled and processor is not None:
+            stage = await processor.advance_recovery()
+            if stage is KalshiRecoveryStage.SNAPSHOT_RETRY:
+                self._health.kalshi_ws_snapshot_retries = processor.diagnostics.snapshot_retries
+                self._kalshi_ws_waiting_since_monotonic = self._monotonic()
+                return True
+            if stage is KalshiRecoveryStage.RESUBSCRIBE:
+                await self._kalshi_ws.send_command(processor.resubscribe_command())
+                self._health.kalshi_ws_resubscribe_requests = (
+                    processor.diagnostics.resubscribe_requests
+                )
+                self._kalshi_ws_waiting_since_monotonic = self._monotonic()
+                return True
+            if stage is KalshiRecoveryStage.RECONNECT:
+                processor.mark_reconnect_requested()
+                self._health.kalshi_ws_ladder_reconnect_requests = (
+                    processor.diagnostics.reconnect_requests
+                )
         self._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
         # One reconnect request is enough.  The next connection establishes a
         # new monotonic snapshot deadline; do not busy-loop while close drains.
@@ -2557,6 +2604,7 @@ class KalshiNativeRecorder:
                     first_request_id=request_id,
                     monotonic=self._monotonic,
                 )
+                self._kalshi_ws_processor = processor
                 request_id += 1_000
                 pending_removals.clear()
                 pending_delete_requests.clear()
@@ -2567,6 +2615,8 @@ class KalshiNativeRecorder:
                     f"official Kalshi WebSocket command failed with code {message.code}"
                 )
             if isinstance(message, KalshiSubscribed):
+                if processor is not None:
+                    processor.accept_subscribed(message)
                 self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
                 self._worker_advanced("kalshi_ws")
                 await asyncio.sleep(0)
@@ -2620,9 +2670,25 @@ class KalshiNativeRecorder:
                     ),
                 )
                 if message.affects_orderbook:
+                    identity_recoveries_before = processor.diagnostics.identity_recoveries
                     await processor.recover_payload_issue(message)
-                    self._mark_kalshi_ws_unsynchronized(GapReason.SOURCE_OUTAGE)
-                    self._health.kalshi_ws_state = KalshiWsRuntimeState.UNSYNCHRONIZED
+                    if processor.diagnostics.identity_recoveries > identity_recoveries_before:
+                        await source.send_command(processor.resubscribe_command())
+                        self._health.kalshi_ws_identity_recoveries = (
+                            processor.diagnostics.identity_recoveries
+                        )
+                        self._health.kalshi_ws_resubscribe_requests = (
+                            processor.diagnostics.resubscribe_requests
+                        )
+                        self._mark_kalshi_ws_unsynchronized(GapReason.BOOK_INVARIANT)
+                        self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+                        self._kalshi_ws_waiting_since_monotonic = self._monotonic()
+                    else:
+                        self._health.kalshi_ws_payload_recoveries = (
+                            processor.diagnostics.payload_recoveries
+                        )
+                        self._mark_kalshi_ws_unsynchronized(GapReason.PAYLOAD_INVALID)
+                        self._health.kalshi_ws_state = KalshiWsRuntimeState.UNSYNCHRONIZED
                 self._worker_advanced("kalshi_ws", message.socket_received_timestamp)
                 await asyncio.sleep(0)
                 continue
@@ -2687,15 +2753,34 @@ class KalshiNativeRecorder:
                 continue
 
             requests_before = processor.diagnostics.requests
+            invariant_recoveries_before = processor.diagnostics.invariant_recoveries
+            identity_recoveries_before = processor.diagnostics.identity_recoveries
             book = await processor.process(message)
+            if processor.diagnostics.identity_recoveries > identity_recoveries_before:
+                await source.send_command(processor.resubscribe_command())
+                self._health.kalshi_ws_identity_recoveries = (
+                    processor.diagnostics.identity_recoveries
+                )
+                self._health.kalshi_ws_resubscribe_requests = (
+                    processor.diagnostics.resubscribe_requests
+                )
+                self._mark_kalshi_ws_unsynchronized(GapReason.BOOK_INVARIANT)
+                self._health.kalshi_ws_state = KalshiWsRuntimeState.WAITING_SNAPSHOT
+                self._kalshi_ws_waiting_since_monotonic = self._monotonic()
             if isinstance(message, KalshiCommandAcknowledged):
                 predecessor = pending_delete_requests.pop(message.request_id, None)
                 if predecessor is not None:
                     coordinator.remove_expected_ticker(predecessor)
                     ticker_assets.pop(predecessor, None)
             if processor.diagnostics.requests > requests_before:
-                self._health.kalshi_ws_seq_gaps += 1
-                self._mark_kalshi_ws_unsynchronized(GapReason.SOURCE_OUTAGE)
+                if processor.diagnostics.invariant_recoveries > invariant_recoveries_before:
+                    self._health.kalshi_ws_invariant_recoveries = (
+                        processor.diagnostics.invariant_recoveries
+                    )
+                    self._mark_kalshi_ws_unsynchronized(GapReason.BOOK_INVARIANT)
+                else:
+                    self._health.kalshi_ws_seq_gaps += 1
+                    self._mark_kalshi_ws_unsynchronized(GapReason.SEQUENCE_GAP)
             synchronized = set(coordinator.synchronized_tickers)
             sync_status = (
                 KalshiBookSyncStatus.SYNCHRONIZED
