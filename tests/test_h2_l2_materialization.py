@@ -130,6 +130,10 @@ def test_overlap_validation_is_explicit_and_h2_never_wins_conflict() -> None:
     matching = evaluate_h2_overlap((h2,), (matching_h0,))
     assert matching.status == H2_OVERLAP_VALIDATED
 
+    duplicate_h0 = evaluate_h2_overlap((h2,), (matching_h0, matching_h0))
+    assert duplicate_h0.status == H2_OVERLAP_FAILED
+    assert duplicate_h0.reasons == ("H0_DUPLICATE_OR_CONFLICT_QUARANTINED",)
+
     conflicting = materialize_snapshot(
         _evidence(yes=(SnapshotLevel(Decimal("0.44"), Decimal("12")),))
     )
