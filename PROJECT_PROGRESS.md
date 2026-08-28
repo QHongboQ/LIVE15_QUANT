@@ -41,8 +41,10 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 
 ## Current reconciliation basis
 
-- Merged-code authority: `origin/main` at `1e0fd39dbc7f6f69f710de8d45e809faf9368937`
-  (PR #42). CTX-002 is merged; this does not prove Production deployment.
+- CTX-002 reconciliation merge basis: PR #42 at
+  `1e0fd39dbc7f6f69f710de8d45e809faf9368937`.
+- Current merged-code authority is always the live `origin/main` HEAD and must
+  be resolved at session/task start; do not freeze it in this ledger.
 - Legacy evidence: `origin/agent/ctx-002-recovery-source:LEGACY_RECOVERY_2026-08-27.md`
   (PR #41, unmerged temporary recovery source). It informs this ledger but is
   not a competing authority.
@@ -75,7 +77,7 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 | Task ID | Title / area | Status / result | Evidence / blocker | Important notes and next action | Human gate |
 | --- | --- | --- | --- | --- | --- |
 | CTX-002 | Project Brain recovery and reconciliation / context | CLOSED / MERGED | PR #42; merge `1e0fd39d` | Context/documentation only; deployed commit N/A. Legacy source PR #41 remains temporary evidence, not canonical Project Brain. | None |
-| DEP-001 | Current-main Production deployment and bounded proof / deployment | BLOCKED | Current installed package receipt cannot prove `cce1ebc`; runtime health alone is insufficient | Requires explicit approval; then deploy/prove only the reviewed current main. | Deploy/restart |
+| DEP-001 | Current-main Production deployment and bounded proof / deployment | BLOCKED | Current installed Production package has not been proven to match current protected `origin/main`; runtime health alone is insufficient | With explicit human approval, deploy and prove the then-current reviewed protected main. | Deploy/restart |
 | ST-005 | 60-minute archive/purge catch-up trend / storage | BLOCKED | Prior run stopped safely during unsynchronized WS; not rerun here | Requires approved read-only run after valid runtime proof; never auto-start. | Runtime/read-only authorization |
 | TRN-001 | `LONG_RUN_TRAINING_FINAL_GO_NO_GO` / training gate | PLANNED / `NO_GO` | No formal gate execution evidence | Do not train until data/runtime/resource/anti-overfit gates pass; holdout remains opaque. | Training/holdout |
 | DATA-004 | Independent UTC-day and regime coverage / data | PLANNED | Research Data Authority | More rows are not independent evidence. | Data policy |
