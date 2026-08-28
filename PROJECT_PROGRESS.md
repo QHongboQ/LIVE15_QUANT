@@ -80,8 +80,14 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 | DEP-001 | Current-main Production deployment and bounded proof / deployment | BLOCKED | Current installed Production package has not been proven to match current protected `origin/main`; runtime health alone is insufficient | With explicit human approval, deploy and prove the then-current reviewed protected main. | Deploy/restart |
 | ST-005 | 60-minute archive/purge catch-up trend / storage | BLOCKED | Prior run stopped safely during unsynchronized WS; not rerun here | Requires approved read-only run after valid runtime proof; never auto-start. | Runtime/read-only authorization |
 | TRN-001 | `LONG_RUN_TRAINING_FINAL_GO_NO_GO` / training gate | PLANNED / `NO_GO` | No formal gate execution evidence | Do not train until data/runtime/resource/anti-overfit gates pass; holdout remains opaque. | Training/holdout |
+| DATA-GLOBAL-001 | Global Research Universe training authority / data | PLANNED | User-approved direction; RDA/CES foundation exists | Formal current training must consume H0/H1/validated-H2 through `ResearchUniverseSnapshot` / `CanonicalEvidenceSnapshot`; Dataset v1/v2 stay `REPRODUCTION_ONLY`, never current-training inputs. Freeze immutable per-run Training Snapshots rather than mutating a global dataset. | Data/model policy |
+| H2-TRAIN-001 | DepthFeed L2 training materialization / data | PLANNED | Provider adapter exists; real H2 snapshot/tick training readiness remains incomplete | Complete DepthFeed → typed snapshot/tick → H0 overlap validation → canonical H2 evidence → deterministic microstructure/sequence materializer → family-specific preflight. Snapshot-only and delta/tick readiness remain separate; do not fabricate missing H2 capability. | Data authority/provider semantics |
 | DATA-004 | Independent UTC-day and regime coverage / data | PLANNED | Research Data Authority | More rows are not independent evidence. | Data policy |
 | FAC-002 / FAC-003 | Decision-time-safe factor evidence / factors | PLANNED | Fixed-set evidence and chronological validation required | Ablate, use grouped validation/BH-FDR; do not widen search first. | Research policy |
+| AUTO-RD-001 | Autonomous factor + model research factory / research | PLANNED | User-approved direction; Factor Factory foundation exists | Build a guarded research loop inspired by AlphaGPT and RD-Agent(Q): generate factors/models → LeakageChecker → chronological walk-forward → FDR/redundancy → after-cost → Shadow/Paper forward → promote/reject. External projects are research references, not Production controllers or automatic dependencies. | Model/factor promotion |
+| ADAPT-001 | Continuous adaptation & drift-safe retraining / models | PLANNED | User-approved direction; current `current_trainable` is on-demand, not a continuous learner | Separate fast inference from slow learning. Add recency × regime-similarity × data-quality sample weighting, feature/prediction/performance drift detection, scheduled/triggered Challenger retraining, Champion comparison, rollback, and optional Stable Champion + Adaptive Challenger routing. New ticks may refresh predictions immediately; they must not directly mutate Production model weights. | Retraining/model promotion |
+| MODEL-ENSEMBLE-001 | Multi-expert v3 evolution / models | PLANNED | User-approved direction; v3 contracts/model-zoo foundations exist | Target layered system: Terminal Expert; Fast Microstructure Expert; Path Expert; Regime/Router Expert; Factor Alpha Expert; Uncertainty/Disagreement Expert → Router/EV Decision → Hard Risk. Path order: structured XGBoost baseline → causal TCN → THUML/Time-Series-Library challengers when sequence gate passes. Microstructure order: MLPLOB sanity baseline → DeepLOB → TLOB challenger. EarnHFT is a hierarchical-router architecture reference. | Model policy/promotion |
+| DEC-ACT-001 | First-live decision action surface / decision | PLANNED | User-approved direction; `DynamicDecisionAction` currently exposes 10 theoretical actions | Initial真钱/Paper-forward action surface should stay conservative: `BUY_YES`, `BUY_NO`, `HOLD`, `TAKE_PROFIT`, `CUT_LOSS`, `CLOSE`, `HOLD_TO_SETTLEMENT`, `DATA_UNAVAILABLE`. Keep `ADD` and `REDUCE` disabled until separately validated forward evidence justifies position scaling. Hard Risk retains veto authority. | Strategy/risk/execution |
 | VAL-001 | Chronological anti-overfit gate / validation | PLANNED | Model vNext contract | Require event grouping, purge/embargo, cost stress, opaque holdout. | Holdout |
 | MVN-001 / MVN-002 / MVN-004 | Path target, after-cost edge, dynamic exit / models | PLANNED | Model contracts | Contract and evidence precede training. | Model policy |
 | MOD-UNC-001 / MOD-004 / MOD-005 | Uncertainty, promotion/rollback, retraining / models | PLANNED | Forward Challenger evidence | Immutable versions; no promotion from backtest alone. | Model promotion |
@@ -89,6 +95,48 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 | RISK-001 / EXE-001 / EXE-002 / SEC-001 | Hard Risk, execution, reconciliation, security / production | PLANNED | Required before any real-money pilot | Production writes remain 0; unknown reconciliation fails closed. | Hard Risk/execution/security |
 | PROD-001 | Tiny 1-contract pilot / production | PLANNED | Requires all preceding forward/risk/security evidence | Not authorized by paper, merge, or training alone. | Explicit human approval |
 | SESS-001 / OPS-002 / ST-004 / AI-001 / AI-002 / CLOUD-001 / DF-001 | Optimization and optional future lanes | PLANNED | Roadmap only | Do not displace the current data/runtime/training gates. | Varies |
+
+## Approved planning directions — 2026-08-27
+
+These are user-approved roadmap directions, not implementation, deployment, training authorization,
+or model-promotion claims. Each still requires its own bounded task, tests, evidence, Checker/CI,
+and human gates where applicable.
+
+- **Global-data-first training:** current research and retraining should draw from the authorized
+  H0/H1/H2 Research Data Authority universe, not Dataset v1/v2 partitions. Dataset v1/v2 remain
+  immutable audit/reproduction artifacts and should be structurally inaccessible to normal current
+  training except explicit reproduction-only paths.
+- **Immutable current Training Snapshots:** new Recorder/archive/H1/H2 evidence continuously expands
+  the research universe, while every actual training run freezes an auditable snapshot/hash so a
+  moving data source cannot silently alter an in-progress model build.
+- **Multi-timescale experts:** the 15-minute settlement horizon is paired with second/minute-scale
+  market changes. Maintain separate terminal, path, microstructure, regime/router, factor-alpha,
+  and uncertainty/disagreement experts rather than forcing one model to solve all horizons.
+- **Model candidate order:** structured logistic/XGBoost remain sanity/baseline models; causal TCN is
+  the preferred first deep sequence challenger after sequence readiness. Time-Series-Library/THUML
+  models are a challenger pool rather than a Production dependency. For L2, compare MLPLOB →
+  DeepLOB → TLOB on identical LIVE15 evidence; architecture popularity never overrides after-cost
+  forward evidence.
+- **Autonomous factor/model R&D:** use AlphaGPT and RD-Agent(Q) ideas as research references for a
+  guarded Challenger factory. Factor/model generation may run continuously offline, but every
+  candidate must pass leakage, grouped chronological validation, FDR/redundancy, after-cost,
+  multi-day/asset/regime, and fresh Shadow/Paper-forward gates before promotion.
+- **Adaptive learning without tick-by-tick weight mutation:** inference may refresh every second or
+  event, while learning runs on a slower scheduled/triggered loop after valid labels/evidence exist.
+  Weight training examples by recency, regime similarity, and data quality; preserve older rare
+  regimes with lower weight instead of deleting history solely by age.
+- **Drift-safe retraining:** monitor feature drift, calibration/prediction drift, and after-cost
+  performance drift. Drift requests retraining; it does not directly replace the Champion. Compare
+  immutable Challengers, support rollback, and consider Stable Champion + Adaptive Challenger
+  routing only after validation.
+- **Conservative first-live action space:** start with eight actions — `BUY_YES`, `BUY_NO`, `HOLD`,
+  `TAKE_PROFIT`, `CUT_LOSS`, `CLOSE`, `HOLD_TO_SETTLEMENT`, `DATA_UNAVAILABLE`. Keep `ADD` and
+  `REDUCE` disabled initially; Hard Risk can veto any model/EV decision.
+- **DepthFeed must become a training source, not merely an extractor:** H2 completion requires real
+  payload semantics, H0 overlap validation, canonical evidence integration, deterministic L2
+  materialization, sequence/microstructure conversion, and family-specific readiness. Provider 402/
+  429 or missing delta capability must remain explicit blockers rather than being hidden by
+  synthetic evidence.
 
 ## Reconciliation classification
 
