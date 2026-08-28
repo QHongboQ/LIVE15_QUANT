@@ -95,14 +95,50 @@ manifest hash, module location under the active release, and requested Git SHA.
 A service that is merely running, a stale receipt, a parent-PID mismatch, or a
 module/working-directory path outside the active immutable release fails.
 
+## DEP-SERVICE-RESTART-001: canonical restart gate
+
+`live15_quant.deployment_restart.restart_service_verified` is the single
+service-control authority for an authorized DEP-001 deployment **and its
+rollback**.  `release_pipeline` intentionally remains package/pointer-only;
+deployment orchestration must not use ad-hoc `Restart-Service`, `sc start`, or
+`winsw restart` commands outside this gate.
+
+For each independently WinSW-owned service (Recorder, Control Center, and
+RuntimeSupervisor), the gate records an atomic non-empty pre-restart receipt,
+then requires this exact sequence:
+
+```text
+PRECHECK -> STOP_REQUESTED -> STOPPED_CONFIRMED -> OLD_PID_GONE
+-> START_REQUESTED -> RUNNING_CONFIRMED -> NEW_PID_CONFIRMED
+-> WINSW_SERVICE_MODE_START_CONFIRMED
+-> RELEASE_RUNNER_RECEIPT_CONFIRMED -> PROVENANCE_CONFIRMED
+```
+
+The precheck binds the SCM ImagePath-derived WinSW executable to its adjacent
+same-basename XML, checks the installed XML hash, and captures a wrapper-log
+cursor.  A stop/start command's return code is only a request acknowledgement:
+SCM state and PID observations are the evidence.  The post-start WinSW wrapper
+log must contain a *new* `Starting WinSW in service mode` entry after the
+cursor; console-mode output is invalid.
+
+For a modern active release, the gate rejects a missing or stale
+`runtime/release-runtime-<component>.json`, parent-PID mismatch, or any failed
+`verify_runtime_provenance` binding.  A legacy rollback invokes the exact same
+gate with expected Git SHA `UNPROVEN`; its provenance remains explicitly
+`LEGACY_UNPROVEN`.  Both success and failure persist an atomic non-empty
+`runtime/deployment-evidence/<deployment-id>/service-restart-<component>.json`.
+If that audit write fails, the gate fails closed.
+
 ## Approved future sequence
 
 1. Freeze a reviewed protected SHA and create a clean source worktree.
 2. Build and verify its release under the Production root's `releases/`.
 3. With separate human approval, capture the legacy rollback artifact if needed,
    stage the matching bootstrap, render/install the reviewed WinSW XML, and
-   perform controlled activation and service restart.
+   call `restart_service_verified` for each approved service.  Never mark the
+   restart stage complete merely because a service still reports Running.
 4. Verify package, active pointer, process provenance, ownership, health, and
-   bounded runtime behavior; emit bounded pre/post deployment receipts.
+   bounded runtime behavior.  On rollback, use the same verified restart gate
+   against the restored legacy identity.
 
 DEP-PKG-001 performs only step 1's offline simulation and no Production action.
