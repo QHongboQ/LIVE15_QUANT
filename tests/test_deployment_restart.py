@@ -16,6 +16,7 @@ from live15_quant.deployment_restart import (
     RestartGateError,
     ServiceSnapshot,
     WinSWLogCursor,
+    recover_service_verified,
     restart_service_verified,
 )
 
@@ -84,6 +85,20 @@ class FakeWinSWLogs:
     ) -> str | None:
         assert path == cursor.path
         return self.launch
+
+
+class GenerationChangingWinSWLogs(FakeWinSWLogs):
+    def __init__(self, launch: str | None, scm: FakeScm, replacement: ServiceSnapshot) -> None:
+        super().__init__(launch)
+        self.scm = scm
+        self.replacement = replacement
+
+    def service_mode_start_after(
+        self, path: Path, cursor: WinSWLogCursor, after: datetime
+    ) -> str | None:
+        launch = super().service_mode_start_after(path, cursor, after)
+        self.scm.current = self.replacement
+        return launch
 
 
 def _expectation(tmp_path: Path) -> RestartExpectation:
@@ -276,6 +291,141 @@ def test_parent_pid_mismatch_is_rejected_before_provenance(tmp_path: Path) -> No
                 scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock()
             ),
         )
+
+
+def test_generation_change_while_waiting_for_winsw_fails_closed_and_is_audited(
+    tmp_path: Path,
+) -> None:
+    expectation = _expectation(tmp_path)
+    before, stopped, started = _snapshots(tmp_path)
+    changed = ServiceSnapshot("RUNNING", 404, started.image_path)
+    _write_runner_receipt(
+        expectation, parent_pid=changed.pid, modified_at=datetime(2026, 8, 30, tzinfo=UTC)
+    )
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+
+    with pytest.raises(RestartGateError, match="SERVICE_GENERATION_CHANGED"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm,
+                GenerationChangingWinSWLogs("Starting WinSW in service mode", scm, changed),
+                FakeClock(),
+            ),
+        )
+
+    audit = json.loads(
+        (expectation.evidence_directory / "service-restart-recorder.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert audit["failure"] == "SERVICE_GENERATION_CHANGED"
+    assert {entry["pid"] for entry in audit["observed_generations"]} == {202, 404}
+
+
+def test_generation_loss_while_waiting_for_receipt_fails_closed(tmp_path: Path) -> None:
+    expectation = _expectation(tmp_path)
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+
+    class ReceiptAppearsAfterStop:
+        def __call__(self, seconds: float) -> None:
+            scm.current = ServiceSnapshot("STOPPED", 0, started.image_path)
+
+    clock = FakeClock()
+    clock.sleep = ReceiptAppearsAfterStop()  # type: ignore[method-assign]
+    with pytest.raises(RestartGateError, match="SERVICE_GENERATION_LOST"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(scm, FakeWinSWLogs("Starting WinSW in service mode"), clock),
+        )
+
+
+def test_generation_change_while_waiting_for_receipt_is_not_parent_mismatch(
+    tmp_path: Path,
+) -> None:
+    expectation = _expectation(tmp_path)
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+
+    class ReceiptWaitChangesGeneration:
+        def __call__(self, seconds: float) -> None:
+            scm.current = ServiceSnapshot("RUNNING", 404, started.image_path)
+
+    clock = FakeClock()
+    clock.sleep = ReceiptWaitChangesGeneration()  # type: ignore[method-assign]
+    with pytest.raises(RestartGateError, match="SERVICE_GENERATION_CHANGED"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(scm, FakeWinSWLogs("Starting WinSW in service mode"), clock),
+        )
+
+
+def test_failed_candidate_then_stopped_rollback_recovers_through_same_gate(tmp_path: Path) -> None:
+    expectation = _expectation(tmp_path)
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+
+    with pytest.raises(RestartGateError, match="WINSW_SERVICE_MODE_START_MISSING"):
+        restart_service_verified(
+            expectation, dependencies=_dependencies(scm, FakeWinSWLogs(None), FakeClock())
+        )
+
+    recovered = ServiceSnapshot("RUNNING", 404, started.image_path)
+    scm.current = stopped
+    scm.after_start = recovered
+    _write_runner_receipt(
+        expectation, parent_pid=recovered.pid, modified_at=datetime(2026, 8, 30, tzinfo=UTC)
+    )
+    result = recover_service_verified(
+        expectation,
+        dependencies=_dependencies(
+            scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock()
+        ),
+    )
+
+    assert result.status == "PASS"
+    assert result.old_pid == 0
+    assert result.new_pid == 404
+    assert scm.stop_calls == 1
+    assert scm.start_calls == 2
+
+
+def test_recovery_from_stopped_starts_once_and_does_not_send_stop(tmp_path: Path) -> None:
+    expectation = _expectation(tmp_path)
+    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
+    _, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=stopped, after_stop=stopped, after_start=started)
+
+    result = recover_service_verified(
+        expectation,
+        dependencies=_dependencies(
+            scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock()
+        ),
+    )
+
+    assert result.status == "PASS"
+    assert result.old_pid == 0
+    assert result.new_pid == 202
+    assert scm.stop_calls == 0
+    assert scm.start_calls == 1
+
+
+def test_recovery_from_stopped_start_timeout_fails_closed(tmp_path: Path) -> None:
+    expectation = _expectation(tmp_path)
+    _, stopped, _ = _snapshots(tmp_path)
+    scm = FakeScm(before=stopped, after_stop=stopped, after_start=stopped)
+
+    with pytest.raises(RestartGateError, match="SERVICE_START_TIMEOUT"):
+        recover_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock()
+            ),
+        )
+
+    assert scm.stop_calls == 0
+    assert scm.start_calls == 1
 
 
 def test_wrong_release_or_hash_from_provenance_fails_closed(tmp_path: Path) -> None:
