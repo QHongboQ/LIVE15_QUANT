@@ -25,6 +25,7 @@ def test_project_brain_has_compact_bootstrap_and_required_pointers() -> None:
         "CONTEXT.md",
         "docs/adr/README.md",
         "CURRENT_STATE.md",
+        "PROJECT_PROGRESS.md",
         "BUG_REGISTRY.md",
     ):
         assert pointer in bootstrap
@@ -76,14 +77,16 @@ def test_new_session_recovery_questions_have_single_source_answers() -> None:
     charter = (ROOT / "PROJECT_CHARTER.md").read_text(encoding="utf-8")
     context = (ROOT / "CONTEXT.md").read_text(encoding="utf-8")
     state = (ROOT / "CURRENT_STATE.md").read_text(encoding="utf-8")
+    progress = (ROOT / "PROJECT_PROGRESS.md").read_text(encoding="utf-8")
 
     assert "Strategic objective" in charter
     assert "H0" in context and "H1" in context and "H2" in context
     assert "ResearchUniverse" in context and "Training Snapshot" in context
     assert "Runtime owner" in context
-    assert "BLOCKED_PENDING_EXTERNAL_CLOSEOUT" in state
-    assert "Pyth worker unhealthy" in state
-    assert "UNRESOLVED_ACTIVE" in state
+    assert "HUMAN_GATE_PENDING_DEPLOYMENT_PROOF" in state
+    assert "NO TRAINING_GO" in state
+    assert "Current reconciliation basis" in progress
+    assert "MERGED != DEPLOYED" in progress
 
 
 def test_strategy_drift_and_new_session_recovery_contract() -> None:
@@ -99,7 +102,7 @@ def test_strategy_drift_and_new_session_recovery_contract() -> None:
         "ResearchUniverseSnapshot",
         "immutable",
         "separately WinSW-owned services",
-        "Pyth worker",
+        "PROJECT_PROGRESS.md",
         "docs/adr/README.md",
     ):
         assert answer in simulation
