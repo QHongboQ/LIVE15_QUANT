@@ -1560,8 +1560,19 @@ class KalshiNativeRecorder:
             self._health.active_settlement_followups += 1
         elif was_pending and not is_pending:
             if self._health.active_settlement_followups <= 0:
-                raise RecorderStorageError("settlement follow-up count would move below zero")
-            self._health.active_settlement_followups -= 1
+                # The heartbeat counter is diagnostic state. A hard-stop can leave it
+                # behind the persisted SQLite lifecycle truth; never turn that stale
+                # metric into a fatal settlement-processing failure.
+                logger.warning(
+                    "Settlement follow-up counter was stale during lifecycle recovery",
+                    extra={
+                        "event": "settlement_followup_counter_clamped",
+                        "ticker": market.ticker,
+                    },
+                )
+                self._health.active_settlement_followups = 0
+            else:
+                self._health.active_settlement_followups -= 1
         if market.settlement is not None:
             if not settlement_existed:
                 self._wrote("kalshi_settlements")
