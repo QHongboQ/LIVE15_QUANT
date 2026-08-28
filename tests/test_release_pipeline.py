@@ -270,13 +270,25 @@ def test_legacy_rollback_capture_never_invents_a_git_sha_or_copies_mutable_data(
     (legacy / "src/live15_quant").mkdir(parents=True)
     (legacy / "src/live15_quant/__init__.py").write_text("legacy\n")
     (legacy / "requirements.lock").write_text("example==1.0\n")
-    (legacy / "data").mkdir()
-    (legacy / "data/live15.sqlite3").write_text("mutable")
-    (legacy / ".secrets").mkdir()
-    (legacy / ".secrets/key.txt").write_text("secret")
-    (legacy / "bootstrap").mkdir()
-    (legacy / "bootstrap/release_runner.py").write_text("control plane")
-    (legacy / "bootstrap/bootstrap-manifest.json").write_text("{}")
+    excluded_directories = {
+        ".git",
+        ".local-tools",
+        ".secrets",
+        ".venv",
+        ".worktrees",
+        "bootstrap",
+        "current",
+        "data",
+        "logs",
+        "releases",
+        "rollback",
+        "runtime",
+    }
+    for directory in excluded_directories:
+        (legacy / directory).mkdir()
+        (legacy / directory / "must-not-capture.txt").write_text(directory)
+    (legacy / ACTIVE_POINTER).write_text("{}")
+    (legacy / PREVIOUS_POINTER).write_text("{}")
     release_root = tmp_path / "releases"
     identity = capture_legacy_unproven_release(
         legacy_app_root=legacy,
@@ -288,10 +300,68 @@ def test_legacy_rollback_capture_never_invents_a_git_sha_or_copies_mutable_data(
     )
     assert manifest["release_kind"] == "LEGACY_UNPROVEN_ROLLBACK_ARTIFACT"
     assert manifest["git_commit_sha"] == "UNPROVEN"
+    assert manifest["source_tree_identity"] == "UNPROVEN"
     app = release_root / "releases" / identity.release_id / "app"
-    assert not (app / "data").exists()
-    assert not (app / ".secrets").exists()
-    assert not (app / "bootstrap").exists()
+    assert all(not (app / directory).exists() for directory in excluded_directories)
+    assert not (app / ACTIVE_POINTER).exists()
+    assert not (app / PREVIOUS_POINTER).exists()
+    assert verify_package(release_root=release_root, release_id=identity.release_id) == identity
+
+
+def test_legacy_capture_excludes_worktrees_before_copytree_can_descend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    legacy = tmp_path / "legacy"
+    (legacy / "src/live15_quant").mkdir(parents=True)
+    (legacy / "src/live15_quant/__init__.py").write_text("legacy\n")
+    (legacy / "requirements.lock").write_text("example==1.0\n")
+    worktrees = legacy / ".worktrees"
+    (worktrees / "frozen-holdout").mkdir(parents=True)
+    (worktrees / "frozen-holdout/forbidden.bin").write_bytes(b"synthetic-only")
+    original_scandir = os.scandir
+
+    def fail_if_worktree_is_scanned(path: str | os.PathLike[str]) -> os.ScandirIterator[str]:
+        scanned = Path(path).resolve()
+        try:
+            scanned.relative_to(worktrees.resolve())
+        except ValueError:
+            return original_scandir(path)
+        raise AssertionError("legacy capture must exclude .worktrees before traversal")
+
+    monkeypatch.setattr(os, "scandir", fail_if_worktree_is_scanned)
+    identity = capture_legacy_unproven_release(
+        legacy_app_root=legacy,
+        release_root=tmp_path / "production",
+        created_at="2026-08-28T00:00:00+00:00",
+    )
+    package = tmp_path / "production/releases" / identity.release_id / "app"
+    assert not (package / ".worktrees").exists()
+    assert (
+        verify_package(release_root=tmp_path / "production", release_id=identity.release_id)
+        == identity
+    )
+
+
+def test_legacy_capture_is_safe_when_application_and_release_root_are_identical(
+    tmp_path: Path,
+) -> None:
+    legacy_and_release_root = tmp_path / "legacy-install"
+    (legacy_and_release_root / "src/live15_quant").mkdir(parents=True)
+    (legacy_and_release_root / "src/live15_quant/__init__.py").write_text("legacy\n")
+    (legacy_and_release_root / "requirements.lock").write_text("example==1.0\n")
+
+    identity = capture_legacy_unproven_release(
+        legacy_app_root=legacy_and_release_root,
+        release_root=legacy_and_release_root,
+        created_at="2026-08-28T00:00:00+00:00",
+    )
+
+    app = legacy_and_release_root / "releases" / identity.release_id / "app"
+    assert not (app / "releases").exists()
+    assert (
+        verify_package(release_root=legacy_and_release_root, release_id=identity.release_id)
+        == identity
+    )
 
 
 def test_first_deploy_can_rollback_to_immutable_legacy_without_a_runner(tmp_path: Path) -> None:
