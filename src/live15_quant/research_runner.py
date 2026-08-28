@@ -191,6 +191,13 @@ def _strings(value: object, name: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _string_map(value: object, name: str) -> dict[str, str]:
+    mapping = _object(value, name)
+    if not all(isinstance(key, str) and isinstance(item, str) for key, item in mapping.items()):
+        raise ValueError(f"snapshot {name} must map strings to strings")
+    return {key: item for key, item in mapping.items()}
+
+
 def _source_from_json(value: object) -> ResearchSourceManifest:
     item = _object(value, "source")
     capability_days = _object(item.get("capability_days", {}), "source capability_days")
@@ -221,6 +228,7 @@ def _source_from_json(value: object) -> ResearchSourceManifest:
         capability_days={
             key: _strings(days, f"capability {key}") for key, days in capability_days.items()
         },
+        coverage_status=_string_map(item.get("coverage_status", {}), "source coverage_status"),
     )
 
 
