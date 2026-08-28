@@ -53,11 +53,21 @@ the previous release before atomically restoring its identity. `--dry-run`
 does not mutate either pointer.
 
 `stage-bootstrap` copies only `app/tools/release_runner.py` from a verified
-release into the stable `bootstrap/` location via same-directory replacement
-and writes `bootstrap/bootstrap-manifest.json`. `verify-bootstrap` requires
-that receipt, the active release ID/manifest hash, and both runner hashes to
-agree. A future release or rollback stages its matching bootstrap before the
-separately authorized service restart; a mismatch fails closed.
+modern release into the stable `bootstrap/` location via same-directory
+replacement and writes `bootstrap/bootstrap-manifest.json`. This is a stable
+bootstrap **control plane**: its receipt records its source release ID/source
+manifest hash and its own SHA-256, independently from the active application
+pointer. `verify-bootstrap` verifies that source package and both runner hashes
+without requiring it to equal the active application release.
+
+That separation is required for the first audited deployment. A legacy capture
+is an immutable `LEGACY_UNPROVEN_ROLLBACK_ARTIFACT`, including no injected
+bootstrap file. After a modern bootstrap is staged, the active application may
+atomically roll back to that legacy payload; the bootstrap remains verified
+infrastructure while the application's Git SHA remains exactly `UNPROVEN`.
+Bootstrap corruption, source-manifest mismatch, or an invalid active payload
+fails closed. The runner disables application bytecode writes so imports cannot
+alter an immutable release inventory.
 
 The first audited deployment may capture the existing code with
 `capture-legacy-unproven`. Its manifest is explicitly
@@ -72,9 +82,12 @@ The stable `bootstrap/release_runner.py` is launched by each existing WinSW
 service definition. It is copied only by `stage-bootstrap` from the selected
 verified release. It validates the active pointer and manifest, changes into the
 immutable `app` directory, prepends `app/src` to `sys.path`, and writes a small
-runtime receipt with component, its parent WinSW PID, interpreter, release ID,
-Git SHA, manifest hash, working directory, and module root. It does not start
-another process or manage service lifecycle.
+runtime receipt with component, its parent WinSW PID, interpreter, application
+release ID/Git SHA/manifest hash, working directory, module root, and distinct
+bootstrap source release/manifest/hash fields. It does not start another
+process or manage service lifecycle. A legacy rollback receipt therefore proves
+`deployment_git_sha = UNPROVEN` while retaining separately verified bootstrap
+provenance.
 
 `verify_runtime_provenance` cross-checks the WinSW service PID, installed XML
 bootstrap command, runner child receipt, active pointer, bootstrap hash receipt,
