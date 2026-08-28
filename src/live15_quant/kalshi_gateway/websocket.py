@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -234,6 +234,10 @@ class KalshiWebSocketGateway:
             "max_retries": self._config.read_retries,
             "allow_unknown_host": True,
         }
+        # Every SDK decode path must tolerate exactly one legitimately empty
+        # orderbook side.  This normalizes only the wire representation before
+        # SDK validation; it does not capture, route, or own any SDK stream.
+        config_kwargs["ws_json_loads"] = _load_ws_json_with_sparse_snapshot_compat
         if capture_pre_dispatch:
             # Shadow diagnostics alone may inspect wire frames before SDK
             # dispatch.  The production Recorder must consume only typed,
@@ -250,60 +254,3 @@ class KalshiWebSocketGateway:
             on_state_change=on_state_change,
             on_error=on_error,
         )
-
-    @staticmethod
-    def orderbook_subscription_id(session: Any) -> int:
-        """Return the sole active SDK orderbook subscription identity.
-
-        ``kalshi-sdk`` deliberately keeps the server ``sid`` private behind a
-        durable client subscription id.  The SDK currently exposes its
-        documented ``update_subscription`` operation on SubscriptionManager,
-        rather than a session facade.  Keep that compatibility boundary here;
-        callers must never inspect or route server SIDs themselves.
-        """
-
-        manager = getattr(session, "_sub_mgr", None)
-        active = getattr(manager, "active_subscriptions", None)
-        if not isinstance(active, Mapping):
-            raise RuntimeError("kalshi-sdk subscription manager is unavailable")
-        matches = [
-            sub for sub in active.values() if getattr(sub, "channel", None) == "orderbook_delta"
-        ]
-        if len(matches) != 1:
-            raise RuntimeError("SDK Recorder requires exactly one orderbook subscription")
-        client_id = getattr(matches[0], "client_id", None)
-        if not isinstance(client_id, int) or isinstance(client_id, bool):
-            raise RuntimeError("SDK orderbook subscription identity is malformed")
-        return client_id
-
-    @staticmethod
-    async def update_orderbook_subscription(
-        session: Any,
-        *,
-        client_id: int,
-        add_tickers: tuple[str, ...] = (),
-        delete_tickers: tuple[str, ...] = (),
-    ) -> None:
-        """Apply the official update_subscription market actions via the SDK.
-
-        This intentionally delegates subscription and SID ownership to the
-        SDK.  It neither sends raw websocket commands nor filters frames.
-        """
-
-        manager = getattr(session, "_sub_mgr", None)
-        update = getattr(manager, "update_subscription", None)
-        if not callable(update):
-            raise RuntimeError("kalshi-sdk update_subscription is unavailable")
-        if delete_tickers:
-            await update(
-                client_id,
-                "delete_markets",
-                market_tickers=list(delete_tickers),
-            )
-        if add_tickers:
-            await update(
-                client_id,
-                "add_markets",
-                market_tickers=list(add_tickers),
-                send_initial_snapshot=True,
-            )

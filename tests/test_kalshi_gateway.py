@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import json
+import sys
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from live15_quant.config import (
     KALSHI_DEMO_API_BASE_URL,
@@ -184,32 +185,6 @@ def test_market_and_portfolio_reads_use_sdk_resources() -> None:
     assert portfolio.fills(ticker="TICKER", exchange_index=2) == ()
 
 
-def test_orderbook_updates_delegate_snapshot_safe_resubscribe_semantics() -> None:
-    calls: list[tuple[int, str, dict[str, object]]] = []
-
-    class SubscriptionManager:
-        async def update_subscription(self, client_id: int, action: str, **kwargs: object) -> None:
-            calls.append((client_id, action, kwargs))
-
-    session = SimpleNamespace(_sub_mgr=SubscriptionManager())
-    asyncio.run(
-        KalshiWebSocketGateway.update_orderbook_subscription(
-            session,
-            client_id=7,
-            delete_tickers=("KXETH15M-TEST",),
-            add_tickers=("KXBTC15M-TEST",),
-        )
-    )
-    assert calls == [
-        (7, "delete_markets", {"market_tickers": ["KXETH15M-TEST"]}),
-        (
-            7,
-            "add_markets",
-            {"market_tickers": ["KXBTC15M-TEST"], "send_initial_snapshot": True},
-        ),
-    ]
-
-
 def test_order_get_uses_list_fallback_only_for_404() -> None:
     sdk_client = client()
 
@@ -291,50 +266,6 @@ def test_websocket_gateway_is_not_activated_for_recorder() -> None:
     assert KalshiWebSocketGateway.recorder_transport_activated is False
 
 
-@pytest.mark.asyncio
-async def test_orderbook_subscription_update_delegates_to_sdk_manager() -> None:
-    calls: list[tuple[int, str, dict[str, object]]] = []
-
-    class Manager:
-        def __init__(self) -> None:
-            self.active_subscriptions = {
-                41: SimpleNamespace(client_id=41, channel="orderbook_delta"),
-            }
-
-        async def update_subscription(self, client_id: int, action: str, **kwargs: object) -> None:
-            calls.append((client_id, action, kwargs))
-
-    session = SimpleNamespace(_sub_mgr=Manager())
-    client_id = KalshiWebSocketGateway.orderbook_subscription_id(session)
-    await KalshiWebSocketGateway.update_orderbook_subscription(
-        session,
-        client_id=client_id,
-        delete_tickers=("OLD",),
-        add_tickers=("NEW",),
-    )
-
-    assert client_id == 41
-    assert calls == [
-        (41, "delete_markets", {"market_tickers": ["OLD"]}),
-        (
-            41,
-            "add_markets",
-            {"market_tickers": ["NEW"], "send_initial_snapshot": True},
-        ),
-    ]
-
-
-def test_orderbook_subscription_identity_rejects_multiple_active_orderbooks() -> None:
-    manager = SimpleNamespace(
-        active_subscriptions={
-            1: SimpleNamespace(client_id=1, channel="orderbook_delta"),
-            2: SimpleNamespace(client_id=2, channel="orderbook_delta"),
-        }
-    )
-    with pytest.raises(RuntimeError, match="exactly one orderbook subscription"):
-        KalshiWebSocketGateway.orderbook_subscription_id(SimpleNamespace(_sub_mgr=manager))
-
-
 def test_sparse_production_snapshot_adds_only_the_unambiguous_empty_side() -> None:
     fixture_path = (
         Path(__file__).parent
@@ -354,6 +285,30 @@ def test_sparse_production_snapshot_adds_only_the_unambiguous_empty_side() -> No
     assert parsed.msg.yes[Decimal("0.0010")] == Decimal("810.00")
 
 
+def test_sparse_production_snapshot_adds_only_the_unambiguous_empty_yes_side() -> None:
+    raw = json.dumps(
+        {
+            "type": "orderbook_snapshot",
+            "sid": 1,
+            "seq": 1,
+            "msg": {
+                "market_ticker": "TICKER",
+                "market_id": "market",
+                "no_dollars_fp": [["0.6000", "2.00"]],
+            },
+        }
+    )
+    normalized = _load_ws_json_with_sparse_snapshot_compat(raw)
+    assert normalized["msg"]["yes_dollars_fp"] == []
+    assert normalized["msg"]["no_dollars_fp"] == [["0.6000", "2.00"]]
+
+    from kalshi.ws.models.orderbook_delta import OrderbookSnapshotMessage
+
+    parsed = OrderbookSnapshotMessage.model_validate(normalized)
+    assert parsed.msg.yes == {}
+    assert parsed.msg.no[Decimal("0.6000")] == Decimal("2.00")
+
+
 def test_sparse_snapshot_compat_remains_fail_closed_when_both_sides_are_absent() -> None:
     raw = json.dumps(
         {
@@ -366,6 +321,96 @@ def test_sparse_snapshot_compat_remains_fail_closed_when_both_sides_are_absent()
     normalized = _load_ws_json_with_sparse_snapshot_compat(raw)
     assert "yes_dollars_fp" not in normalized["msg"]
     assert "no_dollars_fp" not in normalized["msg"]
+
+    from kalshi.ws.models.orderbook_delta import OrderbookSnapshotMessage
+
+    with pytest.raises(ValidationError):
+        OrderbookSnapshotMessage.model_validate(normalized)
+
+
+def test_sparse_snapshot_compat_rejects_a_malformed_present_side() -> None:
+    raw = json.dumps(
+        {
+            "type": "orderbook_snapshot",
+            "sid": 1,
+            "seq": 1,
+            "msg": {
+                "market_ticker": "TICKER",
+                "market_id": "market",
+                "yes_dollars_fp": "not-a-level-list",
+            },
+        }
+    )
+    normalized = _load_ws_json_with_sparse_snapshot_compat(raw)
+    assert "no_dollars_fp" not in normalized["msg"]
+
+    from kalshi.ws.models.orderbook_delta import OrderbookSnapshotMessage
+
+    with pytest.raises(ValidationError):
+        OrderbookSnapshotMessage.model_validate(normalized)
+
+
+def test_production_build_installs_wire_normalization_without_pre_dispatch_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeConfig:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    class FakeAuth:
+        @staticmethod
+        def from_key_path(_api_key_id: str, _private_key_path: Path) -> object:
+            return object()
+
+    class FakeWebSocket:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    auth_module = ModuleType("kalshi.auth")
+    auth_module.KalshiAuth = FakeAuth  # type: ignore[attr-defined]
+    ws_module = ModuleType("kalshi.ws")
+    ws_module.KalshiWebSocket = FakeWebSocket  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kalshi.auth", auth_module)
+    monkeypatch.setitem(sys.modules, "kalshi.ws", ws_module)
+    monkeypatch.setattr(
+        "live15_quant.kalshi_gateway.websocket._sdk_types",
+        lambda: (object, FakeConfig),
+    )
+    private_key = tmp_path / "private.key"
+    private_key.write_text("not-a-real-key", encoding="utf-8")
+    gateway = KalshiWebSocketGateway(
+        KalshiGatewayConfig.for_environment(KalshiEnvironment.PRODUCTION),
+        GatewayCredentials(api_key_id="masked-id", private_key_path=private_key.resolve()),
+    )
+
+    gateway.build(capture_pre_dispatch=False)
+
+    config = captured["config"]
+    assert isinstance(config, FakeConfig)
+    loader = config.kwargs.get("ws_json_loads")
+    assert loader is _load_ws_json_with_sparse_snapshot_compat
+    assert gateway._orderbook_feed is None
+    normalized = loader(
+        json.dumps(
+            {
+                "type": "orderbook_snapshot",
+                "sid": 1,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": "TICKER",
+                    "market_id": "market",
+                    "yes_dollars_fp": [],
+                },
+            }
+        )
+    )
+
+    from kalshi.ws.models.orderbook_delta import OrderbookSnapshotMessage
+
+    assert OrderbookSnapshotMessage.model_validate(normalized).msg.no == {}
 
 
 def test_sparse_snapshot_compat_does_not_rewrite_non_snapshot_frames() -> None:

@@ -49,10 +49,25 @@ package contains that behavior and the subsequent resubscribe-window stash drain
   resubscribe stash before marking the stream active.
 
 This is the upstream contract LIVE15 relies on. No SDK source is copied, vendored, monkey-patched,
-or replaced by a second generic websocket state machine. The LIVE15 Gateway only delegates
-subscription updates (including `send_initial_snapshot=True` for added tickers), while the
-Reliability Adapter and archive layer retain project-specific provenance, fail-closed state,
-replay verification, and quarantine semantics.
+or replaced by a second generic websocket state machine. The Reliability Adapter and archive layer
+retain project-specific provenance, fail-closed state, replay verification, and quarantine semantics.
+
+## Rollover single-reader boundary (2026-08-28)
+
+Kalshi documents an initial `orderbook_snapshot` followed by sequenced deltas, but does not define
+the meaning of a snapshot that omits both book sides. Captured Production frames prove the narrower
+case: exactly one absent side alongside a valid opposite-side list represents an empty side. The
+Gateway therefore normalizes only that case before SDK Pydantic decoding. It leaves both-absent and
+malformed-present-side snapshots untouched, so the SDK rejects them fail-closed. Wire normalization
+is installed for the Production typed SDK path without enabling the shadow-only pre-dispatch feed.
+
+The pinned SDK's `SubscriptionManager.update_subscription(...)` sends a command and then waits for
+its acknowledgement by calling `recv()`. Calling it from LIVE15's active receive-loop session at a
+15-minute universe transition can therefore create a second websocket reader. LIVE15 does not issue
+that command for rollover. It closes the old SDK session through its normal context boundary, starts
+a replacement session for the new ten-market universe, and waits for its SDK-owned authoritative
+snapshots before reporting synchronization. SDK SIDs and regular reconnect/resubscribe ownership
+remain entirely inside the SDK.
 
 The historical `ws-244812239-244812260` failure is separate from future SDK recovery: the archived
 22 rows are delta-only on the replacement subscription and have no persisted authoritative
