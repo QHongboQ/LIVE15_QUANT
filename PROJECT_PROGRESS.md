@@ -38,6 +38,12 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 | UI-012 | legacy-unknown / 2026-08-28 | `agent/live15-intentional-auxiliary-health-projection-001` | #39 | `7f790fb8` | — |
 | KWS-001 | legacy-unknown / 2026-08-28 | `agent/kalshi-ws-rollover-resync-fix-final` | #40 | `cce1ebc1` | — |
 | CTX-002 | legacy-unknown / 2026-08-28 | `agent/ctx-002-project-brain-reconciliation` | #42 | `1e0fd39dbc7f6f69f710de8d45e809faf9368937` | N/A |
+| ROADMAP-001/002 | 2026-08-28 | roadmap docs | #44 | `07f74f974d7c8e41fef87f1ee2bff2b9b23c100f` | N/A |
+| DEP-PKG-001 | 2026-08-28 | release-pipeline branch | #45 | `e6cb02fdcac336cb9c3dab2808fd89d19aa14f43` | — |
+| H2-TRAIN-001 / NIGHT-001 | 2026-08-28 | `agent/night-001-training-readiness` | #47 | `7fe9f17afdd52a1f7cb123c5a038abb1c6df5e1e` | — |
+| H2-TRAIN-002 | 2026-08-28 | `agent/h2-train-002-seven-day-acquisition` | #48 | `6bb247753ae8b7671417b8299d1c6fe5032f523d` | — |
+| DEP-PKG-002 | 2026-08-28 | `agent/dep-pkg-002-legacy-rollback-bootstrap` | #46 | `7fd9b4dab78cb8591bc03e8da528694a39c5c4fc` | — |
+| UI-013 | 2026-08-28 | `agent/ui-013-control-center-truth-performance` | #49 | `30fcdd8516c343110c0bb7b0f23729a70b5eea8f` | — |
 
 ## Current reconciliation basis
 
@@ -45,12 +51,13 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
   `1e0fd39dbc7f6f69f710de8d45e809faf9368937`.
 - Current merged-code authority is always the live `origin/main` HEAD and must
   be resolved at session/task start; do not freeze it in this ledger.
+- Latest reconciled protected-main point for this update is PR #49 merge
+  `30fcdd8516c343110c0bb7b0f23729a70b5eea8f`.
 - Legacy evidence: `origin/agent/ctx-002-recovery-source:LEGACY_RECOVERY_2026-08-27.md`
   (PR #41, unmerged temporary recovery source). It informs this ledger but is
   not a competing authority.
-- Runtime basis: bounded read-only service/health receipts observed during
-  CTX-002. They show a running 10/10 synchronized Recorder with an honest
-  exact-WTI feed-local degradation; they do not prove current-main deployment.
+- Runtime basis remains bounded read-only service/health evidence. Merged code
+  is not a deployment or runtime-verification claim.
 
 ## Completed and merged foundations
 
@@ -71,17 +78,22 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 | UI-012 | Intentional auxiliary health projection / ops | MERGED / GUARDED | PR #39 `7f790fb8` | Runtime receipt confirms neutral ON_DEMAND/PAUSED projection; code deployment unproven | Historical child receipts never override desired state; stale RUNNING remains strict. | Runtime changes |
 | KWS-001 | Kalshi sparse snapshot and rollover / SDK boundary | MERGED / GUARDED | PR #40 `cce1ebc1` | Current-main deployment and rollover proof unproven | One missing side may normalize; both invalid fail closed; replace SDK session, no concurrent receive. | Runtime deployment |
 | ST-006 | Retention effectiveness audit / storage | VERIFIED / `TEMPORARY_BACKLOG` | Bounded storage audit evidence | Read-only classification | No compaction/VACUUM without its independent gate. | Storage mutation |
+| DEP-PKG-001 | Auditable SHA-pinned Production release pipeline / deployment | MERGED / COMPLETE | PR #45 `e6cb02fd` | No Production action | Provides package/activation/rollback prerequisite only. | Deployment/restart |
+| DEP-PKG-002 | First-deploy legacy rollback bootstrap compatibility / deployment | MERGED / COMPLETE | PR #46 `7fd9b4da` | No Production deployment or restart | Legacy app stays `UNPROVEN`; bootstrap provenance remains separate. Next deployment action is DEP-001 Phase A preflight. | Deployment/restart |
+| H2-TRAIN-001 / NIGHT-001 | H2 materialization and training-readiness boundary / research | MERGED / `PARTIAL` | PR #47 `7fe9f17a` | No formal training or holdout access | Code pipeline and strict H0/H2 overlap gates exist; real H2 readiness still requires validated overlap. | Training/holdout |
+| H2-TRAIN-002 | Bounded real DepthFeed snapshot acquisition / research | MERGED / `BLOCKED` | PR #48 `6bb24775` | No training | Real snapshot acquisition works; delta endpoint remains plan-restricted; H0 overlap was blocked by gap authority. | Training/holdout |
+| UI-013 | Control Center truth, polling, and observability hardening / UI | MERGED / COMPLETE | PR #49 `30fcdd85` | Not deployed by this merge | Event totals, current-vs-historical health, market-summary performance, WTI projection, archive observability, and responsive rendering corrected. ST-005 itself remains unresolved. | Deployment |
 
 ## Active, gated, and roadmap work
 
 | Task ID | Title / area | Status / result | Evidence / blocker | Important notes and next action | Human gate |
 | --- | --- | --- | --- | --- | --- |
 | CTX-002 | Project Brain recovery and reconciliation / context | CLOSED / MERGED | PR #42; merge `1e0fd39d` | Context/documentation only; deployed commit N/A. Legacy source PR #41 remains temporary evidence, not canonical Project Brain. | None |
-| DEP-PKG-001 | Auditable SHA-pinned Production release pipeline / deployment | MERGED / COMPLETE | PR #45 merge `e6cb02fd`; offline package/activation/rollback tests | Code prerequisite only; no Production release capture, activation, or restart. | Deployment/restart |
-| DEP-PKG-002 | Legacy rollback bootstrap / deployment | IN_PROGRESS | Offline legacy↔modern regression | Bootstrap and legacy provenance remain separate; no Production action. | Deployment/restart |
-| DEP-001 | Current-main Production deployment and bounded proof / deployment | BLOCKED | Requires DEP-PKG-002 merge; current installed package is still not tied to protected `origin/main` | After DEP-PKG-002 merge, rerun read-only preflight; with explicit human approval, deploy and prove the then-current reviewed protected main. | Deploy/restart |
-| ST-005 | 60-minute archive/purge catch-up trend / storage | BLOCKED | Prior run stopped safely during unsynchronized WS; not rerun here | Requires approved read-only run after valid runtime proof; never auto-start. | Runtime/read-only authorization |
-| TRN-001 | `LONG_RUN_TRAINING_FINAL_GO_NO_GO` / training gate | PLANNED / `NO_GO` | No formal gate execution evidence | Do not train until data/runtime/resource/anti-overfit gates pass; holdout remains opaque. | Training/holdout |
+| WS-RESYNC-001 + GAP-002 | Kalshi orderbook self-healing, precise gap intervals, and clean-segment authority / runtime+data | IN_PROGRESS | Active isolated Codex task; no merged PR yet | Upstream-first design: detect dirty book, official `get_snapshot`, bounded resubscribe/reconnect fallback, close only the contaminated interval, resume from verified snapshot. Includes the real H2-TRAIN-003 revalidation as acceptance work; do not run H2-TRAIN-003 as a separate development lane. | Runtime/deployment for live rollout |
+| H2-TRAIN-003 | Reconstructed H0 overlap against real H2 / research | BLOCKED | Previous run exposed unresolved `kalshi_ws` restart-gap authority | Development is paused/absorbed into WS-RESYNC-001 + GAP-002 acceptance. Preserve historical blocker evidence; no independent branch continuation unless the upstream reliability task leaves a new smallest blocker. | Training/holdout |
+| ST-005 | Archive/purge throughput recovery and 60-minute catch-up proof / storage | IN_PROGRESS | Active isolated Codex task; prior proof was invalidated by unsynchronized WS | Measure first, optimize only proven bottleneck, then require effective processing > incoming rate, declining backlog, controlled DB growth, verified archive, zero attributable WS gaps/sync loss. | Runtime/read-only proof; storage mutation remains separately gated |
+| DEP-001 | Current-main Production deployment and bounded proof / deployment | PLANNED | DEP-PKG-002 blocker is removed by PR #46; Phase A current-main read-only preflight has not yet been rerun | Next deployment action is Phase A read-only preflight. Deployment/restart still requires separate explicit `DEP001_DEPLOY_APPROVED`; merge is not deployment approval. | Deploy/restart |
+| TRN-001 | `LONG_RUN_TRAINING_FINAL_GO_NO_GO` / training gate | PLANNED / `NO_GO` | No formal gate execution evidence | Evaluate only after current data/runtime/storage gates are reconciled. Formal overnight training starts only on explicit `TRAINING_GO`; frozen holdout stays opaque. | Training/holdout |
 | DATA-004 | Independent UTC-day and regime coverage / data | PLANNED | Research Data Authority | More rows are not independent evidence. | Data policy |
 | FAC-002 / FAC-003 | Decision-time-safe factor evidence / factors | PLANNED | Fixed-set evidence and chronological validation required | Ablate, use grouped validation/BH-FDR; do not widen search first. | Research policy |
 | VAL-001 | Chronological anti-overfit gate / validation | PLANNED | Model vNext contract | Require event grouping, purge/embargo, cost stress, opaque holdout. | Holdout |
@@ -91,6 +103,18 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 | RISK-001 / EXE-001 / EXE-002 / SEC-001 | Hard Risk, execution, reconciliation, security / production | PLANNED | Required before any real-money pilot | Production writes remain 0; unknown reconciliation fails closed. | Hard Risk/execution/security |
 | PROD-001 | Tiny 1-contract pilot / production | PLANNED | Requires all preceding forward/risk/security evidence | Not authorized by paper, merge, or training alone. | Explicit human approval |
 | SESS-001 / OPS-002 / ST-004 / AI-001 / AI-002 / CLOUD-001 / DF-001 | Optimization and optional future lanes | PLANNED | Roadmap only | Do not displace the current data/runtime/training gates. | Varies |
+
+## Current route to formal overnight training
+
+The active route is deliberately short and fail-closed:
+
+1. finish and reconcile `WS-RESYNC-001 + GAP-002` (including H2 revalidation inside that task);
+2. finish and reconcile `ST-005` throughput/catch-up proof;
+3. rerun `DEP-001` Phase A current-main read-only preflight, then only with separate human approval deploy and prove the reviewed protected main;
+4. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` without reading the frozen holdout;
+5. start formal overnight training only if TRN-001 returns explicit `TRAINING_GO`.
+
+H2 is optional-by-validation, not optional-by-claim: formal research may consume H0 + H1 + **validated** H2. If a particular H2 capability remains unvalidated or plan-restricted, exclude that capability/model family rather than fabricating readiness or blocking unrelated valid families without evidence.
 
 ## Reconciliation classification
 
