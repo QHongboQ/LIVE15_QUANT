@@ -339,6 +339,22 @@ def test_one_sse_connection_demuxes_multiple_events_and_closes(tmp_path) -> None
     assert response.closed and session.closed
 
 
+def test_stream_can_exclude_one_confirmed_unavailable_feed(tmp_path) -> None:
+    active_assets = (Asset.GOLD, Asset.SILVER, Asset.HYPE, Asset.BNB)
+    response = FakeResponse({}, lines=[f"data:{json.dumps(payload(active_assets))}", ""])
+    session = FakeSession([response])
+    hermes = client(tmp_path, session)
+    try:
+        batches = tuple(
+            hermes.stream_batches(feed_ids=tuple(PYTH_FEEDS[asset][1] for asset in active_assets))
+        )
+        assert {item.asset for item in batches[0].observations} == set(active_assets)
+        requested = session.calls[0]["params"]
+        assert ("ids[]", PYTH_FEEDS[Asset.WTI_OIL][1]) not in requested
+    finally:
+        hermes.close()
+
+
 def test_malformed_sse_event_does_not_close_or_pollute_next_event(tmp_path) -> None:
     lines = ["data:not-json", "", f"data:{json.dumps(payload((Asset.BNB,)))}", ""]
     hermes = client(tmp_path, FakeSession([FakeResponse({}, lines=lines)]))

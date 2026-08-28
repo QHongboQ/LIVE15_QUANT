@@ -59,6 +59,7 @@ class Settings:
     pyth_hermes_base_url: str = PYTH_HERMES_BASE_URL
     pyth_api_key_path: Path | None = field(default=None, repr=False)
     pyth_rest_fallback_interval_seconds: float = 2.0
+    pyth_unavailable_reprobe_interval_seconds: float = 300.0
     pyth_stream_read_timeout_seconds: float = 20.0
     pyth_request_budget_per_10_seconds: int = 8
     recorder_pyth_stale_seconds: float = 15.0
@@ -501,6 +502,11 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             source,
             "LIVE15_PYTH_REST_FALLBACK_INTERVAL_SECONDS",
             defaults.pyth_rest_fallback_interval_seconds,
+        ),
+        pyth_unavailable_reprobe_interval_seconds=_positive_float(
+            source,
+            "LIVE15_PYTH_UNAVAILABLE_REPROBE_INTERVAL_SECONDS",
+            defaults.pyth_unavailable_reprobe_interval_seconds,
         ),
         pyth_stream_read_timeout_seconds=_positive_float(
             source,
