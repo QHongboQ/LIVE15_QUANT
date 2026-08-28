@@ -179,6 +179,27 @@ class MaterializedL2Snapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class H0SnapshotReference:
+    """Equivalent native H0 snapshot, kept separate from the H2 materialized type."""
+
+    provider_identity: str
+    provenance_tier: str
+    ticker: str
+    event_id: str
+    decision_timestamp: datetime
+    yes_levels: tuple[SnapshotLevel, ...]
+    no_levels: tuple[SnapshotLevel, ...]
+    source_artifact_hash: str
+
+    def __post_init__(self) -> None:
+        if self.provenance_tier != "H0_LIVE_NATIVE":
+            raise H2L2MaterializationError("H0_PROVENANCE_TIER_REQUIRED")
+        _utc(self.decision_timestamp, "h0_decision_timestamp")
+        if len(self.source_artifact_hash) != 64:
+            raise H2L2MaterializationError("H0_SOURCE_ARTIFACT_HASH_REQUIRED")
+
+
+@dataclass(frozen=True, slots=True)
 class SnapshotSequence:
     sequence_id: str
     event_id: str
@@ -320,12 +341,14 @@ def build_snapshot_sequences(
     examples: Iterable[MaterializedL2Snapshot],
     *,
     lookback: int,
-    excluded_event_ids: Sequence[str] = (),
+    excluded_event_ids: Sequence[str] | None = None,
 ) -> SnapshotSequenceBuildResult:
     """Build fixed, event-local snapshot windows; never fill a missing or gapped snapshot."""
 
     if lookback <= 0:
         raise H2L2MaterializationError("LOOKBACK_MUST_BE_POSITIVE")
+    if excluded_event_ids is None:
+        raise H2L2MaterializationError("HOLDOUT_IDENTITY_EXCLUSIONS_REQUIRED")
     rows = tuple(examples)
     if not rows:
         return SnapshotSequenceBuildResult((), ())
@@ -343,6 +366,16 @@ def build_snapshot_sequences(
     )
     sequences: list[SnapshotSequence] = []
     exclusions: list[SequenceExclusion] = []
+    seen_observations: set[tuple[str, str, datetime, datetime]] = set()
+    for row in ordered:
+        key = (row.event_id, row.ticker, row.decision_timestamp, row.source_timestamp)
+        if key in seen_observations:
+            exclusions.append(
+                SequenceExclusion(event_id, row.decision_timestamp, "DUPLICATE_SNAPSHOT_REJECTED")
+            )
+        seen_observations.add(key)
+    if exclusions:
+        return SnapshotSequenceBuildResult((), tuple(exclusions))
     for index in range(lookback - 1, len(ordered)):
         window = ordered[index - lookback + 1 : index + 1]
         decision = window[-1].decision_timestamp
@@ -397,18 +430,32 @@ def _book_identity(
 
 
 def evaluate_h2_overlap(
-    h2_examples: Iterable[MaterializedL2Snapshot], h0_examples: Iterable[MaterializedL2Snapshot]
+    h2_examples: Iterable[MaterializedL2Snapshot], h0_examples: Iterable[H0SnapshotReference]
 ) -> H2OverlapResult:
     """Compare bounded equivalent snapshots; conflict is fail-closed and never selects H2."""
 
-    h0_by_key = {_overlap_key(item): item for item in h0_examples}
+    h0_by_key: dict[tuple[str, str, datetime], H0SnapshotReference] = {}
+    for item in h0_examples:
+        key = (item.event_id, item.ticker, item.decision_timestamp)
+        if key in h0_by_key:
+            return H2OverlapResult(
+                H2_OVERLAP_FAILED,
+                (),
+                (),
+                ("H0_DUPLICATE_OR_CONFLICT_QUARANTINED",),
+            )
+        h0_by_key[key] = item
     matched: list[str] = []
     conflicts: list[str] = []
     for h2 in h2_examples:
         reference = h0_by_key.get(_overlap_key(h2))
         if reference is None:
             continue
-        if _book_identity(h2) == _book_identity(reference):
+        reference_book = (
+            tuple((level.price, level.size) for level in reference.yes_levels),
+            tuple((level.price, level.size) for level in reference.no_levels),
+        )
+        if _book_identity(h2) == reference_book:
             matched.append(h2.example_id)
         else:
             conflicts.append(h2.example_id)
@@ -425,16 +472,24 @@ def evaluate_h2_overlap(
 
 
 def summarize_h2_capabilities(
-    examples: Iterable[MaterializedL2Snapshot], sequence_result: SnapshotSequenceBuildResult
+    examples: Iterable[MaterializedL2Snapshot],
+    sequence_result: SnapshotSequenceBuildResult,
+    *,
+    overlap_result: H2OverlapResult | None,
 ) -> dict[str, object]:
     """Report code and real-data H2 status separately without inventing delta capability."""
 
     rows = tuple(examples)
+    validated_ids = (
+        set(overlap_result.matched)
+        if overlap_result is not None and overlap_result.status == H2_OVERLAP_VALIDATED
+        else set()
+    )
     validated_real = tuple(
         item
         for item in rows
         if item.evidence_origin == REAL_PROVIDER_EVIDENCE
-        and item.overlap_status == H2_OVERLAP_VALIDATED
+        and item.example_id in validated_ids
         and item.gap_state == "NO_GAP"
         and item.availability_state == "AVAILABLE"
     )
@@ -460,6 +515,18 @@ def summarize_h2_capabilities(
         "delta_sequence_days": (),
         "microstructure_training_ready_days": snapshot_days,
         "delta_sequence_status": H2_DELTA_SEQUENCE_UNAVAILABLE,
+        "overlap_status": overlap_result.status if overlap_result else H2_OVERLAP_PARTIAL,
+        "overlap_artifact_id": (
+            _hash(
+                {
+                    "matched": overlap_result.matched,
+                    "conflicts": overlap_result.conflicts,
+                    "reasons": overlap_result.reasons,
+                }
+            )
+            if overlap_result is not None and overlap_result.status == H2_OVERLAP_VALIDATED
+            else None
+        ),
         "synthetic_fixture_count": sum(
             item.evidence_origin == SYNTHETIC_TEST_FIXTURE for item in rows
         ),
@@ -498,5 +565,9 @@ def canonical_microstructure_availability(
         "training_ready": {
             "available": bool(training_ready_days),
             "days": len(training_ready_days),
+        },
+        "overlap": {
+            "validated": summary.get("overlap_status") == H2_OVERLAP_VALIDATED,
+            "artifact_id": summary.get("overlap_artifact_id"),
         },
     }

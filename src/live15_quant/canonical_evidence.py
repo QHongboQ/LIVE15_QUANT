@@ -172,6 +172,16 @@ class EvidenceRecord:
         return max(0, int(value.get("days", 0))) if isinstance(value, Mapping) else 0
 
     @property
+    def h2_overlap_validated(self) -> bool:
+        value = self.microstructure_availability.get("overlap", {})
+        return bool(
+            isinstance(value, Mapping)
+            and value.get("validated") is True
+            and isinstance(value.get("artifact_id"), str)
+            and value["artifact_id"]
+        )
+
+    @property
     def target_days(self) -> int:
         return max(0, int(self.target_availability.get("days", 0)))
 
@@ -576,7 +586,9 @@ def training_preflight(
         sources = tuple(
             record
             for record in snapshot.records
-            if record.snapshot_days > 0 and record.microstructure_training_ready_days > 0
+            if record.snapshot_days > 0
+            and record.microstructure_training_ready_days > 0
+            and (record.provenance_tier != H2 or record.h2_overlap_validated)
         )
         if not sources:
             return TrainingPreflightResult(
@@ -588,7 +600,12 @@ def training_preflight(
                 cutoff,
             )
     elif family in {"deeplob", "deep_lob"}:
-        sources = tuple(record for record in snapshot.records if record.snapshot_sequence_days > 0)
+        sources = tuple(
+            record
+            for record in snapshot.records
+            if record.snapshot_sequence_days > 0
+            and (record.provenance_tier != H2 or record.h2_overlap_validated)
+        )
         if not sources:
             return TrainingPreflightResult(
                 PreflightStatus.BLOCKED,
@@ -599,7 +616,12 @@ def training_preflight(
                 cutoff,
             )
     elif family == "tlob":
-        sources = tuple(record for record in snapshot.records if record.delta_sequence_days > 0)
+        sources = tuple(
+            record
+            for record in snapshot.records
+            if record.delta_sequence_days > 0
+            and (record.provenance_tier != H2 or record.h2_overlap_validated)
+        )
         if not sources:
             return TrainingPreflightResult(
                 PreflightStatus.BLOCKED,

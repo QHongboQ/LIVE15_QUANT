@@ -10,6 +10,7 @@ from live15_quant.h2_l2_materialization import (
     H2_OVERLAP_FAILED,
     H2_OVERLAP_PARTIAL,
     H2_OVERLAP_VALIDATED,
+    H0SnapshotReference,
     H2L2MaterializationError,
     H2SnapshotEvidence,
     L2EventWindow,
@@ -106,23 +107,43 @@ def test_sequence_builder_rejects_cross_event_and_gapped_rows_without_fill() -> 
     first = materialize_snapshot(_evidence(seconds=30))
     second_event = materialize_snapshot(_evidence(seconds=60, event_id="event-b"))
     with pytest.raises(H2L2MaterializationError, match="CROSS_EVENT_SEQUENCE_FORBIDDEN"):
-        build_snapshot_sequences((first, second_event), lookback=2)
+        build_snapshot_sequences((first, second_event), lookback=2, excluded_event_ids=())
 
     gapped = materialize_snapshot(_evidence(seconds=60, gap_state="GAP_DETECTED"))
-    result = build_snapshot_sequences((first, gapped), lookback=2)
+    result = build_snapshot_sequences((first, gapped), lookback=2, excluded_event_ids=())
     assert result.sequences == ()
     assert result.exclusions[0].reason == "GAP_REJECTED"
 
 
 def test_overlap_validation_is_explicit_and_h2_never_wins_conflict() -> None:
     h2 = materialize_snapshot(_evidence())
-    matching = evaluate_h2_overlap((h2,), (h2,))
+    matching_h0 = H0SnapshotReference(
+        "live15_recorder_h0",
+        "H0_LIVE_NATIVE",
+        h2.ticker,
+        h2.event_id,
+        h2.decision_timestamp,
+        h2.yes_levels,
+        h2.no_levels,
+        "b" * 64,
+    )
+    matching = evaluate_h2_overlap((h2,), (matching_h0,))
     assert matching.status == H2_OVERLAP_VALIDATED
 
     conflicting = materialize_snapshot(
         _evidence(yes=(SnapshotLevel(Decimal("0.44"), Decimal("12")),))
     )
-    failed = evaluate_h2_overlap((h2,), (conflicting,))
+    conflicting_h0 = H0SnapshotReference(
+        "live15_recorder_h0",
+        "H0_LIVE_NATIVE",
+        conflicting.ticker,
+        conflicting.event_id,
+        conflicting.decision_timestamp,
+        conflicting.yes_levels,
+        conflicting.no_levels,
+        "c" * 64,
+    )
+    failed = evaluate_h2_overlap((h2,), (conflicting_h0,))
     assert failed.status == H2_OVERLAP_FAILED
     assert failed.conflicts == (h2.example_id,)
 
@@ -132,10 +153,19 @@ def test_overlap_validation_is_explicit_and_h2_never_wins_conflict() -> None:
 
 def test_synthetic_snapshots_prove_code_pipeline_but_not_real_h2_readiness() -> None:
     example = materialize_snapshot(_evidence())
-    result = build_snapshot_sequences((example,), lookback=1)
-    summary = summarize_h2_capabilities((example,), result)
+    result = build_snapshot_sequences((example,), lookback=1, excluded_event_ids=())
+    summary = summarize_h2_capabilities((example,), result, overlap_result=None)
     assert summary["code_pipeline_status"] == "CODE_PIPELINE_READY"
     assert summary["real_h2_data_status"] == "REAL_H2_DATA_NOT_READY"
     assert summary["delta_sequence_status"] == H2_DELTA_SEQUENCE_UNAVAILABLE
     assert summary["snapshot_sequence_days"] == ()
     assert canonical_microstructure_availability(summary)["training_ready"]["available"] is False
+
+
+def test_sequence_requires_holdout_exclusions_and_rejects_duplicate_snapshot() -> None:
+    example = materialize_snapshot(_evidence())
+    with pytest.raises(H2L2MaterializationError, match="HOLDOUT_IDENTITY_EXCLUSIONS_REQUIRED"):
+        build_snapshot_sequences((example,), lookback=1)
+    duplicate = build_snapshot_sequences((example, example), lookback=1, excluded_event_ids=())
+    assert duplicate.sequences == ()
+    assert duplicate.exclusions[0].reason == "DUPLICATE_SNAPSHOT_REJECTED"

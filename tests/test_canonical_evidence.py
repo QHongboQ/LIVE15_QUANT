@@ -228,6 +228,7 @@ def test_h2_snapshot_sequence_and_delta_capabilities_remain_separate() -> None:
             "snapshot_sequence": {"available": True, "days": 2},
             "delta_sequence": {"available": False, "days": 0},
             "training_ready": {"available": True, "days": 2},
+            "overlap": {"validated": True, "artifact_id": "h2-overlap-fixture"},
         },
     )
     snapshot = build_canonical_evidence_snapshot(

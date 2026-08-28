@@ -71,9 +71,9 @@ Highest-priority blocker: obtain one bounded, recorded DepthFeed snapshot range 
 
 Recommended next task: `H2-TRAIN-002 — bounded real-snapshot acquisition and H0 overlap validation`.
 
-`NO FORMAL LONG TRAINING`  
-`NO HOLDOUT ACCESS`  
-`NOT PROMOTED`  
-`NO PRODUCTION DEPLOYMENT`  
-`NO PRODUCTION RESTART`  
+`NO FORMAL LONG TRAINING`
+`NO HOLDOUT ACCESS`
+`NOT PROMOTED`
+`NO PRODUCTION DEPLOYMENT`
+`NO PRODUCTION RESTART`
 `PRODUCTION WRITES 0`
