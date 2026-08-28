@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib
 import io
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from live15_quant import release_pipeline
 from live15_quant.release_pipeline import (
     ACTIVE_POINTER,
     PREVIOUS_POINTER,
@@ -362,6 +364,89 @@ def test_legacy_capture_is_safe_when_application_and_release_root_are_identical(
         verify_package(release_root=legacy_and_release_root, release_id=identity.release_id)
         == identity
     )
+
+
+def test_legacy_capture_reports_an_inaccessible_unexcluded_directory_before_descent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    legacy = tmp_path / "legacy"
+    (legacy / "src/live15_quant").mkdir(parents=True)
+    (legacy / "src/live15_quant/__init__.py").write_text("legacy\n")
+    (legacy / "requirements.lock").write_text("example==1.0\n")
+    inaccessible = legacy / ".checker-pytest-candidate"
+    inaccessible.mkdir()
+    original_scandir = os.scandir
+    scanned_inaccessible: list[Path] = []
+
+    def deny_inaccessible(path: str | os.PathLike[str]) -> os.ScandirIterator[str]:
+        candidate = Path(path).resolve()
+        if candidate == inaccessible.resolve():
+            scanned_inaccessible.append(candidate)
+            raise PermissionError(errno.EACCES, "Access is denied", str(path))
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", deny_inaccessible)
+    try:
+        with pytest.raises(
+            ReleaseError,
+            match=(
+                r"cannot inspect unexcluded directory: "
+                r".*\.checker-pytest-candidate.*PermissionError"
+            ),
+        ):
+            capture_legacy_unproven_release(
+                legacy_app_root=legacy,
+                release_root=tmp_path / "production",
+                created_at="2026-08-28T00:00:00+00:00",
+            )
+    finally:
+        monkeypatch.undo()
+
+    assert scanned_inaccessible == [inaccessible.resolve()]
+
+
+def test_legacy_capture_refuses_a_mocked_reparse_point_before_descent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    legacy = tmp_path / "legacy"
+    (legacy / "src/live15_quant").mkdir(parents=True)
+    (legacy / "src/live15_quant/__init__.py").write_text("legacy\n")
+    (legacy / "requirements.lock").write_text("example==1.0\n")
+    reparse_point = legacy / "synthetic-junction"
+    reparse_point.mkdir()
+    original_scandir = os.scandir
+
+    def fail_if_reparse_point_is_scanned(path: str | os.PathLike[str]) -> os.ScandirIterator[str]:
+        candidate = Path(path).resolve()
+        try:
+            candidate.relative_to(reparse_point.resolve())
+        except ValueError:
+            return original_scandir(path)
+        raise AssertionError("legacy capture must reject a reparse point before descent")
+
+    def classify_mocked_reparse_point(path: Path) -> str:
+        if path.resolve() == reparse_point.resolve():
+            return "reparse-point"
+        return "directory" if path.is_dir() else "regular-file"
+
+    monkeypatch.setattr(os, "scandir", fail_if_reparse_point_is_scanned)
+    monkeypatch.setattr(
+        release_pipeline,
+        "_legacy_capture_entry_type",
+        classify_mocked_reparse_point,
+        raising=False,
+    )
+    try:
+        with pytest.raises(
+            ReleaseError, match=r"refuses reparse-point entry: .*synthetic-junction"
+        ):
+            capture_legacy_unproven_release(
+                legacy_app_root=legacy,
+                release_root=tmp_path / "production",
+                created_at="2026-08-28T00:00:00+00:00",
+            )
+    finally:
+        monkeypatch.undo()
 
 
 def test_first_deploy_can_rollback_to_immutable_legacy_without_a_runner(tmp_path: Path) -> None:
