@@ -101,6 +101,10 @@ def test_runner_does_not_leak_its_component_arguments_to_the_application(
 
     monkeypatch.setattr(release_runner.importlib, "import_module", lambda _: Component)
     monkeypatch.setattr(sys, "argv", ["release_runner.py", "--component", "recorder"])
+    # ``run_component`` intentionally changes into the immutable app directory
+    # for a service process. Keep that process-global effect contained to this
+    # direct unit invocation so later tests retain the repository cwd.
+    monkeypatch.chdir(tmp_path)
 
     release_runner.run_component("recorder", tmp_path)
 
