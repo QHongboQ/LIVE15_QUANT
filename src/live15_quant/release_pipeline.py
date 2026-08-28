@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -52,6 +53,59 @@ LEGACY_CAPTURE_EXCLUDED_TOP_LEVEL = PROHIBITED_TOP_LEVEL | {
 
 class ReleaseError(RuntimeError):
     """Raised when release provenance or integrity cannot be proven."""
+
+
+def _legacy_capture_entry_type(path: Path) -> str:
+    """Classify an entry without following a symlink or Windows reparse point."""
+
+    entry_stat = os.lstat(path)
+    if stat.S_ISLNK(entry_stat.st_mode):
+        return "symbolic-link"
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if getattr(entry_stat, "st_file_attributes", 0) & reparse_attribute:
+        return "reparse-point"
+    if stat.S_ISDIR(entry_stat.st_mode):
+        return "directory"
+    if stat.S_ISREG(entry_stat.st_mode):
+        return "regular-file"
+    return "special-file"
+
+
+def _legacy_capture_ignore(path: str, names: list[str]) -> set[str]:
+    """Exclude known boundaries and reject unsafe unknown entries before descent.
+
+    CPython invokes copytree's ignore callback before processing the directory
+    entries.  This matters on Windows because its copytree implementation can
+    recurse through a directory junction.  A legacy rollback capture must stay
+    within its physical source tree, so unknown links and reparse points fail
+    closed instead of being followed or silently omitted.
+    """
+
+    ignored = set(names).intersection(LEGACY_CAPTURE_EXCLUDED_TOP_LEVEL)
+    parent = Path(path)
+    for name in names:
+        if name in ignored:
+            continue
+        candidate = parent / name
+        try:
+            entry_type = _legacy_capture_entry_type(candidate)
+        except OSError as error:
+            raise ReleaseError(
+                "legacy capture cannot inspect unexcluded entry: "
+                f"{candidate} ({type(error).__name__}: {error})"
+            ) from error
+        if entry_type in {"symbolic-link", "reparse-point", "special-file"}:
+            raise ReleaseError(f"legacy capture refuses {entry_type} entry: {candidate}")
+        if entry_type == "directory":
+            try:
+                with os.scandir(candidate):
+                    pass
+            except OSError as error:
+                raise ReleaseError(
+                    "legacy capture cannot inspect unexcluded directory: "
+                    f"{candidate} ({type(error).__name__}: {error})"
+                ) from error
+    return ignored
 
 
 def _sha256_file(path: Path) -> str:
@@ -248,8 +302,7 @@ def capture_legacy_unproven_release(
     ) as temporary_directory:
         staging_root = Path(temporary_directory) / "release"
         staged_app = staging_root / "app"
-        ignored = shutil.ignore_patterns(*LEGACY_CAPTURE_EXCLUDED_TOP_LEVEL)
-        shutil.copytree(legacy_app_root, staged_app, ignore=ignored)
+        shutil.copytree(legacy_app_root, staged_app, ignore=_legacy_capture_ignore)
         files = _file_inventory(staged_app)
         artifact_hash = _manifest_artifact_hash(files)
         release_id = f"legacy-unproven-{artifact_hash[:16]}"
