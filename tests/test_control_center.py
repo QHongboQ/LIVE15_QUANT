@@ -481,6 +481,43 @@ async def test_market_detail_reuses_native_storage_and_feature_engine(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_market_summary_never_computes_features_but_detail_still_does(
+    tmp_path: Path, monkeypatch
+) -> None:
+    configured = settings(tmp_path)
+    market = provider().parse_market(Asset.BTC, raw_market(), NOW)
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_kalshi_market(market)
+        store.append_kalshi_quote(quote(market.ticker, market.event_ticker, NOW))
+        store.append_coinbase(
+            MarketTick(
+                symbol="BTC-USD",
+                price=market.target + Decimal("1"),
+                bid=market.target,
+                ask=market.target + Decimal("2"),
+                received_at=NOW,
+                exchange_time=NOW,
+            )
+        )
+    write_health(configured.recorder_health_path, current_markets={"BTC": market.ticker})
+    service = ControlCenterService(configured, clock=lambda: NOW)
+
+    class UnexpectedFeatureEngine:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise AssertionError("market summary must not construct FeatureEngine")
+
+    monkeypatch.setattr(control_center_store, "FeatureEngine", UnexpectedFeatureEngine)
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        summary = await client.get("/api/markets")
+
+    assert summary.status_code == 200
+    btc = next(item for item in summary.json() if item["asset"] == "BTC")
+    assert btc["features"] == {}
+    assert btc["yes_bid_depth"] == btc["no_bid_depth"] == []
+
+
+@pytest.mark.asyncio
 async def test_pyth_underlying_status_honors_provider_freshness(tmp_path: Path) -> None:
     configured = settings(tmp_path)
     market = provider().parse_market(Asset.GOLD, raw_market(Asset.GOLD), NOW)
@@ -540,6 +577,26 @@ async def test_pyth_underlying_uses_configured_stale_threshold(tmp_path: Path) -
 
     assert payload["underlying_provider"] == "pyth_hermes"
     assert payload["underlying_status"] == "stale"
+
+
+@pytest.mark.parametrize(
+    ("observed", "extra", "expected"),
+    [
+        (NOW, {"source_failures": {"pyth:WTI Oil": "UPSTREAM_UNAVAILABLE"}}, "source_unavailable"),
+        (NOW, {"underlying_market_states": {"WTI Oil": "stale"}}, "stale"),
+        (datetime(2026, 8, 22, 4, 0, tzinfo=UTC), {}, "market_closed"),
+        (NOW, {"underlying_market_states": {"WTI Oil": "healthy"}}, "healthy"),
+    ],
+)
+def test_wti_market_projection_preserves_authoritative_underlying_state(
+    tmp_path: Path, observed: datetime, extra: dict[str, object], expected: str
+) -> None:
+    configured = settings(tmp_path)
+    write_health(configured.recorder_health_path, observed, **extra)
+
+    market = ControlCenterService(configured, clock=lambda: observed).market(Asset.WTI_OIL)
+
+    assert market.underlying_status == expected
 
 
 @pytest.mark.asyncio
@@ -933,6 +990,35 @@ def test_archive_projection_exposes_operational_and_compression_facts(tmp_path: 
     assert archive.last_purge_deleted_events == 10_000
 
 
+def test_archive_catch_up_status_requires_rate_evidence_and_uses_bounded_math() -> None:
+    unknown = ControlCenterService._ws_archive_health(
+        {"enabled": True, "archive_backlog_events": 100, "archive_throughput_events_per_second": 5}
+    )
+    catching_up = ControlCenterService._ws_archive_health(
+        {
+            "enabled": True,
+            "archive_backlog_events": 100,
+            "archive_throughput_events_per_second": 15,
+            "input_ws_events_per_second": 10,
+        }
+    )
+    falling_behind = ControlCenterService._ws_archive_health(
+        {
+            "enabled": True,
+            "archive_backlog_events": 100,
+            "archive_throughput_events_per_second": 5,
+            "input_ws_events_per_second": 10,
+        }
+    )
+
+    assert unknown.archive_catch_up_status == "UNKNOWN"
+    assert catching_up.archive_catch_up_status == "CATCHING_UP"
+    assert catching_up.archive_catch_up_ratio == 1.5
+    assert catching_up.archive_backlog_slope_events_per_second == 5
+    assert catching_up.archive_catch_up_eta_seconds == 20
+    assert falling_behind.archive_catch_up_status == "FALLING_BEHIND"
+
+
 def test_archive_and_storage_missing_facts_remain_na_and_reusable_is_not_reclaimed(
     tmp_path: Path,
 ) -> None:
@@ -1014,6 +1100,7 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
         "/api/storage",
         "/api/operations",
         "/api/events",
+        "/api/events/summary",
         "/api/recorder/start",
         "/api/recorder/pause",
         "/api/recorder/resume",
@@ -1095,6 +1182,109 @@ async def test_operational_events_api_is_bounded_typed_and_filterable(tmp_path: 
     ]
     assert invalid.status_code == 422
     assert naive_time.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_event_summary_is_exact_when_newest_sample_is_limited_to_100(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    with RecorderStore(configured.recorder_data_path) as store:
+        for severity, count in (
+            (RecorderEventSeverity.WARNING, 125),
+            (RecorderEventSeverity.ERROR, 12),
+            (RecorderEventSeverity.FATAL, 3),
+        ):
+            for _ in range(count):
+                store.append_recorder_event(
+                    observed_timestamp=NOW,
+                    severity=severity,
+                    event_type=RecorderEventType.LIFECYCLE_REGRESSION,
+                    asset=Asset.BTC,
+                    source="kalshi_settlement:BTC",
+                    error_type="TestError",
+                    message="retained event",
+                )
+        store.append_recorder_event(
+            observed_timestamp=NOW + timedelta(seconds=1),
+            severity=RecorderEventSeverity.WARNING,
+            event_type=RecorderEventType.LIFECYCLE_REGRESSION,
+            asset=Asset.BTC,
+            source="kalshi_settlement:BTC",
+            error_type="FutureTimestamp",
+            message="must not enter an as-of summary",
+        )
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+    since = (NOW - timedelta(hours=24)).isoformat()
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        rows = await client.get("/api/events", params={"limit": 100, "since": since})
+        summary = await client.get("/api/events/summary", params={"since": since})
+
+    assert len(rows.json()) == 100
+    assert summary.status_code == 200
+    assert summary.json() == {
+        "window_start": since.replace("+00:00", "Z"),
+        "window_end": NOW.isoformat().replace("+00:00", "Z"),
+        "availability": "available",
+        "warnings": 125,
+        "errors": 12,
+        "fatals": 3,
+        "sample_truncated": False,
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        too_wide = await client.get(
+            "/api/events/summary",
+            params={"since": (NOW - timedelta(hours=24, seconds=1)).isoformat()},
+        )
+    assert too_wide.status_code == 422
+
+
+def test_health_keeps_historical_retries_separate_from_current_worker_health(
+    tmp_path: Path,
+) -> None:
+    configured = settings(tmp_path)
+    retry_at = NOW + timedelta(seconds=10)
+    write_health(
+        configured.recorder_health_path,
+        retry_counts={"kalshi_ws": 99},
+        current_health_issues=["stale_worker:kalshi_ws"],
+        worker_health={
+            "kalshi_ws": {
+                "current_state": "RECONNECTING",
+                "consecutive_failures": 2,
+                "last_error_type": "ConnectionError",
+                "next_retry_at": retry_at.isoformat(),
+                "last_progress_timestamp": NOW.isoformat(),
+                "last_successful_observation_timestamp": (NOW - timedelta(seconds=4)).isoformat(),
+                "age_seconds": 0.0,
+            }
+        },
+        stale_workers=["kalshi_ws"],
+    )
+
+    health = ControlCenterService(configured, clock=lambda: NOW).health()
+
+    assert health.retry_counts == {"kalshi_ws": 99}
+    assert health.current_health_issues == ["stale_worker:kalshi_ws"]
+    assert health.worker_health["kalshi_ws"].consecutive_failures == 2
+    assert health.worker_health["kalshi_ws"].next_retry_at == retry_at
+
+
+def test_data_projection_does_not_compute_the_full_training_response(
+    tmp_path: Path, monkeypatch
+) -> None:
+    configured = settings(tmp_path)
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    monkeypatch.setattr(service.store, "training", lambda: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(
+        service.store,
+        "raw_finalized_pool",
+        lambda: {"events": 7, "assets": 2, "observed_at": NOW, "status": "available"},
+    )
+
+    data = service.data()
+
+    assert data.finalized_events == 7
+    assert data.finalized_assets == 2
 
 
 def test_dashboard_assets_are_declared_for_clean_install() -> None:
@@ -1230,7 +1420,11 @@ async def test_frontend_polling_is_bounded_and_exposes_only_recorder_controls(
     assert "system: 30000" in script
     assert "coverage: 60000" in script
     assert "setinterval(updatecountdowns, 1000)" in script
-    assert "setinterval(() => refresh(false), 500)" in script
+    assert "setinterval(() => refresh(false), 500)" not in script
+    assert "setinterval(() => refresh(false), 1000)" in script
+    assert "dashboardeventsummaryurl" in script
+    assert "/api/events/summary" in script
+    assert "legacy/local trainable rows" in script
     assert 'queryselectorall("[data-window-end]")' in script
     assert "windowend" in script
     assert "document.hidden" in script

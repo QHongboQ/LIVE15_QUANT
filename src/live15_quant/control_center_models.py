@@ -150,7 +150,12 @@ class WsArchiveHealth(StrictResponse):
     hot_retention_seconds: float | None = None
     archive_backlog_events: int = 0
     archive_backlog_capped: bool = False
+    input_ws_events_per_second: float | None = None
     archive_throughput_events_per_second: float = 0.0
+    archive_catch_up_ratio: float | None = None
+    archive_backlog_slope_events_per_second: float | None = None
+    archive_catch_up_eta_seconds: float | None = None
+    archive_catch_up_status: str = "UNKNOWN"
     archive_elapsed_seconds: float = 0.0
     archive_lag_seconds: float | None = None
     compression_ratio: float | None = None
@@ -194,12 +199,14 @@ class HealthResponse(StrictResponse):
     active_settlement_followups: int | None = None
     last_finalized_settlement: dict[str, str] = Field(default_factory=dict)
     retry_counts: dict[str, int] = Field(default_factory=dict)
+    current_health_issues: list[str] = Field(default_factory=list)
     source_failures: dict[str, str] = Field(default_factory=dict)
     stale_sources: list[str] = Field(default_factory=list)
     market_closed_sources: list[str] = Field(default_factory=list)
     underlying_market_states: dict[str, str] = Field(default_factory=dict)
     worker_progress: dict[str, datetime] = Field(default_factory=dict)
     worker_progress_age_seconds: dict[str, float] = Field(default_factory=dict)
+    worker_health: dict[str, WorkerHealthResponse] = Field(default_factory=dict)
     stale_workers: list[str] = Field(default_factory=list)
     event_loop_lag_seconds: float | None = None
     fatal_task: str | None = None
@@ -225,6 +232,18 @@ class HealthResponse(StrictResponse):
     kalshi_ws_receive_persist_latency_ms: str | None = None
     kalshi_rest_fallback_status: str = "unavailable"
     ws_archive: WsArchiveHealth = Field(default_factory=WsArchiveHealth)
+
+
+class WorkerHealthResponse(StrictResponse):
+    """Current worker state; lifetime retry counters deliberately do not appear here."""
+
+    current_state: str = "unknown"
+    consecutive_failures: int = 0
+    last_error_type: str | None = None
+    next_retry_at: datetime | None = None
+    last_progress_timestamp: datetime | None = None
+    last_successful_observation_timestamp: datetime | None = None
+    age_seconds: float | None = None
 
 
 class MarketResponse(StrictResponse):
@@ -277,6 +296,18 @@ class MarketResponse(StrictResponse):
     settlement_followup: str
     features: dict[str, dict[str, str | None]] = Field(default_factory=dict)
     previous_events: list[dict[str, str | None]] = Field(default_factory=list)
+
+
+class EventSummaryResponse(StrictResponse):
+    """Exact aggregate over an explicitly bounded recorder-event time window."""
+
+    window_start: datetime
+    window_end: datetime
+    availability: Availability
+    warnings: int | None = None
+    errors: int | None = None
+    fatals: int | None = None
+    sample_truncated: bool = False
 
 
 class AssetCoverage(StrictResponse):
@@ -453,7 +484,14 @@ class ArchiveResponse(StrictResponse):
     waiting_chunks: int | None = None
     quarantined_chunks: int | None = None
     backlog_events: int | None = None
+    backlog_capped: bool = False
+    deferred_for_ws_backpressure: bool = False
     throughput_events_per_second: float | None = None
+    input_ws_events_per_second: float | None = None
+    catch_up_ratio: float | None = None
+    backlog_slope_events_per_second: float | None = None
+    catch_up_eta_seconds: float | None = None
+    catch_up_status: str = "UNKNOWN"
     lag_seconds: float | None = None
     uncompressed_archive_bytes: int | None = None
     compressed_archive_bytes: int | None = None

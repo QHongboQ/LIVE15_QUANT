@@ -10,6 +10,7 @@ clears that projection and renders an unavailable/unknown state until a new resp
 | WS synchronized asset count and sequence gaps | `/api/health` | `ControlCenterService.health()` | Recorder WS health fields (`kalshi_ws_synchronized_count`, `kalshi_ws_seq_gaps`) | 2.5 s | LIVE |
 | Current markets, ticker, quote, lifecycle | `/api/markets` | `ControlCenterService.markets()` / `ControlCenterStore` | Recorder store + current provider projections | 2.5 s | LIVE |
 | Market detail and orderbook | `/api/markets/{asset}` | `ControlCenterService.market()` / `ControlCenterStore` | Recorder store and synchronized quote evidence | 2.5 s | LIVE |
+| Dashboard warning/error/fatal totals | `/api/events/summary` | `ControlCenterService.event_summary()` | Indexed recorder-event aggregate over its explicit 24-hour window; the bounded event sample is never treated as a total | 15 s | LIVE |
 | Account balance, portfolio, positions | `/api/account` | `ProductionAccountService.read()` | Kalshi Production read API | 10 s | LIVE |
 | Orders/fills | `/api/account/orders`, `/api/account/fills` | `ProductionAccountService.read()` | Kalshi Production read API | 10 s | LIVE |
 | Archive verified/failed/waiting/quarantine/backlog | `/api/archive` | `ControlCenterService.archive()` | Recorder heartbeat `ws_archive` projection | 10 s | LIVE |

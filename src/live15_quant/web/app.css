@@ -1,9 +1,9 @@
 :root {
   color-scheme: dark;
-  --bg: #071018;
-  --panel: #0d1822;
-  --panel-2: #111f2b;
-  --line: #233544;
+  --bg: #050505;
+  --panel: #0b0b0d;
+  --panel-2: #111116;
+  --line: rgba(255,255,255,.08);
   --line-soft: #192a37;
   --text: #e8f0f5;
   --muted: #8799a8;
@@ -13,6 +13,7 @@
   --red: #f07878;
   --blue: #72aaf7;
   --purple: #b89cff;
+  --accent: #7567e8;
   --font-ui: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
   --font-cjk: "Microsoft YaHei", "SimSun", sans-serif;
   --font-code: Consolas, "Cascadia Mono", monospace;
@@ -22,7 +23,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 1080px; min-height: 100vh; background: var(--bg); }
+body { margin: 0; min-width: 0; min-height: 100vh; background: var(--bg); overflow-y: scroll; overflow-x: auto; }
 a { color: inherit; }
 button, input, select { font: inherit; }
 
@@ -69,9 +70,7 @@ h3 { margin-bottom: 4px; font-size: 14px; }
 .detail-tab { padding: 9px 12px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; font-size: 11px; }
 .detail-tab:hover, .detail-tab.active { color: var(--text); border-color: var(--teal); }
 
-/* Terminal foundation: continuous black canvas, typographic hierarchy, compact tables. */
-:root { --bg: #050505; --panel: #0b0b0d; --line: rgba(255,255,255,.08); --accent: #7567e8; --text: #f2f2f4; --muted: #85858e; }
-body { background: var(--bg); color: var(--text); overflow-y: scroll; overflow-x: hidden; }
+/* Terminal layout uses the single token authority above. */
 .app-shell { grid-template-columns: 232px minmax(0, 1fr); background: var(--bg); min-height: 100vh; }
 .sidebar { background: #09090b; border-right: 1px solid var(--line); padding: 20px 12px; height: 100vh; position: sticky; top: 0; overflow-y: auto; overflow-x: hidden; }
 .brand { padding: 8px 10px 22px; }
@@ -81,7 +80,7 @@ nav a svg { width: 18px; height: 18px; flex: 0 0 18px; }
 nav a:hover { background: rgba(255,255,255,.05); color: var(--text); }
 nav a.active { background: var(--accent); color: white; }
 .nav-label { margin: 18px 10px 7px; color: #666670; font-size: 10px; letter-spacing: .16em; }
-main { min-width: 0; width: 100%; padding: 0 30px 48px; overflow-x: hidden; }
+main { min-width: 0; width: 100%; padding: 0 30px 48px; }
 .topbar { min-height: 72px; border-bottom: 1px solid var(--line); }
 .topbar h1 { font-size: 20px; letter-spacing: -.02em; }
 .topbar .eyebrow { font-size: 10px; }
@@ -101,7 +100,6 @@ table td { height: 44px; font-size: 13px; border-top-color: rgba(255,255,255,.05
 .chart-grid { height: 240px; display: grid; place-items: center; color: #686872; font-size: 12px; }
 .table-filter { width: 220px; margin: 8px 0 14px; background: #0c0c0f; border: 1px solid var(--line); color: var(--text); padding: 9px 11px; border-radius: 6px; }
 .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
-@media (max-width: 1024px) { .app-shell { grid-template-columns: 76px minmax(0,1fr); } .brand span:not(.brand-mark), nav a:not(.active) { font-size: 0; } nav a { justify-content: center; } .nav-label { font-size: 0; } main { padding: 0 20px 32px; } }
 .read-only { padding: 7px 9px; border: 1px solid #2a4d49; border-radius: 5px; color: var(--teal); background: #0d2424; }
 
 .notice { margin-bottom: 18px; padding: 11px 14px; border: 1px solid #785c27; border-radius: 7px; background: #2b2415; color: #f1ce83; font-size: 12px; }
@@ -243,7 +241,6 @@ td a { color: var(--teal); text-decoration: none; }
 }
 
 @media (max-width: 900px) {
-  body { min-width: 0; }
   .app-shell { grid-template-columns: 190px minmax(0, 1fr); }
   main { padding: 0 18px 32px; }
   .detail-grid { grid-template-columns: 1fr; }
