@@ -173,7 +173,15 @@ def run_component(component: str, production_root: Path | None = None) -> None:
     sys.path.insert(0, str(app / "src"))
     _write_runtime_receipt(root, component, app, manifest, manifest_hash, bootstrap)
     module_name, function_name = COMPONENTS[component]
-    getattr(importlib.import_module(module_name), function_name)()
+    # WinSW invokes this bootstrap with ``--component``. Component entry points
+    # own their own CLI contracts, including Recorder's explicit no-arguments
+    # guard, so the bootstrap arguments must not leak through global sys.argv.
+    inherited_argv = sys.argv
+    try:
+        sys.argv = [sys.argv[0]]
+        getattr(importlib.import_module(module_name), function_name)()
+    finally:
+        sys.argv = inherited_argv
 
 
 def main(argv: list[str] | None = None) -> None:

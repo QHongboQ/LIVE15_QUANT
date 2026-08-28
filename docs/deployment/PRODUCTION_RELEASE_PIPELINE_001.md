@@ -97,15 +97,21 @@ module/working-directory path outside the active immutable release fails.
 
 ## DEP-SERVICE-RESTART-001: canonical restart gate
 
-`live15_quant.deployment_restart.restart_service_verified` is the single
-service-control authority for an authorized DEP-001 deployment **and its
-rollback**.  `release_pipeline` intentionally remains package/pointer-only;
-deployment orchestration must not use ad-hoc `Restart-Service`, `sc start`, or
-`winsw restart` commands outside this gate.
+`live15_quant.deployment_restart` is the single service-control authority for
+an authorized DEP-001 deployment **and its rollback**. `release_pipeline`
+intentionally remains package/pointer-only; deployment orchestration must not
+use ad-hoc `Restart-Service`, `sc start`, or `winsw restart` commands outside
+this gate.
+
+Rollback first inspects SCM state. For `RUNNING` with a positive PID it calls
+`restart_service_verified`; for `STOPPED` with PID `0` it calls
+`recover_service_verified`, which skips the redundant stop request. Both are
+public entry points to the same internal transition, generation-binding, audit,
+and provenance machinery. Any other precheck state fails closed.
 
 For each independently WinSW-owned service (Recorder, Control Center, and
-RuntimeSupervisor), the gate records an atomic non-empty pre-restart receipt,
-then requires this exact sequence:
+RuntimeSupervisor), the gate records an atomic non-empty pre-transition
+receipt. A running service requires this exact sequence:
 
 ```text
 PRECHECK -> STOP_REQUESTED -> STOPPED_CONFIRMED -> OLD_PID_GONE
@@ -113,6 +119,14 @@ PRECHECK -> STOP_REQUESTED -> STOPPED_CONFIRMED -> OLD_PID_GONE
 -> WINSW_SERVICE_MODE_START_CONFIRMED
 -> RELEASE_RUNNER_RECEIPT_CONFIRMED -> PROVENANCE_CONFIRMED
 ```
+
+A stopped-service recovery records `STOPPED_PRECHECK`, then begins at
+`START_REQUESTED`; it must still produce a new PID, a fresh WinSW service-mode
+entry, a fresh runner receipt, and valid provenance. Once `NEW_PID_CONFIRMED`
+is recorded, every later gate re-observes SCM and requires the same `RUNNING`
+WinSW PID. A stopped service is `SERVICE_GENERATION_LOST`; a different PID is
+`SERVICE_GENERATION_CHANGED`, and neither may satisfy a later receipt or
+provenance check.
 
 The precheck binds the SCM ImagePath-derived WinSW executable to its adjacent
 same-basename XML, checks the installed XML hash, and captures a wrapper-log
@@ -135,8 +149,9 @@ If that audit write fails, the gate fails closed.
 2. Build and verify its release under the Production root's `releases/`.
 3. With separate human approval, capture the legacy rollback artifact if needed,
    stage the matching bootstrap, render/install the reviewed WinSW XML, and
-   call `restart_service_verified` for each approved service.  Never mark the
-   restart stage complete merely because a service still reports Running.
+   use the SCM-state-selected canonical transition for each approved service.
+   Never mark the restart stage complete merely because a service still reports
+   Running.
 4. Verify package, active pointer, process provenance, ownership, health, and
    bounded runtime behavior.  On rollback, use the same verified restart gate
    against the restored legacy identity.

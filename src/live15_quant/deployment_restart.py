@@ -314,18 +314,23 @@ def _wait_for_runner_receipt(
     dependencies: RestartDependencies,
     timeout_seconds: float,
     poll_interval_seconds: float,
+    observe_generation: Callable[[], None],
 ) -> tuple[int, str]:
     """Observe, but never synthesize, the runner receipt after a new launch."""
 
     deadline = dependencies.monotonic() + timeout_seconds
     last_error: RestartGateError | None = None
     while True:
+        observe_generation()
         try:
-            return _runner_receipt(path, start_requested_at=start_requested_at, new_pid=new_pid)
+            receipt = _runner_receipt(path, start_requested_at=start_requested_at, new_pid=new_pid)
         except RestartGateError as error:
             last_error = error
             if str(error) == "RUNNER_PARENT_PID_MISMATCH":
                 raise
+        else:
+            observe_generation()
+            return receipt
         if dependencies.monotonic() >= deadline:
             if last_error is not None:
                 raise last_error
@@ -341,28 +346,33 @@ def _wait_for_winsw_service_mode_start(
     dependencies: RestartDependencies,
     timeout_seconds: float,
     poll_interval_seconds: float,
+    observe_generation: Callable[[], None],
 ) -> str:
     """Wait only for new WinSW service-mode evidence after the captured cursor."""
 
     deadline = dependencies.monotonic() + timeout_seconds
     while True:
+        observe_generation()
         launch = dependencies.winsw_logs.service_mode_start_after(path, cursor, start_requested_at)
         if launch is not None and "Starting WinSW in service mode" in launch:
+            observe_generation()
             return launch
         if dependencies.monotonic() >= deadline:
             raise RestartGateError("WINSW_SERVICE_MODE_START_MISSING")
         dependencies.sleep(min(poll_interval_seconds, timeout_seconds))
 
 
-def restart_service_verified(
-    expectation: RestartExpectation, *, dependencies: RestartDependencies | None = None
+def _transition_service_verified(
+    expectation: RestartExpectation,
+    *,
+    allow_stopped_recovery: bool,
+    dependencies: RestartDependencies | None = None,
 ) -> RestartResult:
-    """Restart one WinSW service only when every restart transition is proven.
+    """Run the canonical fail-closed restart or stopped-service recovery transition.
 
-    This function is deliberately synchronous and contains no retry loop around
-    stop/start requests.  Polling is used solely to observe bounded SCM state
-    transitions.  A failed gate raises and leaves its last atomic audit record
-    behind for a deployment/rollback controller to consume.
+    After a new WinSW PID is observed, every later proof step is bound to that
+    generation. SCM failure recovery is allowed to run independently, but its
+    later generation can never satisfy this transition's evidence gates.
     """
 
     if expectation.timeout_seconds <= 0 or expectation.poll_interval_seconds <= 0:
@@ -380,6 +390,8 @@ def restart_service_verified(
         "service_config_path": str(expectation.service_config_path),
         "wrapper_log_path": str(expectation.wrapper_log_path),
         "stages": stages,
+        "observed_generations": [],
+        "transition_mode": "RECOVER_STOPPED" if allow_stopped_recovery else "RESTART",
         "final_status": "PRECHECK",
     }
 
@@ -391,8 +403,6 @@ def restart_service_verified(
     try:
         precheck_at = dependencies.now()
         before = dependencies.scm.inspect(expectation.service_name)
-        if before.state != "RUNNING" or before.pid <= 0:
-            raise RestartGateError("SERVICE_PRECHECK_NOT_RUNNING")
         executable = _image_executable(before.image_path)
         expected_sidecar = _sidecar_config(executable)
         if expectation.service_config_path.resolve() != expected_sidecar.resolve():
@@ -422,30 +432,38 @@ def restart_service_verified(
         )
         record("PRECHECK", precheck_at)
 
-        stop_requested_at = dependencies.now()
-        audit["stop_requested_at"] = stop_requested_at.isoformat()
-        record("STOP_REQUESTED", stop_requested_at)
-        dependencies.scm.stop(expectation.service_name)
-        stopped = _wait_for(
-            predicate=lambda: (
-                snapshot
-                if (snapshot := dependencies.scm.inspect(expectation.service_name)).state
-                == "STOPPED"
-                else None
-            ),
-            dependencies=dependencies,
-            timeout_seconds=expectation.timeout_seconds,
-            poll_interval_seconds=expectation.poll_interval_seconds,
-            error_code="SERVICE_STOP_TIMEOUT",
-        )
-        stopped_at = dependencies.now()
-        audit["stopped_confirmed_at"] = stopped_at.isoformat()
-        record("STOPPED_CONFIRMED", stopped_at)
-        if stopped.pid == before.pid:
-            raise RestartGateError("OLD_PID_STILL_BOUND")
-        if dependencies.scm.is_process_alive(before.pid):
-            raise RestartGateError("OLD_PID_STILL_ALIVE")
-        record("OLD_PID_GONE", dependencies.now())
+        if before.state == "RUNNING" and before.pid > 0:
+            old_pid = before.pid
+            stop_requested_at = dependencies.now()
+            audit["stop_requested_at"] = stop_requested_at.isoformat()
+            record("STOP_REQUESTED", stop_requested_at)
+            dependencies.scm.stop(expectation.service_name)
+            stopped = _wait_for(
+                predicate=lambda: (
+                    snapshot
+                    if (snapshot := dependencies.scm.inspect(expectation.service_name)).state
+                    == "STOPPED"
+                    else None
+                ),
+                dependencies=dependencies,
+                timeout_seconds=expectation.timeout_seconds,
+                poll_interval_seconds=expectation.poll_interval_seconds,
+                error_code="SERVICE_STOP_TIMEOUT",
+            )
+            stopped_at = dependencies.now()
+            audit["stopped_confirmed_at"] = stopped_at.isoformat()
+            record("STOPPED_CONFIRMED", stopped_at)
+            if stopped.pid == old_pid:
+                raise RestartGateError("OLD_PID_STILL_BOUND")
+            if dependencies.scm.is_process_alive(old_pid):
+                raise RestartGateError("OLD_PID_STILL_ALIVE")
+            record("OLD_PID_GONE", dependencies.now())
+        elif before.state == "STOPPED" and before.pid == 0 and allow_stopped_recovery:
+            old_pid = 0
+            audit["recovery_entry_state"] = "STOPPED"
+            record("STOPPED_PRECHECK", dependencies.now())
+        else:
+            raise RestartGateError("SERVICE_PRECHECK_NOT_RUNNING")
 
         start_requested_at = dependencies.now()
         audit["start_requested_at"] = start_requested_at.isoformat()
@@ -466,10 +484,33 @@ def restart_service_verified(
         running_at = dependencies.now()
         audit["running_confirmed_at"] = running_at.isoformat()
         record("RUNNING_CONFIRMED", running_at)
-        if running.pid <= 0 or running.pid == before.pid:
+        if running.pid <= 0 or (old_pid > 0 and running.pid == old_pid):
             raise RestartGateError("SERVICE_START_PID_FAILURE")
         audit["new_pid"] = running.pid
         record("NEW_PID_CONFIRMED", dependencies.now())
+
+        generation = {
+            "service_name": expectation.service_name,
+            "winsw_pid": running.pid,
+            "start_requested_at": start_requested_at.isoformat(),
+            "running_observed_at": running_at.isoformat(),
+        }
+        audit["generation"] = generation
+
+        def observe_generation() -> None:
+            observed_at = dependencies.now()
+            observed = dependencies.scm.inspect(expectation.service_name)
+            audit["observed_generations"].append(
+                {
+                    "timestamp_utc": observed_at.isoformat(),
+                    "state": observed.state,
+                    "pid": observed.pid,
+                }
+            )
+            if observed.state == "STOPPED":
+                raise RestartGateError("SERVICE_GENERATION_LOST")
+            if observed.state != "RUNNING" or observed.pid != running.pid:
+                raise RestartGateError("SERVICE_GENERATION_CHANGED")
 
         winsw_launch = _wait_for_winsw_service_mode_start(
             path=expectation.wrapper_log_path,
@@ -478,8 +519,10 @@ def restart_service_verified(
             dependencies=dependencies,
             timeout_seconds=expectation.timeout_seconds,
             poll_interval_seconds=expectation.poll_interval_seconds,
+            observe_generation=observe_generation,
         )
         audit["winsw_service_mode_launch"] = winsw_launch
+        generation["winsw_service_mode_launch"] = winsw_launch
         record("WINSW_SERVICE_MODE_START_CONFIRMED", dependencies.now())
 
         receipt_path = (
@@ -492,6 +535,7 @@ def restart_service_verified(
             dependencies=dependencies,
             timeout_seconds=expectation.timeout_seconds,
             poll_interval_seconds=expectation.poll_interval_seconds,
+            observe_generation=observe_generation,
         )
         audit["release_runner_receipt"] = {
             "path": str(receipt_path),
@@ -500,6 +544,7 @@ def restart_service_verified(
         }
         record("RELEASE_RUNNER_RECEIPT_CONFIRMED", dependencies.now())
 
+        observe_generation()
         try:
             dependencies.verify_provenance(
                 release_root=expectation.release_root,
@@ -512,9 +557,10 @@ def restart_service_verified(
         except (ReleaseError, OSError, ValueError, RuntimeError) as error:
             raise RestartGateError(f"PROVENANCE_CONFIRMATION_FAILED: {error}") from error
         record("PROVENANCE_CONFIRMED", dependencies.now())
+        observe_generation()
         audit["final_status"] = "PASS"
         _atomic_json(audit_path, audit)
-        return RestartResult("PASS", before.pid, running.pid, audit_path)
+        return RestartResult("PASS", old_pid, running.pid, audit_path)
     except RestartGateError as error:
         audit["failure"] = str(error)
         audit["final_status"] = "FAILED"
@@ -532,3 +578,28 @@ def restart_service_verified(
         except RestartGateError as audit_error:
             raise RestartGateError(f"{failure}; {audit_error}") from audit_error
         raise failure from error
+
+
+def restart_service_verified(
+    expectation: RestartExpectation, *, dependencies: RestartDependencies | None = None
+) -> RestartResult:
+    """Restart a currently running service through the canonical transition gate."""
+
+    return _transition_service_verified(
+        expectation, allow_stopped_recovery=False, dependencies=dependencies
+    )
+
+
+def recover_service_verified(
+    expectation: RestartExpectation, *, dependencies: RestartDependencies | None = None
+) -> RestartResult:
+    """Restore a stopped service without sending a redundant stop request.
+
+    Rollback uses this sibling entry point when a failed candidate has already
+    left the service STOPPED. It shares every generation and provenance gate
+    with a normal restart.
+    """
+
+    return _transition_service_verified(
+        expectation, allow_stopped_recovery=True, dependencies=dependencies
+    )

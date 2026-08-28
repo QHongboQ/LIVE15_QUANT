@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -74,3 +75,37 @@ def test_runner_rejects_a_payload_that_no_longer_matches_the_manifest(tmp_path: 
     )
     with pytest.raises(release_runner.ReleaseRunnerError, match="payload hash mismatch"):
         release_runner.resolve_active_release(production)
+
+
+def test_runner_does_not_leak_its_component_arguments_to_the_application(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WinSW invokes the runner with ``--component``; component CLIs must not see it."""
+
+    app = tmp_path / "app"
+    (app / "src").mkdir(parents=True)
+    seen_argv: list[str] = []
+
+    monkeypatch.setattr(release_runner, "_bootstrap_identity", lambda _: {})
+    monkeypatch.setattr(
+        release_runner,
+        "resolve_active_release",
+        lambda _: (app, {"release_id": "release"}, "manifest"),
+    )
+    monkeypatch.setattr(release_runner, "_write_runtime_receipt", lambda *args: None)
+
+    class Component:
+        @staticmethod
+        def recorder_main() -> None:
+            seen_argv.extend(sys.argv)
+
+    monkeypatch.setattr(release_runner.importlib, "import_module", lambda _: Component)
+    monkeypatch.setattr(sys, "argv", ["release_runner.py", "--component", "recorder"])
+    # ``run_component`` intentionally changes into the immutable app directory
+    # for a service process. Keep that process-global effect contained to this
+    # direct unit invocation so later tests retain the repository cwd.
+    monkeypatch.chdir(tmp_path)
+
+    release_runner.run_component("recorder", tmp_path)
+
+    assert seen_argv == ["release_runner.py"]
