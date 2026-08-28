@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from datetime import timedelta
 from pathlib import Path
 
 from live15_quant.historical_providers import (
-    DEPTHFEED_INTEGRATION_READY_KEY_REQUIRED,
-    DepthFeedHistoricalOrderbookProvider,
     KalshiOfficialHistoricalProvider,
     depthfeed_key_status,
 )
@@ -64,23 +61,13 @@ def main() -> int:
     report["official"] = official
 
     if report["depthfeed"]["key_status"] != "DEPTHFEED_NOT_CONFIGURED":
-        depthfeed: dict[str, object] = {
-            "key_status": DEPTHFEED_INTEGRATION_READY_KEY_REQUIRED,
-            "base_url_configured": bool(os.environ.get("DEPTHFEED_BASE_URL", "").strip()),
+        report["depthfeed"] = {
+            "key_status": "DEPTHFEED_INTEGRATION_READY_USE_H2_TRAIN_002",
+            "historical_request_performed": False,
+            "reason": (
+                "legacy probe cannot select an exact recent H0 event or enforce free-plan bounds"
+            ),
         }
-        if depthfeed["base_url_configured"]:
-            try:
-                adapter = DepthFeedHistoricalOrderbookProvider.from_project_secret()
-                markets = adapter.discover_markets(limit=1)
-                depthfeed["markets"] = len(markets)
-                if markets and isinstance(markets[0].get("ticker"), str):
-                    snapshots = adapter.snapshots(str(markets[0]["ticker"]), max_pages=1, limit=1)
-                    depthfeed["snapshots"] = len(snapshots)
-                adapter.close()
-            except Exception as error:  # optional provider failure is isolated
-                depthfeed["error_class"] = type(error).__name__
-                depthfeed["error"] = str(error)[:240]
-        report["depthfeed"] = depthfeed
 
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(

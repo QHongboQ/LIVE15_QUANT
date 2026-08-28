@@ -12,7 +12,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
 
@@ -469,6 +469,60 @@ def evaluate_h2_overlap(
     if not matched:
         return H2OverlapResult(H2_OVERLAP_PARTIAL, (), (), ("NO_EQUIVALENT_H0_SNAPSHOTS",))
     return H2OverlapResult(H2_OVERLAP_VALIDATED, tuple(sorted(matched)), (), ())
+
+
+def evaluate_h2_overlap_with_tolerance(
+    h2_examples: Iterable[MaterializedL2Snapshot],
+    h0_examples: Iterable[H0SnapshotReference],
+    *,
+    timestamp_tolerance: timedelta,
+) -> H2OverlapResult:
+    """Compare equivalent books at a bounded nearest native-H0 timestamp; H0 wins conflicts."""
+
+    if timestamp_tolerance < timedelta(0):
+        raise H2L2MaterializationError("NEGATIVE_OVERLAP_TOLERANCE")
+    h2_rows = tuple(h2_examples)
+    h0_rows = tuple(h0_examples)
+    exact = evaluate_h2_overlap(h2_rows, h0_rows)
+    if exact.status != H2_OVERLAP_PARTIAL:
+        return exact
+    matched: list[str] = []
+    conflicts: list[str] = []
+    for h2 in h2_rows:
+        candidates = [
+            item
+            for item in h0_rows
+            if item.event_id == h2.event_id
+            and item.ticker == h2.ticker
+            and abs(item.decision_timestamp - h2.decision_timestamp) <= timestamp_tolerance
+        ]
+        if not candidates:
+            continue
+        candidate_books = {
+            (
+                tuple((level.price, level.size) for level in item.yes_levels),
+                tuple((level.price, level.size) for level in item.no_levels),
+            )
+            for item in candidates
+        }
+        if len(candidate_books) != 1:
+            conflicts.append(h2.example_id)
+            continue
+        reference_book = next(iter(candidate_books))
+        if _book_identity(h2) == reference_book:
+            matched.append(h2.example_id)
+        else:
+            conflicts.append(h2.example_id)
+    if conflicts:
+        return H2OverlapResult(
+            H2_OVERLAP_FAILED,
+            tuple(sorted(matched)),
+            tuple(sorted(conflicts)),
+            ("H0_H2_CONFLICT_QUARANTINED",),
+        )
+    if matched:
+        return H2OverlapResult(H2_OVERLAP_VALIDATED, tuple(sorted(matched)), (), ())
+    return exact
 
 
 def summarize_h2_capabilities(

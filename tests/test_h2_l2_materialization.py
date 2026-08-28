@@ -17,6 +17,7 @@ from live15_quant.h2_l2_materialization import (
     build_snapshot_sequences,
     canonical_microstructure_availability,
     evaluate_h2_overlap,
+    evaluate_h2_overlap_with_tolerance,
     materialize_snapshot,
     summarize_h2_capabilities,
 )
@@ -153,6 +154,35 @@ def test_overlap_validation_is_explicit_and_h2_never_wins_conflict() -> None:
 
     partial = evaluate_h2_overlap((h2,), ())
     assert partial.status == H2_OVERLAP_PARTIAL
+
+
+def test_tolerant_overlap_quarantines_conflicting_native_h0_candidates() -> None:
+    h2 = materialize_snapshot(_evidence())
+    matching = H0SnapshotReference(
+        "live15_recorder_h0",
+        "H0_LIVE_NATIVE",
+        h2.ticker,
+        h2.event_id,
+        h2.decision_timestamp - timedelta(seconds=1),
+        h2.yes_levels,
+        h2.no_levels,
+        "d" * 64,
+    )
+    conflicting = H0SnapshotReference(
+        "live15_recorder_h0",
+        "H0_LIVE_NATIVE",
+        h2.ticker,
+        h2.event_id,
+        h2.decision_timestamp + timedelta(seconds=1),
+        (SnapshotLevel(Decimal("0.44"), Decimal("12")),),
+        h2.no_levels,
+        "e" * 64,
+    )
+    result = evaluate_h2_overlap_with_tolerance(
+        (h2,), (matching, conflicting), timestamp_tolerance=timedelta(seconds=1)
+    )
+    assert result.status == H2_OVERLAP_FAILED
+    assert result.conflicts == (h2.example_id,)
 
 
 def test_synthetic_snapshots_prove_code_pipeline_but_not_real_h2_readiness() -> None:
