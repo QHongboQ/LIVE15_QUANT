@@ -29,6 +29,15 @@ so no sequence model was trained and Path training remains locked. H2 raw ticks 
 All statuses are readiness decisions, not profitability or promotion decisions. Dataset v2
 holdout remains `UNREVEALED_FROZEN` and is not an allowed source.
 
+## H2-TRAIN-001 materialization boundary
+
+`H2-TRAIN-001` is `PARTIAL`. The offline typed snapshot materializer, event-local snapshot
+sequence builder, H0/H2 conflict-quarantine comparison, and family-specific MLPLOB/DeepLOB/TLOB
+preflight capability fields are implemented. This is `CODE_PIPELINE_READY`, not real H2 data
+readiness: no real snapshot has passed H0 overlap validation, and delta/tick remains
+`H2_DELTA_SEQUENCE_UNAVAILABLE`. Snapshot, delta, snapshot-sequence, delta-sequence, and
+microstructure-training-ready days remain separate in `CanonicalEvidenceSnapshot`.
+
 ## DATA-READINESS-001 canonical gate
 
 Future readiness must start from `CanonicalEvidenceSnapshot`; the legacy scalar evidence helper is

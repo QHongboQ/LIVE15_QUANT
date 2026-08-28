@@ -1,0 +1,28 @@
+{
+  "task_id": "H2-TRAIN-001",
+  "status": "PARTIAL",
+  "scope": "offline development-only H2 L2 materialization",
+  "pipeline": [
+    {"boundary": "DepthFeed API -> typed historical records", "status": "IMPLEMENTED"},
+    {"boundary": "HistoricalL2Snapshot -> H2SnapshotEvidence", "status": "IMPLEMENTED"},
+    {"boundary": "H2SnapshotEvidence -> MaterializedL2Snapshot", "status": "IMPLEMENTED"},
+    {"boundary": "materialized snapshot -> event-local sequence", "status": "IMPLEMENTED"},
+    {"boundary": "H2 vs equivalent H0 overlap", "status": "IMPLEMENTED_BUT_NO_REAL_DATA"},
+    {"boundary": "H2 summary -> CanonicalEvidenceSnapshot", "status": "IMPLEMENTED"},
+    {"boundary": "canonical evidence -> MLPLOB/DeepLOB/TLOB preflight", "status": "IMPLEMENTED"}
+  ],
+  "code_pipeline_status": "CODE_PIPELINE_READY",
+  "real_h2_data_status": "REAL_H2_DATA_NOT_READY",
+  "provider_capabilities": {
+    "snapshot": "BLOCKED_NO_ACCEPTED_PAYLOAD",
+    "delta_tick": "H2_DELTA_SEQUENCE_UNAVAILABLE",
+    "overlap": "H2_OVERLAP_PARTIAL"
+  },
+  "prohibitions_preserved": {
+    "dataset_v1_v2_current_training": false,
+    "frozen_holdout_access": false,
+    "model_training": false,
+    "model_promotion": false,
+    "production_write": false
+  }
+}

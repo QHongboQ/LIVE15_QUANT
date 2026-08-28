@@ -216,3 +216,27 @@ def test_training_preflight_returns_provenance_aware_contract() -> None:
     }
     with pytest.raises(TypeError, match="CanonicalEvidenceSnapshot"):
         training_preflight({"h0_path_days": 2}, model_family="path_expert")  # type: ignore[arg-type]
+
+
+def test_h2_snapshot_sequence_and_delta_capabilities_remain_separate() -> None:
+    record = _record("h2", "H2_DEPTHFEED_RECORDED_L2", days=2, snapshot_days=2)
+    record = replace(
+        record,
+        microstructure_availability={
+            "snapshot": {"available": True, "days": 2},
+            "delta": {"available": False, "days": 0},
+            "snapshot_sequence": {"available": True, "days": 2},
+            "delta_sequence": {"available": False, "days": 0},
+            "training_ready": {"available": True, "days": 2},
+        },
+    )
+    snapshot = build_canonical_evidence_snapshot(
+        experiment_id="h2-capabilities", experiment_cutoff=CUTOFF, records=(record,)
+    )
+    days = snapshot.readiness_days()
+    assert days["h2_snapshot_sequence_days"] == 2
+    assert days["h2_delta_sequence_days"] == 0
+    assert training_preflight(snapshot, model_family="MLPLOB").status is PreflightStatus.READY
+    assert training_preflight(snapshot, model_family="TLOB").reasons == (
+        "H2_DELTA_SEQUENCE_UNAVAILABLE",
+    )
