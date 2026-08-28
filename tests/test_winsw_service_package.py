@@ -36,7 +36,7 @@ def test_service_xml_is_direct_python_with_bounded_failure_policy() -> None:
     values = {child.tag: (child.text or "") for child in service}
     assert values["id"] == "LIVE15ControlCenter"
     assert values["executable"].endswith(".venv\\Scripts\\python.exe")
-    assert values["arguments"] == "-m live15_quant.control_center"
+    assert values["arguments"].endswith("bootstrap\\release_runner.py --component control-center")
     env = {node.attrib["name"]: node.attrib["value"] for node in service.findall("env")}
     assert env == {
         "PYTHONUNBUFFERED": "1",
@@ -67,7 +67,9 @@ def test_recorder_and_supervisor_are_independent_automatic_winsw_services() -> N
     assert recorder_values["id"] == "LIVE15Recorder"
     assert recorder_values["startmode"] == "Automatic"
     assert supervisor_values["id"] == "LIVE15RuntimeSupervisor"
-    assert supervisor_values["arguments"] == "-m live15_quant.runtime_supervisor"
+    assert supervisor_values["arguments"].endswith(
+        "bootstrap\\release_runner.py --component runtime-supervisor"
+    )
     assert supervisor_values["startmode"] == "Automatic"
     assert [node.attrib["action"] for node in supervisor.findall("onfailure")] == [
         "restart",

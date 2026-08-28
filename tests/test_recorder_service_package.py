@@ -17,7 +17,7 @@ def test_recorder_service_uses_direct_authoritative_entrypoint() -> None:
     assert values["id"] == "LIVE15Recorder"
     assert values["name"] == "LIVE15 Recorder"
     assert values["executable"].endswith(".venv\\Scripts\\python.exe")
-    assert values["arguments"] == '-c "from live15_quant.cli import recorder_main; recorder_main()"'
+    assert values["arguments"].endswith("bootstrap\\release_runner.py --component recorder")
     assert "managed_recorder" not in values["arguments"]
     assert "RecorderProcessController" not in values["arguments"]
     assert values["workingdirectory"] == r"%BASE%\..\.."
