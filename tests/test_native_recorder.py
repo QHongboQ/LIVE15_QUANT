@@ -15,6 +15,7 @@ import requests
 import live15_quant.cli as cli
 from live15_quant.config import Settings
 from live15_quant.gaps import DataGap, GapReason, GapSource, effective_data_gaps
+from live15_quant.kalshi_gateway.canonical_ws import CanonicalEventType
 from live15_quant.kalshi_lifecycle import (
     KalshiDiscovery,
     KalshiLifecycle,
@@ -33,6 +34,7 @@ from live15_quant.native_recorder import (
     PythFeedAvailability,
     PythWorkerUnhealthyError,
     _aggregate_current_health,
+    _BoundedEventRate,
     _PythFeedCircuitBreaker,
 )
 from live15_quant.providers.kalshi import KalshiPublicApiError, KalshiTargetUnavailableError
@@ -98,6 +100,27 @@ class OneTickStream:
         if self.emitted is not None:
             self.emitted.set()
         await asyncio.sleep(60)
+
+
+def test_bounded_event_rate_uses_only_a_bounded_completed_window() -> None:
+    rate = _BoundedEventRate(window_seconds=60.0)
+
+    rate.record(10, observed_monotonic=100.0)
+    assert rate.events_per_second(observed_monotonic=100.0) is None
+
+    rate.record(20, observed_monotonic=110.0)
+    assert rate.events_per_second(observed_monotonic=110.0) == pytest.approx(2.0)
+    assert rate.observation_window_seconds(observed_monotonic=110.0) == 10.0
+
+    rate.record(60, observed_monotonic=180.0)
+    assert rate.events_per_second(observed_monotonic=180.0) == pytest.approx(60.0 / 70.0)
+    assert rate.observation_window_seconds(observed_monotonic=180.0) == 70.0
+
+    slow_archive = _BoundedEventRate(window_seconds=60.0)
+    slow_archive.record(0, observed_monotonic=0.0)
+    slow_archive.record(600, observed_monotonic=120.0)
+    assert slow_archive.events_per_second(observed_monotonic=120.0) == 5.0
+    assert slow_archive.observation_window_seconds(observed_monotonic=120.0) == 120.0
 
 
 class BufferedCoinbaseStream:
@@ -1670,6 +1693,8 @@ async def test_archive_failure_isolated_from_core_recorder(
         await asyncio.wait_for(recorder._archive_ws_retention(), 1)
         health = recorder.health()
         assert health.source_failures["ws_archive"] == type(failure).__name__
+        assert health.ws_archive_metrics["archive_throughput_events_per_second"] is None
+        assert health.ws_archive_metrics["archive_throughput_observation_window_seconds"] is None
         assert health.fatal_task is None
         assert health.fatal_error_type is None
 
@@ -1700,6 +1725,7 @@ async def test_adaptive_retention_fail_safe_requests_managed_pause(tmp_path, mon
                 backlog_events=0,
                 events_per_second=0.0,
                 elapsed_seconds=0.0,
+                processed_events=0,
             ),
         )
         monkeypatch.setattr(
@@ -1848,6 +1874,19 @@ def test_sdk_durable_commit_advances_existing_persistence_health_key(tmp_path) -
         # matters to Recorder health progress.
         recorder._on_sdk_ws_committed((SimpleNamespace(authoritative=False, book=None),))
         assert recorder._health.worker_progress["kalshi_ws_persistence"] == NOW
+
+        samples = iter((100.0, 110.0))
+        recorder._monotonic = lambda: next(samples)
+        raw_delta = SimpleNamespace(
+            canonical=SimpleNamespace(event_type=CanonicalEventType.DELTA),
+            authoritative=False,
+            book=None,
+        )
+        recorder._on_sdk_ws_committed((raw_delta,))
+        recorder._on_sdk_ws_committed((raw_delta,))
+        assert recorder._committed_ws_ingress_rate.events_per_second(
+            observed_monotonic=110.0
+        ) == pytest.approx(0.1)
 
 
 def test_archive_retention_waits_for_current_ws_books_to_synchronize(tmp_path) -> None:

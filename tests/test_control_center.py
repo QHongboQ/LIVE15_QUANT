@@ -960,7 +960,11 @@ def test_archive_projection_exposes_operational_and_compression_facts(tmp_path: 
             "archive_poll_mode": "CATCH_UP",
             "archive_next_poll_seconds": 2.0,
             "archive_backlog_events": 10_000,
+            "input_ws_events_per_second": 3_000.0,
+            "input_ws_observation_window_seconds": 60.0,
             "archive_throughput_events_per_second": 4_500.0,
+            "archive_throughput_observation_window_seconds": 60.0,
+            "archive_rate_observed_at": NOW.isoformat(),
             "verified": 36_051,
             "failed": 0,
             "waiting_for_replay_baseline": 0,
@@ -988,6 +992,10 @@ def test_archive_projection_exposes_operational_and_compression_facts(tmp_path: 
     assert archive.purge_eligible_chunks == 1_224
     assert archive.total_purged_events == 265_586_658
     assert archive.last_purge_deleted_events == 10_000
+    assert archive.input_ws_events_per_second == 3_000.0
+    assert archive.input_ws_observation_window_seconds == 60.0
+    assert archive.throughput_observation_window_seconds == 60.0
+    assert archive.rate_observed_at == NOW
 
 
 def test_archive_catch_up_status_requires_rate_evidence_and_uses_bounded_math() -> None:
@@ -1000,6 +1008,8 @@ def test_archive_catch_up_status_requires_rate_evidence_and_uses_bounded_math() 
             "archive_backlog_events": 100,
             "archive_throughput_events_per_second": 15,
             "input_ws_events_per_second": 10,
+            "input_ws_observation_window_seconds": 60,
+            "archive_throughput_observation_window_seconds": 60,
         }
     )
     falling_behind = ControlCenterService._ws_archive_health(
@@ -1008,6 +1018,18 @@ def test_archive_catch_up_status_requires_rate_evidence_and_uses_bounded_math() 
             "archive_backlog_events": 100,
             "archive_throughput_events_per_second": 5,
             "input_ws_events_per_second": 10,
+            "input_ws_observation_window_seconds": 60,
+            "archive_throughput_observation_window_seconds": 60,
+        }
+    )
+    short_window = ControlCenterService._ws_archive_health(
+        {
+            "enabled": True,
+            "archive_backlog_events": 100,
+            "archive_throughput_events_per_second": 15,
+            "input_ws_events_per_second": 10,
+            "input_ws_observation_window_seconds": 59.9,
+            "archive_throughput_observation_window_seconds": 60,
         }
     )
 
@@ -1017,6 +1039,34 @@ def test_archive_catch_up_status_requires_rate_evidence_and_uses_bounded_math() 
     assert catching_up.archive_backlog_slope_events_per_second == 5
     assert catching_up.archive_catch_up_eta_seconds == 20
     assert falling_behind.archive_catch_up_status == "FALLING_BEHIND"
+    assert short_window.archive_catch_up_status == "UNKNOWN"
+
+
+def test_archive_projection_fails_closed_when_rate_evidence_is_stale(tmp_path: Path) -> None:
+    configured = settings(tmp_path, ui_heartbeat_stale_seconds=30)
+    write_health(
+        configured.recorder_health_path,
+        NOW,
+        ws_archive={
+            "enabled": True,
+            "archive_backlog_events": 100,
+            "archive_throughput_events_per_second": 15,
+            "archive_throughput_observation_window_seconds": 60,
+            "input_ws_events_per_second": 10,
+            "input_ws_observation_window_seconds": 60,
+            "archive_rate_observed_at": (NOW - timedelta(seconds=31)).isoformat(),
+        },
+    )
+
+    archive = ControlCenterService(configured, clock=lambda: NOW).archive()
+    health = ControlCenterService(configured, clock=lambda: NOW).health()
+
+    assert archive.throughput_events_per_second is None
+    assert archive.throughput_observation_window_seconds is None
+    assert archive.catch_up_status == "UNKNOWN"
+    assert health.ws_archive.archive_throughput_events_per_second is None
+    assert health.ws_archive.archive_catch_up_status == "UNKNOWN"
+    assert any("stale" in note for note in archive.notes)
 
 
 def test_archive_and_storage_missing_facts_remain_na_and_reusable_is_not_reclaimed(
@@ -1357,6 +1407,9 @@ async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
         "Adaptive cadence",
         "Poll Mode",
         "Next poll",
+        "Input rate window",
+        "Archive rate window",
+        "Rate observed",
         "Compression savings",
         "SQLite reusable",
         "Physical disk reclaimed",

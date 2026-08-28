@@ -40,6 +40,7 @@ from live15_quant.research_data_authority import ResearchDataAuthority
 from live15_quant.runtime_status import RuntimeStatusError, read_json
 
 _INTENTIONAL_AUXILIARY_STATUSES = frozenset({"ON_DEMAND", "PAUSED_BY_DESIGN"})
+_CATCH_UP_MINIMUM_OBSERVATION_SECONDS = 60.0
 
 
 class ControlCenterService:
@@ -238,7 +239,11 @@ class ControlCenterService:
                 kalshi_rest_fallback_status=str(
                     raw.get("kalshi_rest_fallback_status", "unavailable")
                 ),
-                ws_archive=self._ws_archive_health(raw.get("ws_archive")),
+                ws_archive=self._ws_archive_health(
+                    raw.get("ws_archive"),
+                    checked_at=checked_at,
+                    maximum_rate_age_seconds=self.settings.ui_heartbeat_stale_seconds,
+                ),
             )
             return self._apply_managed_state(response)
         except FileNotFoundError:
@@ -336,12 +341,30 @@ class ControlCenterService:
     def archive(self) -> ArchiveResponse:
         health = self.health()
         archive = health.ws_archive
+        checked_at = self._clock()
+        rate_evidence_fresh = (
+            archive.archive_rate_observed_at is not None
+            and 0
+            <= (checked_at - archive.archive_rate_observed_at).total_seconds()
+            <= self.settings.ui_heartbeat_stale_seconds
+        )
+        if not rate_evidence_fresh:
+            archive = archive.model_copy(
+                update={
+                    "archive_throughput_events_per_second": None,
+                    "archive_throughput_observation_window_seconds": None,
+                    "archive_catch_up_ratio": None,
+                    "archive_backlog_slope_events_per_second": None,
+                    "archive_catch_up_eta_seconds": None,
+                    "archive_catch_up_status": "UNKNOWN",
+                }
+            )
         state = "disabled" if not archive.enabled else "healthy"
         if archive.failed or archive.quarantined:
             state = "attention"
         compressed_saved, compression_percent = self._compression_savings(archive)
         return ArchiveResponse(
-            generated_at=self._clock(),
+            generated_at=checked_at,
             state=state,
             enabled=archive.enabled,
             poll_mode=archive.archive_poll_mode,
@@ -355,6 +378,11 @@ class ControlCenterService:
             deferred_for_ws_backpressure=archive.deferred_for_ws_backpressure,
             throughput_events_per_second=archive.archive_throughput_events_per_second,
             input_ws_events_per_second=archive.input_ws_events_per_second,
+            input_ws_observation_window_seconds=archive.input_ws_observation_window_seconds,
+            throughput_observation_window_seconds=(
+                archive.archive_throughput_observation_window_seconds
+            ),
+            rate_observed_at=archive.archive_rate_observed_at,
             catch_up_ratio=archive.archive_catch_up_ratio,
             backlog_slope_events_per_second=archive.archive_backlog_slope_events_per_second,
             catch_up_eta_seconds=archive.archive_catch_up_eta_seconds,
@@ -373,7 +401,14 @@ class ControlCenterService:
             last_purge_deleted_events=archive.last_purge_deleted_events,
             last_purge_duration_seconds=archive.last_purge_transaction_seconds,
             last_purge_reusable_bytes=archive.last_purge_reusable_bytes,
-            notes=["Purge eligibility is a dry-run projection; destructive actions are absent."],
+            notes=(
+                ["Purge eligibility is a dry-run projection; destructive actions are absent."]
+                if rate_evidence_fresh
+                else [
+                    "Purge eligibility is a dry-run projection; destructive actions are absent.",
+                    "Catch-up rate evidence is stale or unavailable; status fails closed.",
+                ]
+            ),
         )
 
     def storage(self) -> StorageResponse:
@@ -736,7 +771,12 @@ class ControlCenterService:
         return result
 
     @staticmethod
-    def _ws_archive_health(value: object) -> WsArchiveHealth:
+    def _ws_archive_health(
+        value: object,
+        *,
+        checked_at: datetime | None = None,
+        maximum_rate_age_seconds: float | None = None,
+    ) -> WsArchiveHealth:
         """Project an evolving recorder heartbeat onto the stable public API schema.
 
         Recorder-internal archive/adaptive metrics intentionally evolve faster than
@@ -751,10 +791,42 @@ class ControlCenterService:
         archive = WsArchiveHealth.model_validate(
             {key: item for key, item in value.items() if key in allowed}
         )
+        if checked_at is not None and maximum_rate_age_seconds is not None:
+            rate_observed_at = archive.archive_rate_observed_at
+            rate_age_seconds = (
+                None
+                if rate_observed_at is None
+                else (checked_at - rate_observed_at).total_seconds()
+            )
+            if (
+                rate_age_seconds is None
+                or rate_age_seconds < 0
+                or rate_age_seconds > maximum_rate_age_seconds
+            ):
+                return archive.model_copy(
+                    update={
+                        "archive_throughput_events_per_second": None,
+                        "archive_throughput_observation_window_seconds": None,
+                        "archive_catch_up_ratio": None,
+                        "archive_backlog_slope_events_per_second": None,
+                        "archive_catch_up_eta_seconds": None,
+                        "archive_catch_up_status": "UNKNOWN",
+                    }
+                )
         incoming = archive.input_ws_events_per_second
         throughput = archive.archive_throughput_events_per_second
         backlog = archive.archive_backlog_events
-        if incoming is None or incoming <= 0 or throughput < 0:
+        if (
+            incoming is None
+            or incoming <= 0
+            or throughput is None
+            or throughput < 0
+            or archive.input_ws_observation_window_seconds is None
+            or archive.archive_throughput_observation_window_seconds is None
+            or archive.input_ws_observation_window_seconds < _CATCH_UP_MINIMUM_OBSERVATION_SECONDS
+            or archive.archive_throughput_observation_window_seconds
+            < _CATCH_UP_MINIMUM_OBSERVATION_SECONDS
+        ):
             return archive
         ratio = throughput / incoming
         slope = throughput - incoming

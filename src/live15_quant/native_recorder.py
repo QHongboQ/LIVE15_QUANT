@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -38,6 +39,7 @@ from live15_quant.gaps import (
     configured_streams,
     timedelta_seconds,
 )
+from live15_quant.kalshi_gateway.canonical_ws import CanonicalEventType
 from live15_quant.kalshi_gateway.production_recorder_host import SdkProductionRecorderHost
 from live15_quant.kalshi_gateway.recorder_provider import RecorderMarketDataEvent
 from live15_quant.kalshi_lifecycle import (
@@ -132,6 +134,49 @@ from live15_quant.ws_retention import (
 logger = logging.getLogger(__name__)
 
 _LIVE_WS_PROJECTION_DEPTH = 16
+
+
+class _BoundedEventRate:
+    """Conservative bounded rate from timestamped, completed event batches.
+
+    The first batch establishes a baseline rather than contributing an
+    unbounded-startup rate.  Samples are retained to the configured window,
+    but a single slow completed interval reports its full elapsed duration
+    rather than truncating the denominator.  Keeping one preceding baseline
+    deliberately undercounts a boundary batch after rotation; a proof metric
+    must not claim catch-up from an optimistic ingress estimate.
+    """
+
+    def __init__(self, *, window_seconds: float = 60.0) -> None:
+        if window_seconds <= 0:
+            raise ValueError("bounded event-rate window must be positive")
+        self.window_seconds = window_seconds
+        self._samples: deque[tuple[float, int]] = deque()
+
+    def record(self, completed_events: int, *, observed_monotonic: float) -> None:
+        if completed_events < 0:
+            return
+        if self._samples and observed_monotonic < self._samples[-1][0]:
+            return
+        self._samples.append((observed_monotonic, completed_events))
+
+    def events_per_second(self, *, observed_monotonic: float) -> float | None:
+        while (
+            len(self._samples) > 1
+            and observed_monotonic - self._samples[1][0] >= self.window_seconds
+        ):
+            self._samples.popleft()
+        if len(self._samples) < 2:
+            return None
+        elapsed = observed_monotonic - self._samples[0][0]
+        if elapsed <= 0:
+            return None
+        return sum(count for _, count in tuple(self._samples)[1:]) / elapsed
+
+    def observation_window_seconds(self, *, observed_monotonic: float) -> float | None:
+        if self.events_per_second(observed_monotonic=observed_monotonic) is None:
+            return None
+        return observed_monotonic - self._samples[0][0]
 
 
 class PythWorkerUnhealthyError(RuntimeError):
@@ -503,6 +548,8 @@ class KalshiNativeRecorder:
         self._store = store
         self._now = now or (lambda: datetime.now(UTC))
         self._monotonic = monotonic
+        self._committed_ws_ingress_rate = _BoundedEventRate()
+        self._archive_effective_rate = _BoundedEventRate()
         self._startup_phase_observer = startup_phase_observer
         self._controlled_pause = controlled_pause
         self._startup_ws_synchronized_reported = False
@@ -2266,6 +2313,7 @@ class KalshiNativeRecorder:
                 self._health.row_counts.get("kalshi_ws_orderbook_events", 0) + inserted
             )
             self._health.written_records += inserted
+            self._committed_ws_ingress_rate.record(inserted, observed_monotonic=self._monotonic())
         if latency is not None:
             self._health.kalshi_ws_receive_persist_latency_ms = str(latency)
 
@@ -2436,6 +2484,16 @@ class KalshiNativeRecorder:
         # failed/rolled-back SDK batches never reach this callback.
         if events:
             self._worker_advanced("kalshi_ws_persistence")
+            raw_events = sum(
+                1
+                for event in events
+                if getattr(getattr(event, "canonical", None), "event_type", None)
+                in {CanonicalEventType.SNAPSHOT, CanonicalEventType.DELTA}
+            )
+            if raw_events:
+                self._committed_ws_ingress_rate.record(
+                    raw_events, observed_monotonic=self._monotonic()
+                )
         for event in events:
             book = event.book
             if not event.authoritative or book is None:
@@ -2831,12 +2889,14 @@ class KalshiNativeRecorder:
             observed = self._utc_now()
             try:
                 if self._ws_archive_backpressure_active():
+                    self._archive_effective_rate.record(0, observed_monotonic=self._monotonic())
                     poll_mode, poll_seconds = self._archive_poll_schedule(
                         backlog_events=0, backpressure=True
                     )
                     self._health.ws_archive_metrics = {
                         **self._health.ws_archive_metrics,
                         "enabled": True,
+                        **self._ws_archive_rate_metrics(observed),
                         "deferred_for_ws_backpressure": True,
                         "archive_poll_mode": poll_mode,
                         "archive_next_poll_seconds": poll_seconds,
@@ -2846,7 +2906,12 @@ class KalshiNativeRecorder:
                     if await self._wait(poll_seconds):
                         return
                     continue
+                self._archive_effective_rate.record(0, observed_monotonic=self._monotonic())
                 result = await asyncio.to_thread(self._archive_service.run_once, now=observed)
+                self._archive_effective_rate.record(
+                    result.processed_events,
+                    observed_monotonic=self._monotonic(),
+                )
                 eligibility = None
                 if result.backlog_events <= 0:
                     eligibility = await asyncio.to_thread(
@@ -2864,7 +2929,7 @@ class KalshiNativeRecorder:
                         "hot_retention_seconds": self._settings.ws_archive_hot_retention_seconds,
                         "archive_backlog_events": result.backlog_events,
                         "archive_backlog_capped": result.backlog_events > 0,
-                        "archive_throughput_events_per_second": result.events_per_second,
+                        **self._ws_archive_rate_metrics(observed),
                         "archive_elapsed_seconds": result.elapsed_seconds,
                         "deferred_for_ws_backpressure": True,
                         "archive_poll_mode": poll_mode,
@@ -2991,7 +3056,7 @@ class KalshiNativeRecorder:
                     ),
                     "archive_backlog_events": result.backlog_events,
                     "archive_backlog_capped": result.backlog_events > 0,
-                    "archive_throughput_events_per_second": result.events_per_second,
+                    **self._ws_archive_rate_metrics(observed),
                     "archive_elapsed_seconds": result.elapsed_seconds,
                     "archive_lag_seconds": (
                         None
@@ -3068,6 +3133,17 @@ class KalshiNativeRecorder:
                 self._source_ok(key)
                 self._worker_advanced(key, observed)
             except (OSError, sqlite3.OperationalError, WsRetentionError) as error:
+                self._archive_effective_rate.record(0, observed_monotonic=self._monotonic())
+                self._health.ws_archive_metrics = {
+                    **self._health.ws_archive_metrics,
+                    "enabled": True,
+                    **self._ws_archive_rate_metrics(observed),
+                    # A failed archive attempt must not retain a prior favorable
+                    # rate as current proof.  Ingress remains observable, but
+                    # catch-up classification fails closed until a fresh window.
+                    "archive_throughput_events_per_second": None,
+                    "archive_throughput_observation_window_seconds": None,
+                }
                 self._source_failed(key, error)
                 self._worker_advanced(key, observed)
                 if await self._wait(self._retry_delay(key, 1.0)):
@@ -3085,6 +3161,34 @@ class KalshiNativeRecorder:
                 continue
             if await self._wait(poll_seconds):
                 return
+
+    def _ws_archive_rate_metrics(self, observed: datetime) -> dict[str, object]:
+        measured_monotonic = self._monotonic()
+        input_rate = self._committed_ws_ingress_rate.events_per_second(
+            observed_monotonic=measured_monotonic
+        )
+        archive_rate = self._archive_effective_rate.events_per_second(
+            observed_monotonic=measured_monotonic
+        )
+        return {
+            "input_ws_events_per_second": input_rate,
+            "input_ws_observation_window_seconds": (
+                None
+                if input_rate is None
+                else self._committed_ws_ingress_rate.observation_window_seconds(
+                    observed_monotonic=measured_monotonic
+                )
+            ),
+            "archive_throughput_events_per_second": archive_rate,
+            "archive_throughput_observation_window_seconds": (
+                None
+                if archive_rate is None
+                else self._archive_effective_rate.observation_window_seconds(
+                    observed_monotonic=measured_monotonic
+                )
+            ),
+            "archive_rate_observed_at": observed.isoformat(),
+        }
 
     def _archive_poll_schedule(
         self,
