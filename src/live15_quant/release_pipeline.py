@@ -35,6 +35,9 @@ BOOTSTRAP_MANIFEST = "bootstrap-manifest.json"
 PROHIBITED_TOP_LEVEL = frozenset(
     {"data", "runtime", "logs", ".secrets", "current", "rollback", ".venv", ".git", ".local-tools"}
 )
+# A legacy install can already contain the new control plane.  It is not part
+# of the historical application snapshot and must remain separately staged.
+LEGACY_CAPTURE_EXCLUDED_TOP_LEVEL = PROHIBITED_TOP_LEVEL | {BOOTSTRAP_DIRECTORY}
 
 
 class ReleaseError(RuntimeError):
@@ -235,7 +238,7 @@ def capture_legacy_unproven_release(
     ) as temporary_directory:
         staging_root = Path(temporary_directory) / "release"
         staged_app = staging_root / "app"
-        ignored = shutil.ignore_patterns(*PROHIBITED_TOP_LEVEL)
+        ignored = shutil.ignore_patterns(*LEGACY_CAPTURE_EXCLUDED_TOP_LEVEL)
         shutil.copytree(legacy_app_root, staged_app, ignore=ignored)
         files = _file_inventory(staged_app)
         artifact_hash = _manifest_artifact_hash(files)
@@ -381,7 +384,12 @@ def _resolve_service_base_path(value: str, service_config_path: Path) -> Path:
 def stage_bootstrap(
     *, release_root: Path, release_id: str, dry_run: bool = False
 ) -> ReleaseIdentity:
-    """Atomically stage the stable WinSW bootstrap from a verified release."""
+    """Atomically stage a verified stable WinSW bootstrap control plane.
+
+    The selected source release authenticates the runner bytes, but does not
+    become the active application identity.  This distinction is what permits
+    a first deployment to return to an immutable ``LEGACY_UNPROVEN`` app.
+    """
 
     release_root = release_root.resolve()
     identity = verify_package(release_root=release_root, release_id=release_id)
@@ -404,8 +412,9 @@ def stage_bootstrap(
     _write_json_atomically(
         receipt_path,
         {
-            "release_id": identity.release_id,
-            "manifest_sha256": identity.manifest_sha256,
+            "schema_version": 1,
+            "bootstrap_source_release_id": identity.release_id,
+            "bootstrap_source_manifest_sha256": identity.manifest_sha256,
             "runner_sha256": _sha256_file(destination),
         },
     )
@@ -413,19 +422,22 @@ def stage_bootstrap(
 
 
 def verify_bootstrap(*, release_root: Path) -> ReleaseIdentity:
-    """Prove the installed stable runner is byte-bound to the active release."""
+    """Prove the installed stable runner is byte-bound to its source release.
+
+    It intentionally does not inspect the active application pointer: rollback
+    may activate a legacy artifact that predates this control-plane runner.
+    """
 
     release_root = release_root.resolve()
-    identity = active_release(release_root=release_root)
-    if identity is None:
-        raise ReleaseError("no active release pointer")
     runner, receipt_path = _bootstrap_paths(release_root)
     receipt = _read_json(receipt_path)
-    if (
-        receipt.get("release_id") != identity.release_id
-        or receipt.get("manifest_sha256") != identity.manifest_sha256
-    ):
-        raise ReleaseError("installed bootstrap does not bind to active release")
+    release_id = receipt.get("bootstrap_source_release_id")
+    manifest_sha256 = receipt.get("bootstrap_source_manifest_sha256")
+    if not isinstance(release_id, str) or not isinstance(manifest_sha256, str):
+        raise ReleaseError("installed bootstrap source identity is incomplete")
+    identity = verify_package(release_root=release_root, release_id=release_id)
+    if identity.manifest_sha256 != manifest_sha256:
+        raise ReleaseError("installed bootstrap source manifest mismatch")
     source = (
         _release_directory(release_root, identity.release_id) / "app" / "tools" / BOOTSTRAP_RUNNER
     )
@@ -463,7 +475,10 @@ def verify_runtime_provenance(
     component = component_by_service.get(service_name)
     if component is None or service_pid <= 0 or runner_pid <= 0:
         raise ReleaseError("incomplete runtime service observation")
-    identity = verify_bootstrap(release_root=release_root)
+    bootstrap_identity = verify_bootstrap(release_root=release_root)
+    identity = active_release(release_root=release_root)
+    if identity is None:
+        raise ReleaseError("no active release pointer")
     if identity.git_commit_sha != expected_git_sha:
         raise ReleaseError("active release SHA does not match requested deployment SHA")
     try:
@@ -494,6 +509,9 @@ def verify_runtime_provenance(
         "deployment_release_id": identity.release_id,
         "deployment_git_sha": identity.git_commit_sha,
         "deployment_manifest_sha256": identity.manifest_sha256,
+        "bootstrap_source_release_id": bootstrap_identity.release_id,
+        "bootstrap_source_manifest_sha256": bootstrap_identity.manifest_sha256,
+        "bootstrap_runner_sha256": _sha256_file(_bootstrap_paths(release_root.resolve())[0]),
     }
     if any(receipt.get(key) != value for key, value in required.items()):
         raise ReleaseError("runner receipt does not bind to active service and release")

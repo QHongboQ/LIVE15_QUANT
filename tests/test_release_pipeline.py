@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import importlib
 import json
+import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,6 +26,8 @@ from live15_quant.release_pipeline import (
     verify_runtime_provenance,
 )
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def _git(repository: Path, *args: str) -> str:
     return subprocess.run(
@@ -39,7 +46,7 @@ def _repository(tmp_path: Path) -> tuple[Path, str]:
     (repository / "requirements.lock").write_text("example==1.0\n")
     (repository / "pyproject.toml").write_text("[build-system]\nrequires=[]\n")
     (repository / "tools").mkdir()
-    (repository / "tools/release_runner.py").write_text("# stable bootstrap\n")
+    shutil.copyfile(ROOT / "tools/release_runner.py", repository / "tools/release_runner.py")
     _git(repository, "add", ".")
     _git(repository, "commit", "-m", "initial")
     return repository, _git(repository, "rev-parse", "HEAD")
@@ -152,6 +159,7 @@ def test_runtime_provenance_requires_active_release_paths(tmp_path: Path) -> Non
     activate_release(release_root=release_root, release_id=identity.release_id)
     stage_bootstrap(release_root=release_root, release_id=identity.release_id)
     assert verify_bootstrap(release_root=release_root) == identity
+    bootstrap_runner = release_root / "bootstrap/release_runner.py"
     app = release_root / "releases" / identity.release_id / "app"
     interpreter = tmp_path / "python.exe"
     interpreter.write_text("placeholder")
@@ -169,6 +177,11 @@ def test_runtime_provenance_requires_active_release_paths(tmp_path: Path) -> Non
                 "deployment_release_id": identity.release_id,
                 "deployment_git_sha": identity.git_commit_sha,
                 "deployment_manifest_sha256": identity.manifest_sha256,
+                "bootstrap_source_release_id": identity.release_id,
+                "bootstrap_source_manifest_sha256": identity.manifest_sha256,
+                "bootstrap_runner_sha256": hashlib.sha256(
+                    bootstrap_runner.read_bytes()
+                ).hexdigest(),
             }
         )
     )
@@ -246,6 +259,9 @@ def test_legacy_rollback_capture_never_invents_a_git_sha_or_copies_mutable_data(
     (legacy / "data/live15.sqlite3").write_text("mutable")
     (legacy / ".secrets").mkdir()
     (legacy / ".secrets/key.txt").write_text("secret")
+    (legacy / "bootstrap").mkdir()
+    (legacy / "bootstrap/release_runner.py").write_text("control plane")
+    (legacy / "bootstrap/bootstrap-manifest.json").write_text("{}")
     release_root = tmp_path / "releases"
     identity = capture_legacy_unproven_release(
         legacy_app_root=legacy,
@@ -260,3 +276,125 @@ def test_legacy_rollback_capture_never_invents_a_git_sha_or_copies_mutable_data(
     app = release_root / "releases" / identity.release_id / "app"
     assert not (app / "data").exists()
     assert not (app / ".secrets").exists()
+    assert not (app / "bootstrap").exists()
+
+
+def test_first_deploy_can_rollback_to_immutable_legacy_without_a_runner(tmp_path: Path) -> None:
+    """The stable bootstrap is control-plane content, not legacy app content."""
+
+    legacy = tmp_path / "legacy"
+    (legacy / "src/live15_quant").mkdir(parents=True)
+    (legacy / "src/live15_quant/__init__.py").write_text("VALUE = 'legacy'\n")
+    (legacy / "src/live15_quant/cli.py").write_text("def recorder_main():\n    return None\n")
+    (legacy / "requirements.lock").write_text("example==1.0\n")
+    release_root = tmp_path / "production"
+    legacy_identity = capture_legacy_unproven_release(
+        legacy_app_root=legacy,
+        release_root=release_root,
+        created_at="2026-08-28T00:00:00+00:00",
+    )
+    legacy_app = release_root / "releases" / legacy_identity.release_id / "app"
+    legacy_inventory_before = sorted(
+        path.relative_to(legacy_app).as_posix() for path in legacy_app.rglob("*") if path.is_file()
+    )
+    assert not (legacy_app / "tools/release_runner.py").exists()
+
+    repository, commit = _repository(tmp_path)
+    modern_identity = build_release(
+        repository=repository,
+        git_sha=commit,
+        release_root=release_root,
+        created_at="2026-08-28T00:00:00+00:00",
+    )
+    assert activate_release(release_root=release_root, release_id=legacy_identity.release_id)
+    stage_bootstrap(release_root=release_root, release_id=modern_identity.release_id)
+    assert activate_release(release_root=release_root, release_id=modern_identity.release_id)
+    assert rollback_release(release_root=release_root) == legacy_identity
+    assert verify_bootstrap(release_root=release_root)
+    assert active_release(release_root=release_root) == legacy_identity
+    assert legacy_identity.git_commit_sha == "UNPROVEN"
+    assert (
+        sorted(
+            path.relative_to(legacy_app).as_posix()
+            for path in legacy_app.rglob("*")
+            if path.is_file()
+        )
+        == legacy_inventory_before
+    )
+
+    parent_cwd = Path.cwd()
+    parent_sys_path = list(sys.path)
+    parent_dont_write_bytecode = sys.dont_write_bytecode
+    parent_modules = {
+        name: importlib.import_module(name)
+        for name in (
+            "live15_quant.models",
+            "live15_quant.ws_retention",
+            "live15_quant.research_data_authority",
+            "live15_quant.runtime_supervisor",
+        )
+    }
+    child_environment = {
+        key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR") if key in os.environ
+    }
+    child_environment.update(
+        {"TEMP": str(tmp_path), "TMP": str(tmp_path), "PYTHONIOENCODING": "utf-8"}
+    )
+    stable_runner = release_root / "bootstrap/release_runner.py"
+    subprocess.run(
+        [
+            sys.executable,
+            str(stable_runner),
+            "--component",
+            "recorder",
+            "--production-root",
+            str(release_root),
+        ],
+        check=True,
+        cwd=tmp_path,
+        env=child_environment,
+        capture_output=True,
+        text=True,
+    )
+    assert Path.cwd() == parent_cwd
+    assert sys.path == parent_sys_path
+    assert sys.dont_write_bytecode == parent_dont_write_bytecode
+    assert {name: importlib.import_module(name) for name in parent_modules} == parent_modules
+    legacy_receipt = json.loads(
+        (release_root / "runtime/release-runtime-recorder.json").read_text(encoding="utf-8")
+    )
+    assert legacy_receipt["deployment_git_sha"] == "UNPROVEN"
+    assert legacy_receipt["deployment_release_id"] == legacy_identity.release_id
+    assert legacy_receipt["bootstrap_source_release_id"] == modern_identity.release_id
+    assert legacy_receipt["bootstrap_runner_sha256"]
+
+    assert activate_release(release_root=release_root, release_id=modern_identity.release_id)
+    assert verify_bootstrap(release_root=release_root)
+
+
+def test_legacy_runner_subprocess_leaves_project_modules_importable() -> None:
+    for name in (
+        "live15_quant.models",
+        "live15_quant.ws_retention",
+        "live15_quant.research_data_authority",
+        "live15_quant.runtime_supervisor",
+    ):
+        assert importlib.import_module(name)
+
+
+def test_bootstrap_corruption_fails_closed_without_changing_active_application(
+    tmp_path: Path,
+) -> None:
+    repository, commit = _repository(tmp_path)
+    release_root = tmp_path / "production"
+    identity = build_release(repository=repository, git_sha=commit, release_root=release_root)
+    stage_bootstrap(release_root=release_root, release_id=identity.release_id)
+    activate_release(release_root=release_root, release_id=identity.release_id)
+    pointer_before = (release_root / ACTIVE_POINTER).read_text(encoding="utf-8")
+    (release_root / "bootstrap/release_runner.py").write_text("corrupt\n", encoding="utf-8")
+
+    with pytest.raises(ReleaseError, match="bootstrap runner hash mismatch"):
+        verify_bootstrap(release_root=release_root)
+
+    assert active_release(release_root=release_root) == identity
+    assert (release_root / ACTIVE_POINTER).read_text(encoding="utf-8") == pointer_before

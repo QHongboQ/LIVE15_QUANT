@@ -68,6 +68,44 @@ def _verify_payload(app: Path, manifest: dict[str, object]) -> None:
         raise ReleaseRunnerError("active release payload inventory mismatch")
 
 
+def _bootstrap_identity(production_root: Path) -> dict[str, object]:
+    """Verify the stable control-plane runner independently of the app pointer."""
+
+    runner = Path(__file__).resolve()
+    expected_runner = (production_root / "bootstrap" / "release_runner.py").resolve()
+    if runner != expected_runner:
+        raise ReleaseRunnerError("runner is outside the stable bootstrap location")
+    receipt = _read_json(production_root / "bootstrap" / "bootstrap-manifest.json")
+    source_release_id = receipt.get("bootstrap_source_release_id")
+    source_manifest_sha256 = receipt.get("bootstrap_source_manifest_sha256")
+    if (
+        not isinstance(source_release_id, str)
+        or Path(source_release_id).name != source_release_id
+        or not isinstance(source_manifest_sha256, str)
+        or not isinstance(receipt.get("runner_sha256"), str)
+    ):
+        raise ReleaseRunnerError("stable bootstrap identity is incomplete")
+    required = {
+        "schema_version": 1,
+        "bootstrap_source_release_id": source_release_id,
+        "bootstrap_source_manifest_sha256": source_manifest_sha256,
+        "runner_sha256": _sha256(runner),
+    }
+    if any(receipt.get(key) != value for key, value in required.items()):
+        raise ReleaseRunnerError("stable bootstrap identity mismatch")
+    source = production_root / "releases" / source_release_id
+    manifest = source / "release-manifest.json"
+    source_runner = source / "app" / "tools" / "release_runner.py"
+    if (
+        not manifest.is_file()
+        or _sha256(manifest) != source_manifest_sha256
+        or not source_runner.is_file()
+        or _sha256(source_runner) != required["runner_sha256"]
+    ):
+        raise ReleaseRunnerError("stable bootstrap source verification failed")
+    return receipt
+
+
 def resolve_active_release(production_root: Path) -> tuple[Path, dict[str, object], str]:
     pointer = _read_json(production_root / "active-release.json")
     release_id = pointer.get("release_id")
@@ -98,6 +136,7 @@ def _write_runtime_receipt(
     app: Path,
     manifest: dict[str, object],
     manifest_hash: str,
+    bootstrap: dict[str, object],
 ) -> None:
     runtime = production_root / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
@@ -111,6 +150,9 @@ def _write_runtime_receipt(
         "deployment_release_id": manifest["release_id"],
         "deployment_git_sha": manifest["git_commit_sha"],
         "deployment_manifest_sha256": manifest_hash,
+        "bootstrap_source_release_id": bootstrap["bootstrap_source_release_id"],
+        "bootstrap_source_manifest_sha256": bootstrap["bootstrap_source_manifest_sha256"],
+        "bootstrap_runner_sha256": bootstrap["runner_sha256"],
     }
     target = runtime / f"release-runtime-{component}.json"
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
@@ -122,10 +164,14 @@ def run_component(component: str, production_root: Path | None = None) -> None:
     if component not in COMPONENTS:
         raise ReleaseRunnerError(f"unknown component: {component}")
     root = (production_root or Path(__file__).resolve().parents[1]).resolve()
+    bootstrap = _bootstrap_identity(root)
     app, manifest, manifest_hash = resolve_active_release(root)
     os.chdir(app)
+    # Release payloads are immutable inventories.  Application imports must
+    # not create ``__pycache__`` entries that would invalidate that inventory.
+    sys.dont_write_bytecode = True
     sys.path.insert(0, str(app / "src"))
-    _write_runtime_receipt(root, component, app, manifest, manifest_hash)
+    _write_runtime_receipt(root, component, app, manifest, manifest_hash, bootstrap)
     module_name, function_name = COMPONENTS[component]
     getattr(importlib.import_module(module_name), function_name)()
 
