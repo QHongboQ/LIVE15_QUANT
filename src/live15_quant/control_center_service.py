@@ -37,6 +37,8 @@ from live15_quant.recorder_control import RecorderProcessController, process_ali
 from live15_quant.research_data_authority import ResearchDataAuthority
 from live15_quant.runtime_status import RuntimeStatusError, read_json
 
+_INTENTIONAL_AUXILIARY_STATUSES = frozenset({"ON_DEMAND", "PAUSED_BY_DESIGN"})
+
 
 class ControlCenterService:
     """Expose bounded status projections without credentials or write operations."""
@@ -453,6 +455,17 @@ class ControlCenterService:
             return {}
         result: dict[str, RuntimeComponentResponse] = {}
         checked_at = self._clock().astimezone(UTC)
+        supervisor_heartbeat = self._optional_aware_datetime(supervisor.get("last_heartbeat"))
+        supervisor_age = (
+            max(0.0, (checked_at - supervisor_heartbeat).total_seconds())
+            if supervisor_heartbeat
+            else None
+        )
+        supervisor_current = (
+            supervisor.get("status") == "RUNNING"
+            and supervisor_age is not None
+            and supervisor_age <= self.settings.ui_heartbeat_stale_seconds
+        )
         for name, raw in raw_components.items():
             if not isinstance(name, str) or not isinstance(raw, dict):
                 continue
@@ -461,18 +474,31 @@ class ControlCenterService:
             heartbeat = self._optional_aware_datetime(raw.get("last_heartbeat"))
             age = max(0.0, (checked_at - heartbeat).total_seconds()) if heartbeat else None
             fresh = age is not None and age <= self.settings.ui_heartbeat_stale_seconds
-            # The legacy supervisor receipt is only a current-runtime source while its
-            # heartbeat is fresh.  A stale PID may be reused by an unrelated process, so
-            # fail closed instead of projecting historical RUNNING state as live truth.
-            effective_pid = pid if fresh else None
+            declared_status = str(raw.get("status", "UNKNOWN"))
+            # A current supervisor receipt is the authority for desired component state.
+            # Intentional auxiliaries are not expected to emit a current child heartbeat;
+            # their historic PID can never be projected as live. Every other component
+            # must still satisfy its own heartbeat freshness gate.
+            if not supervisor_current:
+                status = "STALE"
+                effective_pid = None
+                process_is_alive = False
+            elif declared_status in _INTENTIONAL_AUXILIARY_STATUSES:
+                status = declared_status
+                effective_pid = None
+                process_is_alive = False
+            else:
+                status = declared_status if fresh else "STALE"
+                effective_pid = pid if fresh else None
+                process_is_alive = fresh and pid is not None and process_alive(pid)
             result[name] = RuntimeComponentResponse(
-                status=str(raw.get("status", "UNKNOWN")) if fresh else "STALE",
+                status=status,
                 pid=effective_pid,
                 started_at=started,
                 last_heartbeat=heartbeat,
                 heartbeat_age_seconds=age,
                 last_error=self._optional_string(raw.get("last_error")),
-                process_alive=fresh and pid is not None and process_alive(pid),
+                process_alive=process_is_alive,
                 expected_mode=self._optional_string(raw.get("expected_mode")),
             )
         return result

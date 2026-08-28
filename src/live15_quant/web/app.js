@@ -148,6 +148,17 @@ function metric(label, value, detail = null) {
   return item;
 }
 
+function runtimeComponentMetric(name, component) {
+  const item = node("div", "metric");
+  append(
+    item,
+    node("span", "label", name.replaceAll("_", " ").toUpperCase()),
+    badge(component.status, stateLabel(component.status)),
+    node("span", "subvalue", `PID ${valueOrDash(component.pid)} · heartbeat ${age(component.heartbeat_age_seconds)}`),
+  );
+  return item;
+}
+
 function kv(label, value, status = null) {
   const item = node("div", "kv");
   item.append(node("span", "label", label));
@@ -756,7 +767,7 @@ function renderSystem() {
   root.append(sectionHead("Runtime components", "Supervisor-owned process and heartbeat truth"));
   const runtimeGrid = node("div", "metric-grid");
   if (!runtimeComponents.length) runtimeGrid.append(emptyState("Supervisor status unavailable", "Runtime components have not been adopted by the supervisor yet."));
-  runtimeComponents.forEach(([name, component]) => runtimeGrid.append(metric(name.replaceAll("_", " ").toUpperCase(), stateLabel(component.status), `PID ${valueOrDash(component.pid)} · heartbeat ${age(component.heartbeat_age_seconds)}`)));
+  runtimeComponents.forEach(([name, component]) => runtimeGrid.append(runtimeComponentMetric(name, component)));
   root.append(runtimeGrid, sectionHead("Per-asset freshness", "Quote and predictive underlying are independent roles"));
   const wrap = node("div", "table-wrap");
   const table = node("table");
