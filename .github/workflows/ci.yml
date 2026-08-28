@@ -2,19 +2,103 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  quality:
+  plan:
+    name: Plan validation
+    runs-on: windows-latest
+    outputs:
+      tier: ${{ steps.plan.outputs.tier }}
+      groups: ${{ steps.plan.outputs.groups }}
+      full_suite: ${{ steps.plan.outputs.full_suite }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: plan
+        name: Classify changed paths
+        shell: pwsh
+        run: |
+          $pathsFile = Join-Path $PWD '.ci-changed-paths'
+          $forceFull = $false
+          if ('${{ github.event_name }}' -eq 'pull_request') {
+            git diff --name-only 'origin/${{ github.base_ref }}...${{ github.sha }}' | Set-Content -LiteralPath $pathsFile -Encoding utf8
+          } elseif ('${{ github.event_name }}' -eq 'push' -and '${{ github.event.before }}' -notmatch '^0+$') {
+            git diff --name-only '${{ github.event.before }}' '${{ github.sha }}' | Set-Content -LiteralPath $pathsFile -Encoding utf8
+          } else {
+            Set-Content -LiteralPath $pathsFile -Value '' -Encoding utf8
+            $forceFull = $true
+          }
+          $env:PYTHONPATH = 'src'
+          $arguments = @('-m', 'live15_quant.ci_plan', '--event', '${{ github.event_name }}', '--ref', '${{ github.ref }}', '--changed-paths-file', $pathsFile, '--github-output', $env:GITHUB_OUTPUT)
+          if ($forceFull) { $arguments += '--force-full' }
+          & python @arguments
+
+  static:
+    name: Static checks
+    needs: plan
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install pinned static tooling
+        run: |
+          python -m pip install pip==26.2.1
+          python -m pip install ruff==0.16.3
+      - name: Lint
+        run: ruff check .
+      - name: Format check
+        run: ruff format --check .
+      - name: Diff integrity
+        run: git diff --check HEAD^ HEAD
+
+  governance:
+    name: Governance tests
+    needs: plan
+    if: ${{ needs.plan.outputs.full_suite != 'true' && contains(needs.plan.outputs.groups, 'governance') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install governance test tooling
+        run: |
+          python -m pip install pip==26.2.1
+          python -m pip install pytest==9.1.1 pytest-asyncio==1.4.0
+      - name: Project context tests
+        env:
+          PYTHONPATH: src
+        run: pytest -p no:cacheprovider tests/test_agent_context.py
+
+  control-center:
+    name: Control Center tests
+    needs: plan
+    if: ${{ needs.plan.outputs.full_suite != 'true' && contains(needs.plan.outputs.groups, 'control-center') }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
           cache: pip
           cache-dependency-path: requirements.lock
       - name: Install locked dependencies
@@ -23,11 +107,134 @@ jobs:
           python -m pip install -r requirements.lock
           python -m pip install --no-deps -e .
           python -m pip check
-      - name: Lint
-        run: ruff check .
-      - name: Format check
-        run: ruff format --check .
       - name: Import check
-        run: python -c "import live15_quant; import live15_quant.backfill; import live15_quant.control_center; import live15_quant.control_center_launcher; import live15_quant.control_center_models; import live15_quant.control_center_service; import live15_quant.control_center_store; import live15_quant.dataset; import live15_quant.execution; import live15_quant.feature_registry; import live15_quant.features; import live15_quant.fees; import live15_quant.kalshi_lifecycle; import live15_quant.kalshi_ws; import live15_quant.managed_recorder; import live15_quant.native_acceptance; import live15_quant.native_recorder; import live15_quant.normalization; import live15_quant.paper; import live15_quant.paper_acceptance; import live15_quant.paper_execution; import live15_quant.paper_runtime; import live15_quant.paper_storage; import live15_quant.providers.coinbase; import live15_quant.providers.kalshi; import live15_quant.providers.kalshi_demo; import live15_quant.providers.kalshi_ws; import live15_quant.providers.robinhood_15min; import live15_quant.recorder; import live15_quant.recorder_control; import live15_quant.records; import live15_quant.replay; import live15_quant.risk; import live15_quant.splits; import live15_quant.storage; import live15_quant.settlement; import btc_price_test; import btc_stream; import market_stream"
-      - name: Test
+        run: python tools/ci_import_check.py
+      - name: Control Center tests
+        run: pytest -p no:cacheprovider tests/test_control_center.py
+
+  recorder-ws:
+    name: Recorder and WS tests
+    needs: plan
+    if: ${{ needs.plan.outputs.full_suite != 'true' && contains(needs.plan.outputs.groups, 'recorder-ws') }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked dependencies
+        run: |
+          python -m pip install pip==26.2.1
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps -e .
+          python -m pip check
+      - name: Import check
+        run: python tools/ci_import_check.py
+      - name: Recorder and WS tests
+        run: pytest -p no:cacheprovider tests/test_recorder.py tests/test_recorder_control.py tests/test_ws_retention.py tests/test_ws_archive.py tests/test_kalshi_ws.py tests/test_kalshi_ws_recorder.py
+
+  data-storage:
+    name: Data and storage tests
+    needs: plan
+    if: ${{ needs.plan.outputs.full_suite != 'true' && contains(needs.plan.outputs.groups, 'data-storage') }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked dependencies
+        run: |
+          python -m pip install pip==26.2.1
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps -e .
+          python -m pip check
+      - name: Import check
+        run: python tools/ci_import_check.py
+      - name: Data and storage tests
+        run: pytest -p no:cacheprovider tests/test_storage.py tests/test_gaps.py tests/test_dataset.py tests/test_ws_archive.py
+
+  research-model:
+    name: Research and model tests
+    needs: plan
+    if: ${{ needs.plan.outputs.full_suite != 'true' && contains(needs.plan.outputs.groups, 'research-model') }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked dependencies
+        run: |
+          python -m pip install pip==26.2.1
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps -e .
+          python -m pip check
+      - name: Import check
+        run: python tools/ci_import_check.py
+      - name: Research and model tests
+        run: pytest -p no:cacheprovider tests/test_research_data_authority.py tests/test_historical_research.py tests/test_historical_bulk.py tests/test_factor_factory.py tests/test_factor001r.py tests/test_sequence_readiness.py tests/test_model*.py
+
+  full:
+    name: Full regression suite
+    needs: plan
+    if: ${{ needs.plan.outputs.full_suite == 'true' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked dependencies
+        run: |
+          python -m pip install pip==26.2.1
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps -e .
+          python -m pip check
+      - name: Import check
+        run: python tools/ci_import_check.py
+      - name: Full test suite
         run: pytest
+
+  ci-gate:
+    name: CI Gate
+    if: ${{ always() }}
+    needs: [plan, static, governance, control-center, recorder-ws, data-storage, research-model, full]
+    runs-on: windows-latest
+    env:
+      PLAN_RESULT: ${{ needs.plan.result }}
+      GROUPS: ${{ needs.plan.outputs.groups }}
+      FULL_SUITE: ${{ needs.plan.outputs.full_suite }}
+      STATIC_RESULT: ${{ needs.static.result }}
+      GOVERNANCE_RESULT: ${{ needs.governance.result }}
+      CONTROL_CENTER_RESULT: ${{ needs['control-center'].result }}
+      RECORDER_WS_RESULT: ${{ needs['recorder-ws'].result }}
+      DATA_STORAGE_RESULT: ${{ needs['data-storage'].result }}
+      RESEARCH_MODEL_RESULT: ${{ needs['research-model'].result }}
+      FULL_RESULT: ${{ needs.full.result }}
+    steps:
+      - name: Enforce planned validation
+        shell: pwsh
+        run: |
+          if ($env:PLAN_RESULT -ne 'success') { throw 'CI planner did not succeed' }
+          if ($env:STATIC_RESULT -ne 'success') { throw 'Static checks did not succeed' }
+          $results = @{
+            'governance' = $env:GOVERNANCE_RESULT
+            'control-center' = $env:CONTROL_CENTER_RESULT
+            'recorder-ws' = $env:RECORDER_WS_RESULT
+            'data-storage' = $env:DATA_STORAGE_RESULT
+            'research-model' = $env:RESEARCH_MODEL_RESULT
+            'full' = $env:FULL_RESULT
+          }
+          $required = if ($env:FULL_SUITE -eq 'true') { @('full') } else { @($env:GROUPS -split ',' | Where-Object { $_ }) }
+          foreach ($job in $required) {
+            if ($results[$job] -ne 'success') { throw "Required CI job did not succeed: $job ($($results[$job]))" }
+          }
