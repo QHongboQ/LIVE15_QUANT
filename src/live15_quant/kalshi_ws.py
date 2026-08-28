@@ -79,6 +79,16 @@ class KalshiWsRecoveryExhausted(ConnectionError):
     """A damaged subscription requires a fresh authenticated connection."""
 
 
+class KalshiRecoveryStage(StrEnum):
+    """Bounded recovery ladder for a dirty order-book subscription."""
+
+    IDLE = "idle"
+    SNAPSHOT_INITIAL = "snapshot_initial"
+    SNAPSHOT_RETRY = "snapshot_retry"
+    RESUBSCRIBE = "resubscribe"
+    RECONNECT = "reconnect"
+
+
 def _aware(value: datetime, field: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field} must be timezone-aware")
@@ -167,7 +177,20 @@ def _source_timestamp(message: Mapping[str, object]) -> datetime | None:
     return by_ms or by_text
 
 
-def _levels(value: object, field: str) -> tuple[OrderBookLevel, ...]:
+def _levels(
+    value: object,
+    field: str,
+    *,
+    unified_yes_price: bool = False,
+) -> tuple[OrderBookLevel, ...]:
+    """Parse depth into LIVE15's canonical YES-leg/NO-leg representation.
+
+    Kalshi's documented ``use_yes_price=true`` subscription option leaves YES
+    levels unchanged but sends NO levels in YES-leg price.  LIVE15's existing
+    execution and feature contracts store NO levels in NO-leg price, so this
+    one receive-boundary conversion is deliberately the only inversion.
+    """
+
     if value is None:
         return ()
     if not isinstance(value, list):
@@ -178,7 +201,11 @@ def _levels(value: object, field: str) -> tuple[OrderBookLevel, ...]:
             raise KalshiWsPayloadError(f"malformed Kalshi WebSocket {field}")
         price = _decimal(raw[0], f"{field} price")
         quantity = _decimal(raw[1], f"{field} quantity")
-        if not Decimal(0) <= price <= Decimal(1) or quantity <= 0 or price in levels:
+        if not Decimal(0) <= price <= Decimal(1) or quantity <= 0:
+            raise KalshiWsPayloadError(f"malformed Kalshi WebSocket {field}")
+        if unified_yes_price:
+            price = Decimal(1) - price
+        if price in levels:
             raise KalshiWsPayloadError(f"malformed Kalshi WebSocket {field}")
         levels[price] = quantity
     return tuple(OrderBookLevel(price, levels[price]) for price in sorted(levels, reverse=True))
@@ -461,7 +488,7 @@ def parse_kalshi_server_message(
             ticker=ticker,
             market_id=market_id,
             yes_bids=_levels(msg.get("yes_dollars_fp"), "yes_dollars_fp"),
-            no_bids=_levels(msg.get("no_dollars_fp"), "no_dollars_fp"),
+            no_bids=_levels(msg.get("no_dollars_fp"), "no_dollars_fp", unified_yes_price=True),
             source_timestamp=_source_timestamp(msg),
             socket_received_timestamp=socket_received_timestamp,
             parse_timestamp=parse_timestamp,
@@ -486,7 +513,11 @@ def parse_kalshi_server_message(
             ticker=ticker,
             market_id=market_id,
             side=side,
-            price=_decimal(msg.get("price_dollars"), "price_dollars"),
+            price=(
+                Decimal(1) - _decimal(msg.get("price_dollars"), "price_dollars")
+                if side is KalshiBookSide.NO
+                else _decimal(msg.get("price_dollars"), "price_dollars")
+            ),
             quantity_delta=_decimal(msg.get("delta_fp"), "delta_fp"),
             source_timestamp=_source_timestamp(msg),
             socket_received_timestamp=socket_received_timestamp,
@@ -777,6 +808,10 @@ class KalshiResyncDiagnostics:
     payload_issues: int = 0
     payload_recoveries: int = 0
     invariant_recoveries: int = 0
+    identity_recoveries: int = 0
+    snapshot_retries: int = 0
+    resubscribe_requests: int = 0
+    reconnect_requests: int = 0
     last_duration_seconds: float | None = None
 
 
@@ -801,17 +836,36 @@ class KalshiAtomicSessionProcessor:
         self._monotonic = monotonic
         self._pending: set[str] = set()
         self._resync_started: float | None = None
+        self._recovery_stage = KalshiRecoveryStage.IDLE
+        self._awaiting_resubscribe_request_id: int | None = None
+        self._resubscribe_subscription_id: int | None = None
         self.diagnostics = KalshiResyncDiagnostics()
 
     def _ensure_recovery_budget(self) -> None:
         if self.diagnostics.requests >= self._max_payload_issues:
             raise KalshiWsRecoveryExhausted("Kalshi WS recovery budget exhausted")
 
+    def _require_resubscribe(self) -> None:
+        """Discard an untrusted stream identity before any recovery command."""
+
+        self._coordinator.reset()
+        self._pending = set(self._coordinator.subscribed_tickers)
+        self._recovery_stage = KalshiRecoveryStage.RESUBSCRIBE
+        if self._resync_started is None:
+            self._resync_started = self._monotonic()
+        self.diagnostics.identity_recoveries += 1
+
     async def recover_payload_issue(self, issue: KalshiWsPayloadIssue) -> None:
         """Fail closed and request an official full snapshot for one affected subscription."""
 
         self.diagnostics.payload_issues += 1
-        tickers = self._coordinator.invalidate_payload(issue.connection_id, issue.subscription_id)
+        try:
+            tickers = self._coordinator.invalidate_payload(
+                issue.connection_id, issue.subscription_id
+            )
+        except KalshiBookInvariantError:
+            self._require_resubscribe()
+            return
         new_tickers = tuple(ticker for ticker in tickers if ticker not in self._pending)
         if not new_tickers:
             return
@@ -825,6 +879,7 @@ class KalshiAtomicSessionProcessor:
         self._next_request_id += 1
         await self._sender(command.payload)
         self._pending.update(new_tickers)
+        self._recovery_stage = KalshiRecoveryStage.SNAPSHOT_INITIAL
         if self._resync_started is None:
             self._resync_started = self._monotonic()
         self.diagnostics.requests += 1
@@ -839,9 +894,15 @@ class KalshiAtomicSessionProcessor:
         a fresh official snapshot.
         """
 
-        tickers = self._coordinator.invalidate_payload(
-            message.connection_id, message.subscription_id
-        )
+        try:
+            tickers = self._coordinator.invalidate_payload(
+                message.connection_id, message.subscription_id
+            )
+        except KalshiBookInvariantError:
+            # An unknown sid cannot be safely repaired by asking that sid for
+            # a snapshot.  Discard it and require a new documented subscribe.
+            self._require_resubscribe()
+            return
         new_tickers = tuple(ticker for ticker in tickers if ticker not in self._pending)
         if not new_tickers:
             return
@@ -855,6 +916,7 @@ class KalshiAtomicSessionProcessor:
         self._next_request_id += 1
         await self._sender(command.payload)
         self._pending.update(new_tickers)
+        self._recovery_stage = KalshiRecoveryStage.SNAPSHOT_INITIAL
         if self._resync_started is None:
             self._resync_started = self._monotonic()
         self.diagnostics.requests += 1
@@ -863,6 +925,10 @@ class KalshiAtomicSessionProcessor:
     async def process(
         self, message: KalshiOrderBookMessage | KalshiCommandAcknowledged
     ) -> SynchronizedKalshiOrderBook | None:
+        if self._awaiting_resubscribe_request_id is not None:
+            expected_sid = self._resubscribe_subscription_id
+            if expected_sid is None or message.subscription_id != expected_sid:
+                return None
         try:
             if isinstance(message, KalshiCommandAcknowledged):
                 self._coordinator.accept_ack(message)
@@ -882,6 +948,7 @@ class KalshiAtomicSessionProcessor:
                 self._next_request_id += 1
                 await self._sender(command.payload)
                 self._pending.update(new_tickers)
+                self._recovery_stage = KalshiRecoveryStage.SNAPSHOT_INITIAL
                 if self._resync_started is None:
                     self._resync_started = self._monotonic()
                 self.diagnostics.requests += 1
@@ -895,7 +962,79 @@ class KalshiAtomicSessionProcessor:
                 self.diagnostics.completed += 1
                 self.diagnostics.last_duration_seconds = self._monotonic() - self._resync_started
                 self._resync_started = None
+                self._recovery_stage = KalshiRecoveryStage.IDLE
+                self._awaiting_resubscribe_request_id = None
+                self._resubscribe_subscription_id = None
         return book
+
+    async def advance_recovery(self) -> KalshiRecoveryStage:
+        """Advance one and only one recovery step after a bounded timeout.
+
+        The caller owns timeout measurement and the transport reconnect.  This
+        keeps the coordinator the sole owner of book semantics while ensuring
+        a quiet/dirty subscription cannot issue command storms.
+        """
+
+        if not self._pending:
+            return KalshiRecoveryStage.IDLE
+        if self._recovery_stage is KalshiRecoveryStage.SNAPSHOT_INITIAL:
+            subscription_id = self._coordinator.subscription_id
+            if subscription_id is None:
+                self._recovery_stage = KalshiRecoveryStage.RESUBSCRIBE
+                return self._recovery_stage
+            command = update_subscription_command(
+                self._next_request_id,
+                subscription_id,
+                "get_snapshot",
+                tuple(sorted(self._pending)),
+            )
+            self._next_request_id += 1
+            await self._sender(command.payload)
+            self.diagnostics.requests += 1
+            self.diagnostics.snapshot_retries += 1
+            self._recovery_stage = KalshiRecoveryStage.SNAPSHOT_RETRY
+            return KalshiRecoveryStage.SNAPSHOT_RETRY
+        if self._recovery_stage is KalshiRecoveryStage.SNAPSHOT_RETRY:
+            self._recovery_stage = KalshiRecoveryStage.RESUBSCRIBE
+            return self._recovery_stage
+        if self._recovery_stage is KalshiRecoveryStage.RESUBSCRIBE:
+            self._recovery_stage = KalshiRecoveryStage.RECONNECT
+            return KalshiRecoveryStage.RECONNECT
+        return KalshiRecoveryStage.RECONNECT
+
+    def resubscribe_command(self) -> KalshiSubscriptionCommand:
+        """Replace an untrusted sid with one fresh market-data subscription."""
+
+        if self._recovery_stage is not KalshiRecoveryStage.RESUBSCRIBE:
+            raise KalshiWsRecoveryExhausted("Kalshi WS resubscribe is not currently required")
+        self._coordinator.reset()
+        self._pending = set(self._coordinator.subscribed_tickers)
+        request_id = self._next_request_id
+        command = subscribe_command(request_id, tuple(sorted(self._pending)))
+        self._next_request_id += 1
+        self._awaiting_resubscribe_request_id = request_id
+        self._resubscribe_subscription_id = None
+        self.diagnostics.resubscribe_requests += 1
+        self._recovery_stage = KalshiRecoveryStage.RECONNECT
+        return command
+
+    def accept_subscribed(self, message: KalshiSubscribed) -> bool:
+        """Bind a replacement subscribe response before accepting book frames."""
+
+        if self._awaiting_resubscribe_request_id is None:
+            return False
+        if message.request_id != self._awaiting_resubscribe_request_id:
+            return False
+        if message.channel != "orderbook_delta":
+            raise KalshiBookInvariantError("replacement subscription channel mismatch")
+        self._resubscribe_subscription_id = message.subscription_id
+        return True
+
+    def mark_reconnect_requested(self) -> None:
+        """Record the terminal ladder step exactly once for this processor."""
+
+        if self._recovery_stage is KalshiRecoveryStage.RECONNECT:
+            self.diagnostics.reconnect_requests += 1
 
 
 class PersistedKalshiWsEvent(Protocol):
@@ -1023,7 +1162,7 @@ def subscribe_command(request_id: int, tickers: Sequence[str]) -> KalshiSubscrip
                 "params": {
                     "channels": ["orderbook_delta", "ticker"],
                     "market_tickers": list(exact),
-                    "use_yes_price": False,
+                    "use_yes_price": True,
                 },
             },
             separators=(",", ":"),
@@ -1053,7 +1192,7 @@ def update_subscription_command(
                 "id": request_id,
                 "cmd": "update_subscription",
                 "params": {
-                    "sid": subscription_id,
+                    "sids": [subscription_id],
                     "market_tickers": list(exact),
                     "action": action,
                 },
