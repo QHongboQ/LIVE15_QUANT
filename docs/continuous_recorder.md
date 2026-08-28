@@ -105,10 +105,14 @@ future explicit retention policy.
 - `LIVE15_KALSHI_WEBSOCKET_STALE_SECONDS` (default 10)
 - `LIVE15_KALSHI_WEBSOCKET_QUEUE_CAPACITY` (default 8192; bounded backpressure, no silent drop)
 - `LIVE15_DATASET_BUILD_INTERVAL_SECONDS` (unset/disabled by default)
+- `LIVE15_PYTH_UNAVAILABLE_REPROBE_INTERVAL_SECONDS` (default 300; exact-feed re-probe only)
 
 Coinbase covers BTC, ETH, XRP, SOL and DOGE. Gold, Silver, WTI Oil, HYPE and BNB use one authenticated
 multi-feed Pyth stream when enabled; no source is fabricated. Predictive inputs are never settlement
-truth.
+truth. A Pyth feed confirmed unavailable by Hermes is excluded only from the shared SSE request and
+is reported as `UPSTREAM_UNAVAILABLE`; surviving configured feeds remain streamed. The exact feed
+is re-probed at the bounded cadence above and may resume only after Hermes returns an observation
+for that same configured ID.
 
 ## Receive-time gap detection
 
