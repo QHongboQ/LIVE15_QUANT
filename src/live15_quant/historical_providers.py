@@ -12,7 +12,7 @@ import json
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -27,6 +27,7 @@ DEPTHFEED_KALSHI_L2 = "depthfeed_kalshi_l2"
 LIVE15_RECORDER_H0 = "live15_recorder_h0"
 DEPTHFEED_NOT_CONFIGURED = "DEPTHFEED_NOT_CONFIGURED"
 DEPTHFEED_INTEGRATION_READY_KEY_REQUIRED = "DEPTHFEED_INTEGRATION_READY_KEY_REQUIRED"
+DEPTHFEED_FREE_PLAN_LOOKBACK_DAYS = 7
 HISTORICAL_L2_SNAPSHOT = "HISTORICAL_L2_SNAPSHOT"
 HISTORICAL_L2_DELTA = "HISTORICAL_L2_DELTA"
 _MAX_PROBE_PAGES = 100
@@ -38,6 +39,41 @@ class HistoricalProviderError(RuntimeError):
 
 class HistoricalProviderNotConfigured(HistoricalProviderError):
     """The optional provider has no configured credential."""
+
+
+class DepthFeedFreePlanRangeError(HistoricalProviderError):
+    """A request lies outside the account's explicitly configured free-plan window."""
+
+
+class DepthFeedHttpError(HistoricalProviderError):
+    """A sanitized, endpoint-specific failure from the optional DepthFeed API."""
+
+    def __init__(self, *, status_code: int | None, endpoint_family: str, retry_after: str | None):
+        self.status_code = status_code
+        self.endpoint_family = endpoint_family
+        self.retry_after = retry_after
+        status = str(status_code) if status_code is not None else "UNKNOWN"
+        super().__init__(f"DEPTHFEED_HTTP_{status}:{endpoint_family}")
+
+
+class DepthFeedSchemaError(HistoricalProviderError):
+    """A payload shape mismatch, reported without response values or credentials."""
+
+    def __init__(
+        self,
+        *,
+        endpoint_family: str,
+        fields: tuple[str, ...],
+        timestamp_shape: str,
+        cause: Exception,
+    ):
+        self.endpoint_family = endpoint_family
+        self.fields = fields
+        self.timestamp_shape = timestamp_shape
+        super().__init__(
+            f"DEPTHFEED_SCHEMA_ERROR:{endpoint_family}:fields={','.join(fields)}:"
+            f"timestamp_shape={timestamp_shape}:{cause}"
+        )
 
 
 def _utc(value: object, field: str) -> datetime:
@@ -53,6 +89,56 @@ def _utc(value: object, field: str) -> datetime:
     if result.tzinfo is None or result.utcoffset() is None:
         raise HistoricalProviderError(f"{field} must be timezone-aware")
     return result.astimezone(UTC)
+
+
+def _depthfeed_snapshot_timestamp(value: object) -> datetime:
+    """Decode DepthFeed's documented UTC snapshot timestamp, which omits the UTC suffix."""
+
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise HistoricalProviderError("malformed received_timestamp") from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return parsed.replace(tzinfo=UTC)
+    return _utc(value, "received_timestamp")
+
+
+@dataclass(frozen=True, slots=True)
+class DepthFeedHistoricalRange:
+    requested_start: datetime
+    requested_end: datetime
+    effective_start: datetime
+    effective_end: datetime
+
+    def as_query_params(self) -> dict[str, str]:
+        return {
+            "start_time": self.effective_start.astimezone(UTC).isoformat(),
+            "end_time": self.effective_end.astimezone(UTC).isoformat(),
+        }
+
+
+def validate_depthfeed_free_plan_range(
+    start: datetime,
+    end: datetime,
+    *,
+    now: datetime | None = None,
+    max_lookback_days: int = DEPTHFEED_FREE_PLAN_LOOKBACK_DAYS,
+) -> DepthFeedHistoricalRange:
+    """Validate one explicit historical range locally before a DepthFeed network request."""
+
+    if max_lookback_days <= 0:
+        raise ValueError("max_lookback_days must be positive")
+    requested_start = _utc(start, "start_time")
+    requested_end = _utc(end, "end_time")
+    observed_now = _utc(now or datetime.now(UTC), "now")
+    if requested_end <= requested_start:
+        raise DepthFeedFreePlanRangeError("DEPTHFEED_REQUEST_END_NOT_AFTER_START")
+    if requested_end > observed_now:
+        raise DepthFeedFreePlanRangeError("DEPTHFEED_REQUEST_END_IN_FUTURE")
+    if requested_start < observed_now - timedelta(days=max_lookback_days):
+        raise DepthFeedFreePlanRangeError("DEPTHFEED_FREE_PLAN_LOOKBACK_EXCEEDED")
+    return DepthFeedHistoricalRange(requested_start, requested_end, requested_start, requested_end)
 
 
 def _decimal(value: object, field: str, *, allow_none: bool = False) -> Decimal | None:
@@ -504,7 +590,11 @@ class DepthFeedHistoricalOrderbookProvider:
 
     @classmethod
     def from_project_secret(
-        cls, *, project_root: Path | None = None, session: object | None = None
+        cls,
+        *,
+        project_root: Path | None = None,
+        base_url: str | None = None,
+        session: object | None = None,
     ):
         path = resolve_secret_path(
             None,
@@ -513,7 +603,7 @@ class DepthFeedHistoricalOrderbookProvider:
             legacy_paths=(),
         )
         key = path.read_text(encoding="utf-8").strip() if path else None
-        return cls(key, session=session)
+        return cls(key, base_url=base_url, session=session)
 
     @property
     def status(self) -> str:
@@ -539,7 +629,20 @@ class DepthFeedHistoricalOrderbookProvider:
             headers={"Authorization": f"Bearer {self._api_key}", "Accept": "application/json"},
             timeout=10.0,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as error:
+            response_headers = getattr(response, "headers", {})
+            retry_after = (
+                response_headers.get("Retry-After")
+                if isinstance(response_headers, Mapping)
+                else None
+            )
+            raise DepthFeedHttpError(
+                status_code=getattr(response, "status_code", None),
+                endpoint_family=path.rsplit("/", 1)[-1],
+                retry_after=retry_after if isinstance(retry_after, str) else None,
+            ) from error
         payload = response.json()
         if not isinstance(payload, Mapping):
             raise HistoricalProviderError("DepthFeed response must be an object")
@@ -548,8 +651,28 @@ class DepthFeedHistoricalOrderbookProvider:
     def _provenance(self, endpoint: str) -> ProviderProvenance:
         return ProviderProvenance(self.provider_id, self.tier, endpoint, datetime.now(UTC))
 
-    def discover_markets(self, *, limit: int = 1) -> tuple[Mapping[str, Any], ...]:
-        payload = self._get("/v3/kalshi/markets", {"limit": limit})
+    @staticmethod
+    def _range_params(historical_range: DepthFeedHistoricalRange | None) -> dict[str, str]:
+        if historical_range is None:
+            raise HistoricalProviderError("DEPTHFEED_EXPLICIT_HISTORICAL_RANGE_REQUIRED")
+        validated = validate_depthfeed_free_plan_range(
+            historical_range.requested_start, historical_range.requested_end
+        )
+        return validated.as_query_params()
+
+    def discover_markets(
+        self,
+        *,
+        limit: int = 1,
+        series: str | None = None,
+        historical_range: DepthFeedHistoricalRange | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        self._require_key()
+        params: dict[str, object] = {"limit": limit}
+        if series:
+            params["series"] = series
+        params.update(self._range_params(historical_range))
+        payload = self._get("/v3/kalshi/markets", params)
         raw = payload.get("markets", payload.get("data", []))
         if not isinstance(raw, list):
             raise HistoricalProviderError("DepthFeed markets must be a list")
@@ -575,6 +698,8 @@ class DepthFeedHistoricalOrderbookProvider:
             assert price is not None and size is not None
             if price in seen:
                 raise HistoricalProviderError(f"duplicate price in {field} ladder")
+            if price < 0 or size < 0:
+                raise HistoricalProviderError(f"negative value in {field} ladder")
             seen.add(price)
             output.append(SnapshotLevel(price, size))
         return tuple(output)
@@ -589,7 +714,7 @@ class DepthFeedHistoricalOrderbookProvider:
             raw.get("series") if isinstance(raw.get("series"), str) else raw.get("series_ticker"),
             raw.get("base_asset") if isinstance(raw.get("base_asset"), str) else None,
             raw.get("market_type") if isinstance(raw.get("market_type"), str) else None,
-            _utc(received, "received_timestamp"),
+            _depthfeed_snapshot_timestamp(received),
             self._levels(raw.get("yes", raw.get("yes_levels")), "yes"),
             self._levels(raw.get("no", raw.get("no_levels")), "no"),
             self._provenance("historical_snapshots"),
@@ -616,7 +741,12 @@ class DepthFeedHistoricalOrderbookProvider:
         )
 
     def snapshots(
-        self, ticker: str, *, max_pages: int = 1, limit: int = 1
+        self,
+        ticker: str,
+        *,
+        historical_range: DepthFeedHistoricalRange | None = None,
+        max_pages: int = 1,
+        limit: int = 1,
     ) -> tuple[HistoricalL2Snapshot, ...]:
         self._require_key()
         if not 1 <= max_pages <= _MAX_PROBE_PAGES:
@@ -625,13 +755,25 @@ class DepthFeedHistoricalOrderbookProvider:
         result: list[HistoricalL2Snapshot] = []
         for _ in range(max_pages):
             params: dict[str, object] = {"limit": limit}
+            params.update(self._range_params(historical_range))
             if cursor:
                 params["cursor"] = cursor
             payload = self._get(f"/v3/kalshi/{quote(ticker, safe='')}/snapshots", params)
             rows = payload.get("snapshots", payload.get("data", []))
             if not isinstance(rows, list):
                 raise HistoricalProviderError("DepthFeed snapshots must be a list")
-            result.extend(self.parse_snapshot(row) for row in rows if isinstance(row, Mapping))
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                try:
+                    result.append(self.parse_snapshot(row))
+                except HistoricalProviderError as error:
+                    raise DepthFeedSchemaError(
+                        endpoint_family="snapshots",
+                        fields=tuple(sorted(str(key) for key in row)),
+                        timestamp_shape=repr(row.get("timestamp"))[:96],
+                        cause=error,
+                    ) from error
             cursor = payload.get("next_cursor", payload.get("cursor")) or None
             if cursor is not None and not isinstance(cursor, str):
                 raise HistoricalProviderError("DepthFeed cursor is malformed")
@@ -640,7 +782,12 @@ class DepthFeedHistoricalOrderbookProvider:
         return tuple(result)
 
     def ticks(
-        self, ticker: str, *, max_pages: int = 1, limit: int = 1
+        self,
+        ticker: str,
+        *,
+        historical_range: DepthFeedHistoricalRange | None = None,
+        max_pages: int = 1,
+        limit: int = 1,
     ) -> tuple[HistoricalL2Tick, ...]:
         self._require_key()
         if not 1 <= max_pages <= _MAX_PROBE_PAGES:
@@ -649,6 +796,7 @@ class DepthFeedHistoricalOrderbookProvider:
         result: list[HistoricalL2Tick] = []
         for _ in range(max_pages):
             params: dict[str, object] = {"limit": limit}
+            params.update(self._range_params(historical_range))
             if cursor:
                 params["cursor"] = cursor
             payload = self._get(f"/v3/kalshi/{quote(ticker, safe='')}/ticks", params)

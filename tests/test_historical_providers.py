@@ -6,18 +6,24 @@ from decimal import Decimal
 import pytest
 
 from live15_quant.historical_providers import (
+    DEPTHFEED_FREE_PLAN_LOOKBACK_DAYS,
     DEPTHFEED_NOT_CONFIGURED,
     AcquisitionManifest,
+    DepthFeedFreePlanRangeError,
     DepthFeedHistoricalOrderbookProvider,
+    DepthFeedHistoricalRange,
+    DepthFeedHttpError,
     HistoricalL2Snapshot,
     HistoricalProviderError,
     KalshiOfficialHistoricalProvider,
     SnapshotLevel,
     filter_candlesticks_asof,
     select_latest_asof,
+    validate_depthfeed_free_plan_range,
 )
 
 NOW = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
+RANGE = validate_depthfeed_free_plan_range(NOW - timedelta(minutes=15), NOW, now=NOW)
 
 
 class FakeHistorical:
@@ -150,6 +156,22 @@ def test_depthfeed_snapshot_parsing_rejects_bad_ladders_and_separates_ticks() ->
         )
 
 
+def test_depthfeed_real_snapshot_timestamp_shape_is_interpreted_as_utc() -> None:
+    adapter = DepthFeedHistoricalOrderbookProvider(api_key="test-key")
+    snapshot = adapter.parse_snapshot(
+        {
+            "ticker": "KXBTC15M-26AUG280100-00",
+            "series": "KXBTC15M",
+            "base_asset": "BTC",
+            "market_type": "15m",
+            "timestamp": "2026-08-28 04:45:59.390",
+            "yes": [["0.50", "2"]],
+            "no": [["0.49", "3"]],
+        }
+    )
+    assert snapshot.received_timestamp == datetime(2026, 8, 28, 4, 45, 59, 390000, tzinfo=UTC)
+
+
 def test_asof_selection_never_uses_future_observation() -> None:
     adapter = DepthFeedHistoricalOrderbookProvider(api_key="test-key")
     earlier = adapter.parse_snapshot(
@@ -208,6 +230,19 @@ class FakeDepthResponse:
         return self.payload
 
 
+class FakeHttpErrorResponse(FakeDepthResponse):
+    status_code = 429
+
+    def __init__(self, payload):
+        super().__init__(payload)
+        self.headers = {"Retry-After": "2"}
+
+    def raise_for_status(self):
+        import requests
+
+        raise requests.HTTPError("rate limited")
+
+
 class FakeDepthSession:
     def __init__(self):
         self.calls = []
@@ -237,7 +272,7 @@ def test_depthfeed_snapshot_pagination_is_bounded_and_key_is_not_logged() -> Non
     adapter = DepthFeedHistoricalOrderbookProvider(
         api_key="opaque-secret", base_url="https://depthfeed.test", session=session
     )
-    snapshots = adapter.snapshots("KXBTC15M-TEST", max_pages=2, limit=1)
+    snapshots = adapter.snapshots("KXBTC15M-TEST", historical_range=RANGE, max_pages=2, limit=1)
 
     assert len(snapshots) == 2
     assert len(session.calls) == 2
@@ -250,5 +285,52 @@ def test_depthfeed_adapter_appends_v3_to_documented_root() -> None:
     adapter = DepthFeedHistoricalOrderbookProvider(
         api_key="opaque-secret", base_url="https://api.depthfeed.com", session=session
     )
-    adapter.discover_markets(limit=1)
+    adapter.discover_markets(limit=1, historical_range=RANGE)
     assert session.calls[0][0].startswith("https://api.depthfeed.com/v3/kalshi/markets")
+
+
+def test_depthfeed_http_errors_are_sanitized_and_endpoint_scoped() -> None:
+    class RateLimitedSession:
+        def get(self, *args, **kwargs):
+            return FakeHttpErrorResponse({})
+
+    adapter = DepthFeedHistoricalOrderbookProvider(
+        api_key="opaque-secret", base_url="https://depthfeed.test", session=RateLimitedSession()
+    )
+    with pytest.raises(DepthFeedHttpError, match="DEPTHFEED_HTTP_429:snapshots") as error:
+        adapter.snapshots("KXBTC15M-TEST", historical_range=RANGE)
+    assert error.value.status_code == 429
+    assert error.value.endpoint_family == "snapshots"
+    assert error.value.retry_after == "2"
+
+
+def test_depthfeed_free_plan_range_is_explicit_and_fail_closed() -> None:
+    now = datetime(2026, 8, 28, tzinfo=UTC)
+    allowed = validate_depthfeed_free_plan_range(
+        now - timedelta(days=DEPTHFEED_FREE_PLAN_LOOKBACK_DAYS), now, now=now
+    )
+    assert allowed.as_query_params() == {
+        "start_time": "2026-08-21T00:00:00+00:00",
+        "end_time": "2026-08-28T00:00:00+00:00",
+    }
+    with pytest.raises(DepthFeedFreePlanRangeError, match="DEPTHFEED_FREE_PLAN_LOOKBACK_EXCEEDED"):
+        validate_depthfeed_free_plan_range(
+            now - timedelta(days=DEPTHFEED_FREE_PLAN_LOOKBACK_DAYS, microseconds=1), now, now=now
+        )
+    with pytest.raises(DepthFeedFreePlanRangeError, match="DEPTHFEED_REQUEST_END_IN_FUTURE"):
+        validate_depthfeed_free_plan_range(
+            now - timedelta(minutes=15), now + timedelta(seconds=1), now=now
+        )
+
+
+def test_depthfeed_provider_revalidates_public_range_before_network_access() -> None:
+    session = FakeDepthSession()
+    adapter = DepthFeedHistoricalOrderbookProvider(
+        api_key="opaque-secret", base_url="https://depthfeed.test", session=session
+    )
+    bypass = DepthFeedHistoricalRange(
+        NOW - timedelta(days=8), NOW - timedelta(days=7, minutes=59), NOW, NOW
+    )
+    with pytest.raises(DepthFeedFreePlanRangeError, match="DEPTHFEED_FREE_PLAN_LOOKBACK_EXCEEDED"):
+        adapter.snapshots("KXBTC15M-TEST", historical_range=bypass)
+    assert session.calls == []
