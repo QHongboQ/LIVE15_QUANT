@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -75,6 +76,38 @@ def test_runner_rejects_a_payload_that_no_longer_matches_the_manifest(tmp_path: 
     )
     with pytest.raises(release_runner.ReleaseRunnerError, match="payload hash mismatch"):
         release_runner.resolve_active_release(production)
+
+
+def test_runtime_receipt_records_venv_launcher_and_base_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = tmp_path / "release/app"
+    app.mkdir(parents=True)
+    launcher = tmp_path / "venv/Scripts/python.exe"
+    base = tmp_path / "base/python.exe"
+    launcher.parent.mkdir(parents=True)
+    base.parent.mkdir(parents=True)
+    launcher.write_bytes(b"launcher")
+    base.write_bytes(b"base")
+    monkeypatch.setattr(sys, "executable", str(launcher))
+    monkeypatch.setattr(sys, "_base_executable", str(base), raising=False)
+
+    release_runner._write_runtime_receipt(
+        tmp_path,
+        "recorder",
+        app,
+        {"release_id": "candidate", "git_commit_sha": "a" * 40},
+        "manifest",
+        {
+            "bootstrap_source_release_id": "candidate",
+            "bootstrap_source_manifest_sha256": "bootstrap-manifest",
+            "runner_sha256": "runner-hash",
+        },
+    )
+
+    receipt = json.loads((tmp_path / "runtime/release-runtime-recorder.json").read_text())
+    assert receipt["interpreter_path"] == str(launcher)
+    assert receipt["base_executable"] == str(base)
 
 
 def test_runner_does_not_leak_its_component_arguments_to_the_application(

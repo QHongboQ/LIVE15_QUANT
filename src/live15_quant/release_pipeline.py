@@ -523,16 +523,20 @@ def verify_runtime_provenance(
     service_name: str,
     service_pid: int,
     runner_pid: int,
+    runner_parent_pid: int,
     service_config_path: Path,
     expected_git_sha: str,
 ) -> ReleaseIdentity:
     """Bind a captured running-process observation to the active release.
 
     The Windows service PID is captured externally with ``sc queryex``. The
-    runner receipt is emitted by the verified stable bootstrap and must show it
-    is that service's direct child, imported code from the active release, and
-    used exactly the requested SHA. The installed XML is checked so a service
-    path cannot quietly bypass the bootstrap.
+    runner receipt is emitted by the verified stable bootstrap and must bind to
+    the process parent already accepted by the strict restart process-chain
+    gate.  The gate permits either direct WinSW ownership or exactly one
+    configured Windows venv redirector; this function never performs a broad
+    ancestor-chain inference.  It also proves imported code and the requested
+    SHA. The installed XML is checked so a service path cannot quietly bypass
+    the bootstrap.
     """
 
     component_by_service = {
@@ -541,7 +545,7 @@ def verify_runtime_provenance(
         "LIVE15RuntimeSupervisor": "runtime-supervisor",
     }
     component = component_by_service.get(service_name)
-    if component is None or service_pid <= 0 or runner_pid <= 0:
+    if component is None or service_pid <= 0 or runner_pid <= 0 or runner_parent_pid <= 0:
         raise ReleaseError("incomplete runtime service observation")
     bootstrap_identity = verify_bootstrap(release_root=release_root)
     identity = active_release(release_root=release_root)
@@ -573,7 +577,7 @@ def verify_runtime_provenance(
     required = {
         "component": component,
         "pid": runner_pid,
-        "parent_pid": service_pid,
+        "parent_pid": runner_parent_pid,
         "deployment_release_id": identity.release_id,
         "deployment_git_sha": identity.git_commit_sha,
         "deployment_manifest_sha256": identity.manifest_sha256,
@@ -588,6 +592,7 @@ def verify_runtime_provenance(
         ("working directory", receipt.get("working_directory")),
         ("module root", receipt.get("module_root")),
         ("interpreter", receipt.get("interpreter_path")),
+        ("base executable", receipt.get("base_executable")),
     ):
         if not isinstance(raw_path, str):
             raise ReleaseError(f"runner receipt {label} is missing")
@@ -603,6 +608,8 @@ def verify_runtime_provenance(
             raise ReleaseError(f"runtime {label} is outside {boundary}") from error
     if not Path(str(receipt["interpreter_path"])).is_file():
         raise ReleaseError("runtime interpreter path is missing")
+    if not Path(str(receipt["base_executable"])).is_file():
+        raise ReleaseError("runtime base executable path is missing")
     return identity
 
 

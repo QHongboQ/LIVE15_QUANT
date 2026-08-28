@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from xml.etree import ElementTree
 
 from live15_quant.release_pipeline import ReleaseError, active_release, verify_runtime_provenance
 
@@ -34,6 +35,21 @@ class ServiceSnapshot:
     state: str
     pid: int
     image_path: str
+
+
+@dataclass(frozen=True)
+class ProcessSnapshot:
+    """One immutable observation of a Windows process generation.
+
+    A PID alone is not a process identity on Windows: it may be reused.  The
+    creation time, parent and executable therefore travel with every process
+    observation used by modern deployment provenance.
+    """
+
+    pid: int
+    parent_pid: int
+    executable_path: Path
+    created_at: datetime
 
 
 @dataclass(frozen=True)
@@ -89,6 +105,10 @@ class WinSWLogEvidence(Protocol):
     ) -> str | None: ...
 
 
+class ProcessInspection(Protocol):
+    def inspect(self, pid: int) -> ProcessSnapshot: ...
+
+
 ProvenanceVerifier = Callable[..., object]
 LegacyVerifier = Callable[..., object]
 
@@ -103,6 +123,7 @@ class RestartDependencies:
     monotonic: Callable[[], float]
     sleep: Callable[[float], None]
     verify_provenance: ProvenanceVerifier
+    processes: ProcessInspection
 
 
 def _utc_now() -> datetime:
@@ -281,6 +302,113 @@ class WindowsScm:
         return any(field.strip('"') == str(pid) for field in result.stdout.split(","))
 
 
+class WindowsProcessInspector:
+    """Native, read-only Windows process inspection for a pinned generation."""
+
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _TH32CS_SNAPPROCESS = 0x00000002
+
+    def inspect(self, pid: int) -> ProcessSnapshot:
+        if os.name != "nt":
+            raise RestartGateError("WINDOWS_PROCESS_INSPECTION_UNAVAILABLE")
+        # Keep this boundary native rather than depending on PowerShell/CIM
+        # formatting or a potentially stale process listing.
+        import ctypes
+        from ctypes import wintypes
+
+        class FILETIME(ctypes.Structure):
+            _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = (
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.GetProcessTimes.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(FILETIME),
+            ctypes.POINTER(FILETIME),
+            ctypes.POINTER(FILETIME),
+            ctypes.POINTER(FILETIME),
+        )
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W))
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W))
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(self._PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            raise RestartGateError(f"PROCESS_OBSERVATION_FAILURE: PID {pid}")
+        try:
+            size = wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                raise RestartGateError(f"PROCESS_OBSERVATION_FAILURE: PID {pid}")
+            created, exited, kernel, user = (FILETIME(), FILETIME(), FILETIME(), FILETIME())
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(created),
+                ctypes.byref(exited),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                raise RestartGateError(f"PROCESS_OBSERVATION_FAILURE: PID {pid}")
+            # Keep the target process object referenced while capturing its
+            # Toolhelp parent entry.  Otherwise a PID could exit and be reused
+            # between the image/time and parent observations.
+            snapshot = kernel32.CreateToolhelp32Snapshot(self._TH32CS_SNAPPROCESS, 0)
+            if snapshot == ctypes.c_void_p(-1).value:
+                raise RestartGateError(f"PROCESS_OBSERVATION_FAILURE: PID {pid}")
+            try:
+                entry = PROCESSENTRY32W()
+                entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+                found = False
+                if kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                    while True:
+                        if entry.th32ProcessID == pid:
+                            parent_pid = int(entry.th32ParentProcessID)
+                            found = True
+                            break
+                        if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                            break
+                if not found:
+                    raise RestartGateError(f"PROCESS_OBSERVATION_FAILURE: PID {pid}")
+            finally:
+                kernel32.CloseHandle(snapshot)
+        finally:
+            kernel32.CloseHandle(handle)
+        creation_ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+        return ProcessSnapshot(
+            pid=pid,
+            parent_pid=parent_pid,
+            executable_path=Path(buffer.value),
+            created_at=datetime.fromtimestamp((creation_ticks / 10_000_000) - 11_644_473_600, UTC),
+        )
+
+
 def default_dependencies() -> RestartDependencies:
     return RestartDependencies(
         scm=WindowsScm(),
@@ -289,10 +417,11 @@ def default_dependencies() -> RestartDependencies:
         monotonic=time.monotonic,
         sleep=time.sleep,
         verify_provenance=verify_runtime_provenance,
+        processes=WindowsProcessInspector(),
     )
 
 
-def _runner_receipt(path: Path, *, start_requested_at: datetime, new_pid: int) -> tuple[int, str]:
+def _runner_receipt(path: Path, *, start_requested_at: datetime) -> tuple[dict[str, Any], str]:
     try:
         modified_at = datetime.fromtimestamp(path.stat().st_mtime, UTC)
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -300,23 +429,173 @@ def _runner_receipt(path: Path, *, start_requested_at: datetime, new_pid: int) -
         raise RestartGateError(f"RELEASE_RUNNER_RECEIPT_MISSING_OR_INVALID: {path}") from error
     if modified_at <= start_requested_at:
         raise RestartGateError("STALE_RELEASE_RUNNER_RECEIPT")
-    if not isinstance(value, dict) or not isinstance(value.get("pid"), int):
+    if not isinstance(value, dict) or not all(
+        (
+            isinstance(value.get("pid"), int),
+            isinstance(value.get("parent_pid"), int),
+            isinstance(value.get("interpreter_path"), str),
+            isinstance(value.get("base_executable"), str),
+        )
+    ):
         raise RestartGateError("RELEASE_RUNNER_RECEIPT_MISSING_OR_INVALID")
-    if value.get("parent_pid") != new_pid:
-        raise RestartGateError("RUNNER_PARENT_PID_MISMATCH")
-    return value["pid"], _sha256(path)
+    return value, _sha256(path)
+
+
+def _resolve_xml_path(value: str, config_path: Path) -> Path:
+    if not value:
+        raise RestartGateError("PROCESS_CHAIN_CONFIGURED_LAUNCHER_MISSING")
+    return Path(value.replace("%BASE%", str(config_path.parent))).resolve()
+
+
+def _configured_python_executable(config_path: Path) -> Path:
+    """Resolve the exact executable configured by the installed WinSW XML."""
+
+    try:
+        root = ElementTree.parse(config_path).getroot()
+    except (OSError, ElementTree.ParseError) as error:
+        raise RestartGateError("PROCESS_CHAIN_SERVICE_CONFIG_INVALID") from error
+    executable = _resolve_xml_path(root.findtext("executable", default=""), config_path)
+    if not executable.is_file():
+        raise RestartGateError("PROCESS_CHAIN_CONFIGURED_EXECUTABLE_MISSING")
+    return executable
+
+
+def _configured_venv_base(launcher: Path) -> Path:
+    """Derive the base interpreter for the one allowed venv redirector."""
+
+    configuration = launcher.parent.parent / "pyvenv.cfg"
+    try:
+        values = {
+            key.strip().lower(): value.strip()
+            for line in configuration.read_text(encoding="utf-8").splitlines()
+            if "=" in line
+            for key, value in [line.split("=", 1)]
+        }
+        base_home = values["home"]
+    except (OSError, KeyError) as error:
+        raise RestartGateError("PROCESS_CHAIN_VENV_CONFIGURATION_INVALID") from error
+    base = (Path(base_home) / "python.exe").resolve()
+    if not base.is_file():
+        raise RestartGateError("PROCESS_CHAIN_CONFIGURED_EXECUTABLE_MISSING")
+    return base
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
+
+
+def _validate_snapshot(
+    snapshot: ProcessSnapshot,
+    *,
+    expected_pid: int,
+    expected_executable: Path,
+    start_requested_at: datetime,
+    role: str,
+) -> None:
+    if snapshot.pid != expected_pid:
+        raise RestartGateError(f"PROCESS_CHAIN_{role}_PID_MISMATCH")
+    if snapshot.created_at < start_requested_at:
+        raise RestartGateError(f"PROCESS_CHAIN_{role}_STALE_OR_PID_REUSED")
+    if not _same_path(snapshot.executable_path, expected_executable):
+        raise RestartGateError(f"PROCESS_CHAIN_{role}_EXECUTABLE_MISMATCH")
+    # Read both paths at the identity boundary so a same-named replacement
+    # cannot satisfy the launch path check silently.
+    if _sha256(snapshot.executable_path) != _sha256(expected_executable):
+        raise RestartGateError(f"PROCESS_CHAIN_{role}_EXECUTABLE_HASH_MISMATCH")
+
+
+def _validate_modern_process_chain(
+    *,
+    receipt: dict[str, Any],
+    service_pid: int,
+    winsw_executable: Path,
+    service_generation: ProcessSnapshot,
+    start_requested_at: datetime,
+    config_path: Path,
+    processes: ProcessInspection,
+) -> tuple[str, int, dict[str, Any]]:
+    """Accept only direct WinSW ownership or one configured venv redirector.
+
+    No ancestor walk is used here.  The only non-direct shape is the exact
+    configured venv launcher, whose ``pyvenv.cfg`` identifies the base Python
+    executable.  Any second intermediate is an incompatible process topology.
+    """
+
+    configured_executable = _configured_python_executable(config_path)
+    if not _same_path(Path(receipt["interpreter_path"]), configured_executable):
+        raise RestartGateError("PROCESS_CHAIN_RECEIPT_INTERPRETER_MISMATCH")
+    service = processes.inspect(service_pid)
+    if (
+        service.pid != service_generation.pid
+        or service.created_at != service_generation.created_at
+        or not _same_path(service.executable_path, service_generation.executable_path)
+    ):
+        raise RestartGateError("PROCESS_CHAIN_WINSW_GENERATION_CHANGED")
+    _validate_snapshot(
+        service,
+        expected_pid=service_pid,
+        expected_executable=winsw_executable,
+        start_requested_at=start_requested_at,
+        role="WINSW",
+    )
+    runner = processes.inspect(int(receipt["pid"]))
+    parent_pid = int(receipt["parent_pid"])
+    if runner.parent_pid != parent_pid:
+        raise RestartGateError("PROCESS_CHAIN_RUNNER_PARENT_MISMATCH")
+    if parent_pid == service_pid:
+        if not _same_path(Path(receipt["base_executable"]), configured_executable):
+            raise RestartGateError("PROCESS_CHAIN_DIRECT_BASE_EXECUTABLE_MISMATCH")
+        _validate_snapshot(
+            runner,
+            expected_pid=int(receipt["pid"]),
+            expected_executable=configured_executable,
+            start_requested_at=start_requested_at,
+            role="DIRECT_RUNNER",
+        )
+        return "DIRECT", service_pid, {"mode": "DIRECT", "winsw_pid": service_pid}
+    base = _configured_venv_base(configured_executable)
+    if not _same_path(Path(receipt["base_executable"]), base):
+        raise RestartGateError("PROCESS_CHAIN_RECEIPT_BASE_EXECUTABLE_MISMATCH")
+    redirector = processes.inspect(parent_pid)
+    _validate_snapshot(
+        redirector,
+        expected_pid=parent_pid,
+        expected_executable=configured_executable,
+        start_requested_at=start_requested_at,
+        role="REDIRECTOR",
+    )
+    if redirector.parent_pid != service_pid:
+        raise RestartGateError("PROCESS_CHAIN_REDIRECTOR_PARENT_MISMATCH")
+    _validate_snapshot(
+        runner,
+        expected_pid=int(receipt["pid"]),
+        expected_executable=base,
+        start_requested_at=start_requested_at,
+        role="BASE_RUNNER",
+    )
+    return (
+        "WINDOWS_VENV_REDIRECTOR",
+        parent_pid,
+        {
+            "mode": "WINDOWS_VENV_REDIRECTOR",
+            "winsw_pid": service_pid,
+            "redirector_pid": parent_pid,
+            "runner_pid": int(receipt["pid"]),
+            "launcher_path": str(configured_executable),
+            "base_executable_path": str(base),
+        },
+    )
 
 
 def _wait_for_runner_receipt(
     *,
     path: Path,
     start_requested_at: datetime,
-    new_pid: int,
     dependencies: RestartDependencies,
     timeout_seconds: float,
     poll_interval_seconds: float,
     observe_generation: Callable[[], None],
-) -> tuple[int, str]:
+) -> tuple[dict[str, Any], str]:
     """Observe, but never synthesize, the runner receipt after a new launch."""
 
     deadline = dependencies.monotonic() + timeout_seconds
@@ -324,11 +603,9 @@ def _wait_for_runner_receipt(
     while True:
         observe_generation()
         try:
-            receipt = _runner_receipt(path, start_requested_at=start_requested_at, new_pid=new_pid)
+            receipt = _runner_receipt(path, start_requested_at=start_requested_at)
         except RestartGateError as error:
             last_error = error
-            if str(error) == "RUNNER_PARENT_PID_MISMATCH":
-                raise
         else:
             observe_generation()
             return receipt
@@ -533,15 +810,23 @@ def _transition_service_verified(
         record("WINSW_SERVICE_MODE_START_CONFIRMED", dependencies.now())
 
         if modern_contract:
+            service_generation = dependencies.processes.inspect(running.pid)
+            _validate_snapshot(
+                service_generation,
+                expected_pid=running.pid,
+                expected_executable=executable,
+                start_requested_at=start_requested_at,
+                role="WINSW",
+            )
+            generation["winsw_process_created_at"] = service_generation.created_at.isoformat()
             receipt_path = (
                 expectation.release_root
                 / "runtime"
                 / f"release-runtime-{expectation.component}.json"
             )
-            runner_pid, receipt_hash = _wait_for_runner_receipt(
+            receipt, receipt_hash = _wait_for_runner_receipt(
                 path=receipt_path,
                 start_requested_at=start_requested_at,
-                new_pid=running.pid,
                 dependencies=dependencies,
                 timeout_seconds=expectation.timeout_seconds,
                 poll_interval_seconds=expectation.poll_interval_seconds,
@@ -550,16 +835,30 @@ def _transition_service_verified(
             audit["release_runner_receipt"] = {
                 "path": str(receipt_path),
                 "sha256": receipt_hash,
-                "runner_pid": runner_pid,
+                "runner_pid": receipt["pid"],
             }
             record("RELEASE_RUNNER_RECEIPT_CONFIRMED", dependencies.now())
+            observe_generation()
+            chain_mode, runner_parent_pid, chain_evidence = _validate_modern_process_chain(
+                receipt=receipt,
+                service_pid=running.pid,
+                winsw_executable=executable,
+                service_generation=service_generation,
+                start_requested_at=start_requested_at,
+                config_path=expectation.service_config_path,
+                processes=dependencies.processes,
+            )
+            audit["process_chain"] = chain_evidence
+            audit["process_chain"]["mode"] = chain_mode
+            record("PROCESS_CHAIN_CONFIRMED", dependencies.now())
             observe_generation()
             try:
                 dependencies.verify_provenance(
                     release_root=expectation.release_root,
                     service_name=expectation.service_name,
                     service_pid=running.pid,
-                    runner_pid=runner_pid,
+                    runner_pid=int(receipt["pid"]),
+                    runner_parent_pid=runner_parent_pid,
                     service_config_path=expectation.service_config_path,
                     expected_git_sha=expectation.expected_git_sha,
                 )

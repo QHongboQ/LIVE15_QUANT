@@ -145,6 +145,7 @@ def _write_runtime_receipt(
         "pid": os.getpid(),
         "parent_pid": os.getppid(),
         "interpreter_path": sys.executable,
+        "base_executable": getattr(sys, "_base_executable", sys.executable),
         # Runtime state belongs to the mutable Production root.  Only module
         # imports originate in the immutable release payload.
         "working_directory": str(production_root),
