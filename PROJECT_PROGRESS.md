@@ -37,7 +37,7 @@ A dash in `Deployed commit` is deliberately **not** a deployment claim.
 | RUN-004 | legacy-unknown / 2026-08-28 | `agent/archive-mvn003-integration-001` | #38 | `79e4f708` | — |
 | UI-012 | legacy-unknown / 2026-08-28 | `agent/live15-intentional-auxiliary-health-projection-001` | #39 | `7f790fb8` | — |
 | KWS-001 | legacy-unknown / 2026-08-28 | `agent/kalshi-ws-rollover-resync-fix-final` | #40 | `cce1ebc1` | — |
-| CTX-002 | legacy-unknown / 2026-08-28 | `agent/ctx-002-project-brain-reconciliation` | pending | `493c34b` | N/A |
+| CTX-002 | legacy-unknown / 2026-08-28 | `agent/ctx-002-project-brain-reconciliation` | pending | — (unmerged) | N/A |
 
 ## Current reconciliation basis
 
