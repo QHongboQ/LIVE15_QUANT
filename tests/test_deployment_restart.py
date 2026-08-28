@@ -16,7 +16,9 @@ from live15_quant.deployment_restart import (
     RestartGateError,
     ServiceSnapshot,
     WinSWLogCursor,
+    recover_legacy_service_verified,
     recover_service_verified,
+    restart_legacy_service_verified,
     restart_service_verified,
 )
 
@@ -475,23 +477,100 @@ def test_valid_new_service_and_fresh_receipt_passes_and_writes_nonempty_audit(
     assert not list(audit.parent.glob(".service-restart-recorder.json.*.tmp"))
 
 
-def test_legacy_rollback_uses_the_same_verified_restart_gate(tmp_path: Path) -> None:
+def test_legacy_rollback_uses_explicit_legacy_contract_without_modern_receipt(
+    tmp_path: Path,
+) -> None:
     expectation = _expectation(tmp_path)
     expectation = RestartExpectation(**{**expectation.__dict__, "expected_git_sha": "UNPROVEN"})
-    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
     before, stopped, started = _snapshots(tmp_path)
     scm = FakeScm(before=before, after_stop=stopped, after_start=started)
     seen: list[str] = []
 
-    def provenance(**kwargs: object) -> None:
+    def legacy_contract(**kwargs: object) -> None:
         seen.append(str(kwargs["expected_git_sha"]))
 
-    result = restart_service_verified(
+    result = restart_legacy_service_verified(
         expectation,
         dependencies=_dependencies(
-            scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock(), provenance
+            scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock()
         ),
+        verify_legacy=legacy_contract,
     )
 
     assert result.status == "PASS"
     assert seen == ["UNPROVEN"]
+
+
+def test_legacy_stopped_recovery_uses_generation_gate_without_modern_receipt(
+    tmp_path: Path,
+) -> None:
+    expectation = RestartExpectation(
+        **{**_expectation(tmp_path).__dict__, "expected_git_sha": "UNPROVEN"}
+    )
+    _, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=stopped, after_stop=stopped, after_start=started)
+    result = recover_legacy_service_verified(
+        expectation,
+        dependencies=_dependencies(
+            scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock()
+        ),
+        verify_legacy=lambda **_: None,
+    )
+    assert result.status == "PASS"
+    assert scm.stop_calls == 0
+    assert scm.start_calls == 1
+
+
+def test_legacy_generation_turnover_fails_closed(tmp_path: Path) -> None:
+    expectation = RestartExpectation(
+        **{**_expectation(tmp_path).__dict__, "expected_git_sha": "UNPROVEN"}
+    )
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    with pytest.raises(RestartGateError, match="SERVICE_GENERATION_CHANGED"):
+        restart_legacy_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm,
+                GenerationChangingWinSWLogs(
+                    "Starting WinSW in service mode",
+                    scm,
+                    ServiceSnapshot("RUNNING", 999, started.image_path),
+                ),
+                FakeClock(),
+            ),
+            verify_legacy=lambda **_: None,
+        )
+
+
+def test_modern_restart_rejects_legacy_unproven_contract(tmp_path: Path) -> None:
+    expectation = RestartExpectation(
+        **{**_expectation(tmp_path).__dict__, "expected_git_sha": "UNPROVEN"}
+    )
+    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    with pytest.raises(RestartGateError, match="LEGACY_CONTRACT_REQUIRED"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock()
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "transition",
+    [restart_legacy_service_verified, recover_legacy_service_verified],
+)
+def test_legacy_transition_rejects_modern_sha(tmp_path: Path, transition: object) -> None:
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    with pytest.raises(RestartGateError, match="LEGACY_CONTRACT_REQUIRES_UNPROVEN"):
+        transition(  # type: ignore[operator]
+            _expectation(tmp_path),
+            dependencies=_dependencies(
+                scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock()
+            ),
+            verify_legacy=lambda **_: None,
+        )
