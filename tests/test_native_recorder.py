@@ -854,6 +854,41 @@ def test_rollover_and_restart_recover_deterministic_lifecycle(tmp_path) -> None:
         assert store.count("kalshi_settlements") == 1
 
 
+def test_restart_clamps_stale_heartbeat_followup_counter(tmp_path) -> None:
+    """A stale heartbeat counter cannot make a final settlement fatal after restart."""
+
+    path = tmp_path / "restart.sqlite3"
+    pending = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="determined", result="yes"),
+        NOW + timedelta(minutes=16),
+    )
+    finalized = provider().parse_market(
+        Asset.BTC,
+        raw_market(status="finalized", result="yes"),
+        NOW + timedelta(minutes=17),
+    )
+    with RecorderStore(path) as store:
+        store.append_kalshi_market(pending)
+        assert store.unsettled_kalshi_count(now=NOW + timedelta(minutes=17)) == 1
+
+        restarted = KalshiNativeRecorder(
+            Settings(products=("BTC-USD",), recorder_health_path=tmp_path / "health.json"),
+            store,
+            discovery=FakeDiscovery(()),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            # This is the stale, pre-crash heartbeat value from the real failure class.
+            initial_active_settlement_followups=0,
+            now=lambda: NOW + timedelta(minutes=17),
+        )
+
+        restarted._accept_market(finalized)
+
+        assert restarted.health().active_settlement_followups == 0
+        assert store.count("kalshi_settlements") == 1
+
+
 class IsolatedDiscovery(FakeDiscovery):
     def __init__(self, failures: set[Asset] | None = None) -> None:
         super().__init__((discovery(),))
