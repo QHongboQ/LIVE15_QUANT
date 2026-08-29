@@ -140,6 +140,19 @@ SCM state and PID observations are the evidence.  The post-start WinSW wrapper
 log must contain a *new* `Starting WinSW in service mode` entry after the
 cursor; console-mode output is invalid.
 
+### Candidate sidecar credential binding
+
+Release XML deliberately carries symbolic Kalshi credential-path placeholders;
+it never carries credential material.  Before replacing an installed sidecar,
+the deployment authority must use
+`render_candidate_winsw_sidecar` to retain the installed sidecar's two existing
+external, absolute credential-path references.  It rejects a missing,
+placeholder, or relative installed reference before service control, and never
+reads credential-file contents or writes the path values to deployment
+evidence.  This is necessary because a LocalSystem WinSW service does not
+inherit a deploy user's environment variables.  Copying a release XML directly
+into a service sidecar is prohibited.
+
 The normal delegated deploy account may hold the service-control ACE while a
 LocalSystem WinSW process rejects `OpenProcess` with access denied.  Native
 full-path inspection remains preferred.  Only for that exact access-denied
