@@ -36,6 +36,15 @@ legacy path merely because a POC passed.
 
 ## Agent/Codex task shape
 
+Before composing a user-facing Codex task, read the current Git Project Brain
+for the relevant task instead of asking the user to re-paste durable project
+rules. Git is durable external memory; chat text is not the authority.
+
+Every copy-ready Codex task must explicitly state its selected model and
+reasoning level. Choose them dynamically from task complexity, risk, context
+size and expected token cost. Use the least expensive adequate setting; do not
+hard-code Terra/High as a default. Escalate only when the task justifies it.
+
 For generic infrastructure tasks, prompts and implementation plans should ask
 for the upstream/native mechanism first and keep LIVE15 work to:
 
@@ -90,6 +99,8 @@ Each migration owns one bounded task, branch and PR. Review must ask:
   controllers?
 - Are measured requirements, hashes, health/evidence and rollback boundaries
   explicit?
+- Did the prompt state a dynamically chosen model and reasoning level without
+  over-spending tokens for a simpler task?
 
 If the answer to the first three questions is no, the migration is not ready
 regardless of whether its tests pass.
