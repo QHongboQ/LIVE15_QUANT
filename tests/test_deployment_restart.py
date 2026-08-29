@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -123,6 +124,35 @@ def test_native_windows_process_inspector_observes_current_process() -> None:
     assert snapshot.parent_pid > 0
     assert snapshot.executable_path.is_file()
     assert snapshot.created_at.tzinfo is UTC
+
+
+def test_cim_process_snapshot_retains_pid_parent_creation_and_image_basename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*_: object, **__: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "pid": 202,
+                    "parent_pid": 101,
+                    "created_at": "2026-08-29T00:00:01+00:00",
+                    "name": "LIVE15Recorder.exe",
+                }
+            ),
+        )
+
+    monkeypatch.setattr("live15_quant.deployment_restart.subprocess.run", fake_run)
+
+    snapshot = WindowsProcessInspector._cim_snapshot(202)
+
+    assert snapshot == ProcessSnapshot(
+        pid=202,
+        parent_pid=101,
+        executable_path=Path("LIVE15Recorder.exe"),
+        created_at=datetime(2026, 8, 29, 0, 0, 1, tzinfo=UTC),
+        executable_observation="CIM_BASENAME_SCM_BOUND",
+    )
 
 
 def _expectation(tmp_path: Path, *, venv_redirector: bool = False) -> RestartExpectation:
@@ -262,6 +292,68 @@ def _dependencies(
         verify_provenance=provenance or (lambda **_: None),
         processes=processes,
     )
+
+
+def test_cim_basename_observation_preserves_the_strict_configured_process_chain(
+    tmp_path: Path,
+) -> None:
+    expectation = _expectation(tmp_path)
+    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    processes = _processes(expectation)
+    processes.snapshots = {
+        pid: ProcessSnapshot(
+            snapshot.pid,
+            snapshot.parent_pid,
+            Path(snapshot.executable_path.name),
+            snapshot.created_at,
+            "CIM_BASENAME_SCM_BOUND",
+        )
+        for pid, snapshot in processes.snapshots.items()
+    }
+
+    result = restart_service_verified(
+        expectation,
+        dependencies=_dependencies(
+            scm,
+            FakeWinSWLogs("Starting WinSW in service mode"),
+            FakeClock(),
+            processes=processes,
+        ),
+    )
+
+    audit = json.loads(result.audit_path.read_text(encoding="utf-8"))
+    assert audit["generation"]["winsw_executable_observation"] == "CIM_BASENAME_SCM_BOUND"
+
+
+def test_cim_basename_observation_rejects_a_nonmatching_configured_executable(
+    tmp_path: Path,
+) -> None:
+    expectation = _expectation(tmp_path)
+    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    processes = _processes(expectation)
+    service = processes.snapshots[started.pid]
+    processes.snapshots[started.pid] = ProcessSnapshot(
+        service.pid,
+        service.parent_pid,
+        Path("untrusted-wrapper.exe"),
+        service.created_at,
+        "CIM_BASENAME_SCM_BOUND",
+    )
+
+    with pytest.raises(RestartGateError, match="PROCESS_CHAIN_WINSW_EXECUTABLE_MISMATCH"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm,
+                FakeWinSWLogs("Starting WinSW in service mode"),
+                FakeClock(),
+                processes=processes,
+            ),
+        )
 
 
 def test_stop_command_success_but_service_remains_running_fails_closed(tmp_path: Path) -> None:

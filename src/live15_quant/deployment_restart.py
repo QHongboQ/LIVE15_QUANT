@@ -50,6 +50,7 @@ class ProcessSnapshot:
     parent_pid: int
     executable_path: Path
     created_at: datetime
+    executable_observation: str = "NATIVE_FULL_PATH"
 
 
 @dataclass(frozen=True)
@@ -307,6 +308,70 @@ class WindowsProcessInspector:
 
     _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     _TH32CS_SNAPPROCESS = 0x00000002
+    _ERROR_ACCESS_DENIED = 5
+
+    @staticmethod
+    def _cim_snapshot(pid: int) -> ProcessSnapshot:
+        """Read the minimum generation facts when a service process denies OpenProcess.
+
+        A delegated deploy operator can legitimately hold SCM start/stop rights while
+        the LocalSystem WinSW process denies ``PROCESS_QUERY_LIMITED_INFORMATION``.
+        ``Win32_Process`` exposes read-only PID, parent PID, creation time, and image
+        basename without broadening service or process ACLs.  The restart gate binds
+        that basename to the SCM ImagePath / parsed WinSW XML independently; it never
+        treats this as a full-path observation or an ancestor-chain exemption.
+        """
+
+        command = (
+            "$ErrorActionPreference='Stop'; "
+            f"$process=Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = {pid}'; "
+            "if ($null -eq $process) { exit 3 }; "
+            "[pscustomobject]@{"
+            "pid=[int]$process.ProcessId; "
+            "parent_pid=[int]$process.ParentProcessId; "
+            "created_at=$process.CreationDate.ToUniversalTime().ToString('o'); "
+            "name=[string]$process.Name"
+            "} | ConvertTo-Json -Compress"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=15,
+            )
+            value = json.loads(result.stdout) if result.returncode == 0 else None
+        except (OSError, TypeError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+            raise RestartGateError(f"PROCESS_OBSERVATION_FALLBACK_FAILURE: PID {pid}") from error
+        if not isinstance(value, dict):
+            raise RestartGateError(f"PROCESS_OBSERVATION_FALLBACK_FAILURE: PID {pid}")
+        observed_pid = value.get("pid")
+        parent_pid = value.get("parent_pid")
+        created_at = value.get("created_at")
+        name = value.get("name")
+        if (
+            not isinstance(observed_pid, int)
+            or observed_pid != pid
+            or not isinstance(parent_pid, int)
+            or parent_pid < 0
+            or not isinstance(created_at, str)
+            or not isinstance(name, str)
+            or not name
+            or Path(name).name != name
+        ):
+            raise RestartGateError(f"PROCESS_OBSERVATION_FALLBACK_FAILURE: PID {pid}")
+        try:
+            observed_at = datetime.fromisoformat(created_at).astimezone(UTC)
+        except ValueError as error:
+            raise RestartGateError(f"PROCESS_OBSERVATION_FALLBACK_FAILURE: PID {pid}") from error
+        return ProcessSnapshot(
+            pid=pid,
+            parent_pid=parent_pid,
+            executable_path=Path(name),
+            created_at=observed_at,
+            executable_observation="CIM_BASENAME_SCM_BOUND",
+        )
 
     def inspect(self, pid: int) -> ProcessSnapshot:
         if os.name != "nt":
@@ -361,11 +426,15 @@ class WindowsProcessInspector:
         kernel32.Process32NextW.restype = wintypes.BOOL
         handle = kernel32.OpenProcess(self._PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
+            if ctypes.get_last_error() == self._ERROR_ACCESS_DENIED:
+                return self._cim_snapshot(pid)
             raise RestartGateError(f"PROCESS_OBSERVATION_FAILURE: PID {pid}")
         try:
             size = wintypes.DWORD(32768)
             buffer = ctypes.create_unicode_buffer(size.value)
             if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                if ctypes.get_last_error() == self._ERROR_ACCESS_DENIED:
+                    return self._cim_snapshot(pid)
                 raise RestartGateError(f"PROCESS_OBSERVATION_FAILURE: PID {pid}")
             created, exited, kernel, user = (FILETIME(), FILETIME(), FILETIME(), FILETIME())
             if not kernel32.GetProcessTimes(
@@ -375,6 +444,8 @@ class WindowsProcessInspector:
                 ctypes.byref(kernel),
                 ctypes.byref(user),
             ):
+                if ctypes.get_last_error() == self._ERROR_ACCESS_DENIED:
+                    return self._cim_snapshot(pid)
                 raise RestartGateError(f"PROCESS_OBSERVATION_FAILURE: PID {pid}")
             # Keep the target process object referenced while capturing its
             # Toolhelp parent entry.  Otherwise a PID could exit and be reused
@@ -496,12 +567,23 @@ def _validate_snapshot(
         raise RestartGateError(f"PROCESS_CHAIN_{role}_PID_MISMATCH")
     if snapshot.created_at < start_requested_at:
         raise RestartGateError(f"PROCESS_CHAIN_{role}_STALE_OR_PID_REUSED")
-    if not _same_path(snapshot.executable_path, expected_executable):
-        raise RestartGateError(f"PROCESS_CHAIN_{role}_EXECUTABLE_MISMATCH")
-    # Read both paths at the identity boundary so a same-named replacement
-    # cannot satisfy the launch path check silently.
-    if _sha256(snapshot.executable_path) != _sha256(expected_executable):
-        raise RestartGateError(f"PROCESS_CHAIN_{role}_EXECUTABLE_HASH_MISMATCH")
+    if snapshot.executable_observation == "NATIVE_FULL_PATH":
+        if not _same_path(snapshot.executable_path, expected_executable):
+            raise RestartGateError(f"PROCESS_CHAIN_{role}_EXECUTABLE_MISMATCH")
+        # Read both paths at the identity boundary so a same-named replacement
+        # cannot satisfy the launch path check silently.
+        if _sha256(snapshot.executable_path) != _sha256(expected_executable):
+            raise RestartGateError(f"PROCESS_CHAIN_{role}_EXECUTABLE_HASH_MISMATCH")
+    elif snapshot.executable_observation == "CIM_BASENAME_SCM_BOUND":
+        # The process DACL denied a full-path handle.  Do not weaken the launch
+        # topology: accept only the Win32_Process image basename that matches the
+        # independently verified SCM/WinSW configured executable.
+        if snapshot.executable_path.name.casefold() != expected_executable.name.casefold():
+            raise RestartGateError(f"PROCESS_CHAIN_{role}_EXECUTABLE_MISMATCH")
+        if not expected_executable.is_file():
+            raise RestartGateError(f"PROCESS_CHAIN_{role}_EXECUTABLE_MISMATCH")
+    else:
+        raise RestartGateError(f"PROCESS_CHAIN_{role}_EXECUTABLE_OBSERVATION_INVALID")
 
 
 def _validate_modern_process_chain(
@@ -795,6 +877,7 @@ def _transition_service_verified(
             role="WINSW",
         )
         generation["winsw_process_created_at"] = service_generation.created_at.isoformat()
+        generation["winsw_executable_observation"] = service_generation.executable_observation
 
         def observe_generation() -> None:
             observed_at = dependencies.now()

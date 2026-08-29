@@ -140,6 +140,16 @@ SCM state and PID observations are the evidence.  The post-start WinSW wrapper
 log must contain a *new* `Starting WinSW in service mode` entry after the
 cursor; console-mode output is invalid.
 
+The normal delegated deploy account may hold the service-control ACE while a
+LocalSystem WinSW process rejects `OpenProcess` with access denied.  Native
+full-path inspection remains preferred.  Only for that exact access-denied
+case, the gate reads the documented read-only `Win32_Process` PID, parent PID,
+creation time, and image basename; the basename must still match the
+independently SCM/ImagePath- and parsed-XML-bound executable.  This preserves
+PID-reuse and direct/one-redirector checks without granting process ACLs or
+accepting an arbitrary ancestor.  `Win32_Process` documents both the
+creation/parent identity fields and their PID-reuse caveat.[^win32-process]
+
 For a modern active release, the gate rejects a missing or stale
 `runtime/release-runtime-<component>.json`, parent-PID mismatch, or any failed
 `verify_runtime_provenance` binding.  A legacy rollback invokes the exact same
@@ -162,3 +172,5 @@ If that audit write fails, the gate fails closed.
    against the restored legacy identity.
 
 DEP-PKG-001 performs only step 1's offline simulation and no Production action.
+
+[^win32-process]: [Microsoft: Win32_Process class](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process)
