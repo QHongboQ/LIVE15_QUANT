@@ -1,0 +1,33 @@
+{
+  "schema_version": "1",
+  "observed_at_utc": "2026-08-29T10:20:31.2100764+00:00",
+  "nomad_version": "2.0.5",
+  "service_account": "LocalService",
+  "service_state": "running",
+  "job_id": "live15-nomad-generic",
+  "allocation_id": "fbf38f04-e108-04af-1130-1a04f5efb28a",
+  "desired_status": "run",
+  "client_status": "running",
+  "deployment_status": "healthy",
+  "checks": [
+    {
+      "name": "http-health",
+      "status": "success",
+      "status_code": 200
+    }
+  ],
+  "provider": "nomad",
+  "lifecycle_event": "observation",
+  "source_refs": [
+    {
+      "path": "D:\\LIVE15_NOMAD_POC\\generic-poc\\logs\\nomad-soak-observer.log",
+      "sha256": "3830C7A698D22CA0748F045D8F2EB4A559B66D8D627E9A5BC2DE39FBF49FCB66"
+    },
+    {
+      "path": "D:\\LIVE15_NOMAD_POC\\generic-poc\\state\\nomad-soak-checkpoint.txt",
+      "sha256": "40E273413FF28B132B262BF0A2D9E305CE4AFC549639673CFA02C41603AE5036"
+    }
+  ],
+  "production": false,
+  "control_performed": false
+}

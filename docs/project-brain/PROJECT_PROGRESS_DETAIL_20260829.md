@@ -104,6 +104,12 @@ holdout, Hard Risk, training, and trading gates unchanged; do not introduce a
 LIVE15 supervisor, restart manager, rollback controller, custom registry, or
 model framework.
 
+The complete cross-layer replacement map is recorded in
+`docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`. It keeps Recorder truth,
+strict as-of/gap semantics, Hard Risk, and execution in LIVE15 while routing
+generic runtime, UI, telemetry, throughput, and future model research to
+separately gated upstream candidates.
+
 Maker commit `72daad0` is Checker-PASS after independent review. The local
 governance assertions and `git diff --check` pass; the repository test module
 is not installed in this isolated worktree, so no package installation was

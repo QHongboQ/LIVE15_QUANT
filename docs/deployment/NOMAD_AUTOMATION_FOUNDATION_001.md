@@ -36,6 +36,16 @@ truth, strict as-of validity, gap closure, sizing, Hard Risk, execution
 permission, or Production authorization. Any missing/stale/unsynchronized
 input remains fail-closed.
 
+The fixed evidence interface is defined by
+`docs/deployment/NOMAD_AUTOMATION_RECEIPT_V1.md` with a checked example at
+`docs/deployment/examples/nomad-automation-receipt-v1.example.json`. This
+stage defines the shape only; it does not add a runtime producer or consumer.
+
+The cross-layer replacement decision record is
+`docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`. It distinguishes adopted
+POC candidates, conditional infrastructure, research-only model references,
+and LIVE15 truth/safety responsibilities that must not be replaced.
+
 ## Acceptance and validation
 
 Maker and Independent Checker must confirm, from official HashiCorp docs and
@@ -49,6 +59,10 @@ the pinned v2.0.5 source/release:
    intact; and
 4. no code, framework, Production, holdout, Hard Risk, training, or trading
    change is required by this contract.
+
+The receipt contract must additionally reject future timestamps, missing
+source hashes, paths outside `D:\LIVE15_NOMAD_POC`, `provider != "nomad"`, and
+any `production` or `control_performed` value other than `false`.
 
 Validation for this docs-only task is `git diff --check` plus the repository's
 local governance/document checks. Hosted CI remains `CI_DEFERRED_QUOTA`; that
