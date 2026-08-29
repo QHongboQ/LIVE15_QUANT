@@ -10,6 +10,7 @@ Classification: `LOCAL_VALIDATION_PASS`.
 - command: `D:\LIVE15_QUANT\.venv\Scripts\python.exe -m pytest -o cache_dir=runtime/tmp/full-pytest-cache -q`;
 - completed: `2026-08-29T12:29:55.1502444Z`;
 - result: **1,176 passed, 14 skipped, 0 failed in 80.82s**;
+- `ruff check .` and `ruff format --check .`: PASS (336 files already formatted);
 - pytest cache was explicitly confined to the isolated worktree's
   `runtime/tmp` subtree.
 
