@@ -95,7 +95,8 @@ mechanisms. Nomad and SCM remain the lifecycle owners.
 
 ## Historical receipt and current acceptance — 2026-08-29
 
-- Historical staging receipt (not an acceptance receipt):
+- Historical staging receipt (artifact-identity provenance only; not current
+  owner/DACL acceptance evidence):
   `D:\LIVE15_NOMAD_POC\control-center-shadow\evidence\staging-receipt.json`.
   It records post-copy artifact/jobspec hashes and ACL read-back alongside
   `production=false`, `credentials_present=false`, `recorder_started=false`,
@@ -122,7 +123,7 @@ mechanisms. Nomad and SCM remain the lifecycle owners.
   shadow-owned logs/config/artifact remain in the separate child root stated
   above. This is an explicit POC-envelope boundary, not a custom log path.
 
-### Trusted-owner human gate
+### Historical task-side owner gate (superseded)
 
 Microsoft's documented icacls /setowner owner /T mechanism is required for
 applying the trusted owner recursively. A bounded POC-only test on 2026-08-29
@@ -156,18 +157,36 @@ owner, the top-level DACL, and both hashes were unchanged. It was not retried;
 this task must not request another UAC operation.
 
 Those failed task-side attempts are historical operator-gate evidence only.
-The environment administrator subsequently completed the approved native owner
-and top-level DACL initialization outside this task. The non-elevated
-read-only validation then verified all ten target objects are owned by
-BUILTIN\Administrators; each directory has the approved protected DACL; no
-Everyone, Authenticated Users, or named-user write ACE remains; and the
-artifact and jobspec hashes remain unchanged.
+They do not provide acceptance and do not authorize a repair subsystem. The
+environment administrator subsequently completed the approved native owner and
+top-level DACL initialization outside this task.
 
-The existing stager returned ALREADY_STAGED without repair. Nomad plan safely
-reported the stopped job would change only Stop from true to false, and the
-checked run created allocation 2eb3bf4a-e47b-62be-2ca7-675e3b07eb9e under
-deployment a27379da-5bb6-c479-acb4-c2c7bba88534. Native allocation status
-reported running, deployment health healthy, nomad-liveness success, fixed
+### Current read-only acceptance receipt
+
+The current receipt is the output of the read-only stager validation plus the
+bounded Nomad allocation observation, recorded here because the sealed POC
+evidence directory is intentionally non-writable to the task user:
+
+- all ten target objects, including roots and descendants, are owned by
+  BUILTIN\Administrators;
+- root, artifact, config and evidence each have the protected four-ACE
+  Administrators/SYSTEM full-control plus LocalService/Users RX policy;
+  logs has the same policy except LocalService Modify;
+- no Everyone, Authenticated Users, or named-user write ACE exists, and no
+  reparse point, external link, Production reference or credential reference
+  was found in the fixed POC tree;
+- artifact SHA-256 is
+  4D06F9641BA468D4C351190AB5F4E8D1D5F5BEB1463FFF85985190F46662127B and
+  jobspec SHA-256 is
+  C789ACB201349AD3FB85E41A830F1EE6BEB6A1976F3939A6C6E044C771B1A062;
+- the stager returned VALIDATED_STAGED in read_only_validation mode without
+  creating, copying, changing owner, granting DACLs or writing a receipt.
+
+Nomad plan safely reported the stopped job would change only Stop from true to
+false, and the checked run created allocation
+2eb3bf4a-e47b-62be-2ca7-675e3b07eb9e under deployment
+a27379da-5bb6-c479-acb4-c2c7bba88534. Native allocation status reported
+running, deployment health healthy, nomad-liveness success, fixed
 127.0.0.1:18081 mapping, and zero task restarts. Direct loopback health was
 HTTP 200 with production=false and read_only=true. Nomad stdout/stderr were
 empty; the POC runtime log recorded the new start with the pinned artifact
