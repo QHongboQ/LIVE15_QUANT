@@ -57,16 +57,44 @@ alter the Recorder truth contract, authorize training, or permit trading.
 ## Recommended adoption order
 
 1. Nomad/SCM for one isolated workload, then gradual WinSW retirement per
-   workload.
+   workload. Migrate low-risk read-only workloads first; Recorder is late.
 2. React Admin + Material UI for a display-only health/markets web POC.
-3. Vector as the default telemetry/log candidate; compare with OTel only if
-   trace/OTLP requirements justify it.
+3. Vector as the default telemetry/log candidate, then Grafana if a separate
+   operations dashboard is needed. Compare with OTel only if trace/OTLP
+   requirements justify it.
 4. Measure ST-005 and Recorder ingress before choosing NATS JetStream,
    Polars/Arrow, or DuckDB; use the smallest candidate that addresses the
    measured bottleneck.
-5. Preserve the existing LIVE15 data/model contracts; evaluate model projects
-   only through the already documented offline, pinned, leakage-safe research
-   path.
+5. Do not add Consul, Temporal, Kafka/Redpanda, or another control plane without
+   a concrete unmet requirement.
+6. Preserve the existing LIVE15 data/model/safety contracts; evaluate model
+   projects only through the documented offline, pinned, leakage-safe path.
+
+## Replacement acceptance rule
+
+Upstream adoption is expected to be **subtractive**. The target is fewer
+LIVE15-owned generic code paths, not a larger integration framework.
+
+- Freeze the legacy generic implementation once an upstream owner is selected;
+  only narrowly scoped Production safety/rollback fixes may extend it during
+  migration.
+- Prefer deletion or retirement of redundant supervisors, restart/rollback
+  machinery, wrappers, frontend plumbing and telemetry aggregation after each
+  workload-specific replacement is proven.
+- Keep integrations to pinned configuration, thin adapters and fail-closed
+  validation. Do not reproduce upstream behavior locally.
+- If the migration materially increases custom lifecycle/platform code, adds a
+  second/third special-case path, or causes both legacy and replacement control
+  planes to keep growing, stop for architecture review.
+- Passing tests do not override this rule. A replacement that does not simplify
+  ownership is not ready.
+- User-facing Codex tasks must recover durable rules from the current Git Project
+  Brain and select model/reasoning dynamically for complexity and token cost;
+  do not require the user to re-paste durable context or use a fixed expensive
+  model by default.
+
+Detailed execution guidance is in
+`docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md`.
 
 Every adoption requires its own isolated task, upstream documentation/source
 review, Maker, Independent Checker, local validation, durable evidence, and one

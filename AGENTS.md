@@ -84,6 +84,15 @@ or another nested exception branch, first consolidate around an existing shared/
 abstraction. Optimize for fewer code paths and clearer ownership, not for making one failing test
 pass.
 
+**Platform hard stop:** once a failure is classified as OS/permission/ACL, service/lifecycle,
+deploy/revert, discovery, telemetry, packaging, or other mature platform/upstream behavior,
+LIVE15 may keep only thin configuration/adapters and fail-closed read-only validation. Do not grow
+supervisors, restart/rollback controllers, ACL/UAC repair managers, registries, or new recovery
+branches around it. A new Checker platform prerequisite becomes an
+`environment/operator/installation` blocker and stops code changes. Upstream replacement must
+reduce/freeze local generic machinery; otherwise stop for architecture review. Detail and ordered
+migration policy: issues #88/#90 and `docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md`.
+
 ## Working protocol
 
 ### Protected `main` governance
@@ -106,8 +115,8 @@ changes; those still require the relevant explicit human approval.
 4. For bugs, execute the Upstream Reuse First sequence before inventing a local fix; then build a
    reproducible signal and classify whether the cause is LIVE15, third-party, configuration,
    environment/operator, test, data quality, or upstream platform behavior.
-5. For behavior changes, use a failing regression test, then the smallest architecture-consistent
-   implementation or upstream reuse/adaptation.
+5. Apply the Platform hard stop to externally owned failures; for LIVE15-owned behavior use a
+   failing regression test and the smallest architecture-consistent implementation/adaptation.
 6. Run targeted checks and relevant broader checks proportional to risk.
 7. Report evidence, changed files, validation, and remaining uncertainty.
 8. Stop on a real blocker or on success; do not widen the task opportunistically.
@@ -121,11 +130,18 @@ Use `setup-matt-pocock-skills` only to change the configured workflow. The
 project uses GitHub issues and a single-context documentation layout; see
 `docs/agents/issue-tracker.md` and `docs/agents/domain.md`.
 
-For normal work, load only the relevant skill from `.agents/skills/`, then the
-normal shared-brain bootstrap order:
+**Mandatory refresh gate:** before answering any LIVE15 continuation/next-step request, producing
+a copy-ready Codex task, or making a review/deployment/acceptance recommendation, refresh the
+current Git Project Brain. Do not rely on chat memory or a previous read as authority.
+
+Use the compact bootstrap order:
 
 `AGENTS.md` → `PROJECT_CHARTER.md` → `CONTEXT.md` → `CURRENT_STATE.md` →
-`PROJECT_PROGRESS.md` → only the relevant ADR, `BUG_REGISTRY.md`, or evidence.
+`PROJECT_PROGRESS.md` → only the relevant ADR, `BUG_REGISTRY.md`, issue, or evidence.
+
+Keep this refresh selective: read the compact bootstrap plus only the task-relevant pointer; do
+not scan the repository. If Git Project Brain cannot be refreshed, say so and do not silently
+issue an executable task from stale context.
 
 Git Project Brain is the shared external brain for ChatGPT and Codex; chat
 history is never durable project memory. Then use the relevant pointer:
@@ -158,7 +174,8 @@ Before closing an important task, decide whether it changed durable project
 state. Record only the authority that changed: task status/result/next action
 in `PROJECT_PROGRESS.md`; whole-project phase in `CURRENT_STATE.md`; a durable
 bug in `BUG_REGISTRY.md`; a strategy or architecture decision in the charter or
-ADR; and vocabulary/routing in `CONTEXT.md`. Complex LIVE15 task specifications
-normally state Terra/High, goal, authority, prohibitions, acceptance,
-validation, and return format. Use the mandatory Upstream Reuse First sequence in the relevant
-diagnosis skill before inventing a local fix.
+ADR; and vocabulary/routing in `CONTEXT.md`. User-facing Codex task specifications must explicitly
+state the selected model and reasoning level, chosen dynamically for the task's complexity, risk,
+and token cost; use the least expensive adequate setting rather than a fixed default. They should
+also state goal, authority, prohibitions, acceptance, validation, and return format. Use the mandatory
+Upstream Reuse First sequence in the relevant diagnosis skill before inventing a local fix.
