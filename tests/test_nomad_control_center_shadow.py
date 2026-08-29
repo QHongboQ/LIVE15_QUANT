@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 import socket
 import subprocess
 import tempfile
 import time
 import unittest
-from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +21,7 @@ class NomadControlCenterShadowTest(unittest.TestCase):
     def test_jobspec_is_nomad_native_and_pins_the_artifact(self) -> None:
         artifact_hash = hashlib.sha256(ARTIFACT.read_bytes()).hexdigest().upper()
         jobspec = JOBSPEC.read_text(encoding="utf-8")
+        attributes = (REPOSITORY_ROOT / ".gitattributes").read_text(encoding="utf-8")
 
         self.assertIn('job "live15-control-center-shadow"', jobspec)
         self.assertIn('provider = "nomad"', jobspec)
@@ -29,6 +30,10 @@ class NomadControlCenterShadowTest(unittest.TestCase):
         self.assertIn('path     = "/_nomad/healthz"', jobspec)
         self.assertIn('static       = 18081', jobspec)
         self.assertIn(artifact_hash, jobspec)
+        self.assertIn(
+            "deploy/nomad/control-center-shadow/live15-control-center-shadow.ps1 -text",
+            attributes,
+        )
         self.assertNotIn("LIVE15_KALSHI_PRODUCTION", jobspec)
         self.assertNotIn("LIVE15_QUANT", jobspec)
 

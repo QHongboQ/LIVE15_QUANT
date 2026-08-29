@@ -2,5 +2,6 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+deploy/nomad/control-center-shadow/live15-control-center-shadow.ps1 -text
 .local-tools export-ignore
 .local-tools/** export-ignore
