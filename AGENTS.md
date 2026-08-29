@@ -130,11 +130,18 @@ Use `setup-matt-pocock-skills` only to change the configured workflow. The
 project uses GitHub issues and a single-context documentation layout; see
 `docs/agents/issue-tracker.md` and `docs/agents/domain.md`.
 
-For normal work, load only the relevant skill from `.agents/skills/`, then the
-normal shared-brain bootstrap order:
+**Mandatory refresh gate:** before answering any LIVE15 continuation/next-step request, producing
+a copy-ready Codex task, or making a review/deployment/acceptance recommendation, refresh the
+current Git Project Brain. Do not rely on chat memory or a previous read as authority.
+
+Use the compact bootstrap order:
 
 `AGENTS.md` → `PROJECT_CHARTER.md` → `CONTEXT.md` → `CURRENT_STATE.md` →
-`PROJECT_PROGRESS.md` → only the relevant ADR, `BUG_REGISTRY.md`, or evidence.
+`PROJECT_PROGRESS.md` → only the relevant ADR, `BUG_REGISTRY.md`, issue, or evidence.
+
+Keep this refresh selective: read the compact bootstrap plus only the task-relevant pointer; do
+not scan the repository. If Git Project Brain cannot be refreshed, say so and do not silently
+issue an executable task from stale context.
 
 Git Project Brain is the shared external brain for ChatGPT and Codex; chat
 history is never durable project memory. Then use the relevant pointer:
