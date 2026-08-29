@@ -59,6 +59,14 @@ small configuration/thin adapters, mature defaults, and deletion of redundant lo
 Do not add speculative flexibility, duplicated safety controllers, or abstractions with no current
 requirement. Tracking: `GOV-PLATFORM-REUSE-001` / GitHub issue #88.
 
+## Project-brain and model-selection gate
+
+Before issuing a copy-ready LIVE15 Codex task, consult the current Git Project Brain for the
+relevant task. Durable project rules should be recovered from Git rather than asking the user to
+re-paste them. Then state the selected model and reasoning level explicitly in the prompt.
+Selection is dynamic: choose the least expensive adequate model/reasoning level for the task's
+complexity, risk, context size, and expected token cost; escalate only when justified.
+
 If scope expands materially, the original acceptance signal disappears, or the failure is owned by
 a platform/upstream boundary outside LIVE15, stop and reassess. Do not keep patching through an
 unclassified or externally owned failure.
