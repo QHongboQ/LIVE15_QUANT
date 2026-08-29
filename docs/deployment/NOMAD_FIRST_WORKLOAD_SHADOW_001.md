@@ -79,13 +79,12 @@ PowerShell listener at
 `tools/stage_nomad_control_center_shadow.ps1` is the thin staging adapter. It
 rejects targets outside `D:\LIVE15_NOMAD_POC`, verifies the jobspec-pinned
 artifact hash, accepts only the checkout containing the staging script as its
-source, and writes a post-seal no-secret staging receipt. The receipt records
-post-copy hashes, owner and recursive ACL read-back for artifact,
-configuration, and logs. It requires every root and child to be owned by
-BUILTIN\Administrators, with no child-specific ACL override. The adapter
-applies a read/execute ACL to artifact/configuration plus a
-LocalService-write-only log ACL. It is not a service manager, supervisor,
-registry, restart manager, or rollback controller.
+source, and only validates the already-sealed artifact/jobspec hashes,
+owner/DACL tree, reparse-point boundary and historical receipt consistency.
+It emits read-only validation evidence but never creates, copies, changes
+owner, grants ACLs or writes a receipt. It is not a service manager,
+supervisor, registry, restart manager, rollback controller or ACL/UAC repair
+subsystem.
 
 The minimal job is
 `deploy/nomad/control-center-shadow/live15-control-center-shadow.nomad.hcl`.

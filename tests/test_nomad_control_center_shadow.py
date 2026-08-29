@@ -127,6 +127,7 @@ class NomadControlCenterShadowTest(unittest.TestCase):
         self.assertIn('Owner -ne "BUILTIN\\Administrators"', stager)
         self.assertIn("Assert-SealedDescendants", stager)
         self.assertIn("staged child ACL is not the exact inherited sealed policy", stager)
+        self.assertIn("staged root is a reparse point", stager)
         self.assertIn("VALIDATED_STAGED", stager)
         self.assertNotIn("New-Item", stager)
         self.assertNotIn("Copy-Item", stager)
