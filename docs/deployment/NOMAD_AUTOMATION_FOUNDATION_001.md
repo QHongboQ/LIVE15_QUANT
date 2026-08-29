@@ -63,4 +63,3 @@ state is not a pass and no merge is authorized by this task.
 - [job revert](https://developer.hashicorp.com/nomad/commands/job/revert)
 - [service discovery](https://developer.hashicorp.com/nomad/docs/job-declare/service-discovery)
 - [v2.0.5 release](https://github.com/hashicorp/nomad/releases/tag/v2.0.5)
-
