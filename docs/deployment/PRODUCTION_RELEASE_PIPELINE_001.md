@@ -81,11 +81,16 @@ operation, not part of DEP-PKG-001.
 The stable `bootstrap/release_runner.py` is launched by each existing WinSW
 service definition. It is copied only by `stage-bootstrap` from the selected
 verified release. It validates the active pointer and manifest, changes into the
-immutable `app` directory, prepends `app/src` to `sys.path`, and writes a small
-runtime receipt with component, its parent WinSW PID, interpreter, application
-release ID/Git SHA/manifest hash, working directory, module root, and distinct
-bootstrap source release/manifest/hash fields. It does not start another
-process or manage service lifecycle. A legacy rollback receipt therefore proves
+mutable Production root so relative `data/`, `runtime/`, and log paths remain
+outside the immutable payload, and prepends immutable `app/src` to `sys.path`.
+Its runtime receipt records the component, process PID/parent PID, interpreter,
+base interpreter, application release ID/Git SHA/manifest hash, mutable working
+directory, immutable module root, and distinct bootstrap source
+release/manifest/hash fields. A modern receipt is valid only for either a
+direct `WinSW -> runner` process chain or the one verified Windows venv shape
+`WinSW -> configured venv redirector -> base-Python runner`; arbitrary
+intermediaries are rejected. It does not start another process or manage
+service lifecycle. A legacy rollback receipt therefore proves
 `deployment_git_sha = UNPROVEN` while retaining separately verified bootstrap
 provenance.
 
