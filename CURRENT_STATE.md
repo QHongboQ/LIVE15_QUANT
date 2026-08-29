@@ -40,7 +40,7 @@ Neither is a Production cutover or a change to WinSW runtime ownership. Detail:
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
-| Nomad secure migration POC | **VERIFIED / service-model POC and two-hour soak complete; first ControlCenter shadow locally validated** | `NOMAD-POC-SECURE-001` and `NOMAD-FIRST-WORKLOAD-SHADOW-001`; detail in Project Brain evidence index |
+| Nomad secure migration POC | **VERIFIED generic POC; first ControlCenter shadow BLOCKED / trusted ACL owner required (bounded allocation observation only)** | `NOMAD-POC-SECURE-001` and `NOMAD-FIRST-WORKLOAD-SHADOW-001`; detail in Project Brain evidence index |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |

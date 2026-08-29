@@ -143,7 +143,7 @@ function Seal-OrValidateAcl([string]$Path, [string]$LocalServicePermission, [boo
     if (-not $Existed) {
         & icacls $Path /setowner "BUILTIN\Administrators" /T /C | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "failed to set trusted owner recursively for staged root: $Path" }
-        & icacls $Path /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)$LocalServicePermission" "BUILTIN\Users:(OI)(CI)RX" /T /C | Out-Null
+        & icacls $Path /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)$LocalServicePermission" "BUILTIN\Users:(OI)(CI)RX" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "failed to seal staged ACL: $Path" }
     }
     return [ordered]@{

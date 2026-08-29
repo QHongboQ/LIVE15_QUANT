@@ -128,6 +128,10 @@ class NomadControlCenterShadowTest(unittest.TestCase):
         self.assertIn('/setowner "BUILTIN\\Administrators" /T /C', stager)
         self.assertIn("Assert-SealedDescendants", stager)
         self.assertIn("staged child ACL has an explicit access rule", stager)
+        self.assertNotIn(
+            '"BUILTIN\\Users:(OI)(CI)RX" /T /C',
+            stager,
+        )
 
     @staticmethod
     def _available_port() -> int:
