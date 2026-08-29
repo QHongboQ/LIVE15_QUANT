@@ -84,38 +84,14 @@ or another nested exception branch, first consolidate around an existing shared/
 abstraction. Optimize for fewer code paths and clearer ownership, not for making one failing test
 pass.
 
-### Platform patch-pile hard stop
-
-This is a mandatory stop rule, not a style preference. When the observed root cause is classified
-as operating-system behavior, permissions/ACL/ownership, service management, scheduling, process
-lifecycle, deployment/revert, service discovery, logging/telemetry, packaging, or another mature
-generic platform responsibility, **do not grow a LIVE15 repair subsystem around it**.
-
-LIVE15 may keep only:
-
-- the thinnest adapter/configuration required to call the upstream or native mechanism;
-- fail-closed **read-only validation** of required host/platform preconditions and receipts; and
-- LIVE15-specific Kalshi, strict-as-of/freshness/gap, persistence, research-authority, risk, and
-  execution semantics.
-
-Agents must not create or extend custom supervisors, restart managers, rollback controllers,
-ACL/owner repair managers, UAC/elevation wrappers, service lifecycle managers, custom
-registries/discovery, or nested platform-specific recovery branches when the OS or selected
-upstream project already owns that responsibility.
-
-If Maker/Checker discovers another generic platform prerequisite after the bounded adapter or
-validator exists, classify it as an **environment/operator/installation gate and stop**. Record the
-exact blocker and the native/admin action required; do not keep editing the adapter merely to
-absorb more platform behavior. A validator may say `PASS` or `BLOCKED`; it must not evolve into a
-repair controller.
-
-A replacement is expected to reduce local machinery. If adopting an upstream component increases
-custom lifecycle/platform code, adds a second/third special-case path, or requires speculative
-abstractions instead of deleting/simplifying code, stop for architecture review. Prefer one clear
-owner per responsibility, the fewest code paths, mature defaults, and lightweight code that does
-only the required job.
-
-Tracking: `GOV-PLATFORM-REUSE-001` / GitHub issue #88.
+**Platform hard stop:** once a failure is classified as OS/permission/ACL, service/lifecycle,
+deploy/revert, discovery, telemetry, packaging, or other mature platform/upstream behavior,
+LIVE15 may keep only thin configuration/adapters and fail-closed read-only validation. Do not grow
+supervisors, restart/rollback controllers, ACL/UAC repair managers, registries, or new recovery
+branches around it. A new Checker platform prerequisite becomes an
+`environment/operator/installation` blocker and stops code changes. Upstream replacement must
+reduce/freeze local generic machinery; otherwise stop for architecture review. Detail and ordered
+migration policy: issues #88/#90 and `docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md`.
 
 ## Working protocol
 
@@ -139,14 +115,11 @@ changes; those still require the relevant explicit human approval.
 4. For bugs, execute the Upstream Reuse First sequence before inventing a local fix; then build a
    reproducible signal and classify whether the cause is LIVE15, third-party, configuration,
    environment/operator, test, data quality, or upstream platform behavior.
-5. If the cause is configuration, environment/operator, OS/platform, or an already-owned upstream
-   responsibility, apply the Platform patch-pile hard stop: prefer the native/upstream action and
-   keep LIVE15 at validation/thin-adapter scope rather than implementing a repair subsystem.
-6. For LIVE15-owned behavior changes, use a failing regression test, then the smallest
-   architecture-consistent implementation or upstream reuse/adaptation.
-7. Run targeted checks and relevant broader checks proportional to risk.
-8. Report evidence, changed files, validation, and remaining uncertainty.
-9. Stop on a real blocker or on success; do not widen the task opportunistically.
+5. Apply the Platform hard stop to externally owned failures; for LIVE15-owned behavior use a
+   failing regression test and the smallest architecture-consistent implementation/adaptation.
+6. Run targeted checks and relevant broader checks proportional to risk.
+7. Report evidence, changed files, validation, and remaining uncertainty.
+8. Stop on a real blocker or on success; do not widen the task opportunistically.
 
 Use the local adapted skills in `.agents/skills/` for diagnosis, TDD, and alignment. Their
 provenance and LIVE15-specific adaptations are recorded in `.agents/skills-manifest.json`.
