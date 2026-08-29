@@ -72,15 +72,8 @@ function Copy-OrVerify-SealedSource([string]$Source, [string]$Destination, [stri
     Copy-Item -LiteralPath $Source -Destination $Destination
 }
 
-function Get-ExpectedRootAcl([string]$Path, [string]$LocalServicePermission) {
-    $acl = Get-Acl -LiteralPath $Path
-    if ($acl.Owner -ne "BUILTIN\Administrators") {
-        throw "staged ACL owner is not the trusted BUILTIN\Administrators principal: $Path"
-    }
-    if (-not $acl.AreAccessRulesProtected) {
-        throw "staged ACL inherits entries instead of using the sealed DACL: $Path"
-    }
-    $expectedRules = @{
+function Get-ExpectedAccessRules([string]$LocalServicePermission) {
+    return @{
         "NT AUTHORITY\SYSTEM" = [Security.AccessControl.FileSystemRights]::FullControl
         "BUILTIN\Administrators" = [Security.AccessControl.FileSystemRights]::FullControl
         "NT AUTHORITY\LOCAL SERVICE" = if ($LocalServicePermission -eq "M") {
@@ -91,6 +84,17 @@ function Get-ExpectedRootAcl([string]$Path, [string]$LocalServicePermission) {
         }
         "BUILTIN\Users" = [Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [Security.AccessControl.FileSystemRights]::Synchronize
     }
+}
+
+function Get-ExpectedRootAcl([string]$Path, [string]$LocalServicePermission) {
+    $acl = Get-Acl -LiteralPath $Path
+    if ($acl.Owner -ne "BUILTIN\Administrators") {
+        throw "staged ACL owner is not the trusted BUILTIN\Administrators principal: $Path"
+    }
+    if (-not $acl.AreAccessRulesProtected) {
+        throw "staged ACL inherits entries instead of using the sealed DACL: $Path"
+    }
+    $expectedRules = Get-ExpectedAccessRules $LocalServicePermission
     $accessRules = @($acl.Access)
     if ($accessRules.Count -ne $expectedRules.Count) {
         throw "staged ACL has an unexpected access rule: $Path"
@@ -117,7 +121,8 @@ function Get-ExpectedRootAcl([string]$Path, [string]$LocalServicePermission) {
     }
 }
 
-function Assert-SealedDescendants([string]$Path) {
+function Assert-SealedDescendants([string]$Path, [string]$LocalServicePermission) {
+    $expectedRules = Get-ExpectedAccessRules $LocalServicePermission
     $descendantReadback = @()
     foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force -Recurse)) {
         $acl = Get-Acl -LiteralPath $entry.FullName
@@ -127,8 +132,20 @@ function Assert-SealedDescendants([string]$Path) {
         if ($acl.AreAccessRulesProtected) {
             throw "staged child ACL blocks inheritance from its sealed root: $($entry.FullName)"
         }
-        if (@($acl.Access | Where-Object { -not $_.IsInherited }).Count -ne 0) {
-            throw "staged child ACL has an explicit access rule: $($entry.FullName)"
+        $accessRules = @($acl.Access)
+        if ($accessRules.Count -ne $expectedRules.Count) {
+            throw "staged child ACL has an unexpected access rule: $($entry.FullName)"
+        }
+        foreach ($accessRule in $accessRules) {
+            $identity = $accessRule.IdentityReference.Value
+            if (
+                -not $expectedRules.ContainsKey($identity) -or
+                $accessRule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                -not $accessRule.IsInherited -or
+                $accessRule.FileSystemRights -ne $expectedRules[$identity]
+            ) {
+                throw "staged child ACL is not the exact inherited sealed policy: $($entry.FullName)"
+            }
         }
         $descendantReadback += [ordered]@{
             path = $entry.FullName
@@ -148,7 +165,7 @@ function Seal-OrValidateAcl([string]$Path, [string]$LocalServicePermission, [boo
     }
     return [ordered]@{
         root = Get-ExpectedRootAcl $Path $LocalServicePermission
-        descendants = Assert-SealedDescendants $Path
+        descendants = Assert-SealedDescendants $Path $LocalServicePermission
     }
 }
 
