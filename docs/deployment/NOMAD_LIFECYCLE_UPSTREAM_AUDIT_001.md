@@ -51,9 +51,16 @@ non-Production operation that records the service query, Nomad allocation/check
 state, allocation logs, and durable POC checkpoint before and after the native
 service restart.
 
-No Production path, holdout, trading write, training action, UAC operation, or
-hosted-CI trigger is part of this audit.  Hosted CI remains
-`CI_DEFERRED_QUOTA`.
+No Production path, holdout, trading write, training action, or UAC operation
+is part of this audit. CI status belongs to the PR; the default
+`CI_DEFERRED_QUOTA` policy still requires task-specific user authorization.
+
+## Local governance validation
+
+At the original audit point, the four Project Brain context assertions passed
+locally: required pointers and recovery strings, skills-manifest/adaptation
+paths, and compactness. Re-run this check after any main reconciliation; record
+the final hosted-CI result on the PR rather than freezing it in this document.
 
 ## Official primary references
 
