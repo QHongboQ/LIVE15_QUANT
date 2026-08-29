@@ -77,7 +77,13 @@ an authorization to operate Production.
 
 1. The observation-only two-hour soak is complete. Its final checkpoint and
    observer log are retained under the isolated POC boundary with SHA-256
-   receipts; no runtime control was performed by the observer.
+   receipts; no runtime control was performed by the observer. The terminal
+   observer record is `2026-08-29T10:20:31.2100764+00:00 soak_complete
+   iterations=24`; its SHA-256 is
+   `3830C7A698D22CA0748F045D8F2EB4A559B66D8D627E9A5BC2DE39FBF49FCB66`.
+   `state\validation-status.txt` and `logs\validation-final-summary.txt`
+   predate that receipt and remain historical drafts, not competing results;
+   the exact paths, timestamps and checksums are in the Nomad handoff.
 2. Preserve the explicit `provider = "nomad"` POC boundary. Native discovery
    does not imply health-filtered consumer discovery or select a Production
    provider; see
@@ -89,7 +95,7 @@ an authorization to operate Production.
 
 | Workstream | Status | Next bounded action | Prohibitions |
 | --- | --- | --- | --- |
-| `NOMAD-POC-SECURE-001` | IN_PROGRESS / burn-in, native auto-revert, and bounded two-hour soak PASS | Preserve the final checksum/checkpoint evidence; next work is separately scoped non-Production assurance only | No Production service/data/control-plane changes; no arbitrary bridge capability |
+| `NOMAD-POC-SECURE-001` | VERIFIED / isolated POC burn-in, native auto-revert, and bounded two-hour soak PASS | Preserve the final checksum/checkpoint evidence; next work is separately scoped non-Production assurance only | No Production service/data/control-plane changes; no arbitrary bridge capability |
 | `ST-005` archive/purge throughput | IN_PROGRESS / proof pending | Read-only healthy-runtime 60-minute catch-up proof; processing must exceed ingress with backlog decline and intact safety | No restart, compaction, retention mutation, or speculative optimization |
 | Web / Control Center | Existing truth/observability foundation retained | Keep UI as a truthful projection of runtime evidence; deepen only through independently scoped tasks | UI must not manufacture health, control Production, or replace runtime authority |
 | Shadow Recorder | Existing SDK reliability shadow retained | Compare SDK-authoritative recorder behavior with bounded parity/reliability evidence; isolate mismatch | Not a replacement Recorder or a backdoor execution channel |
