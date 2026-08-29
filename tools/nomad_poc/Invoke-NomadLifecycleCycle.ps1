@@ -69,6 +69,14 @@ function Test-NomadCheckResults {
     $checkValues.Count -gt 0 -and @($checkValues | Where-Object { $_.Status -ne 'success' }).Count -eq 0
 }
 
+function Test-NomadAllocationRunning {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Allocation)
+
+    $taskStates = @($Allocation.TaskStates.PSObject.Properties.Value)
+    $Allocation.ClientStatus -eq 'running' -and $Allocation.DesiredStatus -eq 'run' -and $taskStates.Count -gt 0 -and @($taskStates | Where-Object { $_.State -ne 'running' }).Count -eq 0
+}
+
 function Test-NomadAllocationCheck {
     [CmdletBinding()]
     param(
@@ -76,6 +84,12 @@ function Test-NomadAllocationCheck {
         [Parameter(Mandatory)][string]$NomadAddress,
         [Parameter(Mandatory)][string]$AllocationId
     )
+
+    $allocation = & $NomadExe alloc status -json "-address=$NomadAddress" $AllocationId | ConvertFrom-Json
+    Assert-NomadCommandSucceeded -Operation 'alloc status' -ExitCode $LASTEXITCODE
+    if (-not (Test-NomadAllocationRunning -Allocation $allocation)) {
+        return $false
+    }
 
     $checks = & $NomadExe alloc checks -json "-address=$NomadAddress" $AllocationId | ConvertFrom-Json
     Assert-NomadCommandSucceeded -Operation 'alloc checks' -ExitCode $LASTEXITCODE
@@ -89,6 +103,7 @@ function Wait-NomadHealthyAllocation {
         [Parameter(Mandatory)][scriptblock]$CheckAllocation,
         [ValidateRange(1, 300)][int]$TimeoutSeconds = 60,
         [ValidateRange(1, 30)][int]$PollSeconds = 2,
+        [ValidateRange(1, 10)][int]$RequiredConsecutiveHealthyObservations = 1,
         [scriptblock]$Pause = { param([int]$Seconds) Start-Sleep -Seconds $Seconds }
     )
 
@@ -96,27 +111,47 @@ function Wait-NomadHealthyAllocation {
     $attempts = 0
     $emptySnapshots = 0
     $lastAllocationId = $null
+    $healthyAllocationId = $null
+    $consecutiveHealthyObservations = 0
 
     do {
         $attempts++
         $allocation = Select-NomadRunningAllocation -Allocations @(& $ReadAllocations)
         if ($null -eq $allocation) {
             $emptySnapshots++
+            $healthyAllocationId = $null
+            $consecutiveHealthyObservations = 0
         }
         else {
             $lastAllocationId = $allocation.ID
             try {
                 if (& $CheckAllocation $allocation.ID) {
-                    return [pscustomobject]@{
-                        Allocation = $allocation
-                        Attempts = $attempts
-                        EmptySnapshots = $emptySnapshots
+                    if ($healthyAllocationId -eq $allocation.ID) {
+                        $consecutiveHealthyObservations++
                     }
+                    else {
+                        $healthyAllocationId = $allocation.ID
+                        $consecutiveHealthyObservations = 1
+                    }
+                    if ($consecutiveHealthyObservations -ge $RequiredConsecutiveHealthyObservations) {
+                        return [pscustomobject]@{
+                            Allocation = $allocation
+                            Attempts = $attempts
+                            EmptySnapshots = $emptySnapshots
+                            ConsecutiveHealthyObservations = $consecutiveHealthyObservations
+                        }
+                    }
+                }
+                else {
+                    $healthyAllocationId = $null
+                    $consecutiveHealthyObservations = 0
                 }
             }
             catch {
                 # The allocation may have changed between the job and check
                 # reads; continue to observe Nomad's next authoritative state.
+                $healthyAllocationId = $null
+                $consecutiveHealthyObservations = 0
             }
         }
 

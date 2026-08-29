@@ -38,6 +38,27 @@ Describe 'Wait-NomadHealthyAllocation' {
 
         $allocation.ID | Should Be 'active'
     }
+    It 'requires the configured consecutive healthy observations before returning' {
+        $state = [pscustomobject]@{ Checks = 0 }
+        $reader = {
+            @([pscustomobject]@{
+                    ID = 'stable-allocation'
+                    ClientStatus = 'running'
+                    DesiredStatus = 'run'
+                    ModifyIndex = 2
+                })
+        }
+        $checker = {
+            param($AllocationId)
+            $state.Checks++
+            $true
+        }
+
+        $result = Wait-NomadHealthyAllocation -ReadAllocations $reader -CheckAllocation $checker -TimeoutSeconds 2 -PollSeconds 1 -RequiredConsecutiveHealthyObservations 2 -Pause { param($Seconds) }
+
+        $result.ConsecutiveHealthyObservations | Should Be 2
+        $state.Checks | Should Be 2
+    }
     It 'fails closed when a native Nomad command reports error' {
         $threw = $false
         try {
@@ -49,6 +70,17 @@ Describe 'Wait-NomadHealthyAllocation' {
         $threw | Should Be $true
     }
 
+    It 'rejects a healthy check when Nomad reports a task that is not running' {
+        $allocation = [pscustomobject]@{
+            ClientStatus = 'running'
+            DesiredStatus = 'run'
+            TaskStates = [pscustomobject]@{
+                fixture = [pscustomobject]@{ State = 'pending' }
+            }
+        }
+
+        (Test-NomadAllocationRunning -Allocation $allocation) | Should Be $false
+    }
     It 'rejects an allocation when any Nomad service check is not successful' {
         $checks = [pscustomobject]@{
             passing = [pscustomobject]@{ Status = 'success' }
