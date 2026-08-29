@@ -14,6 +14,9 @@ The release-pipeline prerequisites are merged, Control Center truth/performance
 hardening is merged, and two upstream reliability tasks are active before the
 formal long-run training GO/NO-GO gate.
 
+An isolated Nomad POC is active; it is not a Production cutover or a change to
+WinSW runtime ownership. Detail: `PROJECT_PROGRESS.md`.
+
 ## Completed foundations
 
 - protected-main governance;
@@ -34,6 +37,7 @@ formal long-run training GO/NO-GO gate.
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
+| Nomad secure migration POC | **BLOCKED_PENDING_FIXED_URLACL_CORRECTION** | `NOMAD-POC-SECURE-001`; detail in Project Brain evidence index |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
@@ -56,6 +60,9 @@ formal long-run training GO/NO-GO gate.
 - `ST-005` is not resolved merely because UI-013 can display catch-up state. It
   still requires measured throughput/catch-up evidence and a valid 60-minute
   proof with Recorder safety intact.
+- Nomad POC lifecycle evidence is not end-to-end readiness: fixed URLACL parser
+  correction remains. Scope is LocalService + loopback `18080` only; no
+  Production authority. Detail: `PROJECT_PROGRESS.md`.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
   **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
   frozen-holdout rows and was stopped immediately. The former `UNREVEALED`
@@ -71,14 +78,16 @@ formal long-run training GO/NO-GO gate.
    H2 revalidation inside that task;
 2. complete `ST-005` archive/purge throughput recovery and valid 60-minute
    catch-up proof; these two tasks may proceed independently and in parallel;
-3. reconcile/merge those tasks onto the then-current protected main;
-4. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is
+3. complete `NOMAD-POC-SECURE-001` through Checker/UAC gates, end-to-end POC
+   burn-in and bounded assurance; no Production cutover;
+4. reconcile/merge those tasks onto the then-current protected main;
+5. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is
    READY may a separate explicit human approval authorize deployment/restart and
    bounded runtime proof;
-5. complete the separate holdout-contamination remediation/replacement decision
+6. complete the separate holdout-contamination remediation/replacement decision
    without reopening the frozen holdout;
-6. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` only after that decision;
-7. start formal overnight training only after explicit `TRAINING_GO`.
+7. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` only after that decision;
+8. start formal overnight training only after explicit `TRAINING_GO`.
 
 Validated H2 is additive authority: formal research may use H0 + H1 + validated
 H2. An H2 capability that remains unvalidated or plan-restricted must be excluded

@@ -32,6 +32,7 @@ policy, storage, lifecycle, datasets, models, paper, risk, and UI. Detail:
 | Training recency | Development history over sessions/weeks | `docs/research_data_authority.md` |
 | Forward OOS freshness | Evidence strictly after a frozen specification | `docs/research_data_authority.md` |
 | Runtime owner | The single service/component authority permitted to restart a component | `docs/runtime_ownership_and_self_healing.md` |
+| Nomad secure POC | Protected LocalService POC bridge; fixed URLACL parser correction remains | `PROJECT_PROGRESS.md` |
 | Project progress | Durable task state, evidence links, cautions, and next action; never live telemetry | `PROJECT_PROGRESS.md` |
 
 ## Fast routing
@@ -44,6 +45,7 @@ policy, storage, lifecycle, datasets, models, paper, risk, and UI. Detail:
   `docs/model_artifact_lineage.md`, then the relevant evidence report.
 - Runtime ownership/recovery: `docs/runtime_ownership_and_self_healing.md`
   and `deploy/windows/runtime-ownership.json`.
+- Nomad POC: `PROJECT_PROGRESS.md`, then its detail index; never infer cutover approval.
 - Policy decision: `PROJECT_CHARTER.md`, then `docs/adr/README.md`.
 
 Do not scan the repository for context. Start here, then follow one pointer at
