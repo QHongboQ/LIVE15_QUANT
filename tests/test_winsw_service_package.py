@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import subprocess
-import tempfile
 import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -124,69 +123,68 @@ def test_control_center_config_only_references_credential_paths_not_secret_conte
     assert "PRIVATE KEY" not in xml
 
 
-def test_bootstrap_rejects_bad_download_without_promoting_it() -> None:
-    with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
-        project = Path(temp_dir) / "project"
-        (project / "deploy/windows").mkdir(parents=True)
-        (project / "tools").mkdir(parents=True)
-        bad = b"not WinSW"
-        (project / "download.bin").write_bytes(bad)
-        destination = project / ".local-tools/winsw/WinSW-x64.exe"
-        destination.parent.mkdir(parents=True)
-        existing = b"existing local WinSW executable"
-        destination.write_bytes(existing)
-        metadata = json.loads((ROOT / "deploy/windows/winsw-v2.12.0.json").read_text())
-        metadata["url"] = "http://127.0.0.1:0/download.bin"
-        (project / "deploy/windows/winsw-v2.12.0.json").write_text(json.dumps(metadata))
+def test_bootstrap_rejects_bad_download_without_promoting_it(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "deploy/windows").mkdir(parents=True)
+    (project / "tools").mkdir(parents=True)
+    bad = b"not WinSW"
+    (project / "download.bin").write_bytes(bad)
+    destination = project / ".local-tools/winsw/WinSW-x64.exe"
+    destination.parent.mkdir(parents=True)
+    existing = b"existing local WinSW executable"
+    destination.write_bytes(existing)
+    metadata = json.loads((ROOT / "deploy/windows/winsw-v2.12.0.json").read_text())
+    metadata["url"] = "http://127.0.0.1:0/download.bin"
+    (project / "deploy/windows/winsw-v2.12.0.json").write_text(json.dumps(metadata))
 
-        class Handler(SimpleHTTPRequestHandler):
-            requests = 0
+    class Handler(SimpleHTTPRequestHandler):
+        requests = 0
 
-            def do_GET(self) -> None:
-                type(self).requests += 1
-                super().do_GET()
+        def do_GET(self) -> None:
+            type(self).requests += 1
+            super().do_GET()
 
-            def log_message(self, *_args: object) -> None:
-                pass
+        def log_message(self, *_args: object) -> None:
+            pass
 
-        server = ThreadingHTTPServer(
-            ("127.0.0.1", 0),
-            partial(Handler, directory=str(project)),
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        partial(Handler, directory=str(project)),
+    )
+    metadata["url"] = f"http://127.0.0.1:{server.server_port}/download.bin"
+    (project / "deploy/windows/winsw-v2.12.0.json").write_text(json.dumps(metadata))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        env = os.environ.copy()
+        env["PSModulePath"] = (
+            r"C:\Program Files\WindowsPowerShell\Modules;"
+            r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\Modules"
         )
-        metadata["url"] = f"http://127.0.0.1:{server.server_port}/download.bin"
-        (project / "deploy/windows/winsw-v2.12.0.json").write_text(json.dumps(metadata))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            env = os.environ.copy()
-            env["PSModulePath"] = (
-                r"C:\Program Files\WindowsPowerShell\Modules;"
-                r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\Modules"
-            )
-            result = subprocess.run(
-                [
-                    r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    (
-                        "Import-Module Microsoft.PowerShell.Utility; "
-                        f"& '{ROOT / 'tools/bootstrap_winsw.ps1'}' -ProjectRoot '{project}'"
-                    ),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                env=env,
-            )
-        finally:
-            server.shutdown()
-            thread.join(timeout=5)
-        assert result.returncode != 0
-        assert Handler.requests == 1, result.stderr
-        assert destination.read_bytes() == existing
-        assert hashlib.sha256(bad).hexdigest().upper() != PINNED_SHA256
+        result = subprocess.run(
+            [
+                r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                (
+                    "Import-Module Microsoft.PowerShell.Utility; "
+                    f"& '{ROOT / 'tools/bootstrap_winsw.ps1'}' -ProjectRoot '{project}'"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    assert result.returncode != 0
+    assert Handler.requests == 1, result.stderr
+    assert destination.read_bytes() == existing
+    assert hashlib.sha256(bad).hexdigest().upper() != PINNED_SHA256
 
 
 def test_package_has_no_legacy_watchdog_or_recorder_lifecycle_dependency() -> None:

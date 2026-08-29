@@ -70,7 +70,8 @@ live15_quant = ["web/*.html", "web/*.css", "web/*.js"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
 asyncio_mode = "auto"
-pythonpath = ["."]
+cache_dir = "runtime/tmp/pytest-cache"
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 markers = [
     "smoke: tests that access public external services",
