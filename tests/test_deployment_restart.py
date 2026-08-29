@@ -374,7 +374,6 @@ def test_candidate_and_legacy_rollback_keep_distinct_restart_audits(tmp_path: Pa
         **{
             **expectation.__dict__,
             "expected_git_sha": "UNPROVEN",
-            "transition_id": "legacy-rollback",
         }
     )
     rollback = restart_legacy_service_verified(
@@ -389,6 +388,58 @@ def test_candidate_and_legacy_rollback_keep_distinct_restart_audits(tmp_path: Pa
 
     assert candidate.audit_path != rollback.audit_path
     assert candidate.audit_path.is_file() and rollback.audit_path.is_file()
+
+
+def test_reused_transition_id_rejects_before_overwriting_prior_audit(tmp_path: Path) -> None:
+    expectation = _expectation(tmp_path)
+    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
+    before, stopped, started = _snapshots(tmp_path)
+    candidate = restart_service_verified(
+        expectation,
+        dependencies=_dependencies(
+            FakeScm(before=before, after_stop=stopped, after_start=started),
+            FakeWinSWLogs("Starting WinSW in service mode"),
+            FakeClock(),
+        ),
+    )
+    original_audit = candidate.audit_path.read_bytes()
+    duplicate_scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+
+    with pytest.raises(RestartGateError, match="AUDIT_RECEIPT_ALREADY_EXISTS"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                duplicate_scm,
+                FakeWinSWLogs("Starting WinSW in service mode"),
+                FakeClock(),
+            ),
+        )
+
+    assert candidate.audit_path.read_bytes() == original_audit
+    assert duplicate_scm.stop_calls == 0 and duplicate_scm.start_calls == 0
+
+
+def test_in_progress_audit_reservation_rejects_before_service_precheck(tmp_path: Path) -> None:
+    expectation = _expectation(tmp_path)
+    reservation = expectation.evidence_directory / (
+        ".service-restart-recorder-modern-restart-candidate.json.reservation"
+    )
+    reservation.parent.mkdir(parents=True)
+    reservation.write_text("reserved", encoding="utf-8")
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+
+    with pytest.raises(RestartGateError, match="AUDIT_RECEIPT_ALREADY_EXISTS"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm,
+                FakeWinSWLogs("Starting WinSW in service mode"),
+                FakeClock(),
+            ),
+        )
+
+    assert scm.stop_calls == 0 and scm.start_calls == 0
 
 
 def test_transition_id_must_be_path_safe_before_service_precheck(tmp_path: Path) -> None:
@@ -422,7 +473,9 @@ def test_stop_command_success_but_service_remains_running_fails_closed(tmp_path:
 
     assert scm.stop_calls == 1
     assert scm.start_calls == 0
-    failed_audit = expectation.evidence_directory / "service-restart-recorder-candidate.json"
+    failed_audit = (
+        expectation.evidence_directory / "service-restart-recorder-modern-restart-candidate.json"
+    )
     assert failed_audit.is_file() and failed_audit.stat().st_size > 0
     assert json.loads(failed_audit.read_text(encoding="utf-8"))["final_status"] == "FAILED"
 
@@ -563,9 +616,10 @@ def test_generation_change_while_waiting_for_winsw_fails_closed_and_is_audited(
         )
 
     audit = json.loads(
-        (expectation.evidence_directory / "service-restart-recorder-candidate.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            expectation.evidence_directory
+            / "service-restart-recorder-modern-restart-candidate.json"
+        ).read_text(encoding="utf-8")
     )
     assert audit["failure"] == "SERVICE_GENERATION_CHANGED"
     assert {entry["pid"] for entry in audit["observed_generations"]} == {202, 404}
@@ -720,10 +774,14 @@ def test_valid_new_service_and_fresh_receipt_passes_and_writes_nonempty_audit(
     assert result.old_pid == 101
     assert result.new_pid == 202
     assert calls and calls[0]["service_pid"] == 202
-    audit = expectation.evidence_directory / "service-restart-recorder-candidate.json"
+    audit = (
+        expectation.evidence_directory / "service-restart-recorder-modern-restart-candidate.json"
+    )
     assert audit.is_file() and audit.stat().st_size > 0
     assert json.loads(audit.read_text(encoding="utf-8"))["final_status"] == "PASS"
-    assert not list(audit.parent.glob(".service-restart-recorder-candidate.json.*.tmp"))
+    assert not list(
+        audit.parent.glob(".service-restart-recorder-modern-restart-candidate.json.*.tmp")
+    )
 
 
 def test_exact_configured_windows_venv_redirector_is_the_only_allowed_intermediate(
@@ -754,9 +812,10 @@ def test_exact_configured_windows_venv_redirector_is_the_only_allowed_intermedia
     )
 
     audit = json.loads(
-        (expectation.evidence_directory / "service-restart-recorder-candidate.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            expectation.evidence_directory
+            / "service-restart-recorder-modern-restart-candidate.json"
+        ).read_text(encoding="utf-8")
     )
     assert calls[0]["runner_parent_pid"] == redirector_pid
     assert audit["process_chain"]["mode"] == "WINDOWS_VENV_REDIRECTOR"

@@ -168,8 +168,13 @@ For a modern active release, the gate rejects a missing or stale
 `verify_runtime_provenance` binding.  A legacy rollback invokes the exact same
 gate with expected Git SHA `UNPROVEN`; its provenance remains explicitly
 `LEGACY_UNPROVEN`.  Both success and failure persist an atomic non-empty
-`runtime/deployment-evidence/<deployment-id>/service-restart-<component>.json`.
-If that audit write fails, the gate fails closed.
+`runtime/deployment-evidence/<deployment-id>/service-restart-<component>-<transition-kind>-<transition_id>.json`.
+`transition-kind` is the explicit modern/legacy and restart/recover-stopped
+state-machine mode. Before any service operation, the gate atomically reserves
+that exact transition identity with a non-empty receipt; a collision fails
+closed. Candidate and rollback (or a stopped-service recovery) therefore
+cannot overwrite one another's evidence. If that audit write fails, the gate
+fails closed.
 
 ## Approved future sequence
 

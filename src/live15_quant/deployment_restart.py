@@ -140,6 +140,13 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _serialized_audit(value: dict[str, Any]) -> str:
+    serialized = json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    if not serialized.strip():  # Defensive: audit records must never be empty.
+        raise RestartGateError("AUDIT_RECEIPT_WRITE_FAILURE: empty audit serialization")
+    return serialized
+
+
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     """Persist a non-empty audit document or fail the gate.
 
@@ -147,9 +154,7 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     as a zero-byte or partially serialized JSON file.
     """
 
-    serialized = json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
-    if not serialized.strip():  # Defensive: audit records must never be empty.
-        raise RestartGateError("AUDIT_RECEIPT_WRITE_FAILURE: empty audit serialization")
+    serialized = _serialized_audit(value)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
@@ -163,6 +168,39 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
         raise RestartGateError(f"AUDIT_RECEIPT_WRITE_FAILURE: {path}: {error}") from error
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _reserve_atomic_json(path: Path, value: dict[str, Any]) -> None:
+    """Atomically reserve one immutable audit identity with a non-empty receipt."""
+
+    serialized = _serialized_audit(value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise RestartGateError("AUDIT_RECEIPT_ALREADY_EXISTS")
+    reservation = path.with_name(f".{path.name}.reservation")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        descriptor = os.open(reservation, flags, 0o600)
+    except FileExistsError as error:
+        raise RestartGateError("AUDIT_RECEIPT_ALREADY_EXISTS") from error
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
+            destination.write(serialized)
+        if reservation.stat().st_size == 0:
+            raise RestartGateError("AUDIT_RECEIPT_WRITE_FAILURE: reserved audit is empty")
+        if path.exists():
+            raise RestartGateError("AUDIT_RECEIPT_ALREADY_EXISTS")
+        os.replace(reservation, path)
+        if path.stat().st_size == 0:
+            raise RestartGateError("AUDIT_RECEIPT_WRITE_FAILURE: committed audit is empty")
+    except RestartGateError:
+        reservation.unlink(missing_ok=True)
+        raise
+    except OSError as error:
+        reservation.unlink(missing_ok=True)
+        raise RestartGateError(f"AUDIT_RECEIPT_WRITE_FAILURE: {path}: {error}") from error
 
 
 def _image_executable(image_path: str) -> Path:
@@ -732,14 +770,22 @@ def _wait_for_winsw_service_mode_start(
 _SAFE_TRANSITION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 
 
-def _audit_path(expectation: RestartExpectation) -> Path:
-    """Keep candidate and rollback receipts distinct within one deployment evidence root."""
+def _audit_transition_kind(*, modern_contract: bool, allow_stopped_recovery: bool) -> str:
+    contract = "modern" if modern_contract else "legacy"
+    operation = "recover-stopped" if allow_stopped_recovery else "restart"
+    return f"{contract}-{operation}"
+
+
+def _audit_path(expectation: RestartExpectation, *, transition_kind: str) -> Path:
+    """Derive one stable receipt path for one complete service transition identity."""
 
     if not _SAFE_TRANSITION_ID.fullmatch(expectation.transition_id):
         raise RestartGateError("INVALID_TRANSITION_ID")
-    return expectation.evidence_directory / (
-        f"service-restart-{expectation.component}-{expectation.transition_id}.json"
+    audit_path = expectation.evidence_directory / (
+        "service-restart-"
+        f"{expectation.component}-{transition_kind}-{expectation.transition_id}.json"
     )
+    return audit_path
 
 
 def _transition_service_verified(
@@ -766,13 +812,18 @@ def _transition_service_verified(
     if not modern_contract and expectation.expected_git_sha != "UNPROVEN":
         raise RestartGateError("LEGACY_CONTRACT_REQUIRES_UNPROVEN")
     dependencies = dependencies or default_dependencies()
-    audit_path = _audit_path(expectation)
+    transition_kind = _audit_transition_kind(
+        modern_contract=modern_contract,
+        allow_stopped_recovery=allow_stopped_recovery,
+    )
+    audit_path = _audit_path(expectation, transition_kind=transition_kind)
     stages: list[dict[str, str]] = []
     audit: dict[str, Any] = {
         "schema_version": 1,
         "service_name": expectation.service_name,
         "component": expectation.component,
         "transition_id": expectation.transition_id,
+        "transition_kind": transition_kind,
         "expected_git_sha": expectation.expected_git_sha,
         "service_config_path": str(expectation.service_config_path),
         "wrapper_log_path": str(expectation.wrapper_log_path),
@@ -781,6 +832,7 @@ def _transition_service_verified(
         "transition_mode": "RECOVER_STOPPED" if allow_stopped_recovery else "RESTART",
         "final_status": "PRECHECK",
     }
+    _reserve_atomic_json(audit_path, audit)
 
     def record(stage: str, timestamp: datetime) -> None:
         stages.append({"stage": stage, "timestamp_utc": timestamp.isoformat()})
