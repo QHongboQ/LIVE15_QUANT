@@ -32,7 +32,7 @@ policy, storage, lifecycle, datasets, models, paper, risk, and UI. Detail:
 | Training recency | Development history over sessions/weeks | `docs/research_data_authority.md` |
 | Forward OOS freshness | Evidence strictly after a frozen specification | `docs/research_data_authority.md` |
 | Runtime owner | The single service/component authority permitted to restart a component | `docs/runtime_ownership_and_self_healing.md` |
-| Nomad secure POC | Isolated LocalService + fixed loopback URLACL service model; end-to-end burn-in and native auto-revert are verified, bounded soak remains | `PROJECT_PROGRESS.md`, then `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md` |
+| Nomad secure POC | Isolated LocalService POC; burn-in/auto-revert verified, soak active | `PROJECT_PROGRESS.md`, then `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md` |
 | Project progress | Durable task state, evidence links, cautions, and next action; never live telemetry | `PROJECT_PROGRESS.md` |
 
 ## Fast routing
@@ -46,8 +46,7 @@ policy, storage, lifecycle, datasets, models, paper, risk, and UI. Detail:
 - Runtime ownership/recovery: `docs/runtime_ownership_and_self_healing.md`
   and `deploy/windows/runtime-ownership.json`.
 - Nomad POC: `PROJECT_PROGRESS.md`, then
-  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`; never infer
-  cutover approval.
+  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`; no cutover implied.
 - Policy decision: `PROJECT_CHARTER.md`, then `docs/adr/README.md`.
 
 Do not scan the repository for context. Start here, then follow one pointer at

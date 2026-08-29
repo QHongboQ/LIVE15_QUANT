@@ -60,11 +60,9 @@ WinSW runtime ownership. Detail: `PROJECT_PROGRESS.md`.
 - `ST-005` is not resolved merely because UI-013 can display catch-up state. It
   still requires measured throughput/catch-up evidence and a valid 60-minute
   proof with Recorder safety intact.
-- Nomad POC has verified the isolated LocalService + loopback `18080` service
-  model, fixed native URLACL, workload/service restart and native auto-revert.
-  Its bounded observation-only soak remains in progress. This is never
-  Production authority, a WinSW replacement, or cutover approval. Detail:
-  `PROJECT_PROGRESS.md` and
+- Nomad POC: isolated LocalService/loopback burn-in and native auto-revert are
+  verified; the bounded soak remains active. Never infer Production authority,
+  WinSW replacement or cutover. Detail:
   `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
   **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
