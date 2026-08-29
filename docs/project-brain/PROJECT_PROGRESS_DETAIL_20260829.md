@@ -157,8 +157,11 @@ quota, and no merge follows from a green result.
 - Local evidence: 15 targeted tests passed; the full local suite completed at
   `2026-08-29T12:38:54.8412104Z` with 1,181 passed and 14 opt-in smoke skips;
   Ruff and `git diff --check` passed. Independent Checker returned PASS.
-- Hosted CI is intentionally deferred under `CI_DEFERRED_QUOTA`; no merge or
-  Production/runtime operation was performed.
+- Final current-main reconciliation validation: 1,182 passed and 14 explicit
+  opt-in smoke skips after pytest source/root imports were aligned with CI;
+  the cache-startup rejection regression and Ruff passed.
+- Hosted CI is deferred by default; its required final run needs task-specific
+  user authorization. No Production/runtime operation was performed.
 
 ## Forward roadmap routing
 
