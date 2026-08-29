@@ -110,12 +110,31 @@ separate `DEP001_DEPLOY_APPROVED` human gate.
 The exact read-only observations and non-secret identity fields are recorded in
 `docs/deployment/DEP001_PHASE_A_PREFLIGHT_20260829.md`.
 
+### SHADOW-REC-001 historical evidence audit (2026-08-29)
+
+At observation time, the protected checkout was inspected read-only. The receipt
+`runtime/kalshi-sdk-ws-shadow-status.json` reports `RUNNING`, PID `17356`,
+`process_alive=true`, zero synchronized assets, 53,736 recent gaps and 379,971
+recent mismatches, but its last heartbeat is 2026-08-26. The separate
+`runtime/sdk-reliability-shadow-status.json` reports `RUNNING`, PID `11352`,
+`process_alive=true`, ten synchronized assets, and a last heartbeat of
+2026-08-24. A bounded native process query found both reported PIDs absent.
+These receipts are therefore stale or otherwise uncorrelated with current
+process state and cannot establish current shadow health. Both receipts declare
+`official_recorder_writes=false`; the shadow remains non-authoritative. No
+restart, cleanup, service action, or Production mutation was attempted. Any
+revalidation must be a separately scoped non-Production task with fresh process
+identity, bounded evidence, and independent review.
+
+The exact non-secret observations are recorded in
+`docs/reliability/SHADOW_RECORDER_EVIDENCE_AUDIT_20260829.md`.
+
 | Workstream | Status | Next bounded action | Prohibitions |
 | --- | --- | --- | --- |
 | `NOMAD-POC-SECURE-001` | VERIFIED / isolated POC burn-in, native auto-revert, and bounded two-hour soak PASS | Preserve the final checksum/checkpoint evidence; next work is separately scoped non-Production assurance only | No Production service/data/control-plane changes; no arbitrary bridge capability |
 | `ST-005` archive/purge throughput | BLOCKED / `PROOF_NEEDS_DEPLOYMENT` | 2026-08-29 preflight found a legacy `UNPROVEN` pointer and then-current-main instrumentation unactivated; a separate SHA-verifiable deployment gate precedes one fresh 60-minute proof. | No restart, compaction, retention mutation, Production write, or speculative optimization |
 | Web / Control Center | Existing truth/observability foundation retained | Keep UI as a truthful projection of runtime evidence; deepen only through independently scoped tasks | UI must not manufacture health, control Production, or replace runtime authority |
-| Shadow Recorder | Existing SDK reliability shadow retained | Compare SDK-authoritative recorder behavior with bounded parity/reliability evidence; isolate mismatch | Not a replacement Recorder or a backdoor execution channel |
+| Shadow Recorder | BLOCKED / historical receipts stale | Revalidate only in a separately scoped non-Production task with fresh identity/evidence | Not a replacement Recorder or a backdoor execution channel |
 | Fault/soak assurance | Planned after a healthy POC boundary | Use bounded, reproducible, reversible POC matrices with evidence | No destructive stress against Production or frozen holdout |
 
 ## CI quota policy
