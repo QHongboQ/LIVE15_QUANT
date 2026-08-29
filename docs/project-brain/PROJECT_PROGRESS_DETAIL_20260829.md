@@ -93,6 +93,23 @@ an authorization to operate Production.
 
 ## Current overnight workstreams
 
+### DEP-001 Phase A read-only preflight (2026-08-29)
+
+The protected Windows checkout and service metadata were inspected without
+writing files, changing services, or reading secrets. At that observation, the
+preflight was **not ready** for deployment: the checkout was `c2ded1d4` while
+then-current `origin/main` was `4d088930` (37 commits behind), with the expected mutable/release artifacts
+present in the dirty root. The active pointer resolves to
+`legacy-unproven-08989b3efd7d19f6` (`git_commit_sha=UNPROVEN`), while the
+currently running WinSW services use `LocalSystem`. The tracked WinSW templates
+still invoke the mutable root `.venv` and root working directory, so they do not
+by themselves prove immutable current-main release provenance. This result
+does not authorize a restart or deployment; any remediation remains behind the
+separate `DEP001_DEPLOY_APPROVED` human gate.
+
+The exact read-only observations and non-secret identity fields are recorded in
+`docs/deployment/DEP001_PHASE_A_PREFLIGHT_20260829.md`.
+
 | Workstream | Status | Next bounded action | Prohibitions |
 | --- | --- | --- | --- |
 | `NOMAD-POC-SECURE-001` | VERIFIED / isolated POC burn-in, native auto-revert, and bounded two-hour soak PASS | Preserve the final checksum/checkpoint evidence; next work is separately scoped non-Production assurance only | No Production service/data/control-plane changes; no arbitrary bridge capability |
