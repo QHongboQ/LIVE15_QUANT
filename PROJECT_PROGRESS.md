@@ -25,6 +25,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | H2-TRAIN-002 | MERGED / BLOCKED | PR #48 `6bb24775` | Real snapshot acquisition works; delta endpoint plan-restricted; prior H0 overlap blocked by gap authority. |
 | UI-013 | MERGED / COMPLETE | PR #49 `30fcdd85` | Control Center truth/performance/observability hardened; ST-005 itself remains unresolved. |
 | DEV-TOOLING-GH-001 | VERIFIED / AVAILABLE | Windows development host | GitHub CLI (`gh`) is installed and authenticated; Codex may use it for PR, Actions/CI, issue, review, and GitHub API workflows. Ordinary repo-local maintenance may be autonomously merged after the standing Upstream Reuse First + regression + Checker + green-CI gates; elevated-review zones retain their explicit human gates. |
+| SHADOW-REC-DISCOVERY-CONTRACT-001 | MERGED / CONTRACT | PR #80 | Non-Production validation remains separately authorized. |
 
 ## Active and gated work
 
@@ -39,7 +40,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | ST-005 | BLOCKED / PROOF_NEEDS_DEPLOYMENT | 2026-08-29 preflight: legacy `UNPROVEN` pointer; then-current main instrumentation was unactivated. A SHA-verifiable deployment gate precedes a fresh 60-minute proof. Detail: `docs/evidence/st-005-current-main-preflight-20260829.md`. | Human-authorized deployment; no restart, storage mutation, or Production write |
 | DEP-001 | BLOCKED / PREFLIGHT_NOT_READY | 2026-08-29 read-only snapshot: dirty protected checkout, 37 commits behind then-main, active legacy `UNPROVEN` pointer. No deployment/restart. Detail: `docs/deployment/DEP001_PHASE_A_PREFLIGHT_20260829.md`. | Deployment/restart requires separate explicit `DEP001_DEPLOY_APPROVED` |
 | DEP-ROOT-HYGIENE-PREVENT-001 | PLANNED | Keep pytest/Checker/Codex artifacts out of `D:\LIVE15_QUANT`: use an external temp root or approved excluded `runtime/tmp`. Add guard/regression after root-cleanup; it does not gate DEP-001 unless residue recurs. | Production cleanup remains separately authorized |
-| SHADOW-REC-DISCOVERY-CONTRACT-001 | PR_PENDING / CONTRACT_COMPLETE | Separate docs-only contract defines non-Production Shadow Recorder/service-discovery evidence, provider consistency, native health semantics, fail-closed rules and human boundaries. No runtime execution or provider selection. | Requires separately authorized non-Production validation; no Production/cutover |
+| NOMAD-LIFECYCLE-UPSTREAM-AUDIT-001 | PR_PENDING / AUDIT_PASS | Native service lifecycle is authoritative; manual agent restart remains fail-closed and superseded. Detail: `docs/deployment/NOMAD_LIFECYCLE_UPSTREAM_AUDIT_001.md`. | Docs-only; no POC execution, Production, or UAC |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
 
 ## Route to formal overnight training
