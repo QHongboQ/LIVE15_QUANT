@@ -87,7 +87,7 @@ jobs:
       - name: Project context tests
         env:
           PYTHONPATH: src
-        run: pytest -p no:cacheprovider tests/test_agent_context.py
+        run: pytest tests/test_agent_context.py
 
   control-center:
     name: Control Center tests
@@ -110,7 +110,7 @@ jobs:
       - name: Import check
         run: python tools/ci_import_check.py
       - name: Control Center tests
-        run: pytest -p no:cacheprovider tests/test_control_center.py
+        run: pytest tests/test_control_center.py
 
   recorder-ws:
     name: Recorder and WS tests
@@ -133,7 +133,7 @@ jobs:
       - name: Import check
         run: python tools/ci_import_check.py
       - name: Recorder and WS tests
-        run: pytest -p no:cacheprovider tests/test_recorder.py tests/test_recorder_control.py tests/test_ws_retention.py tests/test_ws_archive.py tests/test_kalshi_ws.py tests/test_kalshi_ws_recorder.py
+        run: pytest tests/test_recorder.py tests/test_recorder_control.py tests/test_ws_retention.py tests/test_ws_archive.py tests/test_kalshi_ws.py tests/test_kalshi_ws_recorder.py
 
   data-storage:
     name: Data and storage tests
@@ -156,7 +156,7 @@ jobs:
       - name: Import check
         run: python tools/ci_import_check.py
       - name: Data and storage tests
-        run: pytest -p no:cacheprovider tests/test_storage.py tests/test_gaps.py tests/test_dataset.py tests/test_ws_archive.py
+        run: pytest tests/test_storage.py tests/test_gaps.py tests/test_dataset.py tests/test_ws_archive.py
 
   research-model:
     name: Research and model tests
@@ -179,7 +179,7 @@ jobs:
       - name: Import check
         run: python tools/ci_import_check.py
       - name: Research and model tests
-        run: pytest -p no:cacheprovider tests/test_research_data_authority.py tests/test_historical_research.py tests/test_historical_bulk.py tests/test_factor_factory.py tests/test_factor001r.py tests/test_sequence_readiness.py tests/test_model*.py
+        run: pytest tests/test_research_data_authority.py tests/test_historical_research.py tests/test_historical_bulk.py tests/test_factor_factory.py tests/test_factor001r.py tests/test_sequence_readiness.py tests/test_model*.py
 
   full:
     name: Full regression suite
