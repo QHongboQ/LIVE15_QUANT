@@ -14,9 +14,10 @@ The release-pipeline prerequisites are merged, Control Center truth/performance
 hardening is merged, and two upstream reliability tasks are active before the
 formal long-run training GO/NO-GO gate.
 
-An isolated Nomad POC is verified, and its first sealed non-Production
-ControlCenter shadow has completed bounded local allocation validation. Neither
-is a Production cutover or a change to WinSW runtime ownership. Detail:
+An isolated Nomad POC is verified, and its first non-Production ControlCenter
+shadow has completed a bounded allocation observation but is blocked from
+acceptance because its staged root has an interactive-user Windows ACL owner.
+Neither is a Production cutover or a change to WinSW runtime ownership. Detail:
 `PROJECT_PROGRESS.md`.
 
 ## Completed foundations
@@ -63,9 +64,10 @@ is a Production cutover or a change to WinSW runtime ownership. Detail:
   still requires measured throughput/catch-up evidence and a valid 60-minute
   proof with Recorder safety intact.
 - Nomad POC: isolated LocalService/loopback burn-in, native auto-revert, and
-  the two-hour observation-only soak are verified. A sealed ControlCenter
-  shadow has one passing native allocation/check receipt; it is not a replay of
-  the generic POC's long lifecycle checks. Never infer Production authority,
+  the two-hour observation-only soak are verified. A ControlCenter shadow has
+  one passing native allocation/check observation, but the user-owned staged
+  artifact fails the trusted-owner sealing gate; it is not a replay of the
+  generic POC's long lifecycle checks. Never infer Production authority,
   WinSW replacement or cutover. Detail:
   `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md` and
   `docs/deployment/NOMAD_FIRST_WORKLOAD_SHADOW_001.md`.

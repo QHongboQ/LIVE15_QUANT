@@ -72,8 +72,11 @@ function Copy-OrVerify-SealedSource([string]$Source, [string]$Destination, [stri
     Copy-Item -LiteralPath $Source -Destination $Destination
 }
 
-function Get-ExpectedAcl([string]$Path, [string]$LocalServicePermission) {
+function Get-ExpectedRootAcl([string]$Path, [string]$LocalServicePermission) {
     $acl = Get-Acl -LiteralPath $Path
+    if ($acl.Owner -ne "BUILTIN\Administrators") {
+        throw "staged ACL owner is not the trusted BUILTIN\Administrators principal: $Path"
+    }
     if (-not $acl.AreAccessRulesProtected) {
         throw "staged ACL inherits entries instead of using the sealed DACL: $Path"
     }
@@ -107,15 +110,46 @@ function Get-ExpectedAcl([string]$Path, [string]$LocalServicePermission) {
     }
     $readback = @(& icacls $Path)
     if ($LASTEXITCODE -ne 0) { throw "unable to read staged ACL: $Path" }
-    return $readback
+    return [ordered]@{
+        owner = $acl.Owner
+        sddl = $acl.Sddl
+        icacls = $readback
+    }
+}
+
+function Assert-SealedDescendants([string]$Path) {
+    $descendantReadback = @()
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Path -Force -Recurse)) {
+        $acl = Get-Acl -LiteralPath $entry.FullName
+        if ($acl.Owner -ne "BUILTIN\Administrators") {
+            throw "staged child owner is not the trusted BUILTIN\Administrators principal: $($entry.FullName)"
+        }
+        if ($acl.AreAccessRulesProtected) {
+            throw "staged child ACL blocks inheritance from its sealed root: $($entry.FullName)"
+        }
+        if (@($acl.Access | Where-Object { -not $_.IsInherited }).Count -ne 0) {
+            throw "staged child ACL has an explicit access rule: $($entry.FullName)"
+        }
+        $descendantReadback += [ordered]@{
+            path = $entry.FullName
+            owner = $acl.Owner
+            sddl = $acl.Sddl
+        }
+    }
+    return $descendantReadback
 }
 
 function Seal-OrValidateAcl([string]$Path, [string]$LocalServicePermission, [bool]$Existed) {
     if (-not $Existed) {
-        & icacls $Path /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)$LocalServicePermission" "BUILTIN\Users:(OI)(CI)RX" | Out-Null
+        & icacls $Path /setowner "BUILTIN\Administrators" /T /C | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "failed to set trusted owner recursively for staged root: $Path" }
+        & icacls $Path /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)$LocalServicePermission" "BUILTIN\Users:(OI)(CI)RX" /T /C | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "failed to seal staged ACL: $Path" }
     }
-    return Get-ExpectedAcl $Path $LocalServicePermission
+    return [ordered]@{
+        root = Get-ExpectedRootAcl $Path $LocalServicePermission
+        descendants = Assert-SealedDescendants $Path
+    }
 }
 
 $sourceJobspecSha256 = (Get-FileHash -LiteralPath $sourceJobspec -Algorithm SHA256).Hash.ToUpperInvariant()
@@ -133,7 +167,7 @@ $configAcl = Seal-OrValidateAcl $configRoot "RX" $configRootExisted
 $logsAcl = Seal-OrValidateAcl $logsRoot "M" $logsRootExisted
 
 if ($evidenceRootExisted) {
-    $evidenceAcl = Get-ExpectedAcl $evidenceRoot "RX"
+    $evidenceAcl = Seal-OrValidateAcl $evidenceRoot "RX" $true
     if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
         throw "sealed evidence root has no complete staging receipt"
     }
@@ -160,9 +194,7 @@ if ($evidenceRootExisted) {
 # post-seal ACL read-back and copied hashes are recorded atomically in the receipt.
 $receiptHandle = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
 try {
-    & icacls $evidenceRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)RX" "BUILTIN\Users:(OI)(CI)RX" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow evidence ACL" }
-    $evidenceAcl = Get-ExpectedAcl $evidenceRoot "RX"
+    $evidenceAcl = Seal-OrValidateAcl $evidenceRoot "RX" $false
 
     $receipt = [ordered]@{
         schema_version = "1"

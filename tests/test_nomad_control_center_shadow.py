@@ -121,6 +121,14 @@ class NomadControlCenterShadowTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("source root must match the staging script checkout", result.stderr)
 
+    def test_stager_requires_trusted_owner_and_recursive_acl_validation(self) -> None:
+        stager = STAGER.read_text(encoding="utf-8")
+
+        self.assertIn('Owner -ne "BUILTIN\\Administrators"', stager)
+        self.assertIn('/setowner "BUILTIN\\Administrators" /T /C', stager)
+        self.assertIn("Assert-SealedDescendants", stager)
+        self.assertIn("staged child ACL has an explicit access rule", stager)
+
     @staticmethod
     def _available_port() -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:

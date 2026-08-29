@@ -1,6 +1,6 @@
 # NOMAD-FIRST-WORKLOAD-SHADOW-001
 
-**Status:** LOCAL_VALIDATION_COMPLETE / PR_PENDING / isolated shadow only.
+**Status:** BLOCKED_ON_TRUSTED_WINDOWS_ACL_OWNER / isolated shadow only.
 
 This task defines the first non-Production workload migration after the verified
 Nomad v2.0.5 POC. The selected workload is the read-only `LIVE15ControlCenter`;
@@ -47,7 +47,8 @@ and evidence validation.
 The task is complete only when a Maker and Independent Checker have reviewed the
 official Nomad v2.0.5 behavior and the exact diff, then local validation proves:
 
-- the staged artifact hash and ACL are recorded and non-user-writable;
+- the staged artifact hash, trusted non-user owner and ACL are recorded and
+  non-user-writable;
 - `nomad job plan`/`run` produce one isolated allocation with a passing native
   check and no Production endpoint or credential reference;
 - a Nomad-native task restart and one controlled Windows-service restart recover
@@ -80,8 +81,10 @@ PowerShell listener at
 rejects targets outside `D:\LIVE15_NOMAD_POC`, verifies the jobspec-pinned
 artifact hash, accepts only the checkout containing the staging script as its
 source, and writes a post-seal no-secret staging receipt. The receipt records
-post-copy hashes and ACL read-back for artifact, configuration, and logs. The
-adapter applies a read/execute ACL to artifact/configuration plus a
+post-copy hashes, owner and recursive ACL read-back for artifact,
+configuration, and logs. It requires every root and child to be owned by
+BUILTIN\Administrators, with no child-specific ACL override. The adapter
+applies a read/execute ACL to artifact/configuration plus a
 LocalService-write-only log ACL. It is not a service manager, supervisor,
 registry, restart manager, or rollback controller.
 
@@ -91,9 +94,9 @@ It reuses the verified `raw_exec`, loopback host network, `provider = "nomad"`,
 native HTTP check, restart policy, and health-gated native update/auto-revert
 mechanisms. Nomad and SCM remain the lifecycle owners.
 
-## Bounded local receipt — 2026-08-29
+## Bounded local receipt and current gate — 2026-08-29
 
-- Staging receipt:
+- Historical staging receipt (not an acceptance receipt):
   `D:\LIVE15_NOMAD_POC\control-center-shadow\evidence\staging-receipt.json`.
   It records post-copy artifact/jobspec hashes and ACL read-back alongside
   `production=false`, `credentials_present=false`, `recorder_started=false`,
@@ -102,6 +105,8 @@ mechanisms. Nomad and SCM remain the lifecycle owners.
   `4D06F9641BA468D4C351190AB5F4E8D1D5F5BEB1463FFF85985190F46662127B`.
   Its artifact and configuration directories are read/execute only for Users
   and LocalService; only the isolated log directory grants LocalService modify.
+  However, its root owners are the interactive user, so that receipt is not
+  trusted for acceptance: an owner can modify a DACL.
 - `nomad job validate` passed. `nomad job plan` allocated one task, then the
   checked `nomad job run -check-index 0` created allocation
   `63252e8b-948e-d73f-e67e-7e35d9f36342`.
@@ -117,6 +122,22 @@ mechanisms. Nomad and SCM remain the lifecycle owners.
   `D:\LIVE15_NOMAD_POC\generic-poc\agent-data\alloc\63252e8b-948e-d73f-e67e-7e35d9f36342`;
   shadow-owned logs/config/artifact remain in the separate child root stated
   above. This is an explicit POC-envelope boundary, not a custom log path.
+
+### Trusted-owner human gate
+
+Microsoft's documented icacls /setowner owner /T mechanism is required for
+applying the trusted owner recursively. A bounded POC-only test on 2026-08-29
+attempted to set a newly created directory owner to BUILTIN\Administrators
+from the current non-elevated session. It failed with Access is denied (exit
+code 5); the exact temporary test root was removed. No UAC or alternate
+owner-changing mechanism was attempted.
+
+Consequently the existing allocation is a **bounded runtime observation only**,
+not acceptance evidence for a sealed artifact. The staging adapter now rejects
+the user-owned root and any user-owned or explicitly ACL-overridden child. A
+human must either provision the exact POC staging root with the approved owner
+outside this task's no-UAC boundary, or explicitly change that boundary. Until
+then, do not create a PR or represent this workload as complete.
 
 The completed generic POC's crash recovery, native auto-revert, agent-service
 restart/rediscovery, and two-hour soak were deliberately not replayed for this
