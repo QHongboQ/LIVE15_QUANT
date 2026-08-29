@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -125,6 +126,35 @@ def test_native_windows_process_inspector_observes_current_process() -> None:
     assert snapshot.created_at.tzinfo is UTC
 
 
+def test_cim_process_snapshot_retains_pid_parent_creation_and_image_basename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*_: object, **__: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "pid": 202,
+                    "parent_pid": 101,
+                    "created_at": "2026-08-29T00:00:01+00:00",
+                    "name": "LIVE15Recorder.exe",
+                }
+            ),
+        )
+
+    monkeypatch.setattr("live15_quant.deployment_restart.subprocess.run", fake_run)
+
+    snapshot = WindowsProcessInspector._cim_snapshot(202)
+
+    assert snapshot == ProcessSnapshot(
+        pid=202,
+        parent_pid=101,
+        executable_path=Path("LIVE15Recorder.exe"),
+        created_at=datetime(2026, 8, 29, 0, 0, 1, tzinfo=UTC),
+        executable_observation="CIM_BASENAME_SCM_BOUND",
+    )
+
+
 def _expectation(tmp_path: Path, *, venv_redirector: bool = False) -> RestartExpectation:
     winsw = tmp_path / "winsw"
     winsw.mkdir()
@@ -157,6 +187,7 @@ def _expectation(tmp_path: Path, *, venv_redirector: bool = False) -> RestartExp
         expected_config_sha256=hashlib.sha256(config.read_bytes()).hexdigest(),
         wrapper_log_path=wrapper_log,
         expected_git_sha="a" * 40,
+        transition_id="candidate",
         timeout_seconds=3.0,
         poll_interval_seconds=1.0,
     )
@@ -249,6 +280,7 @@ def _dependencies(
                 expected_config_sha256="",
                 wrapper_log_path=root / "LIVE15Recorder.wrapper.log",
                 expected_git_sha="a" * 40,
+                transition_id="candidate",
                 timeout_seconds=3.0,
                 poll_interval_seconds=1.0,
             )
@@ -264,6 +296,119 @@ def _dependencies(
     )
 
 
+def test_cim_basename_observation_preserves_the_strict_configured_process_chain(
+    tmp_path: Path,
+) -> None:
+    expectation = _expectation(tmp_path)
+    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    processes = _processes(expectation)
+    processes.snapshots = {
+        pid: ProcessSnapshot(
+            snapshot.pid,
+            snapshot.parent_pid,
+            Path(snapshot.executable_path.name),
+            snapshot.created_at,
+            "CIM_BASENAME_SCM_BOUND",
+        )
+        for pid, snapshot in processes.snapshots.items()
+    }
+
+    result = restart_service_verified(
+        expectation,
+        dependencies=_dependencies(
+            scm,
+            FakeWinSWLogs("Starting WinSW in service mode"),
+            FakeClock(),
+            processes=processes,
+        ),
+    )
+
+    audit = json.loads(result.audit_path.read_text(encoding="utf-8"))
+    assert audit["generation"]["winsw_executable_observation"] == "CIM_BASENAME_SCM_BOUND"
+
+
+def test_cim_basename_observation_rejects_a_nonmatching_configured_executable(
+    tmp_path: Path,
+) -> None:
+    expectation = _expectation(tmp_path)
+    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    processes = _processes(expectation)
+    service = processes.snapshots[started.pid]
+    processes.snapshots[started.pid] = ProcessSnapshot(
+        service.pid,
+        service.parent_pid,
+        Path("untrusted-wrapper.exe"),
+        service.created_at,
+        "CIM_BASENAME_SCM_BOUND",
+    )
+
+    with pytest.raises(RestartGateError, match="PROCESS_CHAIN_WINSW_EXECUTABLE_MISMATCH"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm,
+                FakeWinSWLogs("Starting WinSW in service mode"),
+                FakeClock(),
+                processes=processes,
+            ),
+        )
+
+
+def test_candidate_and_legacy_rollback_keep_distinct_restart_audits(tmp_path: Path) -> None:
+    expectation = _expectation(tmp_path)
+    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
+    before, stopped, started = _snapshots(tmp_path)
+    candidate = restart_service_verified(
+        expectation,
+        dependencies=_dependencies(
+            FakeScm(before=before, after_stop=stopped, after_start=started),
+            FakeWinSWLogs("Starting WinSW in service mode"),
+            FakeClock(),
+        ),
+    )
+    rollback_expectation = RestartExpectation(
+        **{
+            **expectation.__dict__,
+            "expected_git_sha": "UNPROVEN",
+            "transition_id": "legacy-rollback",
+        }
+    )
+    rollback = restart_legacy_service_verified(
+        rollback_expectation,
+        dependencies=_dependencies(
+            FakeScm(before=before, after_stop=stopped, after_start=started),
+            FakeWinSWLogs("Starting WinSW in service mode"),
+            FakeClock(),
+        ),
+        verify_legacy=lambda **_: None,
+    )
+
+    assert candidate.audit_path != rollback.audit_path
+    assert candidate.audit_path.is_file() and rollback.audit_path.is_file()
+
+
+def test_transition_id_must_be_path_safe_before_service_precheck(tmp_path: Path) -> None:
+    expectation = RestartExpectation(
+        **{**_expectation(tmp_path).__dict__, "transition_id": "../legacy-rollback"}
+    )
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+
+    with pytest.raises(RestartGateError, match="INVALID_TRANSITION_ID"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm, FakeWinSWLogs("Starting WinSW in service mode"), FakeClock()
+            ),
+        )
+
+    assert scm.stop_calls == 0 and scm.start_calls == 0
+
+
 def test_stop_command_success_but_service_remains_running_fails_closed(tmp_path: Path) -> None:
     expectation = _expectation(tmp_path, venv_redirector=True)
     before, _, after_start = _snapshots(tmp_path)
@@ -277,7 +422,7 @@ def test_stop_command_success_but_service_remains_running_fails_closed(tmp_path:
 
     assert scm.stop_calls == 1
     assert scm.start_calls == 0
-    failed_audit = expectation.evidence_directory / "service-restart-recorder.json"
+    failed_audit = expectation.evidence_directory / "service-restart-recorder-candidate.json"
     assert failed_audit.is_file() and failed_audit.stat().st_size > 0
     assert json.loads(failed_audit.read_text(encoding="utf-8"))["final_status"] == "FAILED"
 
@@ -418,7 +563,7 @@ def test_generation_change_while_waiting_for_winsw_fails_closed_and_is_audited(
         )
 
     audit = json.loads(
-        (expectation.evidence_directory / "service-restart-recorder.json").read_text(
+        (expectation.evidence_directory / "service-restart-recorder-candidate.json").read_text(
             encoding="utf-8"
         )
     )
@@ -575,10 +720,10 @@ def test_valid_new_service_and_fresh_receipt_passes_and_writes_nonempty_audit(
     assert result.old_pid == 101
     assert result.new_pid == 202
     assert calls and calls[0]["service_pid"] == 202
-    audit = expectation.evidence_directory / "service-restart-recorder.json"
+    audit = expectation.evidence_directory / "service-restart-recorder-candidate.json"
     assert audit.is_file() and audit.stat().st_size > 0
     assert json.loads(audit.read_text(encoding="utf-8"))["final_status"] == "PASS"
-    assert not list(audit.parent.glob(".service-restart-recorder.json.*.tmp"))
+    assert not list(audit.parent.glob(".service-restart-recorder-candidate.json.*.tmp"))
 
 
 def test_exact_configured_windows_venv_redirector_is_the_only_allowed_intermediate(
@@ -609,7 +754,7 @@ def test_exact_configured_windows_venv_redirector_is_the_only_allowed_intermedia
     )
 
     audit = json.loads(
-        (expectation.evidence_directory / "service-restart-recorder.json").read_text(
+        (expectation.evidence_directory / "service-restart-recorder-candidate.json").read_text(
             encoding="utf-8"
         )
     )
