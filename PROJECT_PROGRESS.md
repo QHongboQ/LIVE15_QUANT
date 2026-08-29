@@ -41,7 +41,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | DEP-001 | BLOCKED / PREFLIGHT_NOT_READY | 2026-08-29 read-only snapshot: dirty protected checkout, 37 commits behind then-main, active legacy `UNPROVEN` pointer. No deployment/restart. Detail: `docs/deployment/DEP001_PHASE_A_PREFLIGHT_20260829.md`. | Deployment/restart requires separate explicit `DEP001_DEPLOY_APPROVED` |
 | DEP-ROOT-HYGIENE-PREVENT-001 | PR_PENDING / ENFORCEMENT_READY | Pytest cache is isolated under `runtime/tmp`; WinSW fixture uses pytest temp storage; the startup guard rejects unsafe cache paths. Detail: `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`. | Production cleanup remains separately authorized |
 | NOMAD-LIFECYCLE-UPSTREAM-AUDIT-001 | PR_PENDING / AUDIT_PASS | Native service lifecycle is authoritative; manual agent restart remains fail-closed and superseded. Detail: `docs/deployment/NOMAD_LIFECYCLE_UPSTREAM_AUDIT_001.md`. | Docs-only; no POC execution, Production, or UAC |
-| NOMAD-AUTOMATION-FOUNDATION-001 | PR_PENDING | Detail. | Docs-only |
+| NOMAD-AUTOMATION-FOUNDATION-001 | PR_PENDING / CHECKER_PASS | `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; local docs/receipt checks pass. | Docs-only; hosted CI remains CI_DEFERRED_QUOTA |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
 
 ## Route to formal overnight training
