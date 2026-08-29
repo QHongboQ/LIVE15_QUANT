@@ -149,6 +149,13 @@ dead (stopped). No second UAC request, DACL modification, alternate
 owner-changing mechanism, allocation restore, or long POC validation was
 attempted.
 
+A later explicitly authorized single-operation invocation was stopped before
+the native ACL operation began: the host PowerShell command parser split the
+fixed Windows command at the unescaped inheritance parentheses and reported
+that OI was not a command. The immediate read-only recheck confirmed every
+owner, the top-level DACL, and both hashes were unchanged. It was not retried;
+this task must not request another UAC operation.
+
 Consequently the existing allocation is a **bounded runtime observation only**,
 not acceptance evidence for a sealed artifact. The staging adapter now rejects
 the user-owned root and any user-owned or explicitly ACL-overridden child. A
