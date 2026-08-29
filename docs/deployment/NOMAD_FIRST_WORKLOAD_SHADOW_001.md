@@ -1,6 +1,6 @@
 # NOMAD-FIRST-WORKLOAD-SHADOW-001
 
-**Status:** BLOCKED_ON_TRUSTED_WINDOWS_ACL_OWNER / isolated shadow only.
+**Status:** BLOCKED_HUMAN_GATE / trusted-owner repair Access Denied / isolated shadow only.
 
 This task defines the first non-Production workload migration after the verified
 Nomad v2.0.5 POC. The selected workload is the read-only `LIVE15ControlCenter`;
@@ -129,15 +129,32 @@ Microsoft's documented icacls /setowner owner /T mechanism is required for
 applying the trusted owner recursively. A bounded POC-only test on 2026-08-29
 attempted to set a newly created directory owner to BUILTIN\Administrators
 from the current non-elevated session. It failed with Access is denied (exit
-code 5); the exact temporary test root was removed. No UAC or alternate
-owner-changing mechanism was attempted.
+code 5); the exact temporary test root was removed.
+
+After read-only checks confirmed the fixed staging tree had no reparse point,
+external link, Production/credential reference, or non-trusted writable
+executable ACE, Nomad natively stopped
+live15-control-center-shadow allocation 63252e8b-948e-d73f-e67e-7e35d9f36342.
+The one authorized UAC command was then run exactly once:
+
+    icacls.exe "D:\LIVE15_NOMAD_POC\control-center-shadow" /setowner "BUILTIN\Administrators" /T /C
+
+It returned Access is denied for all 10 target entries and processed zero
+files. The artifact SHA-256 remained
+4D06F9641BA468D4C351190AB5F4E8D1D5F5BEB1463FFF85985190F46662127B,
+the jobspec SHA-256 remained
+C789ACB201349AD3FB85E41A830F1EE6BEB6A1976F3939A6C6E044C771B1A062,
+every recorded owner remained DESKTOP-IG1RJUJ\1, and the Nomad job remained
+dead (stopped). No second UAC request, DACL modification, alternate
+owner-changing mechanism, allocation restore, or long POC validation was
+attempted.
 
 Consequently the existing allocation is a **bounded runtime observation only**,
 not acceptance evidence for a sealed artifact. The staging adapter now rejects
 the user-owned root and any user-owned or explicitly ACL-overridden child. A
-human must either provision the exact POC staging root with the approved owner
-outside this task's no-UAC boundary, or explicitly change that boundary. Until
-then, do not create a PR or represent this workload as complete.
+owner repair needs an external human action that is not a second UAC request
+from this task. Until then, do not create a PR or represent this workload as
+complete.
 
 The completed generic POC's crash recovery, native auto-revert, agent-service
 restart/rediscovery, and two-hour soak were deliberately not replayed for this
