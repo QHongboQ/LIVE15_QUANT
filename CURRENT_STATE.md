@@ -64,7 +64,8 @@ WinSW runtime ownership. Detail: `PROJECT_PROGRESS.md`.
   model, fixed native URLACL, workload/service restart and native auto-revert.
   Its bounded observation-only soak remains in progress. This is never
   Production authority, a WinSW replacement, or cutover approval. Detail:
-  `PROJECT_PROGRESS.md`.
+  `PROJECT_PROGRESS.md` and
+  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
   **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
   frozen-holdout rows and was stopped immediately. The former `UNREVEALED`

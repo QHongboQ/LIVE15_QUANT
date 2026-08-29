@@ -110,3 +110,11 @@ separate from model/research planning and preserves the order:
 `runtime truth → bounded operations proof → POC assurance → separate human
 cutover decision → Paper/Shadow evidence → training gate → any future
 Production decision`.
+
+## New-chat continuation pointer
+
+Use `NOMAD_OVERNIGHT_HANDOFF_20260829.md` for the compact continuation
+snapshot: it records the resolved URLACL/UAC sequence, verified POC boundary,
+active soak state, recovery protocol and the exact safety constraints that a
+new chat must preserve. This detailed file remains the longer history; neither
+file is a Production authorization or a replacement for live evidence.
