@@ -44,4 +44,3 @@ The machine-readable example is
 source hashes identify the durable soak log and checkpoint recorded by the
 POC handoff. It preserves `production=false` and `control_performed=false` and
 does not claim Production self-healing.
-

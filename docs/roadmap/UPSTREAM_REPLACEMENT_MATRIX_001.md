@@ -72,4 +72,3 @@ Every adoption requires its own isolated task, upstream documentation/source
 review, Maker, Independent Checker, local validation, durable evidence, and one
 PR. No row in this matrix authorizes Production deployment, holdout access,
 training, Hard Risk changes, trading writes, or a merge.
-
