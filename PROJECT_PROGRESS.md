@@ -10,9 +10,8 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 ## Current reconciliation basis
 
-- Current merged-code authority is always live `origin/main` HEAD and must be resolved at task start.
-- Latest reconciled protected-main point for this update is PR #68 merge `98f3ef2a15b15d8fbca2a36c855fc96a9a6f64f4`.
-- Runtime evidence remains separate from merged-code authority; a merge never proves deployment.
+- Resolve live `origin/main` at task start; this update reconciles PR #69 merge `0466423`.
+- PR/CI and runtime evidence are live facts; a merge never proves deployment.
 - Full normalized task history, branches, PRs, merge SHAs, completed foundations, legacy reconciliation and operating-rule detail are preserved in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260828.md`.
 
 ## Recent completed foundations
@@ -31,6 +30,9 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
 | WS-RESYNC-001 + GAP-002 | IN_PROGRESS | Kalshi self-healing: dirty-book detection → official `get_snapshot` → bounded resubscribe/reconnect → verified snapshot → precise gap closure/clean segment. H2-TRAIN-003 revalidation is acceptance work, not a separate active lane. | Runtime/deployment for live rollout |
+| NOMAD-POC-SECURE-001 | BLOCKED / fixed URLACL parser | Protected LocalService POC bridge exists; real bind on loopback `18080` waits for Checker-reviewed parser correction and, if needed, separate UAC. Detail: `PROJECT_PROGRESS_DETAIL_20260829.md`. | POC only; no Production/holdout |
+| NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 is code evidence, not merge/deploy proof; dependent restart work remains gated. | POC only |
+| GITHUB-ACTIONS-QUOTA-20260829 | EXCEPTION_AUTHORIZED_ONCE | Default remains `CI_DEFERRED_QUOTA`; this PR may use one final-SHA hosted run, no rerun. | No merge |
 | H2-TRAIN-003 | BLOCKED / historical | Preserve prior blocker evidence. Do not continue as an independent development branch unless WS-RESYNC leaves a new smallest blocker. | Training/holdout |
 | ST-005 | CODE_READY_PENDING_60MIN_PROOF | Code and offline validation now expose fail-closed, comparable 60-second archive/ingress evidence; formal runtime proof has not run. | Requires approved read-only 60-minute proof after a valid runtime/deployment gate; no restart or storage mutation |
 | DEP-001 | PLANNED | DEP-PKG-002 blocker removed. Next action: Phase A current-main read-only preflight. Deployment/restart requires separate explicit `DEP001_DEPLOY_APPROVED`. | Deploy/restart |
@@ -57,6 +59,6 @@ H2 is optional-by-validation: formal research may use H0 + H1 + **validated** H2
 - **Thin-adapter rule:** keep upstream-owned generic behavior upstream and put LIVE15-specific Kalshi/domain/safety semantics behind the thinnest practical adapter. Do not fork generic infrastructure into a growing LIVE15-only patch pile.
 - **Anti-spaghetti rule:** repeated special cases, third/fourth execution modes, duplicated modern/legacy paths, or contradictory invariants trigger consolidation/refactoring/upstream reuse before more patching. A green regression is insufficient if the architecture becomes less coherent.
 - **Standing autonomy for ordinary maintenance:** ordinary repo-local engineering bugs/maintenance may be researched, changed, optimized, tested, reviewed, and merged autonomously after Upstream Reuse First, regression coverage, Independent Checker, and green CI. Elevated-review zones in `AGENTS.md`, Production trading writes, holdout/training/promotion gates, Hard Risk, and irreversible policy changes still require their explicit human approvals.
-- GitHub CLI (`gh`) is available and authenticated on the Windows development host. Prefer it for PR creation/status, Actions/CI inspection, issue/review workflows, and GitHub API queries when working locally; this convenience does not relax the safety/elevated-review boundaries above.
+- Use authenticated GitHub CLI for repository work; it does not relax safety boundaries.
 - Production-root hygiene: pytest, Checker, and Codex temporary/test artifacts must not create ad-hoc top-level directories under `D:\LIVE15_QUANT`; use a dedicated temp root outside Production by default, or an explicitly approved excluded mutable path such as `runtime/tmp`. Unknown exceptions remain fail-closed and must not be silently added to capture exclusions.
 - Record one true smallest blocker only after safe investigation. Never create a second project-memory system.

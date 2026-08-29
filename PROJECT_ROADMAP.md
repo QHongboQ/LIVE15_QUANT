@@ -34,6 +34,12 @@ Do not compress or silently omit requirements to satisfy the Project Brain token
    - Stable/Adaptive Champion concept
    - conservative eight-action first-live decision surface
 
+3. [`docs/roadmap/ROADMAP_003_RUNTIME_OPERATIONAL_ASSURANCE.md`](docs/roadmap/ROADMAP_003_RUNTIME_OPERATIONAL_ASSURANCE.md)
+   - Web / Control Center operational truth and bounded administration
+   - Shadow Recorder and SDK reliability-shadow evidence
+   - archive throughput, soak and fault-injection assurance
+   - isolated Nomad migration POC and explicit non-Production cutover gates
+
 ## Planned task IDs
 
 - `DATA-GLOBAL-001` — Global Research Universe training authority
