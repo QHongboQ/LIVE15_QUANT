@@ -93,6 +93,29 @@ an authorization to operate Production.
 
 ## Current overnight workstreams
 
+### NOMAD-AUTOMATION-FOUNDATION-001 priority routing
+
+The verified Nomad v2.0.5 service-model POC is now the highest-priority
+**next infrastructure validation candidate**. This is a bounded upstream
+contract task, not a Production priority or a claim that all LIVE15 behavior is
+self-healing. Its acceptance boundary and official references are in
+`docs/deployment/NOMAD_AUTOMATION_FOUNDATION_001.md`. Keep all deployment,
+holdout, Hard Risk, training, and trading gates unchanged; do not introduce a
+LIVE15 supervisor, restart manager, rollback controller, custom registry, or
+model framework.
+
+The complete cross-layer replacement map is recorded in
+`docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`. It keeps Recorder truth,
+strict as-of/gap semantics, Hard Risk, and execution in LIVE15 while routing
+generic runtime, UI, telemetry, throughput, and future model research to
+separately gated upstream candidates.
+
+Maker commit `72daad0` is Checker-PASS after independent review. The local
+governance assertions and `git diff --check` pass; the repository test module
+is not installed in this isolated worktree, so no package installation was
+attempted. The task is PR-ready in the branch, but hosted CI remains
+`CI_DEFERRED_QUOTA` and no push or merge is authorized by this task.
+
 ### DEP-001 Phase A read-only preflight (2026-08-29)
 
 The protected Windows checkout and service metadata were inspected without
