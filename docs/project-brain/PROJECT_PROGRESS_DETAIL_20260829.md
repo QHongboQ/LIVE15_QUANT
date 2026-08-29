@@ -93,6 +93,17 @@ an authorization to operate Production.
 
 ## Current overnight workstreams
 
+### NOMAD-AUTOMATION-FOUNDATION-001 priority routing
+
+The verified Nomad v2.0.5 service-model POC is now the highest-priority
+**next infrastructure validation candidate**. This is a bounded upstream
+contract task, not a Production priority or a claim that all LIVE15 behavior is
+self-healing. Its acceptance boundary and official references are in
+`docs/deployment/NOMAD_AUTOMATION_FOUNDATION_001.md`. Keep all deployment,
+holdout, Hard Risk, training, and trading gates unchanged; do not introduce a
+LIVE15 supervisor, restart manager, rollback controller, custom registry, or
+model framework.
+
 ### DEP-001 Phase A read-only preflight (2026-08-29)
 
 The protected Windows checkout and service metadata were inspected without
