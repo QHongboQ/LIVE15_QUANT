@@ -58,15 +58,8 @@ H2 is optional-by-validation: formal research may use H0 + H1 + **validated** H2
 
 ## Durable operating rules
 
-- Complex Codex tasks normally specify Terra / High, goal, authority, prohibitions, acceptance, validation and return format.
-- **Upstream Reuse First is mandatory:** official docs/release notes → pinned dependency source/tests/examples → upstream GitHub Issues/PR/Discussions/merged fixes → mature actively maintained license-compatible GitHub implementation → broader authoritative web → only then local reproduction and a LIVE15-specific fix.
-- **Reuse beats reimplementation:** when a suitable mature implementation exists, prefer `dependency → pinned dependency/fork → vendored upstream module → narrow attributed port → local reimplementation`. Do not read a mature project and then rewrite the same subsystem from scratch unless reuse is demonstrably unsuitable; record that justification.
-- **Thin-adapter rule:** keep upstream-owned generic behavior upstream and put LIVE15-specific Kalshi/domain/safety semantics behind the thinnest practical adapter. Do not fork generic infrastructure into a growing LIVE15-only patch pile.
-- **Anti-spaghetti rule:** repeated special cases, third/fourth execution modes, duplicated modern/legacy paths, or contradictory invariants trigger consolidation/refactoring/upstream reuse before more patching. A green regression is insufficient if the architecture becomes less coherent.
-- **Standing autonomy for ordinary maintenance:** ordinary repo-local engineering bugs/maintenance may be researched, changed, optimized, tested, reviewed, and merged autonomously after Upstream Reuse First, regression coverage, Independent Checker, and green CI. Elevated-review zones in `AGENTS.md`, Production trading writes, holdout/training/promotion gates, Hard Risk, and irreversible policy changes still require their explicit human approvals.
-- Use authenticated GitHub CLI for repository work; it does not relax safety boundaries.
-- Production-root hygiene: pytest, Checker, and Codex temporary/test artifacts must not create ad-hoc top-level directories under `D:\LIVE15_QUANT`; use a dedicated temp root outside Production by default, or an explicitly approved excluded mutable path such as `runtime/tmp`. Unknown exceptions remain fail-closed and must not be silently added to capture exclusions.
-- Record one true smallest blocker only after safe investigation. Never create a second project-memory system.
+See AGENTS.md for the canonical upstream-reuse, adapter, autonomy, safety, and blocker rules.
+
 ### 2026-08-29 architecture replacement decision
 
-Approved: incremental replacement, not a domain rewrite. Preserve SDK/gateway, Recorder/WAL, settlement, strict as-of/gap policy, FastAPI typed API, Risk/Execution gates, and the model baseline. Nomad is the priority runtime candidate; UI, telemetry, throughput, environment, data-lineage, and model tooling remain separately gated. Use one task/worktree, frozen contracts, thin adapters, evidence, and rollback. No second brain, Production/holdout access, training, or trading change. See `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`.
+Approved incremental replacement: preserve data/API/domain core; gate runtime, UI, telemetry, throughput, environment, lineage, and model-tool candidates. See the replacement matrix.
