@@ -1,6 +1,6 @@
 # LIVE15 project progress
 
-This is the compact durable task ledger. It answers where important work stands; detailed history lives in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`. `CURRENT_STATE.md` answers where the whole project is now.
+Compact ledger; detailed history is in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`; `CURRENT_STATE.md` records whole-project orientation.
 
 ## Reading and update rule
 
