@@ -74,6 +74,7 @@ class RestartExpectation:
     expected_config_sha256: str
     wrapper_log_path: Path
     expected_git_sha: str
+    transition_id: str
     timeout_seconds: float
     poll_interval_seconds: float
 
@@ -728,6 +729,19 @@ def _wait_for_winsw_service_mode_start(
         dependencies.sleep(min(poll_interval_seconds, timeout_seconds))
 
 
+_SAFE_TRANSITION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+
+
+def _audit_path(expectation: RestartExpectation) -> Path:
+    """Keep candidate and rollback receipts distinct within one deployment evidence root."""
+
+    if not _SAFE_TRANSITION_ID.fullmatch(expectation.transition_id):
+        raise RestartGateError("INVALID_TRANSITION_ID")
+    return expectation.evidence_directory / (
+        f"service-restart-{expectation.component}-{expectation.transition_id}.json"
+    )
+
+
 def _transition_service_verified(
     expectation: RestartExpectation,
     *,
@@ -752,12 +766,13 @@ def _transition_service_verified(
     if not modern_contract and expectation.expected_git_sha != "UNPROVEN":
         raise RestartGateError("LEGACY_CONTRACT_REQUIRES_UNPROVEN")
     dependencies = dependencies or default_dependencies()
-    audit_path = expectation.evidence_directory / f"service-restart-{expectation.component}.json"
+    audit_path = _audit_path(expectation)
     stages: list[dict[str, str]] = []
     audit: dict[str, Any] = {
         "schema_version": 1,
         "service_name": expectation.service_name,
         "component": expectation.component,
+        "transition_id": expectation.transition_id,
         "expected_git_sha": expectation.expected_git_sha,
         "service_config_path": str(expectation.service_config_path),
         "wrapper_log_path": str(expectation.wrapper_log_path),
