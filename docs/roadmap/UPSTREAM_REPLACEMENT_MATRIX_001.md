@@ -88,6 +88,10 @@ LIVE15-owned generic code paths, not a larger integration framework.
   planes to keep growing, stop for architecture review.
 - Passing tests do not override this rule. A replacement that does not simplify
   ownership is not ready.
+- User-facing Codex tasks must recover durable rules from the current Git Project
+  Brain and select model/reasoning dynamically for complexity and token cost;
+  do not require the user to re-paste durable context or use a fixed expensive
+  model by default.
 
 Detailed execution guidance is in
 `docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md`.
