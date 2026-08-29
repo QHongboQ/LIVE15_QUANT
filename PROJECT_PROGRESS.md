@@ -30,7 +30,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
-| WS-RESYNC-001 + GAP-002 | IN_PROGRESS | Kalshi self-healing: dirty-book detection → official `get_snapshot` → bounded resubscribe/reconnect → verified snapshot → precise gap closure/clean segment. H2-TRAIN-003 revalidation is acceptance work, not a separate active lane. | Runtime/deployment for live rollout |
+| WS-RESYNC-001 + GAP-002 | IN_PROGRESS / HISTORICAL_LOCAL_VALIDATION_PASS | 72 WS/Recorder/SDK-shadow tests passed on `4d088930`; runtime recovery, clean-segment proof and H2 revalidation remain deployment-gated. | Runtime/deployment for live rollout |
 | NOMAD-POC-SECURE-001 | VERIFIED / isolated POC burn-in + auto-revert + two-hour soak PASS | Final receipt: 24 healthy observations; terminal observer entry and evidence rule are in the POC handoff. No cutover. | POC only; no Production/holdout |
 | NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 remains code evidence only; do not merge or treat it as deployment proof. Its separate restart-validation lineage does not supersede the verified service-model POC evidence. | POC only |
 | GITHUB-ACTIONS-QUOTA-20260829 | CI_DEFERRED_QUOTA | Do not intentionally trigger GitHub-hosted CI, and do not record deferred CI as PASS. Run the required final CI only after the user explicitly re-enables quota. | No merge |
