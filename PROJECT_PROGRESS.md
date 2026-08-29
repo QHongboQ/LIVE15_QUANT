@@ -11,7 +11,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 ## Current reconciliation basis
 
 - Current merged-code authority is always live `origin/main` HEAD and must be resolved at task start.
-- Latest reconciled protected-main point for this update is PR #49 merge `30fcdd8516c343110c0bb7b0f23729a70b5eea8f`.
+- Latest reconciled protected-main point for this update is PR #68 merge `98f3ef2a15b15d8fbca2a36c855fc96a9a6f64f4`.
 - Runtime evidence remains separate from merged-code authority; a merge never proves deployment.
 - Full normalized task history, branches, PRs, merge SHAs, completed foundations, legacy reconciliation and operating-rule detail are preserved in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260828.md`.
 
@@ -24,7 +24,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | H2-TRAIN-001 / NIGHT-001 | MERGED / PARTIAL | PR #47 `7fe9f17a` | H2 code/materialization boundary exists; real H2 remains validation-gated. |
 | H2-TRAIN-002 | MERGED / BLOCKED | PR #48 `6bb24775` | Real snapshot acquisition works; delta endpoint plan-restricted; prior H0 overlap blocked by gap authority. |
 | UI-013 | MERGED / COMPLETE | PR #49 `30fcdd85` | Control Center truth/performance/observability hardened; ST-005 itself remains unresolved. |
-| DEV-TOOLING-GH-001 | VERIFIED / AVAILABLE | Windows development host | GitHub CLI (`gh`) is installed and authenticated; Codex may use it for PR, Actions/CI, issue, review, and GitHub API workflows. Human merge gates and no-auto-merge policy remain unchanged. |
+| DEV-TOOLING-GH-001 | VERIFIED / AVAILABLE | Windows development host | GitHub CLI (`gh`) is installed and authenticated; Codex may use it for PR, Actions/CI, issue, review, and GitHub API workflows. Ordinary repo-local maintenance may be autonomously merged after the standing Upstream Reuse First + regression + Checker + green-CI gates; elevated-review zones retain their explicit human gates. |
 
 ## Active and gated work
 
@@ -52,7 +52,11 @@ H2 is optional-by-validation: formal research may use H0 + H1 + **validated** H2
 ## Durable operating rules
 
 - Complex Codex tasks normally specify Terra / High, goal, authority, prohibitions, acceptance, validation and return format.
-- Upstream First: official docs → pinned dependency source/tests → GitHub Issues/PR → mature/reference implementation → broader web → local reproduction → narrow fix → regression → Checker → CI.
-- GitHub CLI (`gh`) is available and authenticated on the Windows development host. Prefer it for PR creation/status, Actions/CI inspection, issue/review workflows, and GitHub API queries when working locally; this convenience does not relax protected-main, human-review, or no-auto-merge rules.
+- **Upstream Reuse First is mandatory:** official docs/release notes → pinned dependency source/tests/examples → upstream GitHub Issues/PR/Discussions/merged fixes → mature actively maintained license-compatible GitHub implementation → broader authoritative web → only then local reproduction and a LIVE15-specific fix.
+- **Reuse beats reimplementation:** when a suitable mature implementation exists, prefer `dependency → pinned dependency/fork → vendored upstream module → narrow attributed port → local reimplementation`. Do not read a mature project and then rewrite the same subsystem from scratch unless reuse is demonstrably unsuitable; record that justification.
+- **Thin-adapter rule:** keep upstream-owned generic behavior upstream and put LIVE15-specific Kalshi/domain/safety semantics behind the thinnest practical adapter. Do not fork generic infrastructure into a growing LIVE15-only patch pile.
+- **Anti-spaghetti rule:** repeated special cases, third/fourth execution modes, duplicated modern/legacy paths, or contradictory invariants trigger consolidation/refactoring/upstream reuse before more patching. A green regression is insufficient if the architecture becomes less coherent.
+- **Standing autonomy for ordinary maintenance:** ordinary repo-local engineering bugs/maintenance may be researched, changed, optimized, tested, reviewed, and merged autonomously after Upstream Reuse First, regression coverage, Independent Checker, and green CI. Elevated-review zones in `AGENTS.md`, Production trading writes, holdout/training/promotion gates, Hard Risk, and irreversible policy changes still require their explicit human approvals.
+- GitHub CLI (`gh`) is available and authenticated on the Windows development host. Prefer it for PR creation/status, Actions/CI inspection, issue/review workflows, and GitHub API queries when working locally; this convenience does not relax the safety/elevated-review boundaries above.
 - Production-root hygiene: pytest, Checker, and Codex temporary/test artifacts must not create ad-hoc top-level directories under `D:\LIVE15_QUANT`; use a dedicated temp root outside Production by default, or an explicitly approved excluded mutable path such as `runtime/tmp`. Unknown exceptions remain fail-closed and must not be silently added to capture exclusions.
 - Record one true smallest blocker only after safe investigation. Never create a second project-memory system.
