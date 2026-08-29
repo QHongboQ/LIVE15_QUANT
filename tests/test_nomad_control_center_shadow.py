@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 import socket
 import subprocess
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
