@@ -22,10 +22,10 @@ not completion.
 ## Current project position
 
 - `NOMAD-POC-SECURE-001` is **IN_PROGRESS**. The service-model burn-in and
-  Nomad-native bad-update auto-revert are verified; an observation-only
-  two-hour POC soak was active at the last update and had four consecutive
-  healthy checkpoints. Reconcile the final soak receipt before changing its
-  status. This is never a Production runtime replacement or cutover approval.
+  Nomad-native bad-update auto-revert are verified; the observation-only
+  two-hour POC soak completed with 24 healthy iterations. Its final durable
+  receipt is reconciled below. This is never a Production runtime replacement
+  or cutover approval.
 - `ST-005` remains separately `CODE_READY_PENDING_60MIN_PROOF`. The Nomad POC
   does not authorize a Recorder restart, storage mutation, retention action or
   its formal 60-minute proof.
@@ -134,8 +134,8 @@ checksums rather than reconstructing them from chat text.
 
 ## Next bounded decision
 
-The next safe action is **not** a Production migration. First reconcile the
-two-hour soak's final evidence. Then decide, in a separately scoped task,
+The next safe action is **not** a Production migration. The two-hour soak's
+final evidence is reconciled. Next, decide in a separately scoped task,
 whether a non-production Shadow Recorder/service-discovery validation has an
 explicit contract. A later Production provider or cutover decision requires
 new human authority and cannot be inferred from this POC.

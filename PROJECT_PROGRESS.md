@@ -31,7 +31,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
 | WS-RESYNC-001 + GAP-002 | IN_PROGRESS | Kalshi self-healing: dirty-book detection → official `get_snapshot` → bounded resubscribe/reconnect → verified snapshot → precise gap closure/clean segment. H2-TRAIN-003 revalidation is acceptance work, not a separate active lane. | Runtime/deployment for live rollout |
-| NOMAD-POC-SECURE-001 | IN_PROGRESS / burn-in + auto-revert PASS; soak running | Isolated `18080` proof complete. Verify soak receipt; no cutover. Handoff: `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`. | POC only; no Production/holdout |
+| NOMAD-POC-SECURE-001 | IN_PROGRESS / burn-in + auto-revert + two-hour soak PASS | Durable soak receipt verified: 24 observation iterations completed; final checkpoint and observer log are SHA-256 recorded in the isolated POC handoff. No cutover. Handoff: `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`. | POC only; no Production/holdout |
 | NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 remains code evidence only; do not merge or treat it as deployment proof. Its separate restart-validation lineage does not supersede the verified service-model POC evidence. | POC only |
 | GITHUB-ACTIONS-QUOTA-20260829 | CI_DEFERRED_QUOTA | Do not intentionally trigger GitHub-hosted CI, and do not record deferred CI as PASS. Run the required final CI only after the user explicitly re-enables quota. | No merge |
 | H2-TRAIN-003 | BLOCKED / historical | Preserve prior blocker evidence. Do not continue as an independent development branch unless WS-RESYNC leaves a new smallest blocker. | Training/holdout |
