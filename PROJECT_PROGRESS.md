@@ -1,6 +1,6 @@
 # LIVE15 project progress
 
-This is the compact durable task ledger. It answers where important work stands; detailed history lives in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260828.md`. `CURRENT_STATE.md` answers where the whole project is now.
+This is the compact durable task ledger. It answers where important work stands; detailed history lives in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`. `CURRENT_STATE.md` answers where the whole project is now.
 
 ## Reading and update rule
 
@@ -10,9 +10,9 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 ## Current reconciliation basis
 
-- Resolve live `origin/main` at task start; this update reconciles PR #69 merge `0466423`.
+- Resolve live `origin/main` at task start; this update reconciles `0f72faf` (PR #73 merge) with isolated POC evidence.
 - PR/CI and runtime evidence are live facts; a merge never proves deployment.
-- Full normalized task history, branches, PRs, merge SHAs, completed foundations, legacy reconciliation and operating-rule detail are preserved in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260828.md`.
+- Full normalized task history, branches, PRs, merge SHAs, completed foundations, legacy reconciliation and operating-rule detail are preserved in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`.
 
 ## Recent completed foundations
 
@@ -30,9 +30,9 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
 | WS-RESYNC-001 + GAP-002 | IN_PROGRESS | Kalshi self-healing: dirty-book detection → official `get_snapshot` → bounded resubscribe/reconnect → verified snapshot → precise gap closure/clean segment. H2-TRAIN-003 revalidation is acceptance work, not a separate active lane. | Runtime/deployment for live rollout |
-| NOMAD-POC-SECURE-001 | BLOCKED / fixed URLACL parser | Protected LocalService POC bridge exists; real bind on loopback `18080` waits for Checker-reviewed parser correction and, if needed, separate UAC. Detail: `PROJECT_PROGRESS_DETAIL_20260829.md`. | POC only; no Production/holdout |
-| NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 is code evidence, not merge/deploy proof; dependent restart work remains gated. | POC only |
-| GITHUB-ACTIONS-QUOTA-20260829 | EXCEPTION_AUTHORIZED_ONCE | Default remains `CI_DEFERRED_QUOTA`; this PR may use one final-SHA hosted run, no rerun. | No merge |
+| NOMAD-POC-SECURE-001 | IN_PROGRESS / end-to-end burn-in and native update/auto-revert PASS; bounded soak running | Fixed native HTTP.sys URLACL, LocalService workload bind, Nomad-native health, workload/service restart and rediscovery are verified. Finish the bounded observation-only soak and reconcile its final evidence; no Production design/cutover follows. Detail: `PROJECT_PROGRESS_DETAIL_20260829.md`. | POC only; no Production/holdout |
+| NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 remains code evidence only; do not merge or treat it as deployment proof. Its separate restart-validation lineage does not supersede the verified service-model POC evidence. | POC only |
+| GITHUB-ACTIONS-QUOTA-20260829 | CI_DEFERRED_QUOTA | Do not intentionally trigger GitHub-hosted CI, and do not record deferred CI as PASS. Run the required final CI only after the user explicitly re-enables quota. | No merge |
 | H2-TRAIN-003 | BLOCKED / historical | Preserve prior blocker evidence. Do not continue as an independent development branch unless WS-RESYNC leaves a new smallest blocker. | Training/holdout |
 | ST-005 | CODE_READY_PENDING_60MIN_PROOF | Code and offline validation now expose fail-closed, comparable 60-second archive/ingress evidence; formal runtime proof has not run. | Requires approved read-only 60-minute proof after a valid runtime/deployment gate; no restart or storage mutation |
 | DEP-001 | PLANNED | DEP-PKG-002 blocker removed. Next action: Phase A current-main read-only preflight. Deployment/restart requires separate explicit `DEP001_DEPLOY_APPROVED`. | Deploy/restart |

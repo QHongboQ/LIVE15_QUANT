@@ -32,7 +32,7 @@ policy, storage, lifecycle, datasets, models, paper, risk, and UI. Detail:
 | Training recency | Development history over sessions/weeks | `docs/research_data_authority.md` |
 | Forward OOS freshness | Evidence strictly after a frozen specification | `docs/research_data_authority.md` |
 | Runtime owner | The single service/component authority permitted to restart a component | `docs/runtime_ownership_and_self_healing.md` |
-| Nomad secure POC | Protected LocalService POC bridge; fixed URLACL parser correction remains | `PROJECT_PROGRESS.md` |
+| Nomad secure POC | Isolated LocalService + fixed loopback URLACL service model; end-to-end burn-in and native auto-revert are verified, bounded soak remains | `PROJECT_PROGRESS.md` |
 | Project progress | Durable task state, evidence links, cautions, and next action; never live telemetry | `PROJECT_PROGRESS.md` |
 
 ## Fast routing
