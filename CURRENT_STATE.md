@@ -14,8 +14,10 @@ The release-pipeline prerequisites are merged, Control Center truth/performance
 hardening is merged, and two upstream reliability tasks are active before the
 formal long-run training GO/NO-GO gate.
 
-An isolated Nomad POC is active; it is not a Production cutover or a change to
-WinSW runtime ownership. Detail: `PROJECT_PROGRESS.md`.
+An isolated Nomad POC is verified, and its first sealed non-Production
+ControlCenter shadow has completed bounded local allocation validation. Neither
+is a Production cutover or a change to WinSW runtime ownership. Detail:
+`PROJECT_PROGRESS.md`.
 
 ## Completed foundations
 
@@ -37,7 +39,7 @@ WinSW runtime ownership. Detail: `PROJECT_PROGRESS.md`.
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
-| Nomad secure migration POC | **IN_PROGRESS / END-TO-END SERVICE MODEL VERIFIED; BOUNDED SOAK RUNNING** | `NOMAD-POC-SECURE-001`; detail in Project Brain evidence index |
+| Nomad secure migration POC | **VERIFIED / service-model POC and two-hour soak complete; first ControlCenter shadow locally validated** | `NOMAD-POC-SECURE-001` and `NOMAD-FIRST-WORKLOAD-SHADOW-001`; detail in Project Brain evidence index |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
@@ -60,10 +62,13 @@ WinSW runtime ownership. Detail: `PROJECT_PROGRESS.md`.
 - `ST-005` is not resolved merely because UI-013 can display catch-up state. It
   still requires measured throughput/catch-up evidence and a valid 60-minute
   proof with Recorder safety intact.
-- Nomad POC: isolated LocalService/loopback burn-in and native auto-revert are
-  verified; the bounded soak remains active. Never infer Production authority,
+- Nomad POC: isolated LocalService/loopback burn-in, native auto-revert, and
+  the two-hour observation-only soak are verified. A sealed ControlCenter
+  shadow has one passing native allocation/check receipt; it is not a replay of
+  the generic POC's long lifecycle checks. Never infer Production authority,
   WinSW replacement or cutover. Detail:
-  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`.
+  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md` and
+  `docs/deployment/NOMAD_FIRST_WORKLOAD_SHADOW_001.md`.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
   **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
   frozen-holdout rows and was stopped immediately. The former `UNREVEALED`

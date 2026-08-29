@@ -1,6 +1,6 @@
 # NOMAD-FIRST-WORKLOAD-SHADOW-001
 
-**Status:** PLANNED / isolated shadow only.
+**Status:** LOCAL_VALIDATION_COMPLETE / PR_PENDING / isolated shadow only.
 
 This task defines the first non-Production workload migration after the verified
 Nomad v2.0.5 POC. The selected workload is the read-only `LIVE15ControlCenter`;
@@ -54,7 +54,67 @@ official Nomad v2.0.5 behavior and the exact diff, then local validation proves:
   the isolated staging root; and
 - no change is made to `D:\LIVE15_QUANT` or any trading/risk/holdout path.
 
-The next implementation step is to identify or build a sealed, non-Production
-Control Center artifact and jobspec in this task branch. Until that artifact and
-its staging root are available, no service installation or workload deployment
-is claimed.
+## Implemented non-Production artifact
+
+The existing Control Center Windows-service package is intentionally not reused:
+it receives production credential paths and exposes bounded Recorder-control
+routes. The replacement artifact is therefore a separately sealed, stdlib-only
+PowerShell listener at
+`deploy/nomad/control-center-shadow/live15-control-center-shadow.ps1`.
+
+- It binds only the Nomad job's `127.0.0.1:18081` port and verifies its own
+  SHA-256 before listening.
+- `/_nomad/healthz` is process liveness only and returns `production=false` and
+  `read_only=true`.
+- `/api/health` and `/api/markets` deliberately return `503` with
+  `fail_closed=true` until a separately authorized non-Production projection
+  source exists. All non-GET methods return `405`.
+- It has no Kalshi, Recorder, execution, credential, storage, or external
+  network dependency. It does not start or control another component.
+
+`tools/stage_nomad_control_center_shadow.ps1` is the thin staging adapter. It
+rejects targets outside `D:\LIVE15_NOMAD_POC`, verifies the jobspec-pinned
+artifact hash, writes the no-secret staging receipt, and applies a read/execute
+ACL to the artifact/configuration plus a LocalService-write-only log ACL. It is
+not a service manager, supervisor, registry, restart manager, or rollback
+controller.
+
+The minimal job is
+`deploy/nomad/control-center-shadow/live15-control-center-shadow.nomad.hcl`.
+It reuses the verified `raw_exec`, loopback host network, `provider = "nomad"`,
+native HTTP check, restart policy, and health-gated native update/auto-revert
+mechanisms. Nomad and SCM remain the lifecycle owners.
+
+## Bounded local receipt — 2026-08-29
+
+- Staging receipt:
+  `D:\LIVE15_NOMAD_POC\control-center-shadow\config\staging-receipt.json`.
+  It records `production=false`, `credentials_present=false`,
+  `recorder_started=false`, and `execution_enabled=false`.
+- Artifact SHA-256:
+  `4D06F9641BA468D4C351190AB5F4E8D1D5F5BEB1463FFF85985190F46662127B`.
+  Its artifact and configuration directories are read/execute only for Users
+  and LocalService; only the isolated log directory grants LocalService modify.
+- `nomad job validate` passed. `nomad job plan` allocated one task, then the
+  checked `nomad job run -check-index 0` created allocation
+  `63252e8b-948e-d73f-e67e-7e35d9f36342`.
+- Deployment `c2928a5f` completed successfully. The native
+  `nomad-liveness` check reported `success`/HTTP 200, and the direct loopback
+  liveness response recorded `production=false` and `read_only=true`.
+- The artifact's independent end-to-end test passed: liveness is 200, both
+  data projections are fail-closed 503, and a Recorder-control URL is 405.
+
+The completed generic POC's crash recovery, native auto-revert, agent-service
+restart/rediscovery, and two-hour soak were deliberately not replayed for this
+shadow. They remain capability evidence only, not a claim that this exact
+artifact completed those long-running checks. No Production service, Recorder,
+Hard Risk, execution, holdout, training, or trading path was accessed or
+changed.
+
+## Upstream basis
+
+- [Nomad Windows service model](https://developer.hashicorp.com/nomad/docs/deploy/production/windows-service)
+- [Nomad update block](https://developer.hashicorp.com/nomad/docs/job-specification/update)
+- [Nomad service block](https://developer.hashicorp.com/nomad/docs/job-specification/service)
+- [Nomad native service discovery](https://developer.hashicorp.com/nomad/docs/job-declare/service-discovery)
+- [Nomad v2.0.5 release](https://github.com/hashicorp/nomad/releases/tag/v2.0.5)
