@@ -73,22 +73,40 @@ function Copy-OrVerify-SealedSource([string]$Source, [string]$Destination, [stri
 }
 
 function Get-ExpectedAcl([string]$Path, [string]$LocalServicePermission) {
-    $readback = @(& icacls $Path)
-    if ($LASTEXITCODE -ne 0) { throw "unable to read staged ACL: $Path" }
-    $requirements = @(
-        "BUILTIN\\Users:.*\(RX\)",
-        "NT AUTHORITY\\LOCAL SERVICE:.*\($LocalServicePermission\)",
-        "NT AUTHORITY\\SYSTEM:.*\(F\)",
-        "BUILTIN\\Administrators:.*\(F\)"
-    )
-    foreach ($requirement in $requirements) {
-        if (-not ($readback -match $requirement)) {
-            throw "staged ACL is not sealed as required: $Path"
+    $acl = Get-Acl -LiteralPath $Path
+    if (-not $acl.AreAccessRulesProtected) {
+        throw "staged ACL inherits entries instead of using the sealed DACL: $Path"
+    }
+    $expectedRules = @{
+        "NT AUTHORITY\SYSTEM" = [Security.AccessControl.FileSystemRights]::FullControl
+        "BUILTIN\Administrators" = [Security.AccessControl.FileSystemRights]::FullControl
+        "NT AUTHORITY\LOCAL SERVICE" = if ($LocalServicePermission -eq "M") {
+            [Security.AccessControl.FileSystemRights]::Modify -bor [Security.AccessControl.FileSystemRights]::Synchronize
+        }
+        else {
+            [Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [Security.AccessControl.FileSystemRights]::Synchronize
+        }
+        "BUILTIN\Users" = [Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [Security.AccessControl.FileSystemRights]::Synchronize
+    }
+    $accessRules = @($acl.Access)
+    if ($accessRules.Count -ne $expectedRules.Count) {
+        throw "staged ACL has an unexpected access rule: $Path"
+    }
+    foreach ($accessRule in $accessRules) {
+        $identity = $accessRule.IdentityReference.Value
+        if (
+            -not $expectedRules.ContainsKey($identity) -or
+            $accessRule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $accessRule.IsInherited -or
+            $accessRule.InheritanceFlags -ne ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit) -or
+            $accessRule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None -or
+            $accessRule.FileSystemRights -ne $expectedRules[$identity]
+        ) {
+            throw "staged ACL is not the exact sealed DACL: $Path"
         }
     }
-    if ($readback -match "BUILTIN\\Users:.*\((M|F|W)\)") {
-        throw "staged ACL grants Users write access: $Path"
-    }
+    $readback = @(& icacls $Path)
+    if ($LASTEXITCODE -ne 0) { throw "unable to read staged ACL: $Path" }
     return $readback
 }
 

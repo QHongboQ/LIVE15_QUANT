@@ -110,6 +110,9 @@ mechanisms. Nomad and SCM remain the lifecycle owners.
   liveness response recorded `production=false` and `read_only=true`.
 - The artifact's independent end-to-end test passed: liveness is 200, both
   data projections are fail-closed 503, and a Recorder-control URL is 405.
+- A bounded negative ACL regression created a temporary POC-only root with an
+  extra `Everyone:(M)` ACE. The stager rejected its unexpected access rule;
+  the verified temporary root was then removed.
 - The allocation's stdout/stderr are Nomad agent-owned files under
   `D:\LIVE15_NOMAD_POC\generic-poc\agent-data\alloc\63252e8b-948e-d73f-e67e-7e35d9f36342`;
   shadow-owned logs/config/artifact remain in the separate child root stated
