@@ -38,14 +38,6 @@ if (-not $Run) {
 }
 
 foreach ($path in @(
-    $sourceArtifact, $sourceJobspec, $receiptPath, $stagedArtifactPath,
-    $stagedJobspecPath
-)) {
-    if (-not (Test-Path -LiteralPath $path)) {
-        throw "required externally provisioned sealed input is missing: $path"
-    }
-}
-foreach ($path in @(
     $resolvedStagingRoot, $artifactRoot, $configRoot, $logsRoot, $evidenceRoot
 )) {
     if (-not (Test-Path -LiteralPath $path -PathType Container)) {
@@ -54,6 +46,15 @@ foreach ($path in @(
     $rootItem = Get-Item -LiteralPath $path -Force
     if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "staged root is a reparse point: $path"
+    }
+}
+
+foreach ($path in @(
+    $sourceArtifact, $sourceJobspec, $receiptPath, $stagedArtifactPath,
+    $stagedJobspecPath
+)) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "required externally provisioned sealed input is missing: $path"
     }
 }
 
