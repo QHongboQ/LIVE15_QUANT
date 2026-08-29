@@ -144,6 +144,21 @@ but do not intentionally trigger GitHub-hosted CI or treat deferred CI as PASS.
 The required final hosted CI may run only after the user explicitly re-enables
 quota, and no merge follows from a green result.
 
+### DEP-ROOT-HYGIENE-PREVENT-001 — local validation complete
+
+- Draft PR #79 (`agent/dep-root-hygiene-prevent-001`) records the safe
+  repository hardening result.
+- `pyproject.toml` pins pytest cache output to
+  `runtime/tmp/pytest-cache`; the WinSW bootstrap fixture uses pytest-managed
+  temporary storage instead of creating a top-level project directory.
+- `live15_quant.root_hygiene.resolve_pytest_cache_dir` rejects project-relative
+  paths outside the approved subtree and traversal attempts while allowing a
+  dedicated external temp root.
+- Local evidence: 15 targeted tests passed, Ruff passed, and `git diff --check`
+  passed. Independent Checker returned PASS.
+- Hosted CI is intentionally deferred under `CI_DEFERRED_QUOTA`; no merge or
+  Production/runtime operation was performed.
+
 ## Forward roadmap routing
 
 The detailed operational assurance roadmap is
