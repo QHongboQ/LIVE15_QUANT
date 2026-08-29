@@ -56,6 +56,7 @@ if (-not $Run) {
 $artifactRootExisted = Test-Path -LiteralPath $artifactRoot -PathType Container
 $configRootExisted = Test-Path -LiteralPath $configRoot -PathType Container
 $logsRootExisted = Test-Path -LiteralPath $logsRoot -PathType Container
+$evidenceRootExisted = Test-Path -LiteralPath $evidenceRoot -PathType Container
 foreach ($path in @($artifactRoot, $configRoot, $logsRoot, $evidenceRoot)) {
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
@@ -71,6 +72,34 @@ function Copy-OrVerify-SealedSource([string]$Source, [string]$Destination, [stri
     Copy-Item -LiteralPath $Source -Destination $Destination
 }
 
+function Get-ExpectedAcl([string]$Path, [string]$LocalServicePermission) {
+    $readback = @(& icacls $Path)
+    if ($LASTEXITCODE -ne 0) { throw "unable to read staged ACL: $Path" }
+    $requirements = @(
+        "BUILTIN\\Users:.*\(RX\)",
+        "NT AUTHORITY\\LOCAL SERVICE:.*\($LocalServicePermission\)",
+        "NT AUTHORITY\\SYSTEM:.*\(F\)",
+        "BUILTIN\\Administrators:.*\(F\)"
+    )
+    foreach ($requirement in $requirements) {
+        if (-not ($readback -match $requirement)) {
+            throw "staged ACL is not sealed as required: $Path"
+        }
+    }
+    if ($readback -match "BUILTIN\\Users:.*\((M|F|W)\)") {
+        throw "staged ACL grants Users write access: $Path"
+    }
+    return $readback
+}
+
+function Seal-OrValidateAcl([string]$Path, [string]$LocalServicePermission, [bool]$Existed) {
+    if (-not $Existed) {
+        & icacls $Path /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)$LocalServicePermission" "BUILTIN\Users:(OI)(CI)RX" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "failed to seal staged ACL: $Path" }
+    }
+    return Get-ExpectedAcl $Path $LocalServicePermission
+}
+
 $sourceJobspecSha256 = (Get-FileHash -LiteralPath $sourceJobspec -Algorithm SHA256).Hash.ToUpperInvariant()
 Copy-OrVerify-SealedSource $sourceArtifact $stagedArtifactPath $artifactSha256
 Copy-OrVerify-SealedSource $sourceJobspec $stagedJobspecPath $sourceJobspecSha256
@@ -81,29 +110,41 @@ if ($stagedArtifactSha256 -ne $artifactSha256 -or $stagedJobspecSha256 -ne $sour
     throw "post-copy shadow hash verification failed"
 }
 
-if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+$artifactAcl = Seal-OrValidateAcl $artifactRoot "RX" $artifactRootExisted
+$configAcl = Seal-OrValidateAcl $configRoot "RX" $configRootExisted
+$logsAcl = Seal-OrValidateAcl $logsRoot "M" $logsRootExisted
+
+if ($evidenceRootExisted) {
+    $evidenceAcl = Get-ExpectedAcl $evidenceRoot "RX"
+    if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+        throw "sealed evidence root has no complete staging receipt"
+    }
+    try {
+        $existingReceipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "staging receipt is malformed; refusing to accept sealed staging"
+    }
+    if (
+        $existingReceipt.artifact_sha256 -ne $stagedArtifactSha256 -or
+        $existingReceipt.jobspec_sha256 -ne $stagedJobspecSha256 -or
+        $existingReceipt.production -ne $false -or
+        $existingReceipt.credentials_present -ne $false -or
+        $null -eq $existingReceipt.acl_readback
+    ) {
+        throw "staging receipt does not match the sealed artifact safety boundary"
+    }
     Write-Output "ALREADY_STAGED: $receiptPath"
     exit 0
 }
 
 # Keep this handle open while the evidence directory is sealed so the
 # post-seal ACL read-back and copied hashes are recorded atomically in the receipt.
-$receiptHandle = [IO.File]::Open($receiptPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+$receiptHandle = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
 try {
-    if (-not $artifactRootExisted) {
-        & icacls $artifactRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)RX" "BUILTIN\Users:(OI)(CI)RX"
-        if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow artifact ACL" }
-    }
-    if (-not $configRootExisted) {
-        & icacls $configRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)RX" "BUILTIN\Users:(OI)(CI)RX"
-        if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow configuration ACL" }
-    }
-    if (-not $logsRootExisted) {
-        & icacls $logsRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)M" "BUILTIN\Users:(OI)(CI)RX"
-        if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow log ACL" }
-    }
-    & icacls $evidenceRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)RX" "BUILTIN\Users:(OI)(CI)RX"
+    & icacls $evidenceRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)RX" "BUILTIN\Users:(OI)(CI)RX" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow evidence ACL" }
+    $evidenceAcl = Get-ExpectedAcl $evidenceRoot "RX"
 
     $receipt = [ordered]@{
         schema_version = "1"
@@ -114,10 +155,10 @@ try {
         jobspec_path = $stagedJobspecPath
         jobspec_sha256 = $stagedJobspecSha256
         acl_readback = [ordered]@{
-            artifact = @(& icacls $artifactRoot)
-            config = @(& icacls $configRoot)
-            logs = @(& icacls $logsRoot)
-            evidence = @(& icacls $evidenceRoot)
+            artifact = $artifactAcl
+            config = $configAcl
+            logs = $logsAcl
+            evidence = $evidenceAcl
         }
         production = $false
         credentials_present = $false
