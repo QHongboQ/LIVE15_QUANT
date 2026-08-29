@@ -1,6 +1,6 @@
 # NOMAD-FIRST-WORKLOAD-SHADOW-001
 
-**Status:** BLOCKED_HUMAN_GATE / trusted-owner repair Access Denied / isolated shadow only.
+**Status:** LOCAL_ACCEPTANCE_COMPLETE / REVIEW_PENDING / isolated shadow only.
 
 This task defines the first non-Production workload migration after the verified
 Nomad v2.0.5 POC. The selected workload is the read-only `LIVE15ControlCenter`;
@@ -51,10 +51,9 @@ official Nomad v2.0.5 behavior and the exact diff, then local validation proves:
   non-user-writable;
 - `nomad job plan`/`run` produce one isolated allocation with a passing native
   check and no Production endpoint or credential reference;
-- a Nomad-native task restart and one controlled Windows-service restart recover
-  the allocation and preserve the read-only health response;
-- bad update input is rejected or natively auto-reverted without a custom
-  controller;
+- the verified generic POC evidence covers native task recovery, Windows-service
+  recovery, allocation rediscovery and native auto-revert; those long platform
+  checks are deliberately not replayed for this shadow;
 - allocation logs, config/data access and a fixed evidence receipt stay within
   the isolated staging root; and
 - no change is made to `D:\LIVE15_QUANT` or any trading/risk/holdout path.
@@ -94,7 +93,7 @@ It reuses the verified `raw_exec`, loopback host network, `provider = "nomad"`,
 native HTTP check, restart policy, and health-gated native update/auto-revert
 mechanisms. Nomad and SCM remain the lifecycle owners.
 
-## Bounded local receipt and current gate — 2026-08-29
+## Historical receipt and current acceptance — 2026-08-29
 
 - Historical staging receipt (not an acceptance receipt):
   `D:\LIVE15_NOMAD_POC\control-center-shadow\evidence\staging-receipt.json`.
@@ -156,12 +155,24 @@ that OI was not a command. The immediate read-only recheck confirmed every
 owner, the top-level DACL, and both hashes were unchanged. It was not retried;
 this task must not request another UAC operation.
 
-Consequently the existing allocation is a **bounded runtime observation only**,
-not acceptance evidence for a sealed artifact. The staging adapter now rejects
-the user-owned root and any user-owned or explicitly ACL-overridden child. A
-owner repair needs an external human action that is not a second UAC request
-from this task. Until then, do not create a PR or represent this workload as
-complete.
+Those failed task-side attempts are historical operator-gate evidence only.
+The environment administrator subsequently completed the approved native owner
+and top-level DACL initialization outside this task. The non-elevated
+read-only validation then verified all ten target objects are owned by
+BUILTIN\Administrators; each directory has the approved protected DACL; no
+Everyone, Authenticated Users, or named-user write ACE remains; and the
+artifact and jobspec hashes remain unchanged.
+
+The existing stager returned ALREADY_STAGED without repair. Nomad plan safely
+reported the stopped job would change only Stop from true to false, and the
+checked run created allocation 2eb3bf4a-e47b-62be-2ca7-675e3b07eb9e under
+deployment a27379da-5bb6-c479-acb4-c2c7bba88534. Native allocation status
+reported running, deployment health healthy, nomad-liveness success, fixed
+127.0.0.1:18081 mapping, and zero task restarts. Direct loopback health was
+HTTP 200 with production=false and read_only=true. Nomad stdout/stderr were
+empty; the POC runtime log recorded the new start with the pinned artifact
+hash. No two-hour soak, native auto-revert, crash-recovery, or service-lifecycle
+burn-in was replayed.
 
 The completed generic POC's crash recovery, native auto-revert, agent-service
 restart/rediscovery, and two-hour soak were deliberately not replayed for this

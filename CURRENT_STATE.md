@@ -15,9 +15,9 @@ hardening is merged, and two upstream reliability tasks are active before the
 formal long-run training GO/NO-GO gate.
 
 An isolated Nomad POC is verified, and its first non-Production ControlCenter
-shadow has completed a bounded allocation observation but is blocked from
-acceptance because its staged root has an interactive-user Windows ACL owner.
-Neither is a Production cutover or a change to WinSW runtime ownership. Detail:
+shadow has completed sealed-artifact and bounded Nomad-native local acceptance.
+Maker and Independent Checker review remain pending; this is neither a
+Production cutover nor a change to WinSW runtime ownership. Detail:
 `PROJECT_PROGRESS.md`.
 
 ## Completed foundations
@@ -40,7 +40,7 @@ Neither is a Production cutover or a change to WinSW runtime ownership. Detail:
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
-| Nomad secure migration POC | **VERIFIED generic POC; first ControlCenter shadow BLOCKED / trusted ACL owner required (bounded allocation observation only)** | `NOMAD-POC-SECURE-001` and `NOMAD-FIRST-WORKLOAD-SHADOW-001`; detail in Project Brain evidence index |
+| Nomad secure migration POC | **VERIFIED generic POC; first ControlCenter shadow LOCAL_ACCEPTANCE_COMPLETE / REVIEW_PENDING** | `NOMAD-POC-SECURE-001` and `NOMAD-FIRST-WORKLOAD-SHADOW-001`; detail in Project Brain evidence index |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
@@ -64,10 +64,10 @@ Neither is a Production cutover or a change to WinSW runtime ownership. Detail:
   still requires measured throughput/catch-up evidence and a valid 60-minute
   proof with Recorder safety intact.
 - Nomad POC: isolated LocalService/loopback burn-in, native auto-revert, and
-  the two-hour observation-only soak are verified. A ControlCenter shadow has
-  one passing native allocation/check observation, but the user-owned staged
-  artifact fails the trusted-owner sealing gate; it is not a replay of the
-  generic POC's long lifecycle checks. Never infer Production authority,
+  the two-hour observation-only soak are verified. Its ControlCenter shadow
+  now has a sealed artifact plus one passing native allocation/check acceptance
+  after an external Windows operator gate; it is not a replay of the generic
+  POC's long lifecycle checks. Never infer Production authority,
   WinSW replacement or cutover. Detail:
   `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md` and
   `docs/deployment/NOMAD_FIRST_WORKLOAD_SHADOW_001.md`.
