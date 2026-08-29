@@ -70,6 +70,7 @@ live15_quant = ["web/*.html", "web/*.css", "web/*.js"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
 asyncio_mode = "auto"
+cache_dir = "runtime/tmp/pytest-cache"
 pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
