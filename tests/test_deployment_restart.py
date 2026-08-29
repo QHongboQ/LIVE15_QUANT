@@ -690,6 +690,38 @@ def test_pid_reuse_or_stale_process_snapshot_fails_closed(tmp_path: Path) -> Non
         )
 
 
+@pytest.mark.parametrize("reused_pid", (202, 303))
+def test_modern_restart_rejects_same_pid_reuse_after_provenance(
+    tmp_path: Path, reused_pid: int
+) -> None:
+    expectation = _expectation(tmp_path)
+    _write_runner_receipt(expectation, modified_at=datetime(2026, 8, 30, tzinfo=UTC))
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    processes = _processes(expectation)
+
+    def provenance(**_: object) -> None:
+        original = processes.snapshots[reused_pid]
+        processes.snapshots[reused_pid] = ProcessSnapshot(
+            original.pid,
+            original.parent_pid,
+            original.executable_path,
+            original.created_at + timedelta(seconds=1),
+        )
+
+    with pytest.raises(RestartGateError, match="PROCESS_CHAIN_GENERATION_CHANGED_AFTER_PROVENANCE"):
+        restart_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm,
+                FakeWinSWLogs("Starting WinSW in service mode"),
+                FakeClock(),
+                provenance=provenance,
+                processes=processes,
+            ),
+        )
+
+
 def test_legacy_rollback_uses_explicit_legacy_contract_without_modern_receipt(
     tmp_path: Path,
 ) -> None:
@@ -753,6 +785,36 @@ def test_legacy_generation_turnover_fails_closed(tmp_path: Path) -> None:
                 FakeClock(),
             ),
             verify_legacy=lambda **_: None,
+        )
+
+
+def test_legacy_restart_rejects_same_pid_reuse_after_legacy_verification(tmp_path: Path) -> None:
+    expectation = RestartExpectation(
+        **{**_expectation(tmp_path).__dict__, "expected_git_sha": "UNPROVEN"}
+    )
+    before, stopped, started = _snapshots(tmp_path)
+    scm = FakeScm(before=before, after_stop=stopped, after_start=started)
+    processes = _processes(expectation)
+
+    def legacy_contract(**_: object) -> None:
+        original = processes.snapshots[started.pid]
+        processes.snapshots[started.pid] = ProcessSnapshot(
+            original.pid,
+            original.parent_pid,
+            original.executable_path,
+            original.created_at + timedelta(seconds=1),
+        )
+
+    with pytest.raises(RestartGateError, match="SERVICE_PROCESS_GENERATION_CHANGED"):
+        restart_legacy_service_verified(
+            expectation,
+            dependencies=_dependencies(
+                scm,
+                FakeWinSWLogs("Starting WinSW in service mode"),
+                FakeClock(),
+                processes=processes,
+            ),
+            verify_legacy=legacy_contract,
         )
 
 

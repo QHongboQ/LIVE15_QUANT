@@ -513,7 +513,7 @@ def _validate_modern_process_chain(
     start_requested_at: datetime,
     config_path: Path,
     processes: ProcessInspection,
-) -> tuple[str, int, dict[str, Any]]:
+) -> tuple[str, int, dict[str, Any], tuple[ProcessSnapshot, ...]]:
     """Accept only direct WinSW ownership or one configured venv redirector.
 
     No ancestor walk is used here.  The only non-direct shape is the exact
@@ -552,7 +552,12 @@ def _validate_modern_process_chain(
             start_requested_at=start_requested_at,
             role="DIRECT_RUNNER",
         )
-        return "DIRECT", service_pid, {"mode": "DIRECT", "winsw_pid": service_pid}
+        return (
+            "DIRECT",
+            service_pid,
+            {"mode": "DIRECT", "winsw_pid": service_pid},
+            (service, runner),
+        )
     base = _configured_venv_base(configured_executable)
     if not _same_path(Path(receipt["base_executable"]), base):
         raise RestartGateError("PROCESS_CHAIN_RECEIPT_BASE_EXECUTABLE_MISMATCH")
@@ -584,6 +589,7 @@ def _validate_modern_process_chain(
             "launcher_path": str(configured_executable),
             "base_executable_path": str(base),
         },
+        (service, redirector, runner),
     )
 
 
@@ -780,6 +786,15 @@ def _transition_service_verified(
             "running_observed_at": running_at.isoformat(),
         }
         audit["generation"] = generation
+        service_generation = dependencies.processes.inspect(running.pid)
+        _validate_snapshot(
+            service_generation,
+            expected_pid=running.pid,
+            expected_executable=executable,
+            start_requested_at=start_requested_at,
+            role="WINSW",
+        )
+        generation["winsw_process_created_at"] = service_generation.created_at.isoformat()
 
         def observe_generation() -> None:
             observed_at = dependencies.now()
@@ -795,6 +810,8 @@ def _transition_service_verified(
                 raise RestartGateError("SERVICE_GENERATION_LOST")
             if observed.state != "RUNNING" or observed.pid != running.pid:
                 raise RestartGateError("SERVICE_GENERATION_CHANGED")
+            if dependencies.processes.inspect(running.pid) != service_generation:
+                raise RestartGateError("SERVICE_PROCESS_GENERATION_CHANGED")
 
         winsw_launch = _wait_for_winsw_service_mode_start(
             path=expectation.wrapper_log_path,
@@ -810,15 +827,6 @@ def _transition_service_verified(
         record("WINSW_SERVICE_MODE_START_CONFIRMED", dependencies.now())
 
         if modern_contract:
-            service_generation = dependencies.processes.inspect(running.pid)
-            _validate_snapshot(
-                service_generation,
-                expected_pid=running.pid,
-                expected_executable=executable,
-                start_requested_at=start_requested_at,
-                role="WINSW",
-            )
-            generation["winsw_process_created_at"] = service_generation.created_at.isoformat()
             receipt_path = (
                 expectation.release_root
                 / "runtime"
@@ -839,14 +847,16 @@ def _transition_service_verified(
             }
             record("RELEASE_RUNNER_RECEIPT_CONFIRMED", dependencies.now())
             observe_generation()
-            chain_mode, runner_parent_pid, chain_evidence = _validate_modern_process_chain(
-                receipt=receipt,
-                service_pid=running.pid,
-                winsw_executable=executable,
-                service_generation=service_generation,
-                start_requested_at=start_requested_at,
-                config_path=expectation.service_config_path,
-                processes=dependencies.processes,
+            chain_mode, runner_parent_pid, chain_evidence, chain_snapshots = (
+                _validate_modern_process_chain(
+                    receipt=receipt,
+                    service_pid=running.pid,
+                    winsw_executable=executable,
+                    service_generation=service_generation,
+                    start_requested_at=start_requested_at,
+                    config_path=expectation.service_config_path,
+                    processes=dependencies.processes,
+                )
             )
             audit["process_chain"] = chain_evidence
             audit["process_chain"]["mode"] = chain_mode
@@ -864,6 +874,16 @@ def _transition_service_verified(
                 )
             except (ReleaseError, OSError, ValueError, RuntimeError) as error:
                 raise RestartGateError(f"PROVENANCE_CONFIRMATION_FAILED: {error}") from error
+            final_receipt, final_receipt_hash = _runner_receipt(
+                receipt_path, start_requested_at=start_requested_at
+            )
+            if final_receipt_hash != receipt_hash or final_receipt != receipt:
+                raise RestartGateError("RELEASE_RUNNER_RECEIPT_CHANGED_AFTER_PROVENANCE")
+            if any(
+                dependencies.processes.inspect(snapshot.pid) != snapshot
+                for snapshot in chain_snapshots
+            ):
+                raise RestartGateError("PROCESS_CHAIN_GENERATION_CHANGED_AFTER_PROVENANCE")
             record("PROVENANCE_CONFIRMED", dependencies.now())
         else:
             try:
