@@ -21,11 +21,11 @@ not completion.
 
 ## Current project position
 
-- `NOMAD-POC-SECURE-001` is **IN_PROGRESS**. The service-model burn-in and
-  Nomad-native bad-update auto-revert are verified; an observation-only
-  two-hour POC soak was active at the last update and had four consecutive
-  healthy checkpoints. Reconcile the final soak receipt before changing its
-  status. This is never a Production runtime replacement or cutover approval.
+- `NOMAD-POC-SECURE-001` is **VERIFIED for the isolated POC phase**. The service-model burn-in and
+  Nomad-native bad-update auto-revert are verified; the observation-only
+  two-hour POC soak completed with 24 healthy iterations. Its final durable
+  receipt is reconciled below. This is never a Production runtime replacement
+  or cutover approval.
 - `ST-005` remains separately `CODE_READY_PENDING_60MIN_PROOF`. The Nomad POC
   does not authorize a Recorder restart, storage mutation, retention action or
   its formal 60-minute proof.
@@ -95,6 +95,30 @@ Evidence lives under `D:\LIVE15_NOMAD_POC\generic-poc\logs`, including
 and the soak's durable checkpoint/final summary. Re-discover filenames and
 checksums rather than reconstructing them from chat text.
 
+### Final two-hour soak receipt (authoritative for this phase)
+
+- File: `D:\LIVE15_NOMAD_POC\generic-poc\logs\nomad-soak-observer.log`.
+- Terminal line: `2026-08-29T10:20:31.2100764+00:00 soak_complete iterations=24`.
+- SHA-256 at reconciliation:
+  `3830C7A698D22CA0748F045D8F2EB4A559B66D8D627E9A5BC2DE39FBF49FCB66`.
+- The 24 five-minute observations recorded `service=Running`, stable job version
+  `15`, the same allocation, native health success, and HTTP `200`. This proves
+  only the bounded isolated POC observation phase; it is not Production proof.
+
+Two older files are historical progress drafts, **not** final soak receipts:
+
+- `D:\LIVE15_NOMAD_POC\state\validation-status.txt` was last written
+  `2026-08-29T08:21:00Z` and still says `RUNNING`; SHA-256
+  `30F756AA518F687D077646BCF8AC67E7222449473386822322D3715729BE46A8`.
+- `D:\LIVE15_NOMAD_POC\logs\validation-final-summary.txt` was last written
+  `2026-08-29T05:15:38Z`, before the successful observation pass, and contains
+  preliminary failures; SHA-256
+  `46B80EF389CAB9029F0E6D43F3F35902FE3466E43BD95C42214AFCAEA97DFCC7`.
+
+Do not rewrite those runtime-side files merely to make their text agree. For
+recovery, use the terminal observer receipt above and record any future phase
+in a new bounded receipt.
+
 ## Engineering rules that the user explicitly adopted
 
 - **Maker / Checker / Project Brain:** one bounded function → one task/branch/
@@ -134,8 +158,9 @@ checksums rather than reconstructing them from chat text.
 
 ## Next bounded decision
 
-The next safe action is **not** a Production migration. First reconcile the
-two-hour soak's final evidence. Then decide, in a separately scoped task,
+The next safe action is **not** a Production migration. The two-hour soak's
+final evidence is reconciled and is a completed POC phase, not a deployment
+decision. Next, decide in a separately scoped task,
 whether a non-production Shadow Recorder/service-discovery validation has an
 explicit contract. A later Production provider or cutover decision requires
 new human authority and cannot be inferred from this POC.
