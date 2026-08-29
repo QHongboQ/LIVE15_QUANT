@@ -37,7 +37,7 @@ WinSW runtime ownership. Detail: `PROJECT_PROGRESS.md`.
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
-| Nomad secure migration POC | **BLOCKED_PENDING_FIXED_URLACL_CORRECTION** | `NOMAD-POC-SECURE-001`; detail in Project Brain evidence index |
+| Nomad secure migration POC | **IN_PROGRESS / END-TO-END SERVICE MODEL VERIFIED; BOUNDED SOAK RUNNING** | `NOMAD-POC-SECURE-001`; detail in Project Brain evidence index |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
@@ -60,9 +60,12 @@ WinSW runtime ownership. Detail: `PROJECT_PROGRESS.md`.
 - `ST-005` is not resolved merely because UI-013 can display catch-up state. It
   still requires measured throughput/catch-up evidence and a valid 60-minute
   proof with Recorder safety intact.
-- Nomad POC lifecycle evidence is not end-to-end readiness: fixed URLACL parser
-  correction remains. Scope is LocalService + loopback `18080` only; no
-  Production authority. Detail: `PROJECT_PROGRESS.md`.
+- Nomad POC has verified the isolated LocalService + loopback `18080` service
+  model, fixed native URLACL, workload/service restart and native auto-revert.
+  Its bounded observation-only soak remains in progress. This is never
+  Production authority, a WinSW replacement, or cutover approval. Detail:
+  `PROJECT_PROGRESS.md` and
+  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
   **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
   frozen-holdout rows and was stopped immediately. The former `UNREVEALED`
@@ -78,8 +81,8 @@ WinSW runtime ownership. Detail: `PROJECT_PROGRESS.md`.
    H2 revalidation inside that task;
 2. complete `ST-005` archive/purge throughput recovery and valid 60-minute
    catch-up proof; these two tasks may proceed independently and in parallel;
-3. complete `NOMAD-POC-SECURE-001` through Checker/UAC gates, end-to-end POC
-   burn-in and bounded assurance; no Production cutover;
+3. complete the bounded assurance evidence for `NOMAD-POC-SECURE-001`; no
+   Production cutover;
 4. reconcile/merge those tasks onto the then-current protected main;
 5. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is
    READY may a separate explicit human approval authorize deployment/restart and
