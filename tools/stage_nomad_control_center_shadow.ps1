@@ -9,6 +9,11 @@ $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
+$expectedProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$resolvedProjectRoot = [IO.Path]::GetFullPath($ProjectRoot)
+if (-not [string]::Equals($resolvedProjectRoot, $expectedProjectRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "source root must match the staging script checkout"
+}
 $pocRoot = "D:\LIVE15_NOMAD_POC"
 $resolvedStagingRoot = [IO.Path]::GetFullPath($StagingRoot)
 if (-not $resolvedStagingRoot.StartsWith("$pocRoot\", [StringComparison]::OrdinalIgnoreCase)) {
@@ -36,7 +41,10 @@ if ($jobspecText -match "LIVE15_KALSHI_PRODUCTION|LIVE15_QUANT") {
 $artifactRoot = Join-Path $resolvedStagingRoot "artifact"
 $configRoot = Join-Path $resolvedStagingRoot "config"
 $logsRoot = Join-Path $resolvedStagingRoot "logs"
-$receiptPath = Join-Path $configRoot "staging-receipt.json"
+$evidenceRoot = Join-Path $resolvedStagingRoot "evidence"
+$receiptPath = Join-Path $evidenceRoot "staging-receipt.json"
+$stagedArtifactPath = Join-Path $artifactRoot "live15-control-center-shadow.ps1"
+$stagedJobspecPath = Join-Path $configRoot "live15-control-center-shadow.nomad.hcl"
 
 if (-not $Run) {
     Write-Output "READY: source artifact SHA-256 $artifactSha256"
@@ -45,33 +53,83 @@ if (-not $Run) {
     exit 0
 }
 
-foreach ($path in @($artifactRoot, $configRoot, $logsRoot)) {
+$artifactRootExisted = Test-Path -LiteralPath $artifactRoot -PathType Container
+$configRootExisted = Test-Path -LiteralPath $configRoot -PathType Container
+$logsRootExisted = Test-Path -LiteralPath $logsRoot -PathType Container
+foreach ($path in @($artifactRoot, $configRoot, $logsRoot, $evidenceRoot)) {
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
 
-Copy-Item -LiteralPath $sourceArtifact -Destination (Join-Path $artifactRoot "live15-control-center-shadow.ps1") -Force
-Copy-Item -LiteralPath $sourceJobspec -Destination (Join-Path $configRoot "live15-control-center-shadow.nomad.hcl") -Force
-
-$receipt = [ordered]@{
-    schema_version = "1"
-    staged_at_utc = (Get-Date).ToUniversalTime().ToString("o")
-    scope = "nomad_non_production_control_center_shadow"
-    artifact_path = (Join-Path $artifactRoot "live15-control-center-shadow.ps1")
-    artifact_sha256 = $artifactSha256
-    jobspec_path = (Join-Path $configRoot "live15-control-center-shadow.nomad.hcl")
-    jobspec_sha256 = (Get-FileHash -LiteralPath $sourceJobspec -Algorithm SHA256).Hash.ToUpperInvariant()
-    production = $false
-    credentials_present = $false
-    recorder_started = $false
-    execution_enabled = $false
+function Copy-OrVerify-SealedSource([string]$Source, [string]$Destination, [string]$ExpectedHash) {
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        $existingHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToUpperInvariant()
+        if ($existingHash -ne $ExpectedHash) {
+            throw "sealed staged file differs from the checked source: $Destination"
+        }
+        return
+    }
+    Copy-Item -LiteralPath $Source -Destination $Destination
 }
-[IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
 
-& icacls $artifactRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)RX" "BUILTIN\Users:(OI)(CI)RX"
-if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow artifact ACL" }
-& icacls $configRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)RX" "BUILTIN\Users:(OI)(CI)RX"
-if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow configuration ACL" }
-& icacls $logsRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)M" "BUILTIN\Users:(OI)(CI)RX"
-if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow log ACL" }
+$sourceJobspecSha256 = (Get-FileHash -LiteralPath $sourceJobspec -Algorithm SHA256).Hash.ToUpperInvariant()
+Copy-OrVerify-SealedSource $sourceArtifact $stagedArtifactPath $artifactSha256
+Copy-OrVerify-SealedSource $sourceJobspec $stagedJobspecPath $sourceJobspecSha256
+
+$stagedArtifactSha256 = (Get-FileHash -LiteralPath $stagedArtifactPath -Algorithm SHA256).Hash.ToUpperInvariant()
+$stagedJobspecSha256 = (Get-FileHash -LiteralPath $stagedJobspecPath -Algorithm SHA256).Hash.ToUpperInvariant()
+if ($stagedArtifactSha256 -ne $artifactSha256 -or $stagedJobspecSha256 -ne $sourceJobspecSha256) {
+    throw "post-copy shadow hash verification failed"
+}
+
+if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+    Write-Output "ALREADY_STAGED: $receiptPath"
+    exit 0
+}
+
+# Keep this handle open while the evidence directory is sealed so the
+# post-seal ACL read-back and copied hashes are recorded atomically in the receipt.
+$receiptHandle = [IO.File]::Open($receiptPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try {
+    if (-not $artifactRootExisted) {
+        & icacls $artifactRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)RX" "BUILTIN\Users:(OI)(CI)RX"
+        if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow artifact ACL" }
+    }
+    if (-not $configRootExisted) {
+        & icacls $configRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)RX" "BUILTIN\Users:(OI)(CI)RX"
+        if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow configuration ACL" }
+    }
+    if (-not $logsRootExisted) {
+        & icacls $logsRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)M" "BUILTIN\Users:(OI)(CI)RX"
+        if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow log ACL" }
+    }
+    & icacls $evidenceRoot /inheritance:r /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)RX" "BUILTIN\Users:(OI)(CI)RX"
+    if ($LASTEXITCODE -ne 0) { throw "failed to seal shadow evidence ACL" }
+
+    $receipt = [ordered]@{
+        schema_version = "1"
+        staged_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+        scope = "nomad_non_production_control_center_shadow"
+        artifact_path = $stagedArtifactPath
+        artifact_sha256 = $stagedArtifactSha256
+        jobspec_path = $stagedJobspecPath
+        jobspec_sha256 = $stagedJobspecSha256
+        acl_readback = [ordered]@{
+            artifact = @(& icacls $artifactRoot)
+            config = @(& icacls $configRoot)
+            logs = @(& icacls $logsRoot)
+            evidence = @(& icacls $evidenceRoot)
+        }
+        production = $false
+        credentials_present = $false
+        recorder_started = $false
+        execution_enabled = $false
+    }
+    $receiptBytes = [Text.UTF8Encoding]::new($false).GetBytes(($receipt | ConvertTo-Json -Depth 6))
+    $receiptHandle.Write($receiptBytes, 0, $receiptBytes.Length)
+    $receiptHandle.Flush($true)
+}
+finally {
+    $receiptHandle.Dispose()
+}
 
 Write-Output "STAGED: $receiptPath"

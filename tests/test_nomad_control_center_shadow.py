@@ -14,6 +14,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SHADOW_ROOT = REPOSITORY_ROOT / "deploy" / "nomad" / "control-center-shadow"
 ARTIFACT = SHADOW_ROOT / "live15-control-center-shadow.ps1"
 JOBSPEC = SHADOW_ROOT / "live15-control-center-shadow.nomad.hcl"
+STAGER = REPOSITORY_ROOT / "tools" / "stage_nomad_control_center_shadow.ps1"
 
 
 class NomadControlCenterShadowTest(unittest.TestCase):
@@ -97,6 +98,28 @@ class NomadControlCenterShadowTest(unittest.TestCase):
             )
 
         self.assertNotEqual(result.returncode, 0)
+
+    def test_stager_rejects_a_source_other_than_its_own_checkout(self) -> None:
+        result = subprocess.run(
+            [
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(STAGER),
+                "-ProjectRoot",
+                r"D:\LIVE15_NOMAD_POC\generic-poc",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("source root must match the staging script checkout", result.stderr)
 
     @staticmethod
     def _available_port() -> int:

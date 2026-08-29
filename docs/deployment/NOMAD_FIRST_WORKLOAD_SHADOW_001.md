@@ -16,8 +16,12 @@ and evidence validation.
 
 ## Hard boundaries
 
-- All files, configuration, data, logs, ports and credentials are confined to a
-  separately prepared non-Production staging root under `D:\LIVE15_NOMAD_POC`.
+- Shadow-owned artifact, configuration, evidence and runtime-log files are
+  confined to `D:\LIVE15_NOMAD_POC\control-center-shadow`. Nomad-owned
+  allocation stdout/stderr remains in the existing agent's
+  `D:\LIVE15_NOMAD_POC\generic-poc\agent-data\alloc` root; both are inside
+  the single isolated `D:\LIVE15_NOMAD_POC` POC envelope. The job does not
+  create an alternate allocation-log manager.
 - `D:\LIVE15_QUANT` is protected and must not be read for runtime data,
   modified, restarted, or used as an artifact source.
 - No Recorder, settlement, Hard Risk, execution, holdout, training or trading
@@ -74,10 +78,12 @@ PowerShell listener at
 
 `tools/stage_nomad_control_center_shadow.ps1` is the thin staging adapter. It
 rejects targets outside `D:\LIVE15_NOMAD_POC`, verifies the jobspec-pinned
-artifact hash, writes the no-secret staging receipt, and applies a read/execute
-ACL to the artifact/configuration plus a LocalService-write-only log ACL. It is
-not a service manager, supervisor, registry, restart manager, or rollback
-controller.
+artifact hash, accepts only the checkout containing the staging script as its
+source, and writes a post-seal no-secret staging receipt. The receipt records
+post-copy hashes and ACL read-back for artifact, configuration, and logs. The
+adapter applies a read/execute ACL to artifact/configuration plus a
+LocalService-write-only log ACL. It is not a service manager, supervisor,
+registry, restart manager, or rollback controller.
 
 The minimal job is
 `deploy/nomad/control-center-shadow/live15-control-center-shadow.nomad.hcl`.
@@ -88,9 +94,10 @@ mechanisms. Nomad and SCM remain the lifecycle owners.
 ## Bounded local receipt — 2026-08-29
 
 - Staging receipt:
-  `D:\LIVE15_NOMAD_POC\control-center-shadow\config\staging-receipt.json`.
-  It records `production=false`, `credentials_present=false`,
-  `recorder_started=false`, and `execution_enabled=false`.
+  `D:\LIVE15_NOMAD_POC\control-center-shadow\evidence\staging-receipt.json`.
+  It records post-copy artifact/jobspec hashes and ACL read-back alongside
+  `production=false`, `credentials_present=false`, `recorder_started=false`,
+  and `execution_enabled=false`.
 - Artifact SHA-256:
   `4D06F9641BA468D4C351190AB5F4E8D1D5F5BEB1463FFF85985190F46662127B`.
   Its artifact and configuration directories are read/execute only for Users
@@ -103,6 +110,10 @@ mechanisms. Nomad and SCM remain the lifecycle owners.
   liveness response recorded `production=false` and `read_only=true`.
 - The artifact's independent end-to-end test passed: liveness is 200, both
   data projections are fail-closed 503, and a Recorder-control URL is 405.
+- The allocation's stdout/stderr are Nomad agent-owned files under
+  `D:\LIVE15_NOMAD_POC\generic-poc\agent-data\alloc\63252e8b-948e-d73f-e67e-7e35d9f36342`;
+  shadow-owned logs/config/artifact remain in the separate child root stated
+  above. This is an explicit POC-envelope boundary, not a custom log path.
 
 The completed generic POC's crash recovery, native auto-revert, agent-service
 restart/rediscovery, and two-hour soak were deliberately not replayed for this
