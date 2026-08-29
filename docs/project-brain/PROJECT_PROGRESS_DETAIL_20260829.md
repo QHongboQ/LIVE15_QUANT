@@ -154,8 +154,9 @@ quota, and no merge follows from a green result.
 - `live15_quant.root_hygiene.resolve_pytest_cache_dir` rejects project-relative
   paths outside the approved subtree and traversal attempts while allowing a
   dedicated external temp root.
-- Local evidence: 15 targeted tests passed, Ruff passed, and `git diff --check`
-  passed. Independent Checker returned PASS.
+- Local evidence: 15 targeted tests passed; the full local suite completed at
+  `2026-08-29T12:38:54.8412104Z` with 1,181 passed and 14 opt-in smoke skips;
+  Ruff and `git diff --check` passed. Independent Checker returned PASS.
 - Hosted CI is intentionally deferred under `CI_DEFERRED_QUOTA`; no merge or
   Production/runtime operation was performed.
 
