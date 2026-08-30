@@ -77,7 +77,10 @@ BLOCKER_ALLOWED = YES/NO
 
 If `STANDARD_UPSTREAM_PATH_FOUND = YES`, continue with that standard path to the maximum extent
 allowed by the current task and stop only at the exact human/operator mutation that lacks
-authorization. Local invention is a last-last-last fallback, not a peer option.
+authorization. Local invention is a last-last-last fallback, not a peer option. For ordinary
+generic/platform problems, the preferred outcome is **no local reimplementation at all**. A local
+solution is justified only when the requirement is genuinely LIVE15-specific or the official,
+GitHub and broader upstream search finds no reusable implementation.
 
 For such failures:
 
