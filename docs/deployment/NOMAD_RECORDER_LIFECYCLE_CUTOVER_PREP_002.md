@@ -4,6 +4,8 @@ STATUS = PREPARED / NO_PRODUCTION_CUTOVER
 AUDITED_MAIN_SHA = `034a34c2fd53506db99e7c96b7c2b7d3815fee98`
 RECORDER_LIFECYCLE_TO_NOMAD = PROCEED
 IDENTITY_GATE = BLOCKED / OPERATOR_ACCESS_PROOF_PENDING
+RECORDER_RUNTIME = CANONICAL_LIVE15_PRODUCTION_RUNTIME
+NEW_RECORDER_RUNTIME_REQUIRED = NO
 HEALTH_BRIDGE_REQUIRED_FOR_CUTOVER = NO
 CHECK_RESTART_USED = NO
 CONSUL_USED = NO
@@ -28,7 +30,7 @@ control/PID paths remain external mutable state. No `artifact` download is used,
 so this does not create a second package/provenance mechanism.
 
 The task invokes the existing `live15_quant.cli:recorder_main` entrypoint through
-the protected CPython executable in isolated mode. The task inherits the
+`CANONICAL_LIVE15_PRODUCTION_RUNTIME` in isolated mode. The task inherits the
 Windows SCM Nomad agent identity (the verified LocalService agent topology); no
 new task-user, wrapper, supervisor, or permission repair path is added.
 
@@ -57,8 +59,10 @@ Read-only host facts:
 - The Nomad Windows service runs as `NT AUTHORITY\LocalService`
   (`sc.exe qc/query nomad`).
 - `D:\LIVE15_QUANT\active-release.json` points to
-  `legacy-unproven-08989b3efd7d19f6`; this is not an acceptable immutable
-  Recorder candidate for the future gate.
+  `legacy-unproven-08989b3efd7d19f6`; this is application-release provenance,
+  not a runtime identity. It remains unsuitable as the future immutable
+  Recorder application candidate, while the separately verified canonical
+  Python runtime remains valid.
 - With the current frozen defaults, Recorder's mutable surface is:
   `data/live15.sqlite3` plus SQLite WAL/SHM siblings; `data/health.json`,
   `data/recorder-control.json`, `data/recorder.pid`; `data/ws_archive/` and
@@ -77,10 +81,11 @@ Required LocalService access is therefore:
 | archive directory and manifest parent | Read/write/create/delete |
 | adaptive-retention state/status parent directories | Read/write/create/delete |
 
-No ACL mutation or effective-access claim was made. Until a reviewed immutable
-Recorder release and its exact path/permission evidence are supplied, the
-identity gate remains blocked and the current `LocalSystem` root must not be
-used as the Nomad candidate.
+The canonical runtime identity/hash and Recorder production imports were
+verified read-only using the installed runtime; no ACL mutation was made. Until
+a reviewed immutable Recorder release and exact LocalService path-permission
+evidence are supplied, the identity gate remains blocked and the current
+`LocalSystem` application root must not be used as the Nomad candidate.
 
 ## Upstream stanza receipt
 
@@ -172,8 +177,12 @@ WinSW during the acceptance window.
   status represented a create diff, not a validation or scheduling error.
 - No long Nomad POC soak, crash recovery, auto-revert burn-in, service restart,
   or GAP002 episode was repeated.
+- Existing canonical runtime compatibility check: PASS; runtime hash matched
+  the recorded identity and required Recorder imports, including
+  `kalshi-sdk==12.0.0`, loaded successfully.
 - Identity preflight: NOT RUN; running against the current `legacy-unproven`
-  active release would not prove the required immutable candidate boundary.
+  active application release would not prove the required immutable candidate
+  boundary. The canonical runtime compatibility check itself passed.
 - `ARTIFACT_BINDING` is `PREPARED`, not `PASS`: the future gate must prove
   actual protected files/manifests == supplied hash variables == allocation
   metadata before runtime acceptance.
