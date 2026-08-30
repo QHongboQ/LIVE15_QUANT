@@ -287,12 +287,21 @@ def test_recursive_split_and_route_health_are_lossless_governance() -> None:
 def test_replacement_first_resolution_preserves_bounded_scope() -> None:
     protocol = read("docs/agents/change-protocol.md")
 
-    assert "approved replacement is selected, run that bounded reversible path first and observe it" in protocol
+    assert (
+        "approved replacement is selected, run that bounded reversible path first and observe it"
+        in protocol
+    )
     assert "If a concrete failure remains, diagnose its owner" in protocol
-    assert "Perform the full Upstream Reuse First search below when\nselecting a new owner or considering a new local implementation" in protocol
+    assert (
+        "Perform the full Upstream Reuse First search below when\n"
+        "selecting a new owner or considering a new local implementation" in protocol
+    )
     assert "a Checker finding is validation feedback against the original task contract" in protocol
     assert "it does not expand the task or become a blocker automatically" in protocol
-    assert "targeted upstream evidence needed for the exact observed error text, API, or version" in protocol
+    assert (
+        "targeted upstream evidence needed for the exact observed error text, API, or version"
+        in protocol
+    )
 
 
 def test_context_recovery_and_skill_provenance_remain_available() -> None:
