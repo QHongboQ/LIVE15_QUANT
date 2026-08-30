@@ -3,6 +3,7 @@
 STATUS = PREPARED / NO_PRODUCTION_CUTOVER
 AUDITED_MAIN_SHA = `034a34c2fd53506db99e7c96b7c2b7d3815fee98`
 RECORDER_LIFECYCLE_TO_NOMAD = PROCEED
+IDENTITY_GATE = BLOCKED / OPERATOR_ACCESS_PROOF_PENDING
 HEALTH_BRIDGE_REQUIRED_FOR_CUTOVER = NO
 CHECK_RESTART_USED = NO
 CONSUL_USED = NO
@@ -10,6 +11,7 @@ LIVE_RECORDER_MUTATED = NO
 WIN_SW_RECORDER_STOPPED = NO
 NOMAD_RECORDER_STARTED = NO
 GAP002_EXECUTED = NO
+ARTIFACT_BINDING = PREPARED
 
 This preparation defines one future Nomad service task only. It does not submit
 the job, stop WinSW, start a Nomad allocation, read credentials, or access the
@@ -29,6 +31,51 @@ The task invokes the existing `live15_quant.cli:recorder_main` entrypoint throug
 the protected CPython executable in isolated mode. The task inherits the
 Windows SCM Nomad agent identity (the verified LocalService agent topology); no
 new task-user, wrapper, supervisor, or permission repair path is added.
+
+The identity-gate helper `deploy/nomad/live15-recorder-identity-preflight.nomad.hcl`
+reuses the verified ControlCenter batch/raw_exec pattern. It only verifies the
+protected runtime, imports `live15_quant` from the reviewed immutable app root,
+opens each credential reference without emitting contents, and creates/deletes
+uniquely named probes in the required mutable directories. It never imports or
+invokes `recorder_main`, opens the RecorderStore, or changes ACLs. It is prepared
+but not run because no reviewed immutable Recorder release candidate and exact
+operator path set is currently available.
+
+## Identity gate findings
+
+Read-only host facts:
+
+- `LIVE15Recorder` is the current sole owner and runs as `LocalSystem` (`sc.exe
+  qc/queryex LIVE15Recorder`). Its existing working directory resolves to
+  `D:\LIVE15_QUANT`; the current XML references `D:\SDK_ID.txt`,
+  `D:\SDK.txt`, and `D:\LIVE15_QUANT\.secrets\pyth-api-key.txt`.
+- The Nomad Windows service runs as `NT AUTHORITY\LocalService`
+  (`sc.exe qc/query nomad`).
+- `D:\LIVE15_QUANT\active-release.json` points to
+  `legacy-unproven-08989b3efd7d19f6`; this is not an acceptable immutable
+  Recorder candidate for the future gate.
+- With the current frozen defaults, Recorder's mutable surface is:
+  `data/live15.sqlite3` plus SQLite WAL/SHM siblings; `data/health.json`,
+  `data/recorder-control.json`, `data/recorder.pid`; `data/ws_archive/` and
+  `data/ws_archive_manifest.sqlite3`; and
+  `data/adaptive-retention.sqlite3` / `data/adaptive-retention.json`.
+
+Required LocalService access is therefore:
+
+| Path class | Required access |
+| --- | --- |
+| protected `recorder_runtime_python`, immutable `recorder_app_root` | Read/execute |
+| Kalshi API-key ID, Kalshi private key, Pyth API key reference files | Read/open only; contents never logged |
+| Recorder working directory | Read/write/create/delete as required by the entrypoint; must not be the mutable source checkout |
+| RecorderStore directory | Read/write/create/delete for SQLite, WAL, and SHM siblings |
+| health/control/PID parent directories | Read/write/create/delete |
+| archive directory and manifest parent | Read/write/create/delete |
+| adaptive-retention state/status parent directories | Read/write/create/delete |
+
+No ACL mutation or effective-access claim was made. Until a reviewed immutable
+Recorder release and its exact path/permission evidence are supplied, the
+identity gate remains blocked and the current `LocalSystem` root must not be
+used as the Nomad candidate.
 
 ## Upstream stanza receipt
 
@@ -120,3 +167,8 @@ WinSW during the acceptance window.
   status represented a create diff, not a validation or scheduling error.
 - No long Nomad POC soak, crash recovery, auto-revert burn-in, service restart,
   or GAP002 episode was repeated.
+- Identity preflight: NOT RUN; running against the current `legacy-unproven`
+  active release would not prove the required immutable candidate boundary.
+- `ARTIFACT_BINDING` is `PREPARED`, not `PASS`: the future gate must prove
+  actual protected files/manifests == supplied hash variables == allocation
+  metadata before runtime acceptance.

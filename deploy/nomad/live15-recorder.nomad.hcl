@@ -46,6 +46,11 @@ variable "kalshi_private_key_path" {
   description = "Existing absolute external Kalshi private-key path; content is never read here."
 }
 
+variable "pyth_api_key_path" {
+  type        = string
+  description = "Existing absolute external Pyth API-key path; content is never read here."
+}
+
 variable "release_id" {
   type        = string
   description = "Verified immutable release identity supplied at the future cutover gate."
@@ -139,6 +144,8 @@ job "live15-recorder" {
         LIVE15_KALSHI_RECORDER_PROVIDER            = "sdk"
         LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH   = var.kalshi_api_key_id_path
         LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH  = var.kalshi_private_key_path
+        LIVE15_ENABLE_PYTH_UNDERLYING              = "true"
+        LIVE15_PYTH_API_KEY_PATH                   = var.pyth_api_key_path
         LIVE15_RECORDER_DATA_PATH                  = var.recorder_data_path
         LIVE15_RECORDER_HEALTH_PATH                = var.recorder_health_path
         LIVE15_RECORDER_CONTROL_PATH               = var.recorder_control_path
