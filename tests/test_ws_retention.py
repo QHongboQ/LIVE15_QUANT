@@ -17,6 +17,7 @@ from live15_quant.kalshi_ws import (
 )
 from live15_quant.models import OrderBookLevel
 from live15_quant.storage import RecorderStore
+from live15_quant.ws_archive import decode_archive_chunk
 from live15_quant.ws_retention import (
     ArchiveState,
     CompactionBenefitGate,
@@ -507,6 +508,55 @@ def test_failed_baseline_reconciliation_requires_explicit_evidence(
     with pytest.raises(WsRetentionError, match="lacks explicit"):
         manifest.quarantine_replay_baseline_failure(failed.chunk_id, now=NOW, evidence="wrong")
     assert manifest.chunks()[0].state is ArchiveState.FAILED
+
+
+def test_mixed_failed_range_quarantines_only_proven_missing_market_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, manifest = _service(tmp_path)
+    monkeypatch.setattr(
+        "live15_quant.ws_retention.decode_archive_chunk",
+        lambda _blob: (_ for _ in ()).throw(WsRetentionError("missing replay baseline")),
+    )
+    with pytest.raises(WsRetentionError, match="missing replay baseline"):
+        service.run_once(now=NOW)
+    failed = manifest.chunks()[0]
+    records = list(service._range_records(failed))
+    missing_ticker = "KXBNB15M-26AUG221215-15"
+    records[0] = replace(records[0], connection_id="connection-2", subscription_id=3)
+    records[1] = replace(records[1], connection_id="connection-2", subscription_id=3, ticker=TICKER)
+    records[2] = replace(
+        records[2],
+        connection_id="connection-2",
+        subscription_id=3,
+        ticker=missing_ticker,
+        market_id="market-bnb",
+    )
+    monkeypatch.setattr(service, "_range_records", lambda _chunk: tuple(records))
+    snapshot_time = NOW - timedelta(hours=7)
+    store = RecorderStore(service.source_database)
+    store.append_kalshi_ws_orderbook_event(
+        KalshiOrderBookSnapshot(
+            connection_id="connection-2",
+            subscription_id=3,
+            sequence=1,
+            ticker=missing_ticker,
+            market_id="market-bnb",
+            yes_bids=(),
+            no_bids=(),
+            source_timestamp=snapshot_time,
+            socket_received_timestamp=snapshot_time,
+            parse_timestamp=snapshot_time + timedelta(microseconds=1),
+        ),
+        sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED,
+    )
+    store.close()
+    raw_before = service.source_database.stat().st_size
+    monkeypatch.setattr("live15_quant.ws_retention.decode_archive_chunk", decode_archive_chunk)
+    service._reconcile_failed_baseline(NOW)
+    assert manifest.chunks()[0].state is ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING
+    assert service.source_database.stat().st_size == raw_before
+    assert manifest.last_event_id() == failed.last_event_id
 
 
 def test_delta_only_chunk_waits_for_baseline_without_publishing_or_failing(
