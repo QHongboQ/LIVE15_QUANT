@@ -27,11 +27,18 @@ green CI. It never extends to elevated-review zones, Production trading writes, 
 training/promotion gates, Hard Risk changes, or irreversible policy changes; those retain their
 explicit human authority.
 
-For behavioral changes, follow:
+For behavioral changes, use the least-cost route:
 
 ```text
-reproduce → classify owner → upstream/native check → failing regression test → minimal implementation → targeted tests → relevant broader checks
+reuse existing capability / selected replacement → bounded reversible execution → observe
+  → diagnose only a concrete remaining failure
+  → (genuine authoritative defect) classify → failing regression test → minimal implementation
+  → targeted tests → relevant broader checks
 ```
+
+The reproduction, hypothesis, and regression-test phases are required for a genuine defect in
+authoritative code, not for generic machinery already approved for retirement. A new local generic
+implementation still requires the Upstream Reuse First review before it is written.
 
 Documentation-only, pure metadata, and audit tasks may use validation without artificial tests.
 High-risk changes require explicit review before altering authoritative Recorder writes, gap or
@@ -46,53 +53,34 @@ deployment/revert, discovery, telemetry/logging, packaging, or behavior already 
 mature upstream project, the default action is **native/upstream remediation plus LIVE15
 validation**, not a new LIVE15 subsystem.
 
-### Upstream resolution must precede blocker or local invention
+### Upstream resolution at the decision point
 
-A platform-owned failure is not allowed to jump directly from classification to `BLOCKED`, and it
-is not allowed to trigger a local workaround first. Before a blocker or local implementation is
-accepted, complete the relevant upstream-resolution pass in this order:
+A platform-owned failure defaults to native/upstream remediation plus LIVE15 validation. When an
+approved replacement is selected, run that bounded reversible path first and observe it; do not
+pre-debug the retiring machinery. If a concrete failure remains, diagnose its owner and consult
+only the targeted upstream evidence needed for the exact observed error text, API, or version.
+Perform the full Upstream Reuse First search below when
+selecting a new owner or considering a new local implementation:
 
-1. official documentation, release notes, migration guides, tutorials and maintained examples;
-2. the selected/pinned project's official GitHub source, tests, examples, changelog, Issues, Pull
-   Requests and Discussions;
-3. other mature, actively maintained, license-compatible GitHub projects that already solve the
-   same problem;
-4. broader community/web material when needed for missing operational detail or real-world
-   deployment experience;
-5. only then consider a LIVE15-specific implementation, and only when the requirement is genuinely
-   project-specific or no reusable upstream path exists.
+1. official documentation, release notes, migration guides and maintained examples;
+2. the selected/pinned project's source, tests, changelog, Issues, Pull Requests and Discussions;
+3. another mature, maintained, license-compatible implementation when the selected owner is
+   insufficient;
+4. broader sources only for missing operational detail;
+5. a LIVE15-specific implementation only when the requirement is genuinely project-specific or no
+   reusable upstream path exists.
 
-Prefer following the official tutorial/mechanism directly. Do not study upstream and then rewrite
-an equivalent subsystem locally. "The operator action cannot be performed in this session" does
-not mean "the upstream solution cannot be prepared in this task": continue preparing the standard
-configuration, artifact, jobspec, install plan, validation, and bounded operator step until the
-specific unauthorized mutation is reached.
+Prefer the official mechanism directly and preserve the reuse order
+`dependency -> pinned dependency/fork -> vendored upstream module -> narrow attributed port ->
+local reimplementation`. Respect licenses and attribution. “The operator action cannot be
+performed in this session” still permits preparing the standard configuration and validation until
+the exact human mutation is reached; a pending human mutation alone does not require a new blocker
+receipt or speculative preflight.
 
-Search with exact observed error text, API/function names, OS/runtime/dependency versions, and
-topology. When a suitable mature implementation exists, reuse priority is
-`dependency -> pinned dependency/fork -> vendored upstream module -> narrow attributed port -> local reimplementation`.
-Respect licenses and attribution. Repeated special-case patching is not a substitute for reuse or
-consolidation around the shared/upstream abstraction.
-
-Before finalizing `environment/operator/installation`, record:
-
-```text
-UPSTREAM_OFFICIAL_DOCS = CHECKED
-UPSTREAM_TUTORIALS_EXAMPLES = CHECKED
-UPSTREAM_GITHUB_SOURCE_TESTS = CHECKED
-UPSTREAM_GITHUB_ISSUES_PRS = CHECKED
-MATURE_GITHUB_ALTERNATIVES = CHECKED/NOT_NEEDED
-STANDARD_UPSTREAM_PATH_FOUND = YES/NO
-UPSTREAM_RESOLUTION_EXHAUSTED = YES/NO
-BLOCKER_ALLOWED = YES/NO
-```
-
-If `STANDARD_UPSTREAM_PATH_FOUND = YES`, continue with that standard path to the maximum extent
-allowed by the current task and stop only at the exact human/operator mutation that lacks
-authorization. Local invention is a last-last-last fallback, not a peer option. For ordinary
-generic/platform problems, the preferred outcome is **no local reimplementation at all**. A local
-solution is justified only when the requirement is genuinely LIVE15-specific or the official,
-GitHub and broader upstream search finds no reusable implementation.
+If a standard upstream path exists, continue with it to the maximum extent allowed by the task and
+stop only at the exact human/operator mutation that lacks authorization. For ordinary
+generic/platform problems, prefer no local reimplementation. A local solution is justified only
+when the requirement is genuinely LIVE15-specific or no reusable upstream path exists.
 
 ### Official procedures are task-time external authority
 
@@ -100,11 +88,12 @@ Project Brain stores LIVE15's durable local rules, ownership, safety boundaries,
 and acceptance criteria. It must not normally freeze a step-by-step copy or paraphrase of an
 external vendor tutorial and then treat that copy as the implementation authority.
 
-The executing agent must retrieve the **current** official documentation/tutorials and official
-GitHub evidence itself when the task runs, then derive the current supported procedure and map only
-LIVE15-specific inputs and constraints onto it. A previous chat summary or a prompt-authored copy of
-vendor steps is not a substitute for that retrieval. If current official sources cannot be reached
-or verified, stop rather than execute a remembered procedure.
+For a new upstream path, a changed version, or an unverified privileged/runtime procedure, the
+executing agent must retrieve the **current** official documentation/tutorials and official GitHub
+evidence itself, then map only LIVE15-specific inputs and constraints onto it. A previously selected
+and validated replacement may use its recorded procedure for the first bounded reversible execution;
+refresh sources when the version/behavior changed or a concrete failure needs clarification. A
+remembered procedure without either current sources or prior validation remains inadmissible.
 
 User-facing Codex prompts should therefore state the goal, selected upstream project, source-search
 order, LIVE15 boundaries, acceptance criteria, rollback, and human gates; they should not normally
@@ -119,9 +108,10 @@ For such failures:
 - repo code must not become an ACL/owner repair manager, UAC/elevation wrapper, service manager,
   supervisor, restart manager, rollback controller, registry/discovery implementation, or generic
   recovery framework;
-- a new Checker finding about another platform prerequisite may become an
-  `environment/operator/installation` blocker only after the upstream-resolution gate above is
-  complete; it is not a reason to keep extending the adapter;
+- a Checker finding is validation feedback against the original task contract. Record or defer an
+  out-of-scope prerequisite; it does not expand the task or become a blocker automatically. A
+  concrete in-scope failure may be classified as an `environment/operator/installation` blocker
+  after the relevant owner check;
 - if the proposed solution adds a second/third special-case path or materially increases custom
   platform/lifecycle code, stop for architecture review before editing.
 

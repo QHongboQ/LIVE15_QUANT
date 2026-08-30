@@ -63,8 +63,9 @@ open its pull request, but does not authorize unrelated unsandboxed commands.
 ## Roles
 
 `.codex/agents/maker.toml` and `.codex/agents/checker.toml` are role specifications, not
-unattended agents. The Maker reads `AGENTS.md`, the contract and relevant skills, reproduces the
-problem, makes the smallest scoped change, tests it, and reports evidence. The Checker reads the
+unattended agents. The Maker reads `AGENTS.md`, the contract and relevant skills, follows the
+task's least-cost route (execute an approved replacement and observe, or reproduce a genuine
+authoritative defect), makes the smallest scoped change, tests it, and reports evidence. The Checker reads the
 original contract and Maker diff independently, reruns critical gates where feasible, and returns
 only `PASS`, `FAIL_FIXABLE`, `BLOCKED`, or `HUMAN_REVIEW_REQUIRED`. The Checker does not edit the
 Maker worktree in LOOP-001.
