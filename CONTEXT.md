@@ -32,7 +32,7 @@ policy, storage, lifecycle, datasets, models, paper, risk, and UI. Detail:
 | Training recency | Development history over sessions/weeks | `docs/research_data_authority.md` |
 | Forward OOS freshness | Evidence strictly after a frozen specification | `docs/research_data_authority.md` |
 | Runtime owner | The single service/component authority permitted to restart a component | `docs/runtime_ownership_and_self_healing.md` |
-| Nomad secure migration | LocalService POC verified; ControlCenter shadow merged; cutover prep next | `PROJECT_PROGRESS.md`, then `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md` |
+| Nomad secure migration | ControlCenter Nomad owner VERIFIED; WinSW rollback retained; Recorder unchanged | `PROJECT_PROGRESS.md`, then `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md` |
 | Project progress | Durable task state, evidence links, cautions, and next action; never live telemetry | `PROJECT_PROGRESS.md` |
 
 ## Fast routing

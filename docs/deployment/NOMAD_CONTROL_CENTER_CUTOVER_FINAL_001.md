@@ -1,8 +1,8 @@
-# NOMAD-CONTROL-CENTER-CUTOVER-FINAL-001 — runtime-accepted ownership cutover
+# NOMAD-CONTROL-CENTER-CUTOVER-FINAL-001 — verified ownership cutover
 
 ## Result
 
-`CONTROL_CENTER_NOMAD_CUTOVER = RUNTIME_ACCEPTED / GOVERNANCE_PENDING`.
+`CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED`.
 
 On 2026-08-29, `LIVE15ControlCenter` changed owner from the stopped
 `WinSW:LIVE15ControlCenter` service to the running Nomad allocation
@@ -105,10 +105,10 @@ SUBTRACTIVE_REPLACEMENT = PASS
 
 ## Repository validation and review gate
 
-The cutover runtime evidence above is complete, but repository acceptance remains
-pending feature-branch CI and human merge. Maker review and Independent Checker
-review passed without runtime mutation. The following local checks passed after
-the final jobspec and receipt were written:
+The cutover runtime evidence above is complete. Maker review and Independent
+Checker review passed without runtime mutation; GitHub Actions CI passed and PR
+#102 merged as `6ec5ac60177d4b48750c593ff634f3e951431f99`. The following local
+checks passed after the final jobspec and receipt were written:
 
 ```text
 nomad job validate (redacted placeholder input paths) = PASS
@@ -122,6 +122,5 @@ Pytest emitted one pre-existing `PytestCacheWarning` because the isolated
 worktree's configured runtime cache directory is not writable. No permission
 repair was attempted; the test results were unaffected.
 
-Only after the remaining CI gate passes may the task record
-`CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED` and publish a pull request as ready
-for human merge.
+`CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED`; the stopped WinSW definition remains
+rollback only and its retirement still requires separate approval.
