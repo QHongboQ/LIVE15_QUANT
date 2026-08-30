@@ -231,10 +231,10 @@ def test_router_skill_is_recursive_and_stores_no_project_facts() -> None:
     assert "siblings by default" in router
     assert "identified as high-risk by `AGENTS.md`" in router
     assert "## Update routing" in router
-    assert "narrowest authoritative owner" in router
-    assert "content-only change, edit the owning leaf only" in router
-    assert "child\nand its direct parent index" in router
-    assert "if ownership is ambiguous, STOP" in router
+    assert "current-root traversal to identify the owner before\nediting" in router
+    assert "docs/agents/change-protocol.md" in router
+    assert "the single authority for content, structure, ambiguity, and split semantics" in router
+    assert "the protocol determines the minimum update surface" in router
     for fact in ("Nomad owns ControlCenter", "NO TRAINING_GO", "kalshi-sdk==12.0.0"):
         assert fact not in router
 
@@ -263,8 +263,8 @@ def test_recursive_split_and_route_health_are_lossless_governance() -> None:
     assert "ceil(len(UTF-8 bytes) / 4)" in protocol
     for route_health_band in (
         "**HEALTHY** is `<=3500`",
-        "**WATCH / CONSIDER RECURSIVE SPLIT** is `3501–4200`",
-        "**SPLIT SOON** is `4201–5000`",
+        "**WATCH / CONSIDER RECURSIVE SPLIT** is `3501\N{EN DASH}4200`",
+        "**SPLIT SOON** is `4201\N{EN DASH}5000`",
         "**HARD\nFAIL** is `>5000`",
     ):
         assert route_health_band in protocol

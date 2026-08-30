@@ -21,11 +21,7 @@ New subdomains normally update their parent index, not this skill.
 
 ## Update routing
 
-For a durable Project Brain update, classify the change, start at the current root, and follow one
-selected pointer recursively until reaching the narrowest authoritative owner. Do not infer an
-owner from prior chat or a remembered filename; if ownership is ambiguous, STOP and resolve the
-authority boundary before editing.
-
-For content-only change, edit the owning leaf only. For a structural child change, edit the child
-and its direct parent index; update higher ancestors only when their routing changes. New subdomains
-are therefore normally discovered through the parent index, without changing this skill.
+For a durable Project Brain change, use the same current-root traversal to identify the owner before
+editing. Then apply `docs/agents/change-protocol.md` → **Recursive Project Brain maintenance**; that
+section is the single authority for content, structure, ambiguity, and split semantics. This skill
+locates the owner; the protocol determines the minimum update surface.
