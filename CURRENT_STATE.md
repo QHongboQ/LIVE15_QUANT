@@ -9,13 +9,14 @@ Authority and its evidence artifacts.
 
 ## Current phase
 
-**Pre-training reliability/storage closeout plus current-main deployment proof gate.**
+**Pre-training reliability/storage closeout plus first Nomad workload cutover-preparation gate.**
 The release-pipeline prerequisites are merged, Control Center truth/performance
 hardening is merged, and two upstream reliability tasks are active before the
 formal long-run training GO/NO-GO gate.
 
-The isolated Nomad POC and first read-only ControlCenter shadow are
-non-Production; detail: `PROJECT_PROGRESS.md`.
+The isolated Nomad POC is verified and the first read-only ControlCenter shadow is merged;
+both remain non-Production. The next Nomad step is a separately scoped ControlCenter
+cutover-preparation task; detail: `PROJECT_PROGRESS.md`.
 
 ## Completed foundations
 
@@ -37,7 +38,7 @@ non-Production; detail: `PROJECT_PROGRESS.md`.
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
-| Nomad secure migration POC | **VERIFIED generic POC; ControlCenter shadow PR_OPEN** | `NOMAD-POC-SECURE-001` and `NOMAD-FIRST-WORKLOAD-SHADOW-001` |
+| Nomad secure migration | **VERIFIED generic POC; first ControlCenter shadow MERGED; cutover prep next** | `NOMAD-POC-SECURE-001`, PR #91, and `NOMAD-CONTROL-CENTER-CUTOVER-PREP-001` |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
@@ -60,9 +61,11 @@ non-Production; detail: `PROJECT_PROGRESS.md`.
 - `ST-005` is not resolved merely because UI-013 can display catch-up state. It
   still requires measured throughput/catch-up evidence and a valid 60-minute
   proof with Recorder safety intact.
-- Nomad POC lifecycle evidence is verified; the ControlCenter shadow is PR #91,
-  read-only only. Never infer Production authority, WinSW replacement, or
-  cutover. Detail: `docs/deployment/NOMAD_FIRST_WORKLOAD_SHADOW_001.md`.
+- Nomad POC lifecycle evidence is verified and PR #91 merged the first read-only
+  ControlCenter shadow with workload-level acceptance evidence. That supports a
+  separate cutover-preparation task only; it does not authorize deployment,
+  WinSW retirement, or Production cutover. Detail:
+  `docs/deployment/NOMAD_FIRST_WORKLOAD_SHADOW_001.md`.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
   **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
   frozen-holdout rows and was stopped immediately. The former `UNREVEALED`
@@ -78,8 +81,9 @@ non-Production; detail: `PROJECT_PROGRESS.md`.
    H2 revalidation inside that task;
 2. complete `ST-005` archive/purge throughput recovery and valid 60-minute
    catch-up proof; these two tasks may proceed independently and in parallel;
-3. complete the bounded assurance evidence for `NOMAD-POC-SECURE-001`; no
-   Production cutover;
+3. prepare `NOMAD-CONTROL-CENTER-CUTOVER-PREP-001`: move the real
+   `LIVE15ControlCenter` lifecycle design from WinSW ownership to Nomad/Windows
+   SCM, preserve a bounded rollback path, and stop before any service change;
 4. reconcile/merge those tasks onto the then-current protected main;
 5. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is
    READY may a separate explicit human approval authorize deployment/restart and
