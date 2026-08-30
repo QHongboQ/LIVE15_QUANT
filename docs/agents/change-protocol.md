@@ -65,6 +65,18 @@ Before issuing a copy-ready LIVE15 Codex task, consult the current Git Project B
 relevant task. Durable project rules should be recovered from Git rather than asking the user to
 re-paste them. Then state the selected model and reasoning level explicitly in the prompt.
 
+### Lossless Project Brain size discipline
+
+The five bootstrap files are an index and decision-routing layer, not the only storage location for
+durable context. The estimated 5,000-token bootstrap limit is a **split threshold**, not permission
+to delete facts or semantically compress away decision-relevant meaning. If new durable state would
+breach the limit, move the full detail into a bounded file under the appropriate existing detail/
+roadmap/evidence area and keep a clear pointer plus the minimum decision/status summary in the
+bootstrap. Preserve provenance, cautions, gates, evidence references, and next-action semantics.
+Do not satisfy the budget by shortening a statement in a way that loses information needed for a
+future ChatGPT/Codex decision. The index may be concise; the external brain as a whole must remain
+lossless for durable project state.
+
 Selection is dynamic and cost-aware. Choose the **model family first** and the **reasoning level
 second**. Do not treat Terra as a default and do not infer model strength from task importance
 alone. Use the least expensive adequate combination for the actual bounded step, then escalate only
