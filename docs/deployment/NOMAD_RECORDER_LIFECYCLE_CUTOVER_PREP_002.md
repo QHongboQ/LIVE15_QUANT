@@ -54,8 +54,10 @@ Read-only host facts:
 
 - `LIVE15Recorder` is the current sole owner and runs as `LocalSystem` (`sc.exe
   qc/queryex LIVE15Recorder`). Its existing working directory resolves to
-  `D:\LIVE15_QUANT`; the reviewed repository XML references `D:\SDK_ID.txt`
-  and `D:\SDK.txt`.
+  `D:\LIVE15_QUANT`. The installed WinSW XML resolves its credential
+  references to `D:\SDK_ID.txt` and `D:\SDK.txt`; the tracked repository XML
+  retains those values as `%LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH%` and
+  `%LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH%` placeholders.
 - The installed XML enables Pyth and references
   `D:\LIVE15_QUANT\.secrets\pyth-api-key.txt`; the running health receipt
   shows the Pyth worker healthy. The reviewed source accepts the same
