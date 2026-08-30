@@ -9,7 +9,6 @@ import time
 import unittest
 from pathlib import Path
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SHADOW_ROOT = REPOSITORY_ROOT / "deploy" / "nomad" / "control-center-shadow"
 ARTIFACT = SHADOW_ROOT / "live15-control-center-shadow.ps1"
