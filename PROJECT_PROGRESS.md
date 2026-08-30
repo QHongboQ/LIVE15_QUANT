@@ -49,7 +49,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 1. finish/reconcile `WS-RESYNC-001 + GAP-002`;
 2. finish/reconcile `ST-005`;
-3. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is READY may a separate explicit human approval authorize deployment/restart and bounded runtime proof;
+3. rerun `DEP-001` Phase A read-only preflight, then only with separate human approval deploy and prove reviewed protected main;
 4. complete a separate holdout-contamination remediation/replacement decision
    without reopening the frozen holdout;
 5. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` only after that decision;
