@@ -141,6 +141,25 @@ Use `setup-matt-pocock-skills` only to change the configured workflow. Do not cr
 project instruction system or copy full project history into another Markdown file, and do not load
 every skill, ADR, or domain document at session start; follow the selected pointer instead.
 
+### Recursive Project Brain maintenance
+
+Before updating durable Project Brain state, start at current `AGENTS.md` and the Project Brain
+root, classify the requested intent, and follow one selected index pointer at a time to the
+narrowest authoritative leaf. Indexes own routing; leaves own facts. Do not infer an owner from
+chat memory, a previous session, or a known filename when current indexes can resolve it. If
+ownership is ambiguous, **STOP** and resolve the authority boundary before editing.
+
+For a content-only update whose ownership and route are unchanged, update the owning leaf only.
+Do not synchronize ancestors or siblings merely to make copies agree. For a structural change—a
+new, renamed, moved, retired, or split child—update the affected child and its direct parent index.
+Propagate farther upward only when that higher index's visible routing changes.
+
+When a leaf becomes too broad, split it losslessly into a folder with an INDEX `README.md` and
+multiple real child authorities. The parent keeps scope and pointers only; child leaves own the
+moved facts. This may repeat to useful depth, without an artificial depth limit or meaningless
+single-child folder. One durable fact has one authoritative home; different fact classes about one
+component may have different owners, but duplicate authority is not permitted.
+
 ### Lossless Project Brain size discipline
 
 The intent-based Project Brain entry/index route is a decision-routing layer, not the only storage location for
@@ -152,6 +171,12 @@ bootstrap. Preserve provenance, cautions, gates, evidence references, and next-a
 Do not satisfy the budget by shortening a statement in a way that loses information needed for a
 future ChatGPT/Codex decision. The index may be concise; the external brain as a whole must remain
 lossless for durable project state.
+
+Route health uses the conservative `ceil(len(UTF-8 bytes) / 4)` estimate: **HEALTHY** is `<=3500`,
+**WATCH / CONSIDER RECURSIVE SPLIT** is `3501–4200`, **SPLIT SOON** is `4201–5000`, and **HARD
+FAIL** is `>5000`. Five thousand is a split boundary, not a normal target. Keep normal task routes
+narrow by splitting downward through indexes and leaves; never delete durable information to meet a
+budget.
 
 Selection is dynamic and cost-aware. Choose the **model family first** and the **reasoning level
 second**. Do not treat Terra as a default and do not infer model strength from task importance
