@@ -82,6 +82,23 @@ generic/platform problems, the preferred outcome is **no local reimplementation 
 solution is justified only when the requirement is genuinely LIVE15-specific or the official,
 GitHub and broader upstream search finds no reusable implementation.
 
+### Official procedures are task-time external authority
+
+Project Brain stores LIVE15's durable local rules, ownership, safety boundaries, source priority,
+and acceptance criteria. It must not normally freeze a step-by-step copy or paraphrase of an
+external vendor tutorial and then treat that copy as the implementation authority.
+
+The executing agent must retrieve the **current** official documentation/tutorials and official
+GitHub evidence itself when the task runs, then derive the current supported procedure and map only
+LIVE15-specific inputs and constraints onto it. A previous chat summary or a prompt-authored copy of
+vendor steps is not a substitute for that retrieval. If current official sources cannot be reached
+or verified, stop rather than execute a remembered procedure.
+
+User-facing Codex prompts should therefore state the goal, selected upstream project, source-search
+order, LIVE15 boundaries, acceptance criteria, rollback, and human gates; they should not normally
+embed the vendor tutorial as a copied deployment recipe. Detailed policy and evidence receipt:
+`docs/agents/runtime-official-source-policy.md`.
+
 For such failures:
 
 - a LIVE15 adapter/validator may inspect and fail closed;
