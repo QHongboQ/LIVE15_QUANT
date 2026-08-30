@@ -230,8 +230,45 @@ def test_router_skill_is_recursive_and_stores_no_project_facts() -> None:
     assert "Do not hard-code a tree or\nproject facts" in router
     assert "siblings by default" in router
     assert "identified as high-risk by `AGENTS.md`" in router
+    assert "## Update routing" in router
+    assert "current-root traversal to identify the owner before\nediting" in router
+    assert "docs/agents/change-protocol.md" in router
+    assert "the single authority for content, structure, ambiguity, and split semantics" in router
+    assert "the protocol determines the minimum update surface" in router
     for fact in ("Nomad owns ControlCenter", "NO TRAINING_GO", "kalshi-sdk==12.0.0"):
         assert fact not in router
+
+
+def test_recursive_project_brain_maintenance_updates_only_the_discovered_owner() -> None:
+    protocol = read("docs/agents/change-protocol.md")
+
+    assert "### Recursive Project Brain maintenance" in protocol
+    assert "follow one selected index pointer at a time" in protocol
+    assert "Indexes own routing; leaves own facts" in protocol
+    assert "ownership is ambiguous, **STOP**" in protocol
+    assert "update the owning leaf only" in protocol
+    assert "Do not synchronize ancestors or siblings" in protocol
+    assert "affected child and its direct parent index" in protocol
+    assert "only when that higher index's visible routing changes" in protocol
+    assert "One durable fact has one authoritative home" in protocol
+    assert "duplicate authority is not permitted" in protocol
+
+
+def test_recursive_split_and_route_health_are_lossless_governance() -> None:
+    protocol = read("docs/agents/change-protocol.md")
+
+    assert "split it losslessly into a folder with an INDEX `README.md`" in protocol
+    assert "multiple real child authorities" in protocol
+    assert "artificial depth limit or meaningless\nsingle-child folder" in protocol
+    assert "ceil(len(UTF-8 bytes) / 4)" in protocol
+    for route_health_band in (
+        "**HEALTHY** is `<=3500`",
+        "**WATCH / CONSIDER RECURSIVE SPLIT** is `3501\N{EN DASH}4200`",
+        "**SPLIT SOON** is `4201\N{EN DASH}5000`",
+        "**HARD\nFAIL** is `>5000`",
+    ):
+        assert route_health_band in protocol
+    assert "never delete durable information to meet a\nbudget" in protocol
 
 
 def test_platform_blocker_requires_upstream_resolution_first() -> None:

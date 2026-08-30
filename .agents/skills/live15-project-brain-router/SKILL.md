@@ -18,3 +18,10 @@ For work identified as high-risk by `AGENTS.md`, load its permanent authority an
 before proceeding. Token efficiency never bypasses these gates.
 
 New subdomains normally update their parent index, not this skill.
+
+## Update routing
+
+For a durable Project Brain change, use the same current-root traversal to identify the owner before
+editing. Then apply `docs/agents/change-protocol.md` → **Recursive Project Brain maintenance**; that
+section is the single authority for content, structure, ambiguity, and split semantics. This skill
+locates the owner; the protocol determines the minimum update surface.
