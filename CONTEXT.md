@@ -3,10 +3,10 @@
 This is a vocabulary and pointer map, not a project history. Read only the
 linked detail that matches the task.
 
-Normal shared-brain bootstrap is `AGENTS.md` → `PROJECT_CHARTER.md` → this
-file → `CURRENT_STATE.md` → `PROJECT_PROGRESS.md` → only relevant detail.
-`PROJECT_PROGRESS.md` is task history; `CURRENT_STATE.md` is compact present
-orientation. Git is the ChatGPT/Codex shared external brain, not chat history.
+Enter through `AGENTS.md` → `docs/project-brain/README.md`, then load the
+minimum category index and authority leaf. `PROJECT_PROGRESS.md` is a compact
+ledger; `CURRENT_STATE.md` is present orientation. Git is the shared external
+brain, not chat history.
 
 ## Architecture map
 
@@ -32,21 +32,18 @@ policy, storage, lifecycle, datasets, models, paper, risk, and UI. Detail:
 | Training recency | Development history over sessions/weeks | `docs/research_data_authority.md` |
 | Forward OOS freshness | Evidence strictly after a frozen specification | `docs/research_data_authority.md` |
 | Runtime owner | The single service/component authority permitted to restart a component | `docs/runtime_ownership_and_self_healing.md` |
-| Nomad secure migration | ControlCenter Nomad owner VERIFIED; WinSW rollback retained; Recorder unchanged | `PROJECT_PROGRESS.md`, then `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md` |
+| Nomad secure migration | ControlCenter migration authority | `docs/project-brain/capabilities/control-center.md` |
 | Project progress | Durable task state, evidence links, cautions, and next action; never live telemetry | `PROJECT_PROGRESS.md` |
 
 ## Fast routing
 
-- Recorder/archive/replay issue: `docs/continuous_recorder.md`, then
-  `docs/agents/debug-routing.md`.
+- Recorder/archive/replay issue: `docs/project-brain/capabilities/README.md`.
 - SDK or venue boundary: `docs/kalshi-sdk-v12-migration.md` and
   `docs/kalshi_native_architecture.md`.
 - Dataset/model question: `docs/training_dataset.md`,
   `docs/model_artifact_lineage.md`, then the relevant evidence report.
-- Runtime ownership/recovery: `docs/runtime_ownership_and_self_healing.md`
-  and `deploy/windows/runtime-ownership.json`.
-- Nomad POC: `PROJECT_PROGRESS.md`, then
-  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`; no cutover implied.
+- Runtime ownership/recovery: `docs/project-brain/dependencies/README.md`.
+- Nomad POC or cutover: `docs/project-brain/capabilities/control-center.md`.
 - Policy decision: `PROJECT_CHARTER.md`, then `docs/adr/README.md`.
 
 Do not scan the repository for context. Start here, then follow one pointer at

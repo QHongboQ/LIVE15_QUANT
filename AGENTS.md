@@ -134,22 +134,24 @@ project uses GitHub issues and a single-context documentation layout; see
 a copy-ready Codex task, or making a review/deployment/acceptance recommendation, refresh the
 current Git Project Brain. Do not rely on chat memory or a previous read as authority.
 
-Use the compact bootstrap order:
+Use intent-based minimum-authority routing:
 
-`AGENTS.md` → `PROJECT_CHARTER.md` → `CONTEXT.md` → `CURRENT_STATE.md` →
-`PROJECT_PROGRESS.md` → only the relevant ADR, `BUG_REGISTRY.md`, issue, or evidence.
+`ALWAYS-ENTRY: AGENTS.md → docs/project-brain/README.md → selected category index → authority leaf/evidence.`
 
-Keep this refresh selective: read the compact bootstrap plus only the task-relevant pointer; do
-not scan the repository. If Git Project Brain cannot be refreshed, say so and do not silently
+Do not scan or blindly load the whole Project Brain. High-risk/elevated work must also load its
+permanent authority: Production writes, Hard Risk, training/promotion, holdout, Recorder writes/gap/quarantine/resync,
+settlement labels, and deployment/restart. Token efficiency may never bypass these gates. If Git Project Brain cannot be refreshed, say so and do not silently
 issue an executable task from stale context.
 
 Git Project Brain is the shared external brain for ChatGPT and Codex; chat
-history is never durable project memory. Then use the relevant pointer:
+history is never durable project memory. The root router selects the relevant pointer:
 
 - strategy/authority → `PROJECT_CHARTER.md`;
 - vocabulary/architecture routing → `CONTEXT.md`;
 - durable decision → `docs/adr/README.md`;
-- transient workstream orientation → `CURRENT_STATE.md`;
+- current orientation → `CURRENT_STATE.md`;
+- planning → `docs/project-brain/plan/README.md`;
+- capability/dependency/execution constraints → the matching Project Brain category index;
 - guarded regression → `BUG_REGISTRY.md`.
 
 The `live15-*` skills preserve project-specific safety adaptations. The

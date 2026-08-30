@@ -48,4 +48,4 @@ bounded runtime acceptance, rollback preservation, Maker/Checker, and green CI.
 
 ## Project Brain size rule
 
-The five bootstrap files remain bounded by `tests/test_agent_context.py`. When new durable detail would exceed that budget, preserve the information in a bounded detail file like this one and add an index pointer from the compact bootstrap. Do not satisfy the bootstrap budget by deleting durable facts or semantically compressing them until decision-relevant meaning is lost.
+The intent-based Project Brain entry/index route remains bounded by `tests/test_agent_context.py`. When new durable detail would exceed the compact-context budget, preserve it in an authority leaf or evidence file and add an index pointer. Do not satisfy the split threshold by deleting durable facts or semantically compressing them until decision-relevant meaning is lost.

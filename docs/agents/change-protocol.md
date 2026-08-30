@@ -127,8 +127,8 @@ re-paste them. Then state the selected model and reasoning level explicitly in t
 
 ### Lossless Project Brain size discipline
 
-The five bootstrap files are an index and decision-routing layer, not the only storage location for
-durable context. The estimated 5,000-token bootstrap limit is a **split threshold**, not permission
+The intent-based Project Brain entry/index route is a decision-routing layer, not the only storage location for
+durable context. The estimated 5,000-token compact-context limit is a **split threshold**, not permission
 to delete facts or semantically compress away decision-relevant meaning. If new durable state would
 breach the limit, move the full detail into a bounded file under the appropriate existing detail/
 roadmap/evidence area and keep a clear pointer plus the minimum decision/status summary in the
