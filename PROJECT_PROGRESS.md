@@ -34,6 +34,16 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 ## Active and gated work
 
+## Current Production runtime authority
+
+CENTRAL_RUNTIME_AUTHORITY = ESTABLISHED
+CANONICAL_RUNTIME = `CANONICAL_LIVE15_PRODUCTION_RUNTIME`
+RUNTIME_AUTHORITY = `docs/project-brain/dependencies/platform/runtime-ownership.md`
+
+Future LIVE15 Python workloads must resolve that authority before provisioning
+or selecting a runtime. The runtime leaf owns the full contract; a separate
+runtime requires concrete incompatibility evidence.
+
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
 | WS-RESYNC-001 + GAP-002 | BLOCKED / EXECUTION_PREREQUISITE_PENDING | Historical evidence: 72 WS/Recorder/SDK-shadow tests passed on `4d088930`. Direct execution awaits the Phase-3 frozen baseline; dependency-closure authority is `docs/project-brain/dependencies/gap002-closure.md`. | Establish Phase-3 frozen baseline before any runtime/deployment live rollout |
