@@ -1347,9 +1347,7 @@ class WsArchiveService:
         cutoff = now - self.hot_retention
         for failed in self.manifest.chunks(ArchiveState.FAILED):
             records = self._range_records(failed)
-            if not records or not all(
-                record.event_kind is KalshiWsEventKind.DELTA for record in records
-            ):
+            if not records:
                 continue
             leading_delta = next(
                 (record for record in records if record.event_kind is KalshiWsEventKind.DELTA),
@@ -1364,6 +1362,19 @@ class WsArchiveService:
                 leading_delta.row_id, leading_delta.connection_id, leading_delta.subscription_id
             )
             if _usable_replay_baseline(prior, leading_delta):
+                continue
+            # Reproduce the failed replay from its real prior checkpoint.  A
+            # mixed range is eligible only when the recorded failure is the
+            # specific missing-baseline fact; checksum, sequence, depth, and
+            # other failures remain permanently blocking.
+            replay = _ReplayState.from_json(prior)
+            try:
+                for record in records:
+                    replay.apply(record)
+            except WsRetentionError as error:
+                if str(error) != "archive delta has no synchronized replay baseline":
+                    continue
+            else:
                 continue
             snapshot = self._authoritative_snapshot_after(
                 failed.last_event_id,
