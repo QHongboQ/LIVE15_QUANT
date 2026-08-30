@@ -10,8 +10,8 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 ## Current reconciliation basis
 
-- Resolve `origin/main` at task start; this index tracks PR #74 `77cb7ce`.
-  `MERGED != DEPLOYED`.
+- Resolve `origin/main` at task start; this index is reconciled through PR #94
+  `63285f74`. `MERGED != DEPLOYED`.
 - Detail/new-chat recovery: `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`
   and `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`.
 
@@ -35,14 +35,15 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | SHADOW-REC-001 | BLOCKED / STALE_RECEIPTS | PIDs absent; no health/restart. Detail: `docs/reliability/SHADOW_RECORDER_EVIDENCE_AUDIT_20260829.md`. | Non-Production only |
 | NOMAD-POC-SECURE-001 | VERIFIED / isolated POC burn-in + auto-revert + two-hour soak PASS | Final receipt: 24 healthy observations; terminal observer entry and evidence rule are in the POC handoff. No cutover. | POC only; no Production/holdout |
 | NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 remains code evidence only; do not merge or treat it as deployment proof. Its separate restart-validation lineage does not supersede the verified service-model POC evidence. | POC only |
-| NOMAD-FIRST-WORKLOAD-SHADOW-001 | PR_OPEN / local acceptance and Maker/Checker PASS; CI remediation in progress | Hash, safety-boundary, and allocation evidence: `docs/deployment/NOMAD_FIRST_WORKLOAD_SHADOW_001.md`. | No cutover or Recorder migration |
+| NOMAD-FIRST-WORKLOAD-SHADOW-001 | MERGED / SHADOW_ACCEPTANCE_PASS | PR #91 merged the sealed read-only ControlCenter shadow after allocation, health, hash, Maker/Checker and CI evidence. Next step is cutover preparation, not another POC loop. | No cutover or Recorder migration |
+| NOMAD-CONTROL-CENTER-CUTOVER-PREP-001 | PLANNED | Prepare the real `LIVE15ControlCenter` lifecycle ownership migration from WinSW to Nomad/Windows SCM, with bounded rollback and explicit legacy-retirement candidates. Stop before any service change. | Deployment/restart/cutover requires explicit human approval |
 | GITHUB-ACTIONS-PUBLIC-20260830 | VERIFIED / STANDARD_HOSTED_CI_AVAILABLE | Public repo: standard GitHub-hosted CI may run normally; no task-specific quota approval is required. Larger/billable runners remain separately cost-gated. | Normal green-CI merge policy |
 | H2-TRAIN-003 | BLOCKED / historical | Preserve prior blocker evidence. Do not continue as an independent development branch unless WS-RESYNC leaves a new smallest blocker. | Training/holdout |
 | ST-005 | BLOCKED / PROOF_NEEDS_DEPLOYMENT | 2026-08-29 preflight: legacy `UNPROVEN` pointer; then-current main instrumentation was unactivated. A SHA-verifiable deployment gate precedes a fresh 60-minute proof. Detail: `docs/evidence/st-005-current-main-preflight-20260829.md`. | Human-authorized deployment; no restart, storage mutation, or Production write |
 | DEP-001 | BLOCKED / PREFLIGHT_NOT_READY | 2026-08-29 read-only snapshot: dirty protected checkout, 37 commits behind then-main, active legacy `UNPROVEN` pointer. No deployment/restart. Detail: `docs/deployment/DEP001_PHASE_A_PREFLIGHT_20260829.md`. | Deployment/restart requires separate explicit `DEP001_DEPLOY_APPROVED` |
-| DEP-ROOT-HYGIENE-PREVENT-001 | PR_PENDING / ENFORCEMENT_READY | Pytest cache is isolated under `runtime/tmp`; WinSW fixture uses pytest temp storage; the startup guard rejects unsafe cache paths. Detail: `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`. | Production cleanup remains separately authorized |
-| NOMAD-LIFECYCLE-UPSTREAM-AUDIT-001 | PR_PENDING / AUDIT_PASS | Native service lifecycle is authoritative; manual agent restart remains fail-closed and superseded. Detail: `docs/deployment/NOMAD_LIFECYCLE_UPSTREAM_AUDIT_001.md`. | Docs-only; no POC execution, Production, or UAC |
-| NOMAD-AUTOMATION-FOUNDATION-001 | PR_PENDING / CHECKER_PASS | `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; local docs/receipt checks pass. | Docs-only; standard hosted CI may run normally |
+| DEP-ROOT-HYGIENE-PREVENT-001 | MERGED / ENFORCEMENT_READY | PR #79 merged pytest-cache isolation, temp-fixture hygiene and fail-closed path enforcement. | Production cleanup remains separately authorized |
+| NOMAD-LIFECYCLE-UPSTREAM-AUDIT-001 | MERGED / AUDIT_PASS | PR #85 merged the upstream lifecycle audit; native Windows SCM/Nomad lifecycle remains authoritative and manual agent restart is superseded. | No Production cutover implied |
+| NOMAD-AUTOMATION-FOUNDATION-001 | MERGED / FOUNDATION_READY | PR #86 merged the Nomad automation responsibility boundary, receipt contract and replacement matrix. | No Production cutover implied |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
 
 ## Route to formal overnight training
