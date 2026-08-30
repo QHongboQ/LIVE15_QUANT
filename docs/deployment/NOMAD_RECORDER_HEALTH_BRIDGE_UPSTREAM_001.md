@@ -30,13 +30,28 @@ or process exit. Thus the supplied live condition (alive, WS `reconnecting`, no 
 progress) would not trigger the existing restart-worthy predicate. Mapping that condition to
 restart would add a new domain policy, not merely expose an upstream lifecycle primitive.
 
+## Lifecycle recovery versus health-driven restart
+
+These are separate responsibilities. Nomad's official `restart` block natively restarts a task
+on task failure, with the task-group restart policy controlling attempts, delay, and rescheduling;
+it does not require a service check. `check_restart` is an additional mechanism for restarting a
+still-running task after consecutive unhealthy Nomad/Consul checks. Therefore the existing
+semantics can be preserved without a health bridge:
+
+`Recorder domain fatal/critical condition → Recorder exits → Nomad task restart`
+
+This is a generic lifecycle-owner substitution, not a new Recorder restart predicate. The
+alive-but-degraded WS condition remains outside that predicate and must not be mapped to
+`check_restart`.
+
 ## Upstream resolution
 
 | Candidate | Finding | Decision |
 | --- | --- | --- |
 | Nomad native check | Official Nomad provider supports only `http` and `tcp`; no file check and no native `script`. | Not available for `data/health.json`. |
 | Nomad + Consul script check | Consul supports Windows script checks and Nomad `check_restart` can consume an unhealthy Consul check. It requires a separately installed/reachable Consul agent, an executable check, protected Consul state, and local-only script-check configuration to avoid remote-execution risk. | Technically supported, but disproportionate and not adopted; Consul is not installed. |
-| Retain WinSW temporarily | Reuses the existing health truth and restart authority without adding a control plane or translating `degraded` into an unapproved restart policy. | **Selected.** |
+| Native Nomad task restart on exit | Replaces the generic WinSW process-restart step after Recorder itself terminates. No service check or bridge is required. | **Selected for lifecycle cutover.** |
+| Retain WinSW temporarily | Still a valid rollback/legacy owner, but “no health bridge” is not a blocker to replacing restart-on-exit ownership. | Not the migration decision. |
 
 Consul TTL would require an application heartbeat to the Consul agent; the current file writer does
 not provide that interface. Consul `os_service` reports Windows service state and cannot express
@@ -50,23 +65,42 @@ CONSUL_WINDOWS_SUPPORTED = YES
 EXISTING_RESTART_WORTHY_HEALTH_PREDICATE = fatal task/error or bounded critical-worker exhaustion causing Recorder exit, then WinSW restart
 DEGRADED_MEANS_RESTART = NO
 OBSERVED_WS_STALL_WOULD_TRIGGER_EXISTING_PREDICATE = NO
-SELECTED_HEALTH_BRIDGE = NONE (retain WinSW temporarily)
+SELECTED_HEALTH_BRIDGE = NONE (not required for lifecycle cutover; existing /api/health remains observation-only)
 CONSUL_ADOPTION_JUSTIFIED = NO
 CUSTOM_HTTP_HEALTH_SERVER_REQUIRED = NO
 THIN_ADAPTER = NONE selected; no new code
 EXPECTED_NEW_LIVE15_CODE = NONE
+NOMAD_RESTART_ON_TASK_EXIT = SUPPORTED
+CHECK_RESTART_REQUIRED_FOR_TASK_EXIT_RECOVERY = NO
+CURRENT_WIN_SW_RECOVERY_SEMANTICS = Recorder exits on an existing fatal/critical condition; WinSW performs generic bounded process restart.
+TARGET_NOMAD_RECOVERY_SEMANTICS = Recorder exits on the same existing condition; Nomad performs generic bounded task restart.
+HEALTH_BRIDGE_REQUIRED_FOR_CUTOVER = NO
+ALIVE_BUT_DEGRADED_RESTART_POLICY = NOT_DEFINED
+CONTROL_CENTER_HEALTH_HTTP_EXISTS = YES
+CONTROL_CENTER_HEALTH_HTTP_RESTART_READY = NO
+CONSUL_REQUIRED_FOR_CUTOVER = NO
+RECORDER_LIFECYCLE_TO_NOMAD = PROCEED
 
 ## Dependency and next-step boundary
 
 The smallest current path is: `data/health.json` writer → existing Recorder health aggregation →
-WinSW service state/restart. SDK transport remains responsible for socket reconnect/resubscribe;
-LIVE15 remains responsible for synchronization, freshness, fail-closed semantics, and persistence.
-Nomad cannot consume this file directly. A future Nomad Recorder migration therefore needs either
-an explicitly approved thin, read-only bridge plus a separately approved restart predicate, or a
-decision to retain WinSW. This task does not choose a new domain restart policy.
+process exit on an existing fatal/critical condition → generic task restart. SDK transport remains
+responsible for socket reconnect/resubscribe; LIVE15 remains responsible for synchronization,
+freshness, fail-closed semantics, and persistence. Nomad cannot consume this file directly, but a
+file health bridge is not required to replace restart-on-exit ownership. A future health-driven
+restart of an alive-but-degraded Recorder would require a separately approved domain predicate and
+an upstream-supported bridge; this task does not add either.
 
-NEXT_TASK = HUMAN_GATE: decide whether to approve a new bounded WS-stall restart predicate and a
-thin upstream-supported bridge; otherwise retain WinSW and do not start Nomad Recorder prep.
+## Existing ControlCenter HTTP projection
+
+`GET /api/health` already reads the Recorder heartbeat and projects status, heartbeat freshness,
+stale workers/sources, fatal task/error, Kalshi WS connection state, synchronized count, and
+related fields. It is suitable for observation only. Because it returns HTTP 2xx for `degraded`, it
+is not a truthful `check_restart` trigger for the current policy. No second HTTP server is needed.
+
+NEXT_TASK = NOMAD-RECORDER-LIFECYCLE-CUTOVER-PREP-002: prepare a Nomad task with native
+restart-on-exit, preserving WinSW as rollback until bounded acceptance; defer any alive-but-
+degraded health-driven restart policy to a separately authorized domain decision.
 
 ## Evidence pointers
 
@@ -83,6 +117,8 @@ thin upstream-supported bridge; otherwise retain WinSW and do not start Nomad Re
 - Official Nomad check and `check_restart` docs:
   <https://developer.hashicorp.com/nomad/docs/job-specification/check>,
   <https://developer.hashicorp.com/nomad/docs/job-specification/check_restart>
+- Official Nomad restart policy:
+  <https://developer.hashicorp.com/nomad/docs/job-specification/restart>
 - Official Nomad/Consul integration and Windows service docs:
   <https://developer.hashicorp.com/nomad/docs/networking/consul>,
   <https://developer.hashicorp.com/nomad/docs/deploy/production/windows-service>
