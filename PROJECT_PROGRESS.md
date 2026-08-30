@@ -36,20 +36,20 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | NOMAD-POC-SECURE-001 | VERIFIED / isolated POC burn-in + auto-revert + two-hour soak PASS | Final receipt: 24 healthy observations; terminal observer entry and evidence rule are in the POC handoff. No cutover. | POC only; no Production/holdout |
 | NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 remains code evidence only; do not merge or treat it as deployment proof. Its separate restart-validation lineage does not supersede the verified service-model POC evidence. | POC only |
 | NOMAD-FIRST-WORKLOAD-SHADOW-001 | PR_OPEN / local acceptance and Maker/Checker PASS; CI remediation in progress | Hash, safety-boundary, and allocation evidence: `docs/deployment/NOMAD_FIRST_WORKLOAD_SHADOW_001.md`. | No cutover or Recorder migration |
-| GITHUB-ACTIONS-QUOTA-20260829 | CI_DEFERRED_QUOTA | Default: do not trigger hosted CI or treat deferral as PASS. A final CI requires the user's task-specific authorization. | No merge by quota policy alone |
+| GITHUB-ACTIONS-PUBLIC-20260830 | VERIFIED / STANDARD_HOSTED_CI_AVAILABLE | Public repo: standard GitHub-hosted CI may run normally; no task-specific quota approval is required. Larger/billable runners remain separately cost-gated. | Normal green-CI merge policy |
 | H2-TRAIN-003 | BLOCKED / historical | Preserve prior blocker evidence. Do not continue as an independent development branch unless WS-RESYNC leaves a new smallest blocker. | Training/holdout |
 | ST-005 | BLOCKED / PROOF_NEEDS_DEPLOYMENT | 2026-08-29 preflight: legacy `UNPROVEN` pointer; then-current main instrumentation was unactivated. A SHA-verifiable deployment gate precedes a fresh 60-minute proof. Detail: `docs/evidence/st-005-current-main-preflight-20260829.md`. | Human-authorized deployment; no restart, storage mutation, or Production write |
 | DEP-001 | BLOCKED / PREFLIGHT_NOT_READY | 2026-08-29 read-only snapshot: dirty protected checkout, 37 commits behind then-main, active legacy `UNPROVEN` pointer. No deployment/restart. Detail: `docs/deployment/DEP001_PHASE_A_PREFLIGHT_20260829.md`. | Deployment/restart requires separate explicit `DEP001_DEPLOY_APPROVED` |
 | DEP-ROOT-HYGIENE-PREVENT-001 | PR_PENDING / ENFORCEMENT_READY | Pytest cache is isolated under `runtime/tmp`; WinSW fixture uses pytest temp storage; the startup guard rejects unsafe cache paths. Detail: `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`. | Production cleanup remains separately authorized |
 | NOMAD-LIFECYCLE-UPSTREAM-AUDIT-001 | PR_PENDING / AUDIT_PASS | Native service lifecycle is authoritative; manual agent restart remains fail-closed and superseded. Detail: `docs/deployment/NOMAD_LIFECYCLE_UPSTREAM_AUDIT_001.md`. | Docs-only; no POC execution, Production, or UAC |
-| NOMAD-AUTOMATION-FOUNDATION-001 | PR_PENDING / CHECKER_PASS | `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; local docs/receipt checks pass. | Docs-only; hosted CI remains CI_DEFERRED_QUOTA |
+| NOMAD-AUTOMATION-FOUNDATION-001 | PR_PENDING / CHECKER_PASS | `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; local docs/receipt checks pass. | Docs-only; standard hosted CI may run normally |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
 
 ## Route to formal overnight training
 
 1. finish/reconcile `WS-RESYNC-001 + GAP-002`;
 2. finish/reconcile `ST-005`;
-3. rerun `DEP-001` Phase A read-only preflight, then only with separate human approval deploy and prove reviewed protected main;
+3. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is READY may a separate explicit human approval authorize deployment/restart and bounded runtime proof;
 4. complete a separate holdout-contamination remediation/replacement decision
    without reopening the frozen holdout;
 5. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` only after that decision;
