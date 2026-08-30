@@ -4,6 +4,11 @@ STATUS = PREPARED / NO_PRODUCTION_CUTOVER
 AUDITED_MAIN_SHA = `034a34c2fd53506db99e7c96b7c2b7d3815fee98`
 RECORDER_LIFECYCLE_TO_NOMAD = PROCEED
 IDENTITY_GATE = BLOCKED / OPERATOR_ACCESS_PROOF_PENDING
+PYTH_CONFIG_RECONCILIATION = PASS
+PYTH_ENABLED = true
+PYTH_BASE_URL = `https://pyth.dourolabs.app/hermes`
+PYTH_API_KEY_PATH_REQUIRED = YES
+PYTH_API_KEY_PATH_REFERENCE = `D:\LIVE15_QUANT\.secrets\pyth-api-key.txt`
 RECORDER_RUNTIME = CANONICAL_LIVE15_PRODUCTION_RUNTIME
 NEW_RECORDER_RUNTIME_REQUIRED = NO
 HEALTH_BRIDGE_REQUIRED_FOR_CUTOVER = NO
@@ -51,11 +56,13 @@ Read-only host facts:
   qc/queryex LIVE15Recorder`). Its existing working directory resolves to
   `D:\LIVE15_QUANT`; the reviewed repository XML references `D:\SDK_ID.txt`
   and `D:\SDK.txt`.
-- The installed XML additionally enables Pyth and references
-  `D:\LIVE15_QUANT\.secrets\pyth-api-key.txt`, while the reviewed repository
-  XML does not. This is configuration drift, not a lifecycle substitution; it
-  must be explicitly reconciled by the operator before any cutover. The
-  candidate does not silently enable Pyth or probe that extra credential.
+- The installed XML enables Pyth and references
+  `D:\LIVE15_QUANT\.secrets\pyth-api-key.txt`; the running health receipt
+  shows the Pyth worker healthy. The reviewed source accepts the same
+  `LIVE15_ENABLE_PYTH_UNDERLYING`, `LIVE15_PYTH_HERMES_BASE_URL`, and
+  `LIVE15_PYTH_API_KEY_PATH` settings, and current official Pyth guidance
+  requires an API key for the upgraded Hermes endpoint. The candidate therefore
+  carries this behavior explicitly; it does not read or log the key contents.
 - The Nomad Windows service runs as `NT AUTHORITY\LocalService`
   (`sc.exe qc/query nomad`).
 - `D:\LIVE15_QUANT\active-release.json` points to
@@ -75,6 +82,7 @@ Required LocalService access is therefore:
 | --- | --- |
 | protected `recorder_runtime_python`, immutable `recorder_app_root` | Read/execute |
 | Kalshi API-key ID and Kalshi private key reference files | Read/open only; contents never logged |
+| Pyth API-key reference file | Read/open only; contents never logged |
 | Recorder working directory | Read/write/create/delete as required by the entrypoint; must not be the mutable source checkout |
 | RecorderStore directory | Read/write/create/delete for SQLite, WAL, and SHM siblings |
 | health/control/PID parent directories | Read/write/create/delete |
@@ -86,6 +94,27 @@ verified read-only using the installed runtime; no ACL mutation was made. Until
 a reviewed immutable Recorder release and exact LocalService path-permission
 evidence are supplied, the identity gate remains blocked and the current
 `LocalSystem` application root must not be used as the Nomad candidate.
+
+## Final pre-cutover gate status
+
+The protected release root currently contains a previously verified release for
+`b1e1894c7666e9763b3994cc8135ad0d7727698e`, not the current protected
+`origin/main` SHA `034a34c2fd53506db99e7c96b7c2b7d3815fee98`. The existing
+DEP-PKG-001 build/verify procedure was run against the current SHA in a
+temporary non-Production root and passed, producing candidate identity
+`live15-034a34c2fd53-44e161f9e838` with source tree
+`44e161f9e838a11ca0ee89d4908fec952515a550`, requirements-lock SHA
+`4521a9151c00797b004cd6aeb12a054dd5759bd211333d012736ced3e635a67e`,
+artifact-manifest SHA `a4637a57c6367e74cfddea98d694b44f5cac5592818d225da044f8362dbd1534`,
+and release-manifest SHA
+`1173401b48b3224ba817963c29777aa20584fa96d742efa905aa242f8110d248`.
+The candidate is not yet a protected Production release, so `RELEASE_VERIFY`
+remains `PENDING_OPERATOR` and no identity preflight has been run.
+
+The operator must perform the existing DEP-PKG-001 build/verify procedure under
+the protected release root, then supply the resulting release identity and
+exact path set to the already-prepared identity preflight. No service or
+allocation mutation is part of this gate.
 
 ## Upstream stanza receipt
 

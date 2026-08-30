@@ -46,6 +46,11 @@ variable "kalshi_private_key_path" {
   description = "Existing absolute external Kalshi private-key path; content is never read here."
 }
 
+variable "pyth_api_key_path" {
+  type        = string
+  description = "Existing absolute external Pyth API-key path; content is never logged."
+}
+
 variable "release_id" {
   type        = string
   description = "Verified immutable release identity supplied at the future cutover gate."
@@ -135,6 +140,8 @@ job "live15-recorder" {
         PYTHONUNBUFFERED                           = "1"
         PYTHONUTF8                                 = "1"
         LIVE15_PYTH_HERMES_BASE_URL                = "https://pyth.dourolabs.app/hermes"
+        LIVE15_ENABLE_PYTH_UNDERLYING              = "true"
+        LIVE15_PYTH_API_KEY_PATH                   = var.pyth_api_key_path
         LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET  = "true"
         LIVE15_KALSHI_RECORDER_PROVIDER            = "sdk"
         LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH   = var.kalshi_api_key_id_path
