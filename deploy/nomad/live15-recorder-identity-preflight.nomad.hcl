@@ -26,11 +26,6 @@ variable "kalshi_private_key_path" {
   description = "Absolute external Kalshi private-key path."
 }
 
-variable "pyth_api_key_path" {
-  type        = string
-  description = "Absolute external Pyth API-key path when Pyth is enabled."
-}
-
 variable "recorder_store_dir" {
   type        = string
   description = "Existing directory containing RecorderStore and its SQLite WAL/SHM siblings."
@@ -103,7 +98,6 @@ job "live15-recorder-identity-preflight" {
           credential_paths = (
               Path(r'${var.kalshi_api_key_id_path}'),
               Path(r'${var.kalshi_private_key_path}'),
-              Path(r'${var.pyth_api_key_path}'),
           )
           for path in credential_paths:
               with path.open("rb") as handle:

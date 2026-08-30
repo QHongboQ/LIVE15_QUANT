@@ -47,8 +47,13 @@ Read-only host facts:
 
 - `LIVE15Recorder` is the current sole owner and runs as `LocalSystem` (`sc.exe
   qc/queryex LIVE15Recorder`). Its existing working directory resolves to
-  `D:\LIVE15_QUANT`; the current XML references `D:\SDK_ID.txt`,
-  `D:\SDK.txt`, and `D:\LIVE15_QUANT\.secrets\pyth-api-key.txt`.
+  `D:\LIVE15_QUANT`; the reviewed repository XML references `D:\SDK_ID.txt`
+  and `D:\SDK.txt`.
+- The installed XML additionally enables Pyth and references
+  `D:\LIVE15_QUANT\.secrets\pyth-api-key.txt`, while the reviewed repository
+  XML does not. This is configuration drift, not a lifecycle substitution; it
+  must be explicitly reconciled by the operator before any cutover. The
+  candidate does not silently enable Pyth or probe that extra credential.
 - The Nomad Windows service runs as `NT AUTHORITY\LocalService`
   (`sc.exe qc/query nomad`).
 - `D:\LIVE15_QUANT\active-release.json` points to
@@ -65,7 +70,7 @@ Required LocalService access is therefore:
 | Path class | Required access |
 | --- | --- |
 | protected `recorder_runtime_python`, immutable `recorder_app_root` | Read/execute |
-| Kalshi API-key ID, Kalshi private key, Pyth API key reference files | Read/open only; contents never logged |
+| Kalshi API-key ID and Kalshi private key reference files | Read/open only; contents never logged |
 | Recorder working directory | Read/write/create/delete as required by the entrypoint; must not be the mutable source checkout |
 | RecorderStore directory | Read/write/create/delete for SQLite, WAL, and SHM siblings |
 | health/control/PID parent directories | Read/write/create/delete |
