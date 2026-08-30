@@ -46,6 +46,25 @@ def test_project_brain_budget_is_a_lossless_split_threshold() -> None:
     assert "NOMAD_MIGRATION_STATUS_20260830.md" in progress
 
 
+def test_platform_blocker_requires_upstream_resolution_first() -> None:
+    protocol = (ROOT / "docs" / "agents" / "change-protocol.md").read_text(encoding="utf-8")
+    execution = (ROOT / "docs" / "roadmap" / "UPSTREAM_REPLACEMENT_EXECUTION_001.md").read_text(
+        encoding="utf-8"
+    )
+
+    for text in (protocol, execution):
+        assert "UPSTREAM_OFFICIAL_DOCS = CHECKED" in text
+        assert "UPSTREAM_TUTORIALS_EXAMPLES = CHECKED" in text
+        assert "UPSTREAM_GITHUB_SOURCE_TESTS = CHECKED" in text
+        assert "UPSTREAM_GITHUB_ISSUES_PRS = CHECKED" in text
+        assert "STANDARD_UPSTREAM_PATH_FOUND = YES/NO" in text
+        assert "UPSTREAM_RESOLUTION_EXHAUSTED = YES/NO" in text
+        assert "BLOCKER_ALLOWED = YES/NO" in text
+
+    assert "Local invention is a last-last-last fallback" in protocol
+    assert "Custom LIVE15 behavior remains a\nlast-last-last option" in execution
+
+
 def test_skills_manifest_exposes_required_upstream_workflow_and_preserves_adaptations() -> None:
     manifest = json.loads((ROOT / ".agents" / "skills-manifest.json").read_text(encoding="utf-8"))
 

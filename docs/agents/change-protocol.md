@@ -40,6 +40,48 @@ deployment/revert, discovery, telemetry/logging, packaging, or behavior already 
 mature upstream project, the default action is **native/upstream remediation plus LIVE15
 validation**, not a new LIVE15 subsystem.
 
+### Upstream resolution must precede blocker or local invention
+
+A platform-owned failure is not allowed to jump directly from classification to `BLOCKED`, and it
+is not allowed to trigger a local workaround first. Before a blocker or local implementation is
+accepted, complete the relevant upstream-resolution pass in this order:
+
+1. official documentation, release notes, migration guides, tutorials and maintained examples;
+2. the selected/pinned project's official GitHub source, tests, examples, changelog, Issues, Pull
+   Requests and Discussions;
+3. other mature, actively maintained, license-compatible GitHub projects that already solve the
+   same problem;
+4. broader community/web material when needed for missing operational detail or real-world
+   deployment experience;
+5. only then consider a LIVE15-specific implementation, and only when the requirement is genuinely
+   project-specific or no reusable upstream path exists.
+
+Prefer following the official tutorial/mechanism directly. Do not study upstream and then rewrite
+an equivalent subsystem locally. "The operator action cannot be performed in this session" does
+not mean "the upstream solution cannot be prepared in this task": continue preparing the standard
+configuration, artifact, jobspec, install plan, validation, and bounded operator step until the
+specific unauthorized mutation is reached.
+
+Before finalizing `environment/operator/installation`, record:
+
+```text
+UPSTREAM_OFFICIAL_DOCS = CHECKED
+UPSTREAM_TUTORIALS_EXAMPLES = CHECKED
+UPSTREAM_GITHUB_SOURCE_TESTS = CHECKED
+UPSTREAM_GITHUB_ISSUES_PRS = CHECKED
+MATURE_GITHUB_ALTERNATIVES = CHECKED/NOT_NEEDED
+STANDARD_UPSTREAM_PATH_FOUND = YES/NO
+UPSTREAM_RESOLUTION_EXHAUSTED = YES/NO
+BLOCKER_ALLOWED = YES/NO
+```
+
+If `STANDARD_UPSTREAM_PATH_FOUND = YES`, continue with that standard path to the maximum extent
+allowed by the current task and stop only at the exact human/operator mutation that lacks
+authorization. Local invention is a last-last-last fallback, not a peer option. For ordinary
+generic/platform problems, the preferred outcome is **no local reimplementation at all**. A local
+solution is justified only when the requirement is genuinely LIVE15-specific or the official,
+GitHub and broader upstream search finds no reusable implementation.
+
 For such failures:
 
 - a LIVE15 adapter/validator may inspect and fail closed;
@@ -48,16 +90,17 @@ For such failures:
 - repo code must not become an ACL/owner repair manager, UAC/elevation wrapper, service manager,
   supervisor, restart manager, rollback controller, registry/discovery implementation, or generic
   recovery framework;
-- a new Checker finding about another platform prerequisite is a reason to record an
-  `environment/operator/installation` blocker and stop, not a reason to keep extending the
-  adapter;
+- a new Checker finding about another platform prerequisite may become an
+  `environment/operator/installation` blocker only after the upstream-resolution gate above is
+  complete; it is not a reason to keep extending the adapter;
 - if the proposed solution adds a second/third special-case path or materially increases custom
   platform/lifecycle code, stop for architecture review before editing.
 
 The simplicity target is deliberate: one clear owner per responsibility, the fewest code paths,
 small configuration/thin adapters, mature defaults, and deletion of redundant local machinery.
 Do not add speculative flexibility, duplicated safety controllers, or abstractions with no current
-requirement. Tracking: `GOV-PLATFORM-REUSE-001` / GitHub issue #88.
+requirement. Tracking: `GOV-PLATFORM-REUSE-001` / GitHub issue #88 and
+`UPSTREAM-MIGRATION-SEQUENCE-001` / issue #90.
 
 ## Project-brain and model-selection gate
 

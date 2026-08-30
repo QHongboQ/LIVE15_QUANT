@@ -55,8 +55,62 @@ for the upstream/native mechanism first and keep LIVE15 work to:
 
 Do not ask an agent to reproduce upstream lifecycle, ACL repair, restart,
 rollback, discovery, dashboard plumbing, telemetry routing, queueing, or
-workflow-engine behavior locally. When a host/platform prerequisite blocks the
-adapter, record `environment/operator/installation` and stop.
+workflow-engine behavior locally.
+
+## Mandatory upstream-resolution gate
+
+For **any** non-trivial problem, especially platform, deployment, packaging,
+permissions, service/lifecycle, discovery, telemetry, dependency, protocol, or
+integration failures, local invention is the last resort. The required search
+order is:
+
+1. official product/project documentation, release notes, migration guides,
+   tutorials and maintained examples;
+2. the selected/pinned upstream project's official GitHub repository: source,
+   tests, examples, changelog, Issues, Pull Requests and Discussions;
+3. other mature, actively maintained, license-compatible GitHub projects that
+   already solve the same problem;
+4. broader community/web material only to fill gaps or compare real-world
+   deployment experience;
+5. a LIVE15-specific implementation only when the requirement is genuinely
+   project-specific or the upstream/community search found no suitable reusable
+   path.
+
+The agent must prefer **following the official tutorial/mechanism directly**
+over translating it into a new LIVE15 subsystem. Studying upstream and then
+rewriting equivalent behavior locally is not compliance.
+
+A platform blocker is not allowed merely because the current checkout,
+installation, account, ACL, secret path, or service state cannot execute the
+official solution immediately. First determine whether the official/upstream
+path can still be fully prepared as configuration, jobspec, artifact, install
+plan, operator step, or bounded validation while leaving the privileged/runtime
+mutation for its human gate. "Cannot perform the operator action now" is not
+the same as "cannot prepare the upstream solution now."
+
+Before any `environment/operator/installation` blocker is final, record:
+
+- `UPSTREAM_OFFICIAL_DOCS = CHECKED`
+- `UPSTREAM_TUTORIALS_EXAMPLES = CHECKED`
+- `UPSTREAM_GITHUB_SOURCE_TESTS = CHECKED`
+- `UPSTREAM_GITHUB_ISSUES_PRS = CHECKED`
+- `MATURE_GITHUB_ALTERNATIVES = CHECKED/NOT_NEEDED`
+- `STANDARD_UPSTREAM_PATH_FOUND = YES/NO`
+- `UPSTREAM_RESOLUTION_EXHAUSTED = YES/NO`
+- `BLOCKER_ALLOWED = YES/NO`
+
+If `STANDARD_UPSTREAM_PATH_FOUND = YES`, continue with that upstream path to the
+maximum extent permitted by the current task. Stop only at the **specific**
+human/operator/installation mutation that is actually unauthorized or
+impossible. Do not convert that future operator step into a custom repair
+subsystem.
+
+Only when the required upstream-resolution pass is complete and no reusable
+standard path can satisfy the requirement, or when the next unavoidable step
+is a specifically unauthorized host mutation, may the task record an
+`environment/operator/installation` blocker. Custom LIVE15 behavior remains a
+last-last-last option and requires an explicit reason why all reusable upstream
+paths are unsuitable.
 
 ## Execution order
 
@@ -97,13 +151,18 @@ Each migration owns one bounded task, branch and PR. Review must ask:
 - Is the LIVE15 adapter smaller and simpler than the subsystem it replaces?
 - Did Checker findings stay validation findings rather than become new repair
   controllers?
+- Was the mandatory upstream-resolution gate completed before any blocker or
+  local implementation decision?
+- If a standard upstream path exists, did the task follow it as far as current
+  authorization allows instead of stopping early or rewriting it locally?
 - Are measured requirements, hashes, health/evidence and rollback boundaries
   explicit?
 - Did the prompt state a dynamically chosen model and reasoning level without
   over-spending tokens for a simpler task?
 
 If the answer to the first three questions is no, the migration is not ready
-regardless of whether its tests pass.
+regardless of whether its tests pass. A platform blocker is also invalid if the
+upstream-resolution gate was not completed.
 
 Tracking: `GOV-PLATFORM-REUSE-001` / issue #88 and
 `UPSTREAM-MIGRATION-SEQUENCE-001` / issue #90.
