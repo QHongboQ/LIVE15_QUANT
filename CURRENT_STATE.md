@@ -19,7 +19,7 @@ foundation evidence is the `PROJECT_PROGRESS.md` ledger.
 
 | Area | State | Authoritative source |
 | --- | --- | --- |
-| Kalshi WS / DataGap reliability | **TRACKED / EXECUTION_GATED** | `WS-RESYNC-001 + GAP-002`; dependency-closure audit, critical-path prerequisite stabilization, and frozen baseline are required before direct execution. |
+| Kalshi WS / DataGap reliability | **TRACKED / EXECUTION_GATED** | `WS-RESYNC-001 + GAP-002`; dependency closure is complete, while critical-path prerequisite stabilization and frozen baseline remain required before direct execution. |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
 | Nomad secure migration | **VERIFIED** | `docs/project-brain/capabilities/control-center.md` |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
@@ -30,9 +30,9 @@ foundation evidence is the `PROJECT_PROGRESS.md` ledger.
 ## Current limits
 
 `MERGED != DEPLOYED`; `DEPLOYED != VERIFIED`. `WS-RESYNC-001 + GAP-002` remains tracked but
-direct execution awaits the dependency-closure audit, critical-path prerequisite stabilization,
-and GAP002 frozen baseline; `GAP002_DEPENDENCY_AUDIT_EXECUTED = NO`. Detail is recursively routed
-through `capabilities/README.md`, not duplicated here.
+direct execution awaits critical-path prerequisite stabilization and the GAP002 frozen baseline;
+`GAP002_DEPENDENCY_AUDIT_EXECUTED = YES`. Detail is recursively routed through
+`capabilities/README.md`, not duplicated here.
 
 ## Current execution route
 
