@@ -65,6 +65,24 @@ def test_platform_blocker_requires_upstream_resolution_first() -> None:
     assert "Custom LIVE15 behavior remains a\nlast-last-last option" in execution
 
 
+def test_official_procedure_is_retrieved_at_task_time() -> None:
+    policy_path = ROOT / "docs" / "agents" / "runtime-official-source-policy.md"
+    policy = policy_path.read_text(encoding="utf-8")
+    protocol = (ROOT / "docs" / "agents" / "change-protocol.md").read_text(encoding="utf-8")
+    execution = (ROOT / "docs" / "roadmap" / "UPSTREAM_REPLACEMENT_EXECUTION_001.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert policy_path.is_file()
+    assert "runtime authority to be retrieved by the agent when the task is executed" in policy
+    assert "must not normally store a step-by-step copy or paraphrase" in policy
+    assert "PROMPT_COPIED_VENDOR_PROCEDURE_USED_AS_AUTHORITY = NO" in policy
+    assert "runtime-official-source-policy.md" in protocol
+    assert "runtime-official-source-policy.md" in execution
+    assert "A previous chat summary or a prompt-authored copy" in protocol
+    assert "retrieve the current official instructions" in execution
+
+
 def test_skills_manifest_exposes_required_upstream_workflow_and_preserves_adaptations() -> None:
     manifest = json.loads((ROOT / ".agents" / "skills-manifest.json").read_text(encoding="utf-8"))
 
