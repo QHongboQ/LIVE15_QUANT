@@ -15,8 +15,9 @@ hardening is merged, and two upstream reliability tasks are active before the
 formal long-run training GO/NO-GO gate.
 
 The Nomad POC and read-only ControlCenter shadow are verified, non-Production.
-The ControlCenter runtime passed a Nomad preflight; cutover awaits an
-operator-installed immutable application artifact. Detail is indexed in
+ControlCenter is running under Nomad from immutable `b1e1894`; bounded runtime
+acceptance passed and its stopped WinSW definition remains rollback. Final
+verification awaits Maker/Checker/CI. Detail is indexed in
 `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md`.
 
 ## Completed foundations
@@ -39,7 +40,7 @@ operator-installed immutable application artifact. Detail is indexed in
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
-| Nomad secure migration | **VERIFIED generic POC; ControlCenter shadow MERGED; cutover prep next** | `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md` |
+| Nomad secure migration | **RUNTIME_ACCEPTED / governance pending; Nomad owner and WinSW rollback retained** | `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md` |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
@@ -62,9 +63,10 @@ operator-installed immutable application artifact. Detail is indexed in
 - `ST-005` is not resolved merely because UI-013 can display catch-up state. It
   still requires measured throughput/catch-up evidence and a valid 60-minute
   proof with Recorder safety intact.
-- Nomad POC lifecycle evidence is verified and PR #91 merged the first
-  read-only ControlCenter shadow. Never infer Production authority, WinSW
-  replacement, deployment, or cutover from that evidence. Detail:
+- Nomad POC lifecycle evidence and the first actual ControlCenter cutover's
+  bounded runtime acceptance passed. Final repository verification remains
+  pending Maker, Checker, and CI. WinSW remains the rollback definition;
+  Recorder ownership is not inferred from this scope. Detail:
   `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md`.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
   **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
@@ -81,8 +83,8 @@ operator-installed immutable application artifact. Detail is indexed in
    H2 revalidation inside that task;
 2. complete `ST-005` archive/purge throughput recovery and valid 60-minute
    catch-up proof; these two tasks may proceed independently and in parallel;
-3. after its immutable artifact is installed, resume
-   `NOMAD-CONTROL-CENTER-CUTOVER-RESUME-001`; preserve rollback before cutover;
+3. retain ControlCenter's WinSW rollback definition while Nomad owns its
+   lifecycle; do not retire it without separate approval;
 4. reconcile/merge those tasks onto the then-current protected main;
 5. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is
    READY may a separate explicit human approval authorize deployment/restart and

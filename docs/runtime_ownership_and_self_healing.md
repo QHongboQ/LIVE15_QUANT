@@ -11,7 +11,7 @@ The machine-readable counterpart is [`deploy/windows/runtime-ownership.json`](..
 | Component | Owner | Health truth | Recovery authority |
 | --- | --- | --- | --- |
 | LIVE15Recorder | WinSW service | Windows service state plus current `data/health.json` | `LIVE15Recorder` WinSW policy |
-| LIVE15ControlCenter | WinSW service | Windows service state plus current control-center receipt | `LIVE15ControlCenter` WinSW policy |
+| LIVE15ControlCenter | Nomad allocation | Nomad allocation state plus native `/api/health` check | Nomad restart/update/auto-revert |
 | LIVE15RuntimeSupervisor | WinSW service | Windows service state plus current supervisor receipt | `LIVE15RuntimeSupervisor` WinSW policy |
 | current_trainable | RuntimeSupervisor when explicitly enabled | current supervisor receipt plus child PID/heartbeat | RuntimeSupervisor bounded child restart |
 | paper_forward | RuntimeSupervisor when explicitly enabled | current supervisor receipt plus child PID/heartbeat | RuntimeSupervisor bounded child restart |
@@ -25,10 +25,9 @@ reported as `STALE_TELEMETRY`; the service itself remains the process authority.
 
 ## Service packaging
 
-`LIVE15Recorder`, `LIVE15ControlCenter`, and `LIVE15RuntimeSupervisor` each have their own WinSW
-definition. They use Automatic start, bounded 10/30/60-second restart actions, then stop retrying
-until the five-minute WinSW reset period. Installation only stages a verified WinSW executable and
-does not deploy or start a service in this branch.
+`LIVE15Recorder` and `LIVE15RuntimeSupervisor` retain their WinSW definitions. The stopped
+`LIVE15ControlCenter` WinSW definition is retained solely as the verified rollback owner while its
+Nomad allocation owns lifecycle, restart, health, update, and native revert.
 
 ## Worker recovery
 
@@ -60,6 +59,6 @@ auxiliary worker to `ALWAYS_ON`; only RuntimeSupervisor may then launch it.
 
 ## Migration / deployment boundary
 
-This branch contains code, contracts, tests, and WinSW package definitions only. It does not
-install services, restart Windows services, deploy the new configuration, or alter Production
-execution. Deployment must be a separately approved, audited operation after review.
+The verified ControlCenter cutover is recorded in
+`docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md`. Recorder and RuntimeSupervisor
+remain independently WinSW-owned; no Production execution authority changes with this ownership map.

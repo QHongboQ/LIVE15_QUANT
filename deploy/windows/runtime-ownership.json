@@ -15,12 +15,12 @@
     },
     {
       "component": "LIVE15ControlCenter",
-      "owner_type": "SERVICE_MANAGED",
-      "owner_id": "WinSW:LIVE15ControlCenter",
-      "heartbeat_source": "runtime/control-center-status.json",
-      "process_source": "Windows service LIVE15ControlCenter",
-      "health_source": "Windows service state plus current control-center heartbeat",
-      "restart_authority": "WinSW:LIVE15ControlCenter",
+      "owner_type": "NOMAD_MANAGED",
+      "owner_id": "Nomad:live15-control-center",
+      "heartbeat_source": "Nomad service check /api/health",
+      "process_source": "Nomad allocation live15-control-center.control-center[0]",
+      "health_source": "Nomad allocation state plus native /api/health check",
+      "restart_authority": "Nomad:live15-control-center",
       "criticality": "DEGRADED_BUT_PROCESS_CAN_CONTINUE",
       "run_mode": "ALWAYS_ON"
     },

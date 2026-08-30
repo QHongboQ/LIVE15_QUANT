@@ -8,19 +8,19 @@ This bounded detail file preserves the current Nomad migration state without for
 - `NOMAD-LIFECYCLE-UPSTREAM-AUDIT-001` merged in PR #85. Windows SCM and Nomad are the intended generic lifecycle owners; manual agent restart logic is superseded/fail-closed rather than extended.
 - `NOMAD-AUTOMATION-FOUNDATION-001` merged in PR #86. The Nomad responsibility boundary, receipt contract, and upstream replacement matrix are durable architecture guidance.
 - `NOMAD-FIRST-WORKLOAD-SHADOW-001` merged in PR #91. The sealed read-only `LIVE15ControlCenter` shadow passed its hash/ACL boundary, Nomad allocation/health checks, Maker review, Independent Checker review, and CI. It remains non-Production evidence only.
-- The actual `LIVE15ControlCenter` runtime owner has not yet been changed. The tracked runtime ownership still points to `WinSW:LIVE15ControlCenter`; `MERGED != DEPLOYED != VERIFIED` continues to apply.
-- `NOMAD-CONTROL-CENTER-CUTOVER-001`'s Python installation prerequisite is superseded by the operator-provisioned protected CPython 3.13.15 ControlCenter runtime. `NOMAD-CONTROL-CENTER-CUTOVER-RESUME-001` verified that runtime through one purged, no-port Nomad LocalService preflight, corrected the lock's missing `tcmlib==1.5.0` closure entry, and found the next single gate: no clean-SHA immutable ControlCenter application artifact is installed beneath a non-user-writable, LocalService-readable release root. Existing release provenance remains reusable; no service changed. Full receipt: `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_RESUME_001.md`.
+- `NOMAD-CONTROL-CENTER-CUTOVER-FINAL-001` completed the first actual ControlCenter ownership change and bounded runtime acceptance. `Nomad:live15-control-center` now owns the running allocation and native `/api/health` check from immutable release `b1e1894`; the old WinSW ControlCenter is stopped, Automatic, and retained as rollback. Recorder is unchanged. Final `VERIFIED` remains pending Maker, Independent Checker, and green CI. Full receipt: `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md`.
 
 ## Next bounded Nomad task
 
-After the corrected lock is merged and the recorded immutable artifact is
-operator-installed, resume `NOMAD-CONTROL-CENTER-CUTOVER-RESUME-001`; do not
-repeat the generic POC burn-in.
+Complete the final task's Maker, Independent Checker, and CI gates, then
+observe the Nomad-native ControlCenter health and retain the stopped WinSW
+definition until a separately authorized retirement. Do not repeat the generic
+POC burn-in.
 
-Its authorized purpose is to execute the first real ownership migration of
-`LIVE15ControlCenter` from the current WinSW-owned lifecycle to `Windows SCM ->
-Nomad agent -> Nomad allocation -> LIVE15ControlCenter`, with WinSW preserved
-as the verified rollback owner until bounded acceptance passes.
+The final task's completed, historical scope was to migrate
+`LIVE15ControlCenter` from the WinSW-owned lifecycle to `Windows SCM -> Nomad
+agent -> Nomad allocation -> LIVE15ControlCenter`, with WinSW preserved as the
+verified rollback owner until bounded acceptance passed.
 
 The task must:
 
@@ -39,6 +39,7 @@ A successful cutover task may conclude `CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED`
 - `docs/deployment/NOMAD_FIRST_WORKLOAD_SHADOW_001.md`
 - `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_001.md`
 - `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_RESUME_001.md`
+- `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md`
 - `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`
 - `docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md`
 - `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`
