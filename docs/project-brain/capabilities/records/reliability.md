@@ -9,10 +9,10 @@ Reliability determines sequence continuity, snapshot validity, gap closure, fres
 
 ## Current truth
 
-`WS-RESYNC-001 + GAP-002` remains the tracked reliability workstream. Dependency closure is
-complete with no required pre-GAP migration; direct execution now awaits critical-path prerequisite
-stabilization and the GAP002 frozen baseline; `GAP002_DEPENDENCY_AUDIT_EXECUTED = YES`. Generic
-lifecycle may use Nomad/SCM; it cannot replace WebSocket gap/recovery semantics or Recorder truth.
+`WS-RESYNC-001 + GAP-002` remains the tracked reliability workstream. Direct execution is gated by
+the Phase-3 frozen baseline; dependency-closure conclusions are owned by
+`../../dependencies/gap002-closure.md`. Generic lifecycle may use Nomad/SCM; it cannot replace
+WebSocket gap/recovery semantics or Recorder truth.
 
 ## Interfaces / dependencies
 

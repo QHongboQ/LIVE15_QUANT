@@ -30,9 +30,8 @@ foundation evidence is the `PROJECT_PROGRESS.md` ledger.
 ## Current limits
 
 `MERGED != DEPLOYED`; `DEPLOYED != VERIFIED`. `WS-RESYNC-001 + GAP-002` remains tracked but
-direct execution awaits critical-path prerequisite stabilization and the GAP002 frozen baseline;
-`GAP002_DEPENDENCY_AUDIT_EXECUTED = YES`. Detail is recursively routed through
-`capabilities/README.md`, not duplicated here.
+direct execution awaits the Phase-3 frozen baseline. Dependency-closure detail is recursively
+routed through `capabilities/README.md` and `dependencies/gap002-closure.md`, not duplicated here.
 
 ## Current execution route
 
