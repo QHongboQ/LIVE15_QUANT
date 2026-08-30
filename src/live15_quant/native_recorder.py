@@ -1393,6 +1393,9 @@ class KalshiNativeRecorder:
                     self._publish_kalshi_ws_live_books(), name="kalshi-ws-live-projection"
                 )
             )
+            tasks.append(
+                asyncio.create_task(self._monitor_kalshi_ws_liveness(), name="kalshi-ws-liveness")
+            )
         for asset in KALSHI_15MIN_SERIES:
             tasks.extend(
                 (
@@ -2307,6 +2310,12 @@ class KalshiNativeRecorder:
     async def _enforce_kalshi_ws_liveness(self, observed: datetime) -> bool:
         """Fail closed when transport or the initial snapshot set stops progressing."""
 
+        if self._sdk_recorder_host is not None:
+            if not self._sdk_recorder_host.transport_stale(observed):
+                return False
+            self._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
+            self._sdk_recorder_host.request_session_replacement()
+            return True
         if self._kalshi_ws is None:
             return False
         state = self._health.kalshi_ws_state

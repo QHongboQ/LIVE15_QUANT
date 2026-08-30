@@ -73,6 +73,9 @@ class SdkProductionRecorderHost:
         self._provider: SdkRecorderMarketDataProvider | None = None
         self._consumer: RecorderMarketDataConsumer | None = None
         self._last_received_at: datetime | None = None
+        self._session_started_at: datetime | None = None
+        self._session_restart: asyncio.Event | None = None
+        self._transport_state = "connecting"
         self._reconnect_count = 0
         self._queue_high_watermark = 0
         self._running = False
@@ -105,6 +108,23 @@ class SdkProductionRecorderHost:
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def session_replacement_requested(self) -> bool:
+        return self._session_restart is not None and self._session_restart.is_set()
+
+    def request_session_replacement(self) -> None:
+        """Close the current SDK context so ``run`` starts a fresh session."""
+
+        if self._session_restart is not None:
+            self._session_restart.set()
+
+    def transport_stale(self, observed: datetime) -> bool:
+        received = self._last_received_at or self._session_started_at
+        if received is None:
+            return False
+        age = (observed - received.astimezone(UTC)).total_seconds()
+        return age > self._settings.kalshi_websocket_stale_seconds
 
     @property
     def final_summary(self) -> SdkProductionRecorderHostSummary | None:
@@ -224,12 +244,16 @@ class SdkProductionRecorderHost:
             read_retries=3,
         )
         changed = asyncio.Event()
+        session_restart = asyncio.Event()
+        self._session_restart = session_restart
+        self._session_started_at = datetime.now(UTC)
         timer_stop = asyncio.Event()
         accepting_orderbook_events = True
 
         async def state_change(_old: Any, new: Any) -> None:
             observed = datetime.now(UTC)
             value = str(getattr(new, "value", new))
+            self._transport_state = value.lower()
             if value.lower() == "reconnecting":
                 # SDK has declared the transport session replaced.  It owns
                 # reconnect/resubscribe/new SID; LIVE15 replaces only its
@@ -293,12 +317,16 @@ class SdkProductionRecorderHost:
             }
             stop_task = asyncio.create_task(stop.wait(), name="sdk-recorder-stop")
             changed_task = asyncio.create_task(changed.wait(), name="sdk-recorder-universe-changed")
+            restart_task = asyncio.create_task(
+                session_restart.wait(), name="sdk-recorder-session-restart"
+            )
             all_tasks = ancillary | {
                 orderbook_drain_task,
                 consumer_task,
                 timer_task,
                 stop_task,
                 changed_task,
+                restart_task,
             }
             done, _pending = await asyncio.wait(all_tasks, return_when=asyncio.FIRST_COMPLETED)
 
@@ -319,15 +347,15 @@ class SdkProductionRecorderHost:
             flushed = consumer.close()
             self._capture_final_summary(consumer, flushed)
 
-            for task in {stop_task, changed_task}:
+            for task in {stop_task, changed_task, restart_task}:
                 if task not in done:
                     task.cancel()
-            await asyncio.gather(stop_task, changed_task, return_exceptions=True)
-            if changed.is_set() and not stop.is_set():
+            await asyncio.gather(stop_task, changed_task, restart_task, return_exceptions=True)
+            if (changed.is_set() or session_restart.is_set()) and not stop.is_set():
                 # A new 15-minute ticker invalidates the prior authoritative
                 # set before the next SDK session obtains replacement snapshots.
                 self._on_transport_state("reconnecting", datetime.now(UTC))
-            if not stop.is_set() and not changed.is_set():
+            if not stop.is_set() and not changed.is_set() and not session_restart.is_set():
                 for task in done:
                     if task.get_name() not in {
                         "sdk-recorder-stop",
@@ -337,6 +365,8 @@ class SdkProductionRecorderHost:
                         if error is not None:
                             raise error
                         raise RuntimeError(f"SDK recorder stream ended: {task.get_name()}")
+        self._session_restart = None
+        self._session_started_at = None
 
     async def run(self, stop: asyncio.Event) -> None:
         self._running = True

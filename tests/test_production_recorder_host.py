@@ -18,6 +18,15 @@ from live15_quant.kalshi_gateway.recorder_provider import (
 from live15_quant.models import Asset
 
 
+def test_sdk_host_session_replacement_request_is_bounded() -> None:
+    host = object.__new__(SdkProductionRecorderHost)
+    host._session_restart = asyncio.Event()
+
+    assert host.session_replacement_requested is False
+    host.request_session_replacement()
+    assert host.session_replacement_requested is True
+
+
 @pytest.mark.asyncio
 async def test_rollover_replaces_session_without_a_second_websocket_reader() -> None:
     """The pinned SDK race is real, while the host rollover cannot trigger it."""
