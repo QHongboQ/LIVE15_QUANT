@@ -48,9 +48,9 @@ def test_project_brain_budget_is_a_lossless_split_threshold() -> None:
 
 def test_platform_blocker_requires_upstream_resolution_first() -> None:
     protocol = (ROOT / "docs" / "agents" / "change-protocol.md").read_text(encoding="utf-8")
-    execution = (
-        ROOT / "docs" / "roadmap" / "UPSTREAM_REPLACEMENT_EXECUTION_001.md"
-    ).read_text(encoding="utf-8")
+    execution = (ROOT / "docs" / "roadmap" / "UPSTREAM_REPLACEMENT_EXECUTION_001.md").read_text(
+        encoding="utf-8"
+    )
 
     for text in (protocol, execution):
         assert "UPSTREAM_OFFICIAL_DOCS = CHECKED" in text
