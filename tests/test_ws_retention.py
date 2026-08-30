@@ -524,9 +524,7 @@ def test_mixed_failed_range_quarantines_only_proven_missing_market_baseline(
     records = list(service._range_records(failed))
     missing_ticker = "KXBNB15M-26AUG221215-15"
     records[0] = replace(records[0], connection_id="connection-2", subscription_id=3)
-    records[1] = replace(
-        records[1], connection_id="connection-2", subscription_id=3, ticker=TICKER
-    )
+    records[1] = replace(records[1], connection_id="connection-2", subscription_id=3, ticker=TICKER)
     records[2] = replace(
         records[2],
         connection_id="connection-2",
@@ -544,7 +542,8 @@ def test_mixed_failed_range_quarantines_only_proven_missing_market_baseline(
             sequence=1,
             ticker=missing_ticker,
             market_id="market-bnb",
-            yes_bids=(), no_bids=(),
+            yes_bids=(),
+            no_bids=(),
             source_timestamp=snapshot_time,
             socket_received_timestamp=snapshot_time,
             parse_timestamp=snapshot_time + timedelta(microseconds=1),
