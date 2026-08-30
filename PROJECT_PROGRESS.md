@@ -1,6 +1,6 @@
 # LIVE15 project progress
 
-Compact ledger; detailed history is in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`; `CURRENT_STATE.md` records whole-project orientation.
+Compact ledger; `CURRENT_STATE.md` records whole-project orientation. Git commits and PRs are canonical history. Dated detail and handoff files are legacy evidence/task-detail only.
 
 ## Reading and update rule
 
@@ -10,11 +10,13 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 ## Current reconciliation basis
 
-- Resolve `origin/main` at task start; this index is reconciled through merged
-  PR #102 (`6ec5ac60`). `MERGED != DEPLOYED` outside explicitly verified work.
-- Detail/new-chat recovery: `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`,
-  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`, and
-  `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md`.
+- Current base authority is `origin/main` at `c557d52` (merged PR #103). Resolve
+  `origin/main` at task start. `MERGED != DEPLOYED` outside explicitly verified work.
+- When an authority leaf selects dated evidence, use
+  `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`,
+  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`, or
+  `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md` as legacy evidence/task detail,
+  not as canonical or detailed history.
 - Current execution sequence: `docs/project-brain/plan/current-roadmap.md`.
 
 ## Recent completed foundations

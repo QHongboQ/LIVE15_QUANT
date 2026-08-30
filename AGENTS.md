@@ -127,7 +127,7 @@ provenance and LIVE15-specific adaptations are recorded in `.agents/skills-manif
 ## Agent skills and project brain
 
 Use `setup-matt-pocock-skills` only to change the configured workflow. The
-project uses GitHub issues and a single-context documentation layout; see
+project uses GitHub issues and a hierarchical Project Brain pointer architecture; see
 `docs/agents/issue-tracker.md` and `docs/agents/domain.md`.
 
 **Mandatory refresh gate:** before answering any LIVE15 continuation/next-step request, producing

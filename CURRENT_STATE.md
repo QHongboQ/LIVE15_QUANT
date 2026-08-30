@@ -11,8 +11,8 @@ Authority and its evidence artifacts.
 
 **Pre-training reliability/storage closeout plus current-main deployment proof gate.**
 The release-pipeline prerequisites are merged, Control Center truth/performance
-hardening is merged, and two upstream reliability tasks are active before the
-formal long-run training GO/NO-GO gate.
+hardening is merged, and the tracked reliability workstream is execution-gated
+before the formal long-run training GO/NO-GO gate.
 
 ControlCenter current truth and its migration boundary are owned by
 `docs/project-brain/capabilities/control-center.md`.
@@ -35,7 +35,7 @@ ControlCenter current truth and its migration boundary are owned by
 
 | Area | State | Authoritative source |
 | --- | --- | --- |
-| Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
+| Kalshi WS / DataGap reliability | **TRACKED / EXECUTION_GATED** | `WS-RESYNC-001 + GAP-002`; dependency-closure audit, critical-path prerequisite stabilization, and frozen baseline are required before direct execution. |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
 | Nomad secure migration | **VERIFIED** | `docs/project-brain/capabilities/control-center.md` |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
@@ -54,6 +54,9 @@ ControlCenter current truth and its migration boundary are owned by
 - `H2-TRAIN-003` is not an independent active development lane. Its previous
   BLOCKED result exposed a Kalshi WS/DataGap authority problem; the real H2
   revalidation is now an acceptance step inside `WS-RESYNC-001 + GAP-002`.
+- `WS-RESYNC-001 + GAP-002` remains tracked, but direct execution is gated by
+  the dependency-closure audit, critical-path prerequisite stabilization, and
+  the GAP002 frozen baseline. `GAP002_DEPENDENCY_AUDIT_EXECUTED = NO`.
 - H2 capability remains granular. Real snapshot readiness, snapshot-sequence
   readiness, delta/tick readiness, and each microstructure model family remain
   independently gated. DepthFeed HTTP 402 plan restrictions must not be hidden.

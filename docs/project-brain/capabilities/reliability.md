@@ -1,7 +1,7 @@
 # Reliability and WebSocket gaps
 
-Revision: R1
-Status: LIVE15-owned data-truth semantics.
+Revision: R2
+Status: tracked; direct execution gated by the current roadmap.
 
 ## What it is
 
@@ -9,7 +9,7 @@ Reliability determines sequence continuity, snapshot validity, gap closure, fres
 
 ## Current truth
 
-`WS-RESYNC-001 + GAP-002` remains active. Generic lifecycle may use Nomad/SCM; it cannot replace WebSocket gap/recovery semantics or Recorder truth.
+`WS-RESYNC-001 + GAP-002` remains the tracked reliability workstream. Direct execution is gated by the dependency-closure audit, critical-path prerequisite stabilization, and the GAP002 frozen baseline; `GAP002_DEPENDENCY_AUDIT_EXECUTED = NO`. Generic lifecycle may use Nomad/SCM; it cannot replace WebSocket gap/recovery semantics or Recorder truth.
 
 ## Interfaces / dependencies
 
@@ -28,3 +28,4 @@ Update only for a durable reliability authority or GAP002 execution decision.
 | Revision | Task / PR | Change |
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 authority baseline. |
+| R2 | PROJECT-BRAIN-V2-REVIEW-CLOSEOUT | Aligned tracked reliability work with the roadmap execution gates. |

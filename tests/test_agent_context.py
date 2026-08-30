@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -7,6 +8,15 @@ BRAIN = ROOT / "docs" / "project-brain"
 
 def read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def estimated_tokens(text: str) -> int:
+    """Use a conservative, dependency-free estimate for compact-context routing."""
+    return math.ceil(len(text.encode("utf-8")) / 4)
+
+
+def route_estimated_tokens(*relative_paths: str) -> int:
+    return sum(estimated_tokens(read(path)) for path in relative_paths)
 
 
 def test_project_brain_v2_uses_intent_based_always_entry() -> None:
@@ -31,14 +41,48 @@ def test_project_brain_v2_uses_intent_based_always_entry() -> None:
     ):
         assert intent in router
 
-    compact_files = (
+    always_entry = (
         "AGENTS.md",
-        "CONTEXT.md",
-        "CURRENT_STATE.md",
-        "PROJECT_PROGRESS.md",
         "docs/project-brain/README.md",
     )
-    assert sum(len(read(path).split()) for path in compact_files) <= 5_000
+    assert route_estimated_tokens(*always_entry) <= 5_000
+
+
+def test_project_brain_v2_route_budgets_use_the_estimated_token_split_threshold() -> None:
+    routes = {
+        "planning": (
+            "AGENTS.md",
+            "docs/project-brain/README.md",
+            "docs/project-brain/plan/README.md",
+            "docs/project-brain/plan/current-roadmap.md",
+        ),
+        "capability": (
+            "AGENTS.md",
+            "docs/project-brain/README.md",
+            "docs/project-brain/capabilities/README.md",
+            "docs/project-brain/capabilities/reliability.md",
+        ),
+        "execution": (
+            "AGENTS.md",
+            "docs/project-brain/README.md",
+            "docs/project-brain/constraints/README.md",
+            "docs/project-brain/constraints/parallel-development.md",
+        ),
+        "high-risk execution": (
+            "AGENTS.md",
+            "PROJECT_CHARTER.md",
+            "docs/project-brain/README.md",
+            "docs/project-brain/capabilities/README.md",
+            "docs/project-brain/capabilities/recorder.md",
+            "docs/project-brain/constraints/README.md",
+        ),
+    }
+
+    for route in routes.values():
+        assert route_estimated_tokens(*route) <= 5_000
+
+    inventory = read("docs/project-brain/V2_MIGRATION_INVENTORY_001.md")
+    assert "No durable fact was deleted" in inventory
 
 
 def test_project_brain_v2_indexes_and_authority_leaves_are_reachable() -> None:
@@ -74,6 +118,7 @@ def test_plan_owns_current_execution_sequence_and_gap002_dual_lane_strategy() ->
     state = read("CURRENT_STATE.md")
     roadmap = read("docs/project-brain/plan/current-roadmap.md")
     progress = read("PROJECT_PROGRESS.md")
+    reliability = read("docs/project-brain/capabilities/reliability.md")
 
     assert "## Immediate sequence" not in state
     assert "current-roadmap.md" in state
@@ -83,6 +128,22 @@ def test_plan_owns_current_execution_sequence_and_gap002_dual_lane_strategy() ->
     assert "OUT_OF_GAP002_PATH" in roadmap
     assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = NO" in roadmap
     assert "current-roadmap.md" in progress
+    for text in (state, reliability):
+        assert "dependency-closure audit" in text
+        assert "critical-path prerequisite stabilization" in text
+        assert "frozen baseline" in text
+        assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = NO" in text
+
+
+def test_progress_history_and_agent_architecture_use_current_v2_authority() -> None:
+    agents = read("AGENTS.md")
+    progress = read("PROJECT_PROGRESS.md")
+
+    assert "single-context documentation layout" not in agents
+    assert "hierarchical Project Brain pointer architecture" in agents
+    assert "c557d52" in progress and "PR #103" in progress
+    assert "Git commits and PRs are canonical history" in progress
+    assert "legacy evidence/task detail" in progress
 
 
 def test_lossless_context_migration_keeps_current_safety_and_runtime_truth() -> None:
