@@ -176,8 +176,8 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
         "PHASE 1 — COMPLETE",
         "PHASE 2 — COMPLETE / NO-OP",
         "PHASE 3 — COMPLETE",
-        "NEXT — PHASE 4A",
-        "PHASE 4A",
+        "RECORDER_LIFECYCLE_TO_NOMAD",
+        "Phase 4A",
         "PHASE 4B — IN PARALLEL",
         "OUT_OF_GAP002_PATH",
     ):
