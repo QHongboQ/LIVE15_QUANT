@@ -36,7 +36,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
-| WS-RESYNC-001 + GAP-002 | BLOCKED / EXECUTION_PREREQUISITE_PENDING | Historical evidence: 72 WS/Recorder/SDK-shadow tests passed on `4d088930`. Direct execution awaits the GAP002 dependency-closure audit, critical-path prerequisite stabilization, and GAP002 frozen baseline; `GAP002_DEPENDENCY_AUDIT_EXECUTED = NO`. | Prerequisite closure before any runtime/deployment live rollout |
+| WS-RESYNC-001 + GAP-002 | BLOCKED / EXECUTION_PREREQUISITE_PENDING | Historical evidence: 72 WS/Recorder/SDK-shadow tests passed on `4d088930`. Direct execution awaits the Phase-3 frozen baseline; dependency-closure authority is `docs/project-brain/dependencies/gap002-closure.md`. | Establish Phase-3 frozen baseline before any runtime/deployment live rollout |
 | SHADOW-REC-001 | BLOCKED / STALE_RECEIPTS | PIDs absent; no health/restart. Detail: `docs/reliability/SHADOW_RECORDER_EVIDENCE_AUDIT_20260829.md`. | Non-Production only |
 | NOMAD-POC-SECURE-001 | VERIFIED / isolated POC burn-in + auto-revert + two-hour soak PASS | Final receipt: 24 healthy observations; terminal observer entry and evidence rule are in the POC handoff. No cutover. | POC only; no Production/holdout |
 | NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 remains code evidence only; do not merge or treat it as deployment proof. Its separate restart-validation lineage does not supersede the verified service-model POC evidence. | POC only |

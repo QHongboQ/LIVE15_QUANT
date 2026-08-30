@@ -1,15 +1,19 @@
 # GAP002 dependency closure
 
-Revision: R1
-Status: structure only; audit not executed.
+Revision: R2
+Status: dependency closure complete; Phase-3 runtime baseline not declared.
 
 ## What it is
 
-Stable home for the future GAP002 critical-path dependency audit.
+Stable home for the GAP002 critical-path dependency closure.
 
 ## Current truth
 
-The future audit classifies nodes as `ALREADY_UPSTREAM`, `MIGRATE_BEFORE_GAP`, `LIVE15_KEEP`, or `OUT_OF_GAP002_PATH`. It does not yet classify any node.
+`GAP002_DEPENDENCY_AUDIT_EXECUTED = YES`. The classified critical path has SDK transport/reconnect
+already upstream-owned; Gateway adaptation, reliability, and Recorder truth remain LIVE15-owned.
+`MIGRATE_BEFORE_GAP_SET = NONE`; Recorder and RuntimeSupervisor Nomad migration are not required
+before GAP002. The compact reserved surface and all supporting classifications are in
+`docs/evidence/GAP002_DEPENDENCY_CLOSURE_DISCOVERY_001.md`.
 
 ## Interfaces / dependencies
 
@@ -28,3 +32,4 @@ Update only when a separately authorized GAP002 audit records its closure.
 | Revision | Task / PR | Change |
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | Created audit home; no audit performed. |
+| R2 | GAP002-DEPENDENCY-CLOSURE-AUDIT-001B | Recorded closure; no Phase-2 migration or Phase-3 freeze executed. |

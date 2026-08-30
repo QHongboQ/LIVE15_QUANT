@@ -152,7 +152,7 @@ def test_authority_leaves_preserve_moved_current_truth() -> None:
     assert "does not authorize a Recorder migration" in control_center
     assert "Recorder ownership is unchanged" in recorder_truth
     assert "ST-005" in throughput and "60-minute proof" in throughput
-    assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = NO" in reliability
+    assert "gap002-closure.md" in reliability
     assert "Research coverage comes from the typed" in research
     assert "Only Kalshi finalized settlement" in validation and "fails closed" in validation
     assert "NO TRAINING_GO" in training and "NO TRAINING_STARTED" in training
@@ -173,18 +173,28 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
     assert "## Immediate sequence" not in state
     assert "current-roadmap.md" in state and "current-roadmap.md" in progress
     for expected in (
-        "GAP002 dependency-closure audit",
+        "PHASE 1 — COMPLETE",
+        "PHASE 2 — COMPLETE / NO-OP",
+        "NEXT — PHASE 3",
         "PHASE 4A",
         "PHASE 4B — IN PARALLEL",
         "OUT_OF_GAP002_PATH",
-        "GAP002_DEPENDENCY_AUDIT_EXECUTED = NO",
     ):
         assert expected in roadmap
     for text in (state, reliability):
-        assert "dependency-closure audit" in text
-        assert "critical-path prerequisite stabilization" in text
-        assert "frozen" in text and "baseline" in text
-        assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = NO" in text
+        normalized = text.replace("\n", " ")
+        assert "frozen" in normalized and "baseline" in normalized
+
+
+def test_gap002_closure_is_complete_without_declaring_the_phase3_baseline() -> None:
+    closure = read("docs/project-brain/dependencies/gap002-closure.md")
+    evidence = read("docs/evidence/GAP002_DEPENDENCY_CLOSURE_DISCOVERY_001.md")
+
+    assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = YES" in closure
+    assert "MIGRATE_BEFORE_GAP_SET = NONE" in closure
+    assert "RECORDER_NOMAD_MIGRATION_BEFORE_GAP = NOT_REQUIRED" in evidence
+    assert "RUNTIME_SUPERVISOR_MIGRATION_BEFORE_GAP = NOT_REQUIRED" in evidence
+    assert "PHASE3_RUNTIME_BASELINE = NOT_DECLARED" in evidence
 
 
 def test_progress_history_and_inventory_preserve_lossless_v2_migration() -> None:
