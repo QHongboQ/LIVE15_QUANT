@@ -186,7 +186,7 @@ class SdkProductionRecorderHost:
 
     async def _run_session(self, asset_to_ticker: Mapping[Asset, str], stop: asyncio.Event) -> None:
         ticker_to_asset = {ticker: asset for asset, ticker in asset_to_ticker.items()}
-        if len(ticker_to_asset) != len(Asset):
+        if not ticker_to_asset:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=1.0)
             except TimeoutError:

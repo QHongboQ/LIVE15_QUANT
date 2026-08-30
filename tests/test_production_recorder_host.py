@@ -19,6 +19,103 @@ from live15_quant.models import Asset
 
 
 @pytest.mark.asyncio
+async def test_current_active_universe_starts_sdk_session_when_commodities_are_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A closed commodity subset must not block the current active WS universe."""
+
+    closed_assets = {Asset.GOLD, Asset.SILVER, Asset.WTI_OIL}
+    active_universe = {
+        asset: f"KX{asset.value.upper().replace(' ', '-')}-CURRENT"
+        for asset in Asset
+        if asset not in closed_assets
+    }
+    subscriptions: list[tuple[str, tuple[str, ...]]] = []
+    stop = asyncio.Event()
+
+    class PendingStream:
+        def __aiter__(self) -> PendingStream:
+            return self
+
+        async def __anext__(self) -> object:
+            await asyncio.Event().wait()
+            raise StopAsyncIteration
+
+    class Session:
+        async def subscribe_ticker(self, *, tickers, maxsize):
+            subscriptions.append(("ticker", tuple(tickers)))
+            assert maxsize == 2_000
+            return PendingStream()
+
+        async def subscribe_market_lifecycle(self, *, tickers, maxsize):
+            subscriptions.append(("lifecycle", tuple(tickers)))
+            assert maxsize == 1_000
+            return PendingStream()
+
+        async def subscribe_orderbook_delta(self, *, tickers, maxsize):
+            subscriptions.append(("orderbook", tuple(tickers)))
+            assert maxsize == 10_000
+            stop.set()
+            return PendingStream()
+
+    class Context:
+        async def __aenter__(self) -> Session:
+            return Session()
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+    class WebSocket:
+        def on(self, _event):
+            def register(handler):
+                return handler
+
+            return register
+
+        def connect(self) -> Context:
+            return Context()
+
+    class Gateway:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def build(self, **_kwargs) -> WebSocket:
+            return WebSocket()
+
+    monkeypatch.setattr(
+        "live15_quant.kalshi_gateway.production_recorder_host.production_credentials",
+        lambda _settings: object(),
+    )
+    monkeypatch.setattr(
+        "live15_quant.kalshi_gateway.production_recorder_host.KalshiWebSocketGateway",
+        Gateway,
+    )
+
+    host = object.__new__(SdkProductionRecorderHost)
+    host._settings = SimpleNamespace(
+        kalshi_websocket_stale_seconds=10.0,
+        kalshi_websocket_read_timeout_seconds=5.0,
+    )
+    host._store = SimpleNamespace(bounded_row_count_estimates=lambda: {})
+    host._on_committed = lambda _events: None
+    host._on_transport_state = lambda _state, _observed_at: None
+    host._provider = None
+    host._consumer = None
+    host._reconnect_count = 0
+    host._final_summary = None
+
+    await host._run_session(active_universe, stop)
+
+    expected_tickers = tuple(sorted(active_universe.values()))
+    assert subscriptions == [
+        ("ticker", expected_tickers),
+        ("lifecycle", expected_tickers),
+        ("orderbook", expected_tickers),
+    ]
+    assert len(expected_tickers) == 7
+
+
+@pytest.mark.asyncio
 async def test_rollover_replaces_session_without_a_second_websocket_reader() -> None:
     """The pinned SDK race is real, while the host rollover cannot trigger it."""
 
