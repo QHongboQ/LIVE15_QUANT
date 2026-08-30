@@ -36,6 +36,16 @@
 - The current `kalshi-sdk` release listing shows `13.0.0`, but its provenance is not the official
   Kalshi SDK path and it does not establish a compatible native fix for this incident:
   [PyPI](https://pypi.org/project/kalshi-sdk/13.0.0/).
+- Task-time pinned-upstream review covered the package repository's
+  [source/releases](https://github.com/TexasCoding/kalshi-python-sdk), its
+  [reconnect issue search](https://github.com/TexasCoding/kalshi-python-sdk/issues?q=is%3Aissue%20reconnect),
+  and closed [resubscribe recovery issue #254](https://github.com/TexasCoding/kalshi-python-sdk/issues/254).
+  They establish that upstream owns WebSocket implementation and has repaired a resubscribe case,
+  but do not document a compatible bounded no-progress/reconnecting session replacement. No
+  official Kalshi GitHub source, test, issue, PR, or Discussion exposing such a drop-in behavior
+  was found; the official starter repository and WebSocket documentation are the available
+  first-party sources. Therefore `SDK_NATIVE_STALL_FIX_FOUND = NO` for the frozen pin, rather than
+  treating an untested 13.0.0 upgrade as a fix.
 
 ## Required migration order
 
