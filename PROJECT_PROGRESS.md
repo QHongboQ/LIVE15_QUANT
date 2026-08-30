@@ -1,6 +1,6 @@
 # LIVE15 project progress
 
-Compact ledger; detailed history is in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`; `CURRENT_STATE.md` records whole-project orientation.
+Compact ledger; `CURRENT_STATE.md` records whole-project orientation. Git commits and PRs are canonical history. Dated detail and handoff files are legacy evidence/task-detail only.
 
 ## Reading and update rule
 
@@ -10,11 +10,15 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 ## Current reconciliation basis
 
-- Resolve `origin/main` at task start; this index is reconciled through merged
-  PR #102 (`6ec5ac60`). `MERGED != DEPLOYED` outside explicitly verified work.
-- Detail/new-chat recovery: `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`,
-  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`, and
-  `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md`.
+- Project Brain V2 migration baseline was `c557d52` (merged PR #103). Always resolve current
+  `origin/main` at task start; no fixed SHA is current authority. `MERGED != DEPLOYED` outside
+  explicitly verified work.
+- When an authority leaf selects dated evidence, use
+  `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`,
+  `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`, or
+  `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md` as legacy evidence/task detail,
+  not as canonical or detailed history.
+- Current execution sequence: `docs/project-brain/plan/current-roadmap.md`.
 
 ## Recent completed foundations
 
@@ -32,12 +36,12 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
-| WS-RESYNC-001 + GAP-002 | IN_PROGRESS / HISTORICAL_LOCAL_VALIDATION_PASS | 72 WS/Recorder/SDK-shadow tests passed on `4d088930`; runtime recovery, clean-segment proof and H2 revalidation remain deployment-gated. | Runtime/deployment for live rollout |
+| WS-RESYNC-001 + GAP-002 | BLOCKED / EXECUTION_PREREQUISITE_PENDING | Historical evidence: 72 WS/Recorder/SDK-shadow tests passed on `4d088930`. Direct execution awaits the GAP002 dependency-closure audit, critical-path prerequisite stabilization, and GAP002 frozen baseline; `GAP002_DEPENDENCY_AUDIT_EXECUTED = NO`. | Prerequisite closure before any runtime/deployment live rollout |
 | SHADOW-REC-001 | BLOCKED / STALE_RECEIPTS | PIDs absent; no health/restart. Detail: `docs/reliability/SHADOW_RECORDER_EVIDENCE_AUDIT_20260829.md`. | Non-Production only |
 | NOMAD-POC-SECURE-001 | VERIFIED / isolated POC burn-in + auto-revert + two-hour soak PASS | Final receipt: 24 healthy observations; terminal observer entry and evidence rule are in the POC handoff. No cutover. | POC only; no Production/holdout |
 | NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 remains code evidence only; do not merge or treat it as deployment proof. Its separate restart-validation lineage does not supersede the verified service-model POC evidence. | POC only |
-| NOMAD-MIGRATION-STATUS-20260830 | VERIFIED / COMPLETE | Nomad owns ControlCenter from immutable `b1e1894`; WinSW is stopped and retained only as rollback. Maker, Checker, and CI passed. Detail: `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md`. | No retirement or Recorder change without separate approval |
-| NOMAD-CONTROL-CENTER-CUTOVER-FINAL-001 | VERIFIED / COMPLETE | Immutable release, native `/api/health`, listener ownership, no duplicate port, and WinSW rollback boundary verified in merged PR #102. Detail: `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md`. | WinSW retirement is separately authorized; no Recorder migration implied. |
+| NOMAD-MIGRATION-STATUS-20260830 | VERIFIED / COMPLETE | `docs/project-brain/capabilities/control-center.md` | No retirement or Recorder change without separate approval |
+| NOMAD-CONTROL-CENTER-CUTOVER-FINAL-001 | VERIFIED / COMPLETE | `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md` | `capabilities/control-center.md` owns current truth |
 | GITHUB-ACTIONS-PUBLIC-20260830 | VERIFIED / STANDARD_HOSTED_CI_AVAILABLE | Public repo: standard GitHub-hosted CI may run normally; no task-specific quota approval is required. Larger/billable runners remain separately cost-gated. | Normal green-CI merge policy |
 | H2-TRAIN-003 | BLOCKED / historical | Preserve prior blocker evidence. Do not continue as an independent development branch unless WS-RESYNC leaves a new smallest blocker. | Training/holdout |
 | ST-005 | BLOCKED / PROOF_NEEDS_DEPLOYMENT | 2026-08-29 preflight: legacy `UNPROVEN` pointer; then-current main instrumentation was unactivated. A SHA-verifiable deployment gate precedes a fresh 60-minute proof. Detail: `docs/evidence/st-005-current-main-preflight-20260829.md`. | Human-authorized deployment; no restart, storage mutation, or Production write |
@@ -45,17 +49,10 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | DEP-ROOT-HYGIENE-PREVENT-001 | MERGED / ENFORCEMENT_READY | PR #79 merged the pytest cache isolation, WinSW fixture temp storage and fail-closed startup guard; detailed validation remains in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`. | Production cleanup remains separately authorized |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
 
-## Route to formal overnight training
+## Planning route
 
-1. finish/reconcile `WS-RESYNC-001 + GAP-002`;
-2. finish/reconcile `ST-005`;
-3. rerun `DEP-001` Phase A read-only preflight, then only with separate human approval deploy and prove reviewed protected main;
-4. complete a separate holdout-contamination remediation/replacement decision
-   without reopening the frozen holdout;
-5. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` only after that decision;
-6. start formal overnight training only on explicit `TRAINING_GO`.
-
-H2 is optional-by-validation: formal research may use H0 + H1 + **validated** H2. Unvalidated or plan-restricted H2 capability is excluded rather than fabricated and must not block unrelated valid model families without evidence.
+`docs/project-brain/plan/current-roadmap.md` owns execution sequence. The
+training and H2 capability authorities are under `capabilities/README.md`.
 
 ## Durable operating rules
 

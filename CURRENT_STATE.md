@@ -9,94 +9,37 @@ Authority and its evidence artifacts.
 
 ## Current phase
 
-**Pre-training reliability/storage closeout plus current-main deployment proof gate.**
-The release-pipeline prerequisites are merged, Control Center truth/performance
-hardening is merged, and two upstream reliability tasks are active before the
-formal long-run training GO/NO-GO gate.
+**Pre-training reliability/storage closeout plus current-main deployment proof gate.** The tracked
+reliability workstream is execution-gated before the formal long-run training GO/NO-GO gate.
 
-Nomad POC/shadow remain non-Production. `CONTROL_CENTER_NOMAD_CUTOVER` is
-VERIFIED from immutable `b1e1894`; Nomad owns ControlCenter. Stopped WinSW is
-rollback only; retirement separately needs approval. Recorder ownership is
-unchanged. Detail is indexed in
-`docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md`.
-
-## Completed foundations
-
-- protected-main governance;
-- Research Data Authority and `/api/research-data`;
-- runtime ownership design;
-- Terminal V3;
-- HOT/COLD archive foundation;
-- full Skills/context system implementation;
-- auditable SHA-pinned release/rollback pipeline including first-deploy legacy
-  rollback bootstrap compatibility (PR #45 + PR #46);
-- NIGHT-001 H2 materialization/readiness boundary and bounded real H2 snapshot
-  acquisition path (PR #47 + PR #48);
-- Control Center truth, polling, and archive-observability hardening (PR #49).
+ControlCenter current truth is `docs/project-brain/capabilities/control-center.md`; completed
+foundation evidence is the `PROJECT_PROGRESS.md` ledger.
 
 ## Workstream orientation
 
 | Area | State | Authoritative source |
 | --- | --- | --- |
-| Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
+| Kalshi WS / DataGap reliability | **TRACKED / EXECUTION_GATED** | `WS-RESYNC-001 + GAP-002`; dependency-closure audit, critical-path prerequisite stabilization, and frozen baseline are required before direct execution. |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
-| Nomad secure migration | **VERIFIED / Nomad ControlCenter owner; WinSW rollback retained** | `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md` |
+| Nomad secure migration | **VERIFIED** | `docs/project-brain/capabilities/control-center.md` |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
 | Hard Risk / Production writes | Human-authorized only | `PROJECT_CHARTER.md`, `AGENTS.md` |
 
-## Current runtime and research limits
+## Current limits
 
-- The last bounded read-only runtime receipt showed all three WinSW services
-  running; Recorder was 10/10 synchronized with zero sequence gaps and no fatal
-  task, with an honest exact-WTI/Pyth feed-local degradation. That receipt does
-  not prove the newly merged protected-main code is deployed.
-- `MERGED != DEPLOYED` and `DEPLOYED != VERIFIED`. PR #46 and PR #49 are merged
-  code only; no current-main deployment claim is made here.
-- `H2-TRAIN-003` is not an independent active development lane. Its previous
-  BLOCKED result exposed a Kalshi WS/DataGap authority problem; the real H2
-  revalidation is now an acceptance step inside `WS-RESYNC-001 + GAP-002`.
-- H2 capability remains granular. Real snapshot readiness, snapshot-sequence
-  readiness, delta/tick readiness, and each microstructure model family remain
-  independently gated. DepthFeed HTTP 402 plan restrictions must not be hidden.
-- `ST-005` is not resolved merely because UI-013 can display catch-up state. It
-  still requires measured throughput/catch-up evidence and a valid 60-minute
-  proof with Recorder safety intact.
-- The first actual ControlCenter cutover is VERIFIED: Maker, Checker, and CI
-  passed. WinSW remains rollback only; Recorder ownership is unchanged and this
-  does not authorize or imply a Recorder migration. Detail:
-  `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md`.
-- `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
-  **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
-  frozen-holdout rows and was stopped immediately. The former `UNREVEALED`
-  status is invalid; no exposed content informed WS/GAP/H2 implementation,
-  test thresholds, parameters, or code changes. Do not reopen the holdout to
-  measure scope. A separate contamination-remediation/replacement decision is
-  required before `TRN-001`. **PRODUCTION WRITES 0.**
+`MERGED != DEPLOYED`; `DEPLOYED != VERIFIED`. `WS-RESYNC-001 + GAP-002` remains tracked but
+direct execution awaits the dependency-closure audit, critical-path prerequisite stabilization,
+and GAP002 frozen baseline; `GAP002_DEPENDENCY_AUDIT_EXECUTED = NO`. Detail is recursively routed
+through `capabilities/README.md`, not duplicated here.
 
-## Immediate sequence
+## Current execution route
 
-1. complete `WS-RESYNC-001 + GAP-002`, including precise dirty-interval closure,
-   self-healing snapshot recovery, clean-segment authority, and the bounded real
-   H2 revalidation inside that task;
-2. complete `ST-005` archive/purge throughput recovery and valid 60-minute
-   catch-up proof; these two tasks may proceed independently and in parallel;
-3. retain ControlCenter's WinSW rollback definition while Nomad owns its
-   lifecycle; do not retire it without separate approval;
-4. reconcile/merge those tasks onto the then-current protected main;
-5. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is
-   READY may a separate explicit human approval authorize deployment/restart and
-   bounded runtime proof;
-6. complete the separate holdout-contamination remediation/replacement decision
-   without reopening the frozen holdout;
-7. run `TRN-001 LONG_RUN_TRAINING_FINAL_GO_NO_GO` only after that decision;
-8. start formal overnight training only after explicit `TRAINING_GO`.
-
-Validated H2 is additive authority: formal research may use H0 + H1 + validated
-H2. An H2 capability that remains unvalidated or plan-restricted must be excluded
-rather than fabricated; it does not automatically invalidate unrelated model
-families that have sufficient authorized evidence.
+The approved sequence, GAP002 dual-lane strategy, and later gates are owned by
+`docs/project-brain/plan/current-roadmap.md`. Capability detail is routed by
+`docs/project-brain/capabilities/README.md`; execution constraints by
+`docs/project-brain/constraints/README.md`.
 
 ## Update policy
 
