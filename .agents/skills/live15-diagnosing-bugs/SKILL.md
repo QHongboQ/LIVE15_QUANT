@@ -8,11 +8,20 @@ description: Disciplined diagnosis for LIVE15 bugs and performance regressions.
 Read `AGENTS.md` and the relevant domain docs first. Preserve fail-closed semantics and never log
 secrets.
 
-## Upstream Reuse First — mandatory
+## Route by ownership and replacement
 
-For every non-trivial bug, regression, platform incompatibility, or missing generic capability,
-**search upstream before inventing a LIVE15 fix**. Use the exact exception/error text, API name,
-platform/runtime version, and dependency version where possible.
+Start with the least-cost owner. Reuse an existing project capability when it already owns the
+behavior. When an approved upstream replacement is selected, execute its bounded reversible path
+and observe it before debugging the retiring layer. A simple reversible execution may be the
+fastest way to expose the concrete failure; diagnose only failures that remain.
+
+Use the Upstream Reuse First search below when selecting an upstream path or considering a new local
+implementation. If a concrete failure shows that the selected owner is insufficient, consult only
+the targeted upstream evidence needed to resolve that failure. It is not an exhaustive precondition
+for replacement work whose owner is already decided. Use the exact exception/error text, API name,
+platform/runtime version, and dependency version where useful.
+
+### Upstream Reuse First search order
 
 Search in this order:
 
@@ -37,9 +46,11 @@ intended use.
 
 ## Diagnosis and repair
 
-After upstream research, build a deterministic feedback loop: reproduce the exact symptom, minimise
-the input, classify ownership (`LIVE15`, third-party, configuration, environment/operator, test,
-data, or upstream platform), rank falsifiable hypotheses, and instrument one boundary at a time.
+For a genuine remaining defect in authoritative LIVE15 code, build a deterministic feedback loop:
+reproduce the exact symptom, minimise the input, classify ownership (`LIVE15`, third-party,
+configuration, environment/operator, test, data, or upstream platform), rank falsifiable hypotheses,
+and instrument one boundary at a time. These full diagnosis phases are not required for machinery
+already approved for replacement.
 
 If the cause is an operator/test invocation error, correct the operation; do not weaken product code
 to accommodate the mistake.
@@ -49,6 +60,7 @@ consistent change. Prefer an existing shared primitive or upstream abstraction o
 case. If a proposed fix would add a third/fourth mode, duplicated transition path, or nested patch
 pile, stop patching and refactor/reuse the mature abstraction instead.
 
-Then run targeted checks, the relevant broader suite, Independent Checker, and CI. A fix is not
-complete if it only makes the new test green while increasing duplicated logic or contradictory
-invariants.
+Then run targeted checks, the relevant broader suite, Independent Checker, and CI as the task
+requires. Checker findings are validation feedback within the original acceptance boundary:
+record or defer an out-of-scope finding instead of expanding the task. A fix is not complete if it
+only makes the new test green while increasing duplicated logic or contradictory invariants.

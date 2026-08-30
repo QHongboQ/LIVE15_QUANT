@@ -12,9 +12,10 @@ recursively and read one necessary child at a time—do not scan the repository.
   authority before action. Safety and human gates never yield to token efficiency.
 - Protected `main` work uses an isolated `agent/<task-id>` branch, Maker, independent Checker,
   push, PR, and green CI; never bypass protection or push directly to `main`.
-- **Upstream Reuse First is mandatory.** Local invention is last-last-last; platform-owned
-  permission/lifecycle/deploy behavior stops at the environment/operator gate rather than growing
-  LIVE15 machinery.
+- **Upstream Reuse First is mandatory before new local implementation.** Reuse an existing
+  capability or approved upstream replacement first; for platform-owned permission/lifecycle/
+  deploy behavior, execute the bounded native path and observe before diagnosing or adding LIVE15
+  machinery.
 
 ## Need → read next
 
