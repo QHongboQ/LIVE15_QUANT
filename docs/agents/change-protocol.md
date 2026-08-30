@@ -21,6 +21,12 @@ Every coding task should make its boundary explicit before editing:
 7. Review the diff and secret/data boundary.
 8. Report facts, changed files, checks, blockers, and rollback/next steps.
 
+The standing authority for ordinary repo-local engineering fixes and maintenance permits change and
+merge only after the required upstream review, regression coverage, Maker/Checker validation, and
+green CI. It never extends to elevated-review zones, Production trading writes, holdout access,
+training/promotion gates, Hard Risk changes, or irreversible policy changes; those retain their
+explicit human authority.
+
 For behavioral changes, follow:
 
 ```text
@@ -61,6 +67,12 @@ an equivalent subsystem locally. "The operator action cannot be performed in thi
 not mean "the upstream solution cannot be prepared in this task": continue preparing the standard
 configuration, artifact, jobspec, install plan, validation, and bounded operator step until the
 specific unauthorized mutation is reached.
+
+Search with exact observed error text, API/function names, OS/runtime/dependency versions, and
+topology. When a suitable mature implementation exists, reuse priority is
+`dependency -> pinned dependency/fork -> vendored upstream module -> narrow attributed port -> local reimplementation`.
+Respect licenses and attribution. Repeated special-case patching is not a substitute for reuse or
+consolidation around the shared/upstream abstraction.
 
 Before finalizing `environment/operator/installation`, record:
 
@@ -124,6 +136,10 @@ requirement. Tracking: `GOV-PLATFORM-REUSE-001` / GitHub issue #88 and
 Before issuing a copy-ready LIVE15 Codex task, consult the current Git Project Brain for the
 relevant task. Durable project rules should be recovered from Git rather than asking the user to
 re-paste them. Then state the selected model and reasoning level explicitly in the prompt.
+
+Use `setup-matt-pocock-skills` only to change the configured workflow. Do not create a competing
+project instruction system or copy full project history into another Markdown file, and do not load
+every skill, ADR, or domain document at session start; follow the selected pointer instead.
 
 ### Lossless Project Brain size discipline
 

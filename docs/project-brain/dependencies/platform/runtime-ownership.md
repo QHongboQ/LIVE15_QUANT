@@ -9,7 +9,8 @@ Maps process/service ownership, health truth, and restart authority.
 
 ## Current truth
 
-`deploy/windows/runtime-ownership.json` remains the machine-readable authority. ControlCenter is Nomad-managed; Recorder and RuntimeSupervisor retain their separately owned boundaries.
+`deploy/windows/runtime-ownership.json` remains the machine-readable authority. ControlCenter is
+Nomad-managed; Recorder and RuntimeSupervisor retain their separately owned boundaries.
 
 ## Interfaces / dependencies
 
@@ -17,7 +18,7 @@ Maps process/service ownership, health truth, and restart authority.
 
 ## Read next
 
-Use `capabilities/control-center.md` or `capabilities/recorder.md` for component context.
+Use `../../capabilities/control-center.md` or `../../capabilities/records/recorder/truth.md` for component context.
 
 ## Update rule
 
@@ -27,4 +28,4 @@ Update only when ownership topology changes; change the JSON authority first whe
 
 | Revision | Task / PR | Change |
 | --- | --- | --- |
-| R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 authority baseline. |
+| R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 authority baseline, moved without semantic change. |

@@ -9,7 +9,8 @@ Routes package/module dependencies separately from data flow and runtime ownersh
 
 ## Current truth
 
-Pinned external packages and their LIVE15 adapter boundary are owned by manifests and `docs/kalshi_native_architecture.md`; this leaf does not duplicate package inventories.
+Pinned external packages and their LIVE15 adapter boundary are owned by manifests and
+`docs/kalshi_native_architecture.md`; this leaf does not duplicate package inventories.
 
 ## Architecture boundary
 
@@ -34,7 +35,7 @@ is SDK-authoritative; the legacy WebSocket is `LEGACY_ROLLBACK_ONLY`.
 
 ## Read next
 
-Use `gap002-closure.md` only for a future task-specific closure.
+Use `../gap002-closure.md` only for a future task-specific closure.
 
 ## Update rule
 
@@ -45,4 +46,4 @@ Update only when dependency routing authority changes.
 | Revision | Task / PR | Change |
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 dependency routing baseline. |
-| R2 | PROJECT-BRAIN-V2-MERGE-GATE-FINAL | Moved architecture/ownership detail out of always entry. |
+| R2 | PROJECT-BRAIN-V2-MERGE-GATE-FINAL | Moved architecture/ownership detail to its narrow authority. |

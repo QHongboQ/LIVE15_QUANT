@@ -1,13 +1,11 @@
 # Dependencies and topology
 
-**Role:** INDEX. Separate software/module dependencies, data flow, runtime ownership, and task closures.
+**Role:** INDEX. Choose one dependency branch; do not load neighboring topology by default.
 
-| Need | Authority |
+| Need | Read next |
 | --- | --- |
-| software/module dependencies | `software-modules.md` |
+| software modules or runtime/service ownership | `platform/README.md` |
 | data flow | `docs/kalshi_native_architecture.md` |
-| runtime ownership | `runtime-ownership.md` |
-| service/process ownership | `deploy/windows/runtime-ownership.json`, then `runtime-ownership.md` |
 | GAP002 future dependency closure | `gap002-closure.md` |
 
 ## Update rule
@@ -19,3 +17,4 @@ Change only when an authority category changes.
 | Revision | Task / PR | Change |
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 dependency routing baseline. |
+| R2 | PROJECT-BRAIN-V2-RECURSIVE-HIERARCHY-001 | Split platform topology from task closure. |

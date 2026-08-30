@@ -11,7 +11,7 @@ def read(relative_path: str) -> str:
 
 
 def estimated_tokens(text: str) -> int:
-    """Use a conservative four-UTF-8-bytes-per-token compact-context estimate."""
+    """Conservative, dependency-free estimate: one token per four UTF-8 bytes."""
     return math.ceil(len(text.encode("utf-8")) / 4)
 
 
@@ -19,36 +19,20 @@ def route_estimated_tokens(*relative_paths: str) -> int:
     return sum(estimated_tokens(read(path)) for path in relative_paths)
 
 
-def test_project_brain_v2_uses_intent_based_always_entry() -> None:
+def test_top_level_agent_and_root_are_compact_recursive_indexes() -> None:
     agents = read("AGENTS.md")
-    router = read("docs/project-brain/README.md")
+    root = read("docs/project-brain/README.md")
 
+    assert "**Role:** TOP-LEVEL INDEX." in agents
+    assert "Git/repo Project Brain is durable; chat history is not." in agents
     assert "ALWAYS-ENTRY" in agents
-    assert "docs/project-brain/README.md" in agents
-    assert "fixed five-document bootstrap" not in agents
-    for intent in (
-        "strategy/permanent authority",
-        "vocabulary",
-        "current overall state",
-        "task/status ledger",
-        "what a feature does",
-        "what depends on what / ownership / topology",
-        "what we plan to do",
-        "what constraints apply to executing work",
-        "durable architecture decisions",
-        "bugs/regressions",
-        "audit receipts",
-    ):
-        assert intent in router
-
-    always_entry = (
-        "AGENTS.md",
-        "docs/project-brain/README.md",
-    )
-    assert route_estimated_tokens(*always_entry) <= 5_000
+    assert estimated_tokens(agents) <= 1_250
+    assert "**Role:** INDEX." in root
+    assert "Each index is recursive" in root
+    assert "Git commits and PRs are canonical history" in root
 
 
-def test_project_brain_v2_route_budgets_use_the_estimated_token_split_threshold() -> None:
+def test_real_recursive_routes_meet_conservative_budget_targets() -> None:
     routes = {
         "planning": (
             "AGENTS.md",
@@ -60,142 +44,163 @@ def test_project_brain_v2_route_budgets_use_the_estimated_token_split_threshold(
             "AGENTS.md",
             "docs/project-brain/README.md",
             "docs/project-brain/capabilities/README.md",
-            "docs/project-brain/capabilities/reliability.md",
+            "docs/project-brain/capabilities/records/README.md",
+            "docs/project-brain/capabilities/records/recorder/README.md",
+            "docs/project-brain/capabilities/records/recorder/truth.md",
+        ),
+        "dependency": (
+            "AGENTS.md",
+            "docs/project-brain/README.md",
+            "docs/project-brain/dependencies/README.md",
+            "docs/project-brain/dependencies/platform/README.md",
+            "docs/project-brain/dependencies/platform/runtime-ownership.md",
         ),
         "execution": (
             "AGENTS.md",
             "docs/project-brain/README.md",
             "CURRENT_STATE.md",
             "docs/project-brain/constraints/README.md",
-            "docs/project-brain/constraints/parallel-development.md",
+            "docs/project-brain/constraints/execution/README.md",
+            "docs/project-brain/constraints/execution/parallel-development.md",
         ),
-        "high-risk execution": (
+        "high-risk Recorder execution": (
             "AGENTS.md",
             "docs/project-brain/README.md",
             "CURRENT_STATE.md",
             "PROJECT_CHARTER.md",
             "docs/project-brain/capabilities/README.md",
-            "docs/project-brain/capabilities/recorder.md",
+            "docs/project-brain/capabilities/records/README.md",
+            "docs/project-brain/capabilities/records/recorder/README.md",
+            "docs/project-brain/capabilities/records/recorder/truth.md",
             "docs/project-brain/constraints/README.md",
-            "docs/project-brain/constraints/parallel-development.md",
+            "docs/project-brain/constraints/execution/README.md",
+            "docs/project-brain/constraints/execution/parallel-development.md",
         ),
     }
 
-    for route in routes.values():
-        assert route_estimated_tokens(*route) <= 5_000
+    for name in ("planning", "capability", "dependency", "execution"):
+        assert route_estimated_tokens(*routes[name]) <= 3_500
 
-    inventory = read("docs/project-brain/V2_MIGRATION_INVENTORY_001.md")
-    assert "No durable fact was deleted" in inventory
-
-    assert {
-        "AGENTS.md",
-        "docs/project-brain/README.md",
-        "CURRENT_STATE.md",
-        "docs/project-brain/constraints/README.md",
-        "docs/project-brain/constraints/parallel-development.md",
-    } <= set(routes["execution"])
-    assert {
-        "AGENTS.md",
-        "docs/project-brain/README.md",
-        "CURRENT_STATE.md",
-        "PROJECT_CHARTER.md",
-        "docs/project-brain/capabilities/README.md",
-        "docs/project-brain/capabilities/recorder.md",
-        "docs/project-brain/constraints/README.md",
-        "docs/project-brain/constraints/parallel-development.md",
-    } <= set(routes["high-risk execution"])
+    high_risk_budget = route_estimated_tokens(*routes["high-risk Recorder execution"])
+    assert high_risk_budget <= 3_800
+    assert high_risk_budget <= 5_000
+    assert "PROJECT_CHARTER.md" in routes["high-risk Recorder execution"]
 
 
-def test_project_brain_v2_indexes_and_authority_leaves_are_reachable() -> None:
-    expected = (
+def test_recursive_indexes_are_reachable_compact_and_fact_free() -> None:
+    indexes = (
         "README.md",
         "capabilities/README.md",
+        "capabilities/records/README.md",
+        "capabilities/records/recorder/README.md",
+        "capabilities/model-governance/README.md",
+        "dependencies/README.md",
+        "dependencies/platform/README.md",
+        "constraints/README.md",
+        "constraints/execution/README.md",
+        "plan/README.md",
+        "status/README.md",
+    )
+    for relative_path in indexes:
+        text = (BRAIN / relative_path).read_text(encoding="utf-8")
+        assert "**Role:** INDEX." in text
+        assert "## Update rule" in text
+        assert "## Change log" in text
+        assert "## Current truth" not in text
+        assert len(text.split()) <= 180
+
+    for intermediate in (
+        "capabilities/records/README.md",
+        "capabilities/records/recorder/README.md",
+        "capabilities/model-governance/README.md",
+        "dependencies/platform/README.md",
+        "constraints/execution/README.md",
+    ):
+        assert read(f"docs/project-brain/{intermediate}").count(".md`") >= 2
+
+    assert "records/README.md" in read("docs/project-brain/capabilities/README.md")
+    assert "recorder/README.md" in read("docs/project-brain/capabilities/records/README.md")
+    assert "truth.md" in read("docs/project-brain/capabilities/records/recorder/README.md")
+    for removed_flat_leaf in (
         "capabilities/recorder.md",
-        "capabilities/control-center.md",
         "capabilities/reliability.md",
         "capabilities/research-data.md",
         "capabilities/training-and-models.md",
-        "dependencies/README.md",
-        "dependencies/runtime-ownership.md",
         "dependencies/software-modules.md",
-        "dependencies/gap002-closure.md",
-        "plan/README.md",
-        "plan/current-roadmap.md",
-        "constraints/README.md",
+        "dependencies/runtime-ownership.md",
         "constraints/parallel-development.md",
         "constraints/runtime-upstream-boundary.md",
-        "status/README.md",
-        "status/task-closeout.md",
-    )
-    for relative_path in expected:
-        assert (BRAIN / relative_path).is_file()
-
-    for relative_path in expected[2:]:
-        text = (BRAIN / relative_path).read_text(encoding="utf-8")
-        assert "## Update rule" in text
-        assert "## Change log" in text
+    ):
+        assert not (BRAIN / removed_flat_leaf).exists()
 
 
-def test_plan_owns_current_execution_sequence_and_gap002_dual_lane_strategy() -> None:
+def test_authority_leaves_preserve_moved_current_truth() -> None:
+    control_center = read("docs/project-brain/capabilities/control-center.md")
+    recorder_truth = read("docs/project-brain/capabilities/records/recorder/truth.md")
+    throughput = read("docs/project-brain/capabilities/records/recorder/throughput-proof.md")
+    reliability = read("docs/project-brain/capabilities/records/reliability.md")
+    research = read("docs/project-brain/capabilities/records/research-data.md")
+    validation = read("docs/project-brain/capabilities/model-governance/data-and-validation.md")
+    training = read("docs/project-brain/capabilities/model-governance/training-and-promotion.md")
+    software = read("docs/project-brain/dependencies/platform/software-modules.md")
+    runtime = read("docs/project-brain/dependencies/platform/runtime-ownership.md")
+    boundary = read("docs/project-brain/constraints/execution/runtime-upstream-boundary.md")
+    legacy_receipt = read("docs/project-brain/status/legacy-runtime-receipt.md")
+
+    assert "CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED" in control_center
+    assert "rollback only" in control_center
+    assert "does not authorize a Recorder migration" in control_center
+    assert "Recorder ownership is unchanged" in recorder_truth
+    assert "ST-005" in throughput and "60-minute proof" in throughput
+    assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = NO" in reliability
+    assert "Research coverage comes from the typed" in research
+    assert "Only Kalshi finalized settlement" in validation and "fails closed" in validation
+    assert "NO TRAINING_GO" in training and "NO TRAINING_STARTED" in training
+    assert "Holdout-contamination remediation/replacement" in training
+    assert "KalshiGateway / immutable adapter" in software
+    assert "ControlCenter is\nNomad-managed" in runtime
+    assert "Production writes remain disabled" in boundary
+    assert "all three WinSW services running" in legacy_receipt
+    assert "no current-main deployment claim" in legacy_receipt
+
+
+def test_current_roadmap_remains_the_only_sequence_authority() -> None:
     state = read("CURRENT_STATE.md")
     roadmap = read("docs/project-brain/plan/current-roadmap.md")
     progress = read("PROJECT_PROGRESS.md")
-    reliability = read("docs/project-brain/capabilities/reliability.md")
+    reliability = read("docs/project-brain/capabilities/records/reliability.md")
 
     assert "## Immediate sequence" not in state
-    assert "current-roadmap.md" in state
-    assert "GAP002 dependency-closure audit" in roadmap
-    assert "PHASE 4A" in roadmap
-    assert "PHASE 4B — IN PARALLEL" in roadmap
-    assert "OUT_OF_GAP002_PATH" in roadmap
-    assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = NO" in roadmap
-    assert "current-roadmap.md" in progress
+    assert "current-roadmap.md" in state and "current-roadmap.md" in progress
+    for expected in (
+        "GAP002 dependency-closure audit",
+        "PHASE 4A",
+        "PHASE 4B — IN PARALLEL",
+        "OUT_OF_GAP002_PATH",
+        "GAP002_DEPENDENCY_AUDIT_EXECUTED = NO",
+    ):
+        assert expected in roadmap
     for text in (state, reliability):
         assert "dependency-closure audit" in text
         assert "critical-path prerequisite stabilization" in text
-        assert "frozen baseline" in text
+        assert "frozen" in text and "baseline" in text
         assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = NO" in text
 
 
-def test_progress_history_and_agent_architecture_use_current_v2_authority() -> None:
-    agents = read("AGENTS.md")
+def test_progress_history_and_inventory_preserve_lossless_v2_migration() -> None:
     progress = read("PROJECT_PROGRESS.md")
+    inventory = read("docs/project-brain/V2_MIGRATION_INVENTORY_001.md")
 
-    assert "single-context documentation layout" not in agents
-    assert "hierarchical Project Brain pointer architecture" in agents
     assert "Project Brain V2 migration baseline was `c557d52`" in progress
-    assert (
-        "Always resolve current\n  `origin/main` at task start; no fixed SHA is current authority"
-        in progress
-    )
-    assert "Current base authority is `origin/main`" not in progress
+    assert "no fixed SHA is current authority" in progress
     assert "Git commits and PRs are canonical history" in progress
-    assert "legacy evidence/task detail" in progress
-
-
-def test_lossless_context_migration_keeps_current_safety_and_runtime_truth() -> None:
-    state = read("CURRENT_STATE.md")
-    recorder = read("docs/project-brain/capabilities/recorder.md")
-    control_center = read("docs/project-brain/capabilities/control-center.md")
-    training = read("docs/project-brain/capabilities/training-and-models.md")
-    research_data = read("docs/project-brain/capabilities/research-data.md")
-    software_modules = read("docs/project-brain/dependencies/software-modules.md")
-    task_closeout = read("docs/project-brain/status/task-closeout.md")
-    execution = read("docs/project-brain/constraints/runtime-upstream-boundary.md")
-
-    assert "CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED" in control_center
-    assert "Nomad" in control_center and "rollback only" in control_center
-    assert "Recorder ownership is unchanged" in control_center
-    assert "does not authorize a Recorder migration" in control_center
-    assert "ST-005" in recorder and "measured proof" in recorder
-    assert "NO TRAINING_GO" in training and "NO TRAINING_STARTED" in training
-    assert "holdout-contamination remediation/replacement" in training
-    assert "Production writes remain disabled" in execution
-    assert "MERGED != DEPLOYED" in state and "DEPLOYED != VERIFIED" in state
-    assert "KalshiGateway / immutable adapter" in software_modules
-    assert "Only Kalshi finalized settlement" in training
-    assert "Research coverage comes from the typed Research Data Authority" in research_data
-    assert "Before closing an important task" in task_closeout
+    assert "No durable fact was deleted" in inventory
+    assert "Mapping created before the recursive move" in inventory
+    assert "capabilities/records/recorder/truth.md" in inventory
+    assert "Git commits and PRs remain canonical history" in inventory
+    assert "status/legacy-runtime-receipt.md" in inventory
+    assert "completed foundation: Terminal V3 / HOT-COLD archive" in inventory
+    assert "docs/agents/skills-installation.md" in inventory
 
 
 def test_high_risk_routing_cannot_be_skipped_for_token_efficiency() -> None:
@@ -207,28 +212,26 @@ def test_high_risk_routing_cannot_be_skipped_for_token_efficiency() -> None:
         "Hard Risk",
         "training/promotion",
         "holdout",
-        "Recorder writes/gap/quarantine/resync",
+        "Recorder\n  writes/gap/quarantine/resync",
         "settlement labels",
         "deployment/restart",
     ):
         assert authority in agents
-    assert "Token efficiency may never bypass" in agents
+    assert "never yield to token efficiency" in agents
     assert "PROJECT_CHARTER.md" in constraints
 
 
-def test_router_skill_routes_categories_without_storing_project_facts() -> None:
+def test_router_skill_is_recursive_and_stores_no_project_facts() -> None:
     manifest = json.loads(read(".agents/skills-manifest.json"))
-    router_path = ROOT / ".agents" / "skills" / "live15-project-brain-router" / "SKILL.md"
-    router = router_path.read_text(encoding="utf-8")
+    router = read(".agents/skills/live15-project-brain-router/SKILL.md")
 
     assert "live15-project-brain-router" in manifest["installed_skills"]["model_invoked"]
-    assert "name: live15-project-brain-router" in router
-    assert "capabilities/README.md" in router
-    assert "dependencies/README.md" in router
-    assert "plan/README.md" in router
-    assert "constraints/README.md" in router
-    assert "Nomad owns ControlCenter" not in router
-    assert "NO TRAINING_GO" not in router
+    assert "first category" in router and "follow its pointers recursively" in router
+    assert "Do not hard-code a tree or\nproject facts" in router
+    assert "siblings by default" in router
+    assert "identified as high-risk by `AGENTS.md`" in router
+    for fact in ("Nomad owns ControlCenter", "NO TRAINING_GO", "kalshi-sdk==12.0.0"):
+        assert fact not in router
 
 
 def test_platform_blocker_requires_upstream_resolution_first() -> None:
@@ -243,7 +246,6 @@ def test_platform_blocker_requires_upstream_resolution_first() -> None:
         assert "STANDARD_UPSTREAM_PATH_FOUND = YES/NO" in text
         assert "UPSTREAM_RESOLUTION_EXHAUSTED = YES/NO" in text
         assert "BLOCKER_ALLOWED = YES/NO" in text
-
     assert "Local invention is a last-last-last fallback" in protocol
     assert "Custom LIVE15 behavior remains a\nlast-last-last option" in execution
 
@@ -284,8 +286,7 @@ def test_context_recovery_and_skill_provenance_remain_available() -> None:
         manifest["installed_skills"]["model_invoked"]
     )
     for name in required_names:
-        skill = read(f".agents/skills/{name}/SKILL.md")
-        assert f"name: {name}" in skill
+        assert f"name: {name}" in read(f".agents/skills/{name}/SKILL.md")
     for name in manifest["installed_skills"]["user_invoked"]:
         assert "disable-model-invocation: true" in read(f".agents/skills/{name}/SKILL.md")
     for relative_path in manifest["adaptation_preservation"].values():
@@ -300,27 +301,19 @@ def test_context_recovery_and_skill_provenance_remain_available() -> None:
         assert answer in simulation
 
 
-def test_lossless_inventory_and_task_time_official_source_safeguards_remain() -> None:
-    inventory = read("docs/project-brain/V2_MIGRATION_INVENTORY_001.md")
+def test_task_time_official_source_safeguards_remain() -> None:
     policy = read("docs/agents/runtime-official-source-policy.md")
     protocol = read("docs/agents/change-protocol.md")
+    execution = read("docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md")
 
-    assert "No durable fact was deleted" in inventory
-    assert "ControlCenter Nomad ownership" in inventory
-    assert "training/holdout gates" in inventory
     assert "split threshold" in protocol
     assert "runtime authority to be retrieved by the agent when the task is executed" in policy
     assert "PROMPT_COPIED_VENDOR_PROCEDURE_USED_AS_AUTHORITY = NO" in policy
-    assert "runtime-official-source-policy.md" in protocol
-    execution = read("docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md")
-    assert "runtime-official-source-policy.md" in execution
     assert "must not normally store a step-by-step copy or paraphrase" in policy
     assert "retrieve the current official instructions" in execution
-    for path in (
-        "docs/project-brain/capabilities/README.md",
-        "docs/project-brain/dependencies/README.md",
-        "docs/project-brain/plan/README.md",
-        "docs/project-brain/constraints/README.md",
-        "docs/project-brain/status/README.md",
-    ):
-        assert len(read(path).split()) <= 180
+    assert "standing authority for ordinary repo-local engineering" in protocol
+    assert "setup-matt-pocock-skills" in protocol
+    assert "competing\nproject instruction system" in protocol
+    assert "dependency -> pinned dependency/fork -> vendored upstream module" in protocol
+    assert "exact observed error text" in protocol
+    assert "Respect licenses and attribution" in protocol

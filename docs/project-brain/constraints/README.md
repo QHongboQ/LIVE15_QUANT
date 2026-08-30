@@ -2,10 +2,9 @@
 
 **Role:** INDEX. Permanent safety authority remains `AGENTS.md` and `PROJECT_CHARTER.md`.
 
-| Need | Authority |
+| Need | Read next |
 | --- | --- |
-| parallel GAP work and freeze | `parallel-development.md` |
-| runtime/upstream migration boundary | `runtime-upstream-boundary.md` |
+| parallel GAP work, freeze, runtime/upstream boundary | `execution/README.md` |
 | permanent human authority | `PROJECT_CHARTER.md` |
 
 ## Update rule
@@ -17,3 +16,4 @@ Change only when a distinct execution constraint gains an authority leaf.
 | Revision | Task / PR | Change |
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 constraint routing baseline. |
+| R2 | PROJECT-BRAIN-V2-RECURSIVE-HIERARCHY-001 | Grouped the two real execution constraints. |

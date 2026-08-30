@@ -13,11 +13,11 @@ The future audit classifies nodes as `ALREADY_UPSTREAM`, `MIGRATE_BEFORE_GAP`, `
 
 ## Interfaces / dependencies
 
-`capabilities/reliability.md`; `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; `plan/current-roadmap.md`.
+`capabilities/records/reliability.md`; `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; `plan/current-roadmap.md`.
 
 ## Read next
 
-Use `constraints/parallel-development.md` once the frozen surface is declared.
+Use `constraints/execution/parallel-development.md` once the frozen surface is declared.
 
 ## Update rule
 

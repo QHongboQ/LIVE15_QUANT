@@ -9,27 +9,11 @@ Authority and its evidence artifacts.
 
 ## Current phase
 
-**Pre-training reliability/storage closeout plus current-main deployment proof gate.**
-The release-pipeline prerequisites are merged, Control Center truth/performance
-hardening is merged, and the tracked reliability workstream is execution-gated
-before the formal long-run training GO/NO-GO gate.
+**Pre-training reliability/storage closeout plus current-main deployment proof gate.** The tracked
+reliability workstream is execution-gated before the formal long-run training GO/NO-GO gate.
 
-ControlCenter current truth and its migration boundary are owned by
-`docs/project-brain/capabilities/control-center.md`.
-
-## Completed foundations
-
-- protected-main governance;
-- Research Data Authority and `/api/research-data`;
-- runtime ownership design;
-- Terminal V3;
-- HOT/COLD archive foundation;
-- full Skills/context system implementation;
-- auditable SHA-pinned release/rollback pipeline including first-deploy legacy
-  rollback bootstrap compatibility (PR #45 + PR #46);
-- NIGHT-001 H2 materialization/readiness boundary and bounded real H2 snapshot
-  acquisition path (PR #47 + PR #48);
-- Control Center truth, polling, and archive-observability hardening (PR #49).
+ControlCenter current truth is `docs/project-brain/capabilities/control-center.md`; completed
+foundation evidence is the `PROJECT_PROGRESS.md` ledger.
 
 ## Workstream orientation
 
@@ -43,34 +27,12 @@ ControlCenter current truth and its migration boundary are owned by
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
 | Hard Risk / Production writes | Human-authorized only | `PROJECT_CHARTER.md`, `AGENTS.md` |
 
-## Current runtime and research limits
+## Current limits
 
-- The last bounded read-only runtime receipt showed all three WinSW services
-  running; Recorder was 10/10 synchronized with zero sequence gaps and no fatal
-  task, with an honest exact-WTI/Pyth feed-local degradation. That receipt does
-  not prove the newly merged protected-main code is deployed.
-- `MERGED != DEPLOYED` and `DEPLOYED != VERIFIED`. PR #46 and PR #49 are merged
-  code only; no current-main deployment claim is made here.
-- `H2-TRAIN-003` is not an independent active development lane. Its previous
-  BLOCKED result exposed a Kalshi WS/DataGap authority problem; the real H2
-  revalidation is now an acceptance step inside `WS-RESYNC-001 + GAP-002`.
-- `WS-RESYNC-001 + GAP-002` remains tracked, but direct execution is gated by
-  the dependency-closure audit, critical-path prerequisite stabilization, and
-  the GAP002 frozen baseline. `GAP002_DEPENDENCY_AUDIT_EXECUTED = NO`.
-- H2 capability remains granular. Real snapshot readiness, snapshot-sequence
-  readiness, delta/tick readiness, and each microstructure model family remain
-  independently gated. DepthFeed HTTP 402 plan restrictions must not be hidden.
-- `ST-005` is not resolved merely because UI-013 can display catch-up state. It
-  still requires measured throughput/catch-up evidence and a valid 60-minute
-  proof with Recorder safety intact.
-- ControlCenter migration current truth: `docs/project-brain/capabilities/control-center.md`.
-- `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
-  **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
-  frozen-holdout rows and was stopped immediately. The former `UNREVEALED`
-  status is invalid; no exposed content informed WS/GAP/H2 implementation,
-  test thresholds, parameters, or code changes. Do not reopen the holdout to
-  measure scope. A separate contamination-remediation/replacement decision is
-  required before `TRN-001`. **PRODUCTION WRITES 0.**
+`MERGED != DEPLOYED`; `DEPLOYED != VERIFIED`. `WS-RESYNC-001 + GAP-002` remains tracked but
+direct execution awaits the dependency-closure audit, critical-path prerequisite stabilization,
+and GAP002 frozen baseline; `GAP002_DEPENDENCY_AUDIT_EXECUTED = NO`. Detail is recursively routed
+through `capabilities/README.md`, not duplicated here.
 
 ## Current execution route
 

@@ -27,7 +27,7 @@ PHASE 6+ — continue relevant migration, `ST-005`, deployment proof, holdout re
 
 ## Interfaces / dependencies
 
-`dependencies/gap002-closure.md`; `constraints/parallel-development.md`; `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`.
+`dependencies/gap002-closure.md`; `constraints/execution/parallel-development.md`; `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`.
 
 ## Read next
 

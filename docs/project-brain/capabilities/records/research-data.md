@@ -9,14 +9,10 @@ The RDA defines authorized H0/H1/H2 research coverage and separation from immuta
 
 ## Current truth
 
-H0 is Recorder/verified archive, H1 official historical evidence, and H2 validated credentialed L2. ResearchUniverseSnapshot is not a Dataset v1/v2 partition.
-
-## Coverage and freshness invariant detail
-
-Research coverage comes from the typed Research Data Authority, never from a Dataset v1/v2
-partition. Keep decision-time feature freshness, development-history recency, and post-spec
-forward OOS freshness separate; a 15-minute horizon is not a two-day history limit. See
-`docs/research_data_authority.md`.
+H0 is Recorder/verified archive, H1 official historical evidence, and H2 validated credentialed L2.
+ResearchUniverseSnapshot is not a Dataset v1/v2 partition. Research coverage comes from the typed
+RDA: decision-time feature freshness, development-history recency, and post-spec forward OOS
+freshness remain separate; a 15-minute horizon is not a two-day history limit.
 
 ## Interfaces / dependencies
 
@@ -24,7 +20,7 @@ forward OOS freshness separate; a 15-minute horizon is not a two-day history lim
 
 ## Read next
 
-Use `training-and-models.md` for promotion and holdout gates.
+Use `../model-governance/README.md` for model validation, promotion, and holdout gates.
 
 ## Update rule
 

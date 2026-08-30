@@ -13,11 +13,11 @@ The read-oriented ControlCenter exposes truthful status and health projections.
 
 ## Interfaces / dependencies
 
-`docs/runtime_ownership_and_self_healing.md`; `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md`; `dependencies/runtime-ownership.md`.
+`docs/runtime_ownership_and_self_healing.md`; `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md`; `dependencies/platform/runtime-ownership.md`.
 
 ## Read next
 
-For current status use `status/README.md`; for retirement constraints use `constraints/runtime-upstream-boundary.md`.
+For current status use `status/README.md`; for retirement constraints use `constraints/execution/runtime-upstream-boundary.md`.
 
 ## Update rule
 
