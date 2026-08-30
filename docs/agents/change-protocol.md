@@ -64,8 +64,42 @@ requirement. Tracking: `GOV-PLATFORM-REUSE-001` / GitHub issue #88.
 Before issuing a copy-ready LIVE15 Codex task, consult the current Git Project Brain for the
 relevant task. Durable project rules should be recovered from Git rather than asking the user to
 re-paste them. Then state the selected model and reasoning level explicitly in the prompt.
-Selection is dynamic: choose the least expensive adequate model/reasoning level for the task's
-complexity, risk, context size, and expected token cost; escalate only when justified.
+
+Selection is dynamic and cost-aware. Choose the **model family first** and the **reasoning level
+second**. Do not treat Terra as a default and do not infer model strength from task importance
+alone. Use the least expensive adequate combination for the actual bounded step, then escalate only
+when evidence shows the current combination is insufficient.
+
+### Model-family ladder
+
+| Task shape | Preferred model |
+| --- | --- |
+| Deterministic formatting/lint, status checks, tiny docs, one- or two-line edits | **Luna** |
+| Single-file bug, explicit failing test, narrow configuration or small bounded fix | **Luna** |
+| Normal multi-file implementation, bounded bugfix with tests, routine PR work | **Terra** |
+| Cross-module debugging, migrations, compatibility or integration work | **Terra** |
+| Architecture, long-context synthesis, multi-system causal analysis, security/release audit | **Sol** |
+| High-risk irreversible decisions or complex Production/data/safety analysis | **Sol** |
+
+### Reasoning ladder
+
+- **Low:** deterministic operation with explicit expected output and little ambiguity.
+- **Medium:** normal engineering judgment, bounded investigation, or several interacting checks.
+- **High:** ambiguous root cause, cross-system reasoning, high-risk decisions, or long autonomous work.
+
+Typical combinations:
+
+- formatting/lint or a known one-line fix → `Luna / Low`;
+- single-file bug or small config repair → `Luna / Medium` (use High only if diagnosis is genuinely ambiguous);
+- normal multi-file feature/bugfix + tests/PR → `Terra / Medium`;
+- migration or cross-module compatibility diagnosis → `Terra / High`;
+- architecture/security/public-readiness design or broad causal analysis → `Sol / Medium`;
+- high-risk irreversible Production/data/safety decision → `Sol / High`.
+
+A workflow may legitimately change combinations between steps. For example, a security audit may
+use `Sol / Medium`, then a deterministic `.gitignore` edit may use `Luna / Low`. Do not keep an
+expensive model/reasoning level for mechanical follow-up work merely because the parent task was
+complex.
 
 If scope expands materially, the original acceptance signal disappears, or the failure is owned by
 a platform/upstream boundary outside LIVE15, stop and reassess. Do not keep patching through an
