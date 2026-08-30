@@ -175,7 +175,8 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
     for expected in (
         "PHASE 1 — COMPLETE",
         "PHASE 2 — COMPLETE / NO-OP",
-        "NEXT — PHASE 3",
+        "PHASE 3 — COMPLETE",
+        "NEXT — PHASE 4A",
         "PHASE 4A",
         "PHASE 4B — IN PARALLEL",
         "OUT_OF_GAP002_PATH",
@@ -186,15 +187,17 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
         assert "frozen" in normalized and "baseline" in normalized
 
 
-def test_gap002_closure_is_complete_without_declaring_the_phase3_baseline() -> None:
+def test_gap002_frozen_baseline_is_declared_without_executing_gap002() -> None:
     closure = read("docs/project-brain/dependencies/gap002-closure.md")
     evidence = read("docs/evidence/GAP002_DEPENDENCY_CLOSURE_DISCOVERY_001.md")
+    baseline = read("docs/evidence/GAP002_FROZEN_BASELINE_001.md")
 
     assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = YES" in closure
     assert "MIGRATE_BEFORE_GAP_SET = NONE" in closure
     assert "RECORDER_NOMAD_MIGRATION_BEFORE_GAP = NOT_REQUIRED" in evidence
     assert "RUNTIME_SUPERVISOR_MIGRATION_BEFORE_GAP = NOT_REQUIRED" in evidence
-    assert "PHASE3_RUNTIME_BASELINE = NOT_DECLARED" in evidence
+    assert "PHASE3_COMPLETE = YES" in baseline
+    assert "GAP002_EXECUTED = NO" in baseline
 
 
 def test_progress_history_and_inventory_preserve_lossless_v2_migration() -> None:

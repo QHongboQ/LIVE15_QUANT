@@ -13,9 +13,10 @@ PHASE 1 — COMPLETE: GAP002 dependency-closure audit (see `dependencies/gap002-
 
 PHASE 2 — COMPLETE / NO-OP: dependency closure found no generic critical-path migration required before GAP002; LIVE15 gap/data truth semantics remain local.
 
-NEXT — PHASE 3: establish the GAP002 frozen baseline and dependency surface.
+PHASE 3 — COMPLETE: GAP002 frozen baseline and dependency surface recorded in
+`docs/evidence/GAP002_FROZEN_BASELINE_001.md`.
 
-PHASE 4A — run `WS-RESYNC-001 + GAP-002` on that stabilized critical path.
+NEXT — PHASE 4A: run `WS-RESYNC-001 + GAP-002` on that stabilized critical path.
 
 PHASE 4B — IN PARALLEL, continue upstream replacement only for `OUT_OF_GAP002_PATH` work.
 
@@ -23,8 +24,7 @@ PHASE 5 — reconcile branches/results and release the GAP freeze.
 
 PHASE 6+ — continue relevant migration, `ST-005`, deployment proof, holdout remediation, and `TRN-001` under their existing gates.
 
-The parallel-isolation reserved surface is not a Phase-3 frozen runtime baseline. Direct GAP002
-execution is gated by Phase 3, not by an additional pre-GAP migration task.
+Phase 4A execution remains separately gated; this task did not execute GAP002.
 
 ## Interfaces / dependencies
 
@@ -44,3 +44,4 @@ Update only when an approved phase, freeze, or gate changes.
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | Recorded approved dual-lane GAP002 strategy. |
 | R2 | GAP002-DEPENDENCY-CLOSURE-AUDIT-001B | Marked Phase 1 complete; Phase 2 migration is complete/no-op; Phase 3 freeze remains pending. |
+| R3 | GAP002-FROZEN-BASELINE-001 | Completed Phase 3 and routed next action to Phase 4A; GAP002 not executed. |
