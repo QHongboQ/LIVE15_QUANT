@@ -14,10 +14,10 @@ The release-pipeline prerequisites are merged, Control Center truth/performance
 hardening is merged, and two upstream reliability tasks are active before the
 formal long-run training GO/NO-GO gate.
 
-The Nomad POC and read-only ControlCenter shadow are verified, non-Production.
-ControlCenter is running under Nomad from immutable `b1e1894`; bounded runtime
-acceptance passed and its stopped WinSW definition remains rollback. Final
-verification awaits Maker/Checker/CI. Detail is indexed in
+Nomad POC/shadow remain non-Production. `CONTROL_CENTER_NOMAD_CUTOVER` is
+VERIFIED from immutable `b1e1894`; Nomad owns ControlCenter. Stopped WinSW is
+rollback only; retirement separately needs approval. Recorder ownership is
+unchanged. Detail is indexed in
 `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md`.
 
 ## Completed foundations
@@ -40,7 +40,7 @@ verification awaits Maker/Checker/CI. Detail is indexed in
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **IN_PROGRESS** | `WS-RESYNC-001 + GAP-002`, current Kalshi protocol, Recorder evidence |
 | Archive/purge throughput | **IN_PROGRESS** | `ST-005`, retention manifests and bounded trend evidence |
-| Nomad secure migration | **RUNTIME_ACCEPTED / governance pending; Nomad owner and WinSW rollback retained** | `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md` |
+| Nomad secure migration | **VERIFIED / Nomad ControlCenter owner; WinSW rollback retained** | `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md` |
 | Production runtime closeout | **READY_FOR_PHASE_A_PREFLIGHT / HUMAN_GATE_PENDING_DEPLOYMENT_PROOF** | Current installed package, service health, and approved runtime evidence |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
@@ -63,10 +63,9 @@ verification awaits Maker/Checker/CI. Detail is indexed in
 - `ST-005` is not resolved merely because UI-013 can display catch-up state. It
   still requires measured throughput/catch-up evidence and a valid 60-minute
   proof with Recorder safety intact.
-- Nomad POC lifecycle evidence and the first actual ControlCenter cutover's
-  bounded runtime acceptance passed. Final repository verification remains
-  pending Maker, Checker, and CI. WinSW remains the rollback definition;
-  Recorder ownership is not inferred from this scope. Detail:
+- The first actual ControlCenter cutover is VERIFIED: Maker, Checker, and CI
+  passed. WinSW remains rollback only; Recorder ownership is unchanged and this
+  does not authorize or imply a Recorder migration. Detail:
   `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md`.
 - `LONG_RUN_TRAINING_FINAL_GO_NO_GO` has not run: **NO TRAINING_GO** and
   **NO TRAINING_STARTED**. A broad local artifact search accidentally displayed
