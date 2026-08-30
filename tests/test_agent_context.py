@@ -1,5 +1,5 @@
 import json
-import math
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,8 +11,8 @@ def read(relative_path: str) -> str:
 
 
 def estimated_tokens(text: str) -> int:
-    """Use a conservative, dependency-free estimate for compact-context routing."""
-    return math.ceil(len(text.encode("utf-8")) / 4)
+    """Estimate compact-context tokens without a tokenizer dependency."""
+    return len(re.findall(r"[A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)*|[^\w\s]", text))
 
 
 def route_estimated_tokens(*relative_paths: str) -> int:
@@ -65,16 +65,19 @@ def test_project_brain_v2_route_budgets_use_the_estimated_token_split_threshold(
         "execution": (
             "AGENTS.md",
             "docs/project-brain/README.md",
+            "CURRENT_STATE.md",
             "docs/project-brain/constraints/README.md",
             "docs/project-brain/constraints/parallel-development.md",
         ),
         "high-risk execution": (
             "AGENTS.md",
-            "PROJECT_CHARTER.md",
             "docs/project-brain/README.md",
+            "CURRENT_STATE.md",
+            "PROJECT_CHARTER.md",
             "docs/project-brain/capabilities/README.md",
             "docs/project-brain/capabilities/recorder.md",
             "docs/project-brain/constraints/README.md",
+            "docs/project-brain/constraints/parallel-development.md",
         ),
     }
 
