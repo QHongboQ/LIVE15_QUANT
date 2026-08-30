@@ -25,9 +25,9 @@ class NomadControlCenterShadowTest(unittest.TestCase):
         self.assertIn('job "live15-control-center-shadow"', jobspec)
         self.assertIn('provider = "nomad"', jobspec)
         self.assertIn('health_check      = "checks"', jobspec)
-        self.assertIn('auto_revert       = true', jobspec)
+        self.assertIn("auto_revert       = true", jobspec)
         self.assertIn('path     = "/_nomad/healthz"', jobspec)
-        self.assertIn('static       = 18081', jobspec)
+        self.assertIn("static       = 18081", jobspec)
         self.assertIn(artifact_hash, jobspec)
         self.assertIn(
             "deploy/nomad/control-center-shadow/live15-control-center-shadow.ps1 -text",
@@ -164,9 +164,7 @@ class NomadControlCenterShadowTest(unittest.TestCase):
     def _request(port: int, path: str, *, method: str = "GET") -> tuple[int, str]:
         with socket.create_connection(("127.0.0.1", port), timeout=2) as connection:
             request = (
-                f"{method} {path} HTTP/1.1\r\n"
-                "Host: 127.0.0.1\r\n"
-                "Connection: close\r\n\r\n"
+                f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
             ).encode("ascii")
             connection.sendall(request)
             response = bytearray()
