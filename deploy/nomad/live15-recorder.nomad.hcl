@@ -1,5 +1,5 @@
-# LIVE15Recorder lifecycle cutover preparation.
-# This file is declarative only; it is not submitted during PREP-002.
+# LIVE15 Recorder service job for a direct reversible cutover.
+# Declarative only; this PR does not submit or mutate Production.
 
 variable "recorder_runtime_python" {
   type        = string
