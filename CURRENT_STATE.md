@@ -14,9 +14,9 @@ The release-pipeline prerequisites are merged, Control Center truth/performance
 hardening is merged, and two upstream reliability tasks are active before the
 formal long-run training GO/NO-GO gate.
 
-The isolated Nomad POC is verified and the first read-only ControlCenter shadow
-is merged; both remain non-Production. The next bounded Nomad step is
-`NOMAD-CONTROL-CENTER-CUTOVER-PREP-001`; detail is indexed in
+The Nomad POC and read-only ControlCenter shadow are verified, non-Production.
+The ControlCenter runtime passed a Nomad preflight; cutover awaits an
+operator-installed immutable application artifact. Detail is indexed in
 `docs/project-brain/NOMAD_MIGRATION_STATUS_20260830.md`.
 
 ## Completed foundations
@@ -81,8 +81,8 @@ is merged; both remain non-Production. The next bounded Nomad step is
    H2 revalidation inside that task;
 2. complete `ST-005` archive/purge throughput recovery and valid 60-minute
    catch-up proof; these two tasks may proceed independently and in parallel;
-3. prepare `NOMAD-CONTROL-CENTER-CUTOVER-PREP-001`; preserve rollback and stop
-   before any service change or Production cutover;
+3. after its immutable artifact is installed, resume
+   `NOMAD-CONTROL-CENTER-CUTOVER-RESUME-001`; preserve rollback before cutover;
 4. reconcile/merge those tasks onto the then-current protected main;
 5. rerun `DEP-001` Phase A current-main **read-only preflight**; only if it is
    READY may a separate explicit human approval authorize deployment/restart and
