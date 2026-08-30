@@ -9,12 +9,17 @@ This bounded detail file preserves the current Nomad migration state without for
 - `NOMAD-AUTOMATION-FOUNDATION-001` merged in PR #86. The Nomad responsibility boundary, receipt contract, and upstream replacement matrix are durable architecture guidance.
 - `NOMAD-FIRST-WORKLOAD-SHADOW-001` merged in PR #91. The sealed read-only `LIVE15ControlCenter` shadow passed its hash/ACL boundary, Nomad allocation/health checks, Maker review, Independent Checker review, and CI. It remains non-Production evidence only.
 - The actual `LIVE15ControlCenter` runtime owner has not yet been changed. The tracked runtime ownership still points to `WinSW:LIVE15ControlCenter`; `MERGED != DEPLOYED != VERIFIED` continues to apply.
+- `NOMAD-CONTROL-CENTER-CUTOVER-001` performed its task-time official-source and host-runtime audit from clean protected source `4488331`. It is `BLOCKED` on one installation prerequisite: there is no Python runtime that is simultaneously non-user-writable, LocalService-readable/executable, and populated with the locked ControlCenter dependencies. The existing code-release pipeline remains reusable, but it packages code only; no service was changed. Full receipt: `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_001.md`.
 
 ## Next bounded Nomad task
 
-`NOMAD-CONTROL-CENTER-CUTOVER-PREP-001` is the next migration step.
+After the recorded installation prerequisite is satisfied, resume
+`NOMAD-CONTROL-CENTER-CUTOVER-001`; do not repeat the generic POC burn-in.
 
-Its purpose is to prepare, but not execute, the first real ownership migration of `LIVE15ControlCenter` from the current WinSW-owned lifecycle to `Windows SCM -> Nomad agent -> Nomad allocation -> LIVE15ControlCenter`.
+Its authorized purpose is to execute the first real ownership migration of
+`LIVE15ControlCenter` from the current WinSW-owned lifecycle to `Windows SCM ->
+Nomad agent -> Nomad allocation -> LIVE15ControlCenter`, with WinSW preserved
+as the verified rollback owner until bounded acceptance passes.
 
 The task must:
 
@@ -22,15 +27,16 @@ The task must:
 - inspect the real ControlCenter entrypoint, working directory, ports, environment, local-secret boundary, Recorder/data reads, health/status outputs, WinSW packaging, release identity, and rollback path;
 - keep Nomad/Windows SCM responsible for generic lifecycle, restart, health, update and revert behavior;
 - keep LIVE15 responsible for typed projections, domain truth and fail-closed semantics;
-- prepare exact source/artifact/jobspec identity and a bounded operator cutover/rollback plan;
+- build exact source/artifact/jobspec identity and execute the bounded reversible cutover/rollback plan;
 - identify which ControlCenter-specific legacy lifecycle machinery can be retired only after a later successful cutover plus bounded runtime proof;
-- stop before any service stop/restart, deployment, WinSW retirement, Recorder change, Production write, Hard Risk change, holdout access or training action.
+- stop before any Recorder change, Production write, Hard Risk change, holdout access or training action; do not mutate ACL/UAC/registry state or create local generic lifecycle machinery.
 
-A successful preparation task may conclude `READY_FOR_CONTROL_CENTER_CUTOVER = YES`, but it must still stop at the human deployment gate. Actual cutover belongs to a separate `NOMAD-CONTROL-CENTER-CUTOVER-001` task with explicit human authorization.
+A successful cutover task may conclude `CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED` only after bounded runtime acceptance, rollback preservation, Maker/Checker, and green CI.
 
 ## Indexed evidence
 
 - `docs/deployment/NOMAD_FIRST_WORKLOAD_SHADOW_001.md`
+- `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_001.md`
 - `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`
 - `docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md`
 - `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`
