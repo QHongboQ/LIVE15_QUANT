@@ -58,7 +58,8 @@ validation**, not a new LIVE15 subsystem.
 A platform-owned failure defaults to native/upstream remediation plus LIVE15 validation. When an
 approved replacement is selected, run that bounded reversible path first and observe it; do not
 pre-debug the retiring machinery. If a concrete failure remains, diagnose its owner and consult
-only the targeted upstream evidence needed. Perform the full Upstream Reuse First search below when
+only the targeted upstream evidence needed for the exact observed error text, API, or version.
+Perform the full Upstream Reuse First search below when
 selecting a new owner or considering a new local implementation:
 
 1. official documentation, release notes, migration guides and maintained examples;

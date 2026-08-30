@@ -284,20 +284,15 @@ def test_recursive_split_and_route_health_are_lossless_governance() -> None:
     assert "never delete durable information to meet a\nbudget" in protocol
 
 
-def test_platform_blocker_requires_upstream_resolution_first() -> None:
+def test_replacement_first_resolution_preserves_bounded_scope() -> None:
     protocol = read("docs/agents/change-protocol.md")
-    execution = read("docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md")
 
-    for text in (protocol, execution):
-        assert "UPSTREAM_OFFICIAL_DOCS = CHECKED" in text
-        assert "UPSTREAM_TUTORIALS_EXAMPLES = CHECKED" in text
-        assert "UPSTREAM_GITHUB_SOURCE_TESTS = CHECKED" in text
-        assert "UPSTREAM_GITHUB_ISSUES_PRS = CHECKED" in text
-        assert "STANDARD_UPSTREAM_PATH_FOUND = YES/NO" in text
-        assert "UPSTREAM_RESOLUTION_EXHAUSTED = YES/NO" in text
-        assert "BLOCKER_ALLOWED = YES/NO" in text
-    assert "Local invention is a last-last-last fallback" in protocol
-    assert "Custom LIVE15 behavior remains a\nlast-last-last option" in execution
+    assert "approved replacement is selected, run that bounded reversible path first and observe it" in protocol
+    assert "If a concrete failure remains, diagnose its owner" in protocol
+    assert "Perform the full Upstream Reuse First search below when\nselecting a new owner or considering a new local implementation" in protocol
+    assert "a Checker finding is validation feedback against the original task contract" in protocol
+    assert "it does not expand the task or become a blocker automatically" in protocol
+    assert "targeted upstream evidence needed for the exact observed error text, API, or version" in protocol
 
 
 def test_context_recovery_and_skill_provenance_remain_available() -> None:
