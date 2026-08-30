@@ -6,35 +6,14 @@ context; chat history is not.
 
 ## Architecture and ownership
 
-```text
-external kalshi-sdk==12.0.0
-  -> LIVE15 KalshiGateway / immutable adapter
-  -> Reliability
-  -> authoritative Recorder / RecorderStore
-  -> Materializer / Dataset / Paper
-  -> Model / Decision / Hard Risk / Execution / Control Center
-```
-
-The SDK owns Kalshi transport, authentication, typed subscriptions, SID routing,
-reconnect/resubscribe, and generic REST/order primitives. LIVE15 owns the domain boundary,
-15-minute universe/window identity, reliability and fail-closed policy, persistence, lifecycle
-and settlement semantics, features/datasets/models, Paper, Risk, and UI. The Recorder provider
-is SDK-authoritative; the legacy WebSocket is `LEGACY_ROLLBACK_ONLY`.
+Architecture/SDK ownership: `docs/project-brain/dependencies/software-modules.md`, then
+`docs/kalshi_native_architecture.md`.
 
 ## Data and model truth
 
-- Only Kalshi finalized settlement with an official `yes`/`no` result is terminal label truth.
-- Predictive feeds never manufacture settlement labels.
-- Decision inputs obey strict as-of timestamps; missing, stale, unsynchronized, or gapped data
-  fails closed. Do not forward-fill, interpolate, or use future rows.
-- Dataset v1 final test is frozen. Never tune vNext on it.
-- Use chronological/event-grouped validation, not random row splits. Do not add features without
-  an ablation. The current v2 baseline remains the baseline until fresh forward Challenger
-  evidence exists.
-- Research coverage comes from the typed Research Data Authority, never from a Dataset v1/v2
-  partition. Keep decision-time feature freshness, development-history recency, and post-spec
-  forward OOS freshness separate; a 15-minute horizon is not a two-day history limit. See
-  `docs/research_data_authority.md`.
+Labels, as-of/fail-closed inputs, frozen tests, validation, and promotion:
+`docs/project-brain/capabilities/training-and-models.md`. Research coverage and freshness:
+`docs/project-brain/capabilities/research-data.md`.
 
 ## Safety and high-risk zones
 
@@ -172,12 +151,4 @@ another Markdown file.
 
 ## Durable task closeout
 
-Before closing an important task, decide whether it changed durable project
-state. Record only the authority that changed: task status/result/next action
-in `PROJECT_PROGRESS.md`; whole-project phase in `CURRENT_STATE.md`; a durable
-bug in `BUG_REGISTRY.md`; a strategy or architecture decision in the charter or
-ADR; and vocabulary/routing in `CONTEXT.md`. User-facing Codex task specifications must explicitly
-state the selected model and reasoning level, chosen dynamically for the task's complexity, risk,
-and token cost; use the least expensive adequate setting rather than a fixed default. They should
-also state goal, authority, prohibitions, acceptance, validation, and return format. Use the mandatory
-Upstream Reuse First sequence in the relevant diagnosis skill before inventing a local fix.
+Task closeout and copy-ready task requirements: `docs/project-brain/status/task-closeout.md`.

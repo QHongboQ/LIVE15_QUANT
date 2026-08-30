@@ -10,8 +10,9 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 
 ## Current reconciliation basis
 
-- Current base authority is `origin/main` at `c557d52` (merged PR #103). Resolve
-  `origin/main` at task start. `MERGED != DEPLOYED` outside explicitly verified work.
+- Project Brain V2 migration baseline was `c557d52` (merged PR #103). Always resolve current
+  `origin/main` at task start; no fixed SHA is current authority. `MERGED != DEPLOYED` outside
+  explicitly verified work.
 - When an authority leaf selects dated evidence, use
   `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`,
   `docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_20260829.md`, or

@@ -4,6 +4,10 @@
 
 Read dated handoffs, deployment receipts, and progress detail only when the selected task pointer requires evidence.
 
+| Need | Authority |
+| --- | --- |
+| durable task closeout / copy-ready tasks | `task-closeout.md` |
+
 ## Update rule
 
 Change only when status authority routing changes.
@@ -13,3 +17,4 @@ Change only when status authority routing changes.
 | Revision | Task / PR | Change |
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 status routing baseline. |
+| R2 | PROJECT-BRAIN-V2-MERGE-GATE-FINAL | Routed durable task-closeout detail to its leaf. |

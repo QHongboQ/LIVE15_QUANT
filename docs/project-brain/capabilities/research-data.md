@@ -1,6 +1,6 @@
 # Research Data Authority
 
-Revision: R1
+Revision: R2
 Status: LIVE15-owned authority.
 
 ## What it is
@@ -10,6 +10,13 @@ The RDA defines authorized H0/H1/H2 research coverage and separation from immuta
 ## Current truth
 
 H0 is Recorder/verified archive, H1 official historical evidence, and H2 validated credentialed L2. ResearchUniverseSnapshot is not a Dataset v1/v2 partition.
+
+## Coverage and freshness invariant detail
+
+Research coverage comes from the typed Research Data Authority, never from a Dataset v1/v2
+partition. Keep decision-time feature freshness, development-history recency, and post-spec
+forward OOS freshness separate; a 15-minute horizon is not a two-day history limit. See
+`docs/research_data_authority.md`.
 
 ## Interfaces / dependencies
 
@@ -28,3 +35,4 @@ Update only for an RDA authority or source-registry decision.
 | Revision | Task / PR | Change |
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 authority baseline. |
+| R2 | PROJECT-BRAIN-V2-MERGE-GATE-FINAL | Moved RDA coverage/freshness detail out of always entry. |

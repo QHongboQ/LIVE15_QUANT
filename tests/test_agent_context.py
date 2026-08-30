@@ -1,5 +1,5 @@
 import json
-import re
+import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,8 +11,8 @@ def read(relative_path: str) -> str:
 
 
 def estimated_tokens(text: str) -> int:
-    """Estimate compact-context tokens without a tokenizer dependency."""
-    return len(re.findall(r"[A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)*|[^\w\s]", text))
+    """Use a conservative four-UTF-8-bytes-per-token compact-context estimate."""
+    return math.ceil(len(text.encode("utf-8")) / 4)
 
 
 def route_estimated_tokens(*relative_paths: str) -> int:
@@ -87,6 +87,24 @@ def test_project_brain_v2_route_budgets_use_the_estimated_token_split_threshold(
     inventory = read("docs/project-brain/V2_MIGRATION_INVENTORY_001.md")
     assert "No durable fact was deleted" in inventory
 
+    assert {
+        "AGENTS.md",
+        "docs/project-brain/README.md",
+        "CURRENT_STATE.md",
+        "docs/project-brain/constraints/README.md",
+        "docs/project-brain/constraints/parallel-development.md",
+    } <= set(routes["execution"])
+    assert {
+        "AGENTS.md",
+        "docs/project-brain/README.md",
+        "CURRENT_STATE.md",
+        "PROJECT_CHARTER.md",
+        "docs/project-brain/capabilities/README.md",
+        "docs/project-brain/capabilities/recorder.md",
+        "docs/project-brain/constraints/README.md",
+        "docs/project-brain/constraints/parallel-development.md",
+    } <= set(routes["high-risk execution"])
+
 
 def test_project_brain_v2_indexes_and_authority_leaves_are_reachable() -> None:
     expected = (
@@ -107,6 +125,7 @@ def test_project_brain_v2_indexes_and_authority_leaves_are_reachable() -> None:
         "constraints/parallel-development.md",
         "constraints/runtime-upstream-boundary.md",
         "status/README.md",
+        "status/task-closeout.md",
     )
     for relative_path in expected:
         assert (BRAIN / relative_path).is_file()
@@ -144,7 +163,12 @@ def test_progress_history_and_agent_architecture_use_current_v2_authority() -> N
 
     assert "single-context documentation layout" not in agents
     assert "hierarchical Project Brain pointer architecture" in agents
-    assert "c557d52" in progress and "PR #103" in progress
+    assert "Project Brain V2 migration baseline was `c557d52`" in progress
+    assert (
+        "Always resolve current\n  `origin/main` at task start; no fixed SHA is current authority"
+        in progress
+    )
+    assert "Current base authority is `origin/main`" not in progress
     assert "Git commits and PRs are canonical history" in progress
     assert "legacy evidence/task detail" in progress
 
@@ -154,6 +178,9 @@ def test_lossless_context_migration_keeps_current_safety_and_runtime_truth() -> 
     recorder = read("docs/project-brain/capabilities/recorder.md")
     control_center = read("docs/project-brain/capabilities/control-center.md")
     training = read("docs/project-brain/capabilities/training-and-models.md")
+    research_data = read("docs/project-brain/capabilities/research-data.md")
+    software_modules = read("docs/project-brain/dependencies/software-modules.md")
+    task_closeout = read("docs/project-brain/status/task-closeout.md")
     execution = read("docs/project-brain/constraints/runtime-upstream-boundary.md")
 
     assert "CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED" in control_center
@@ -165,6 +192,10 @@ def test_lossless_context_migration_keeps_current_safety_and_runtime_truth() -> 
     assert "holdout-contamination remediation/replacement" in training
     assert "Production writes remain disabled" in execution
     assert "MERGED != DEPLOYED" in state and "DEPLOYED != VERIFIED" in state
+    assert "KalshiGateway / immutable adapter" in software_modules
+    assert "Only Kalshi finalized settlement" in training
+    assert "Research coverage comes from the typed Research Data Authority" in research_data
+    assert "Before closing an important task" in task_closeout
 
 
 def test_high_risk_routing_cannot_be_skipped_for_token_efficiency() -> None:
