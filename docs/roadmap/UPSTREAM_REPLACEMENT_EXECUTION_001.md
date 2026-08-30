@@ -80,6 +80,14 @@ The agent must prefer **following the official tutorial/mechanism directly**
 over translating it into a new LIVE15 subsystem. Studying upstream and then
 rewriting equivalent behavior locally is not compliance.
 
+The concrete vendor procedure is **not** meant to be copied into Project Brain
+or pre-expanded into a permanent Codex recipe. At task execution time, the
+agent must retrieve the current official instructions and current official
+GitHub evidence itself, then derive the supported procedure from those sources.
+Project Brain should hold the routing rule, LIVE15 boundaries and acceptance
+criteria, not a stale external tutorial. Detailed policy:
+`docs/agents/runtime-official-source-policy.md`.
+
 A platform blocker is not allowed merely because the current checkout,
 installation, account, ACL, secret path, or service state cannot execute the
 official solution immediately. First determine whether the official/upstream
@@ -153,6 +161,8 @@ Each migration owns one bounded task, branch and PR. Review must ask:
   controllers?
 - Was the mandatory upstream-resolution gate completed before any blocker or
   local implementation decision?
+- Did the executing agent retrieve the current official procedure itself rather
+  than rely on a frozen Project Brain/prompt copy?
 - If a standard upstream path exists, did the task follow it as far as current
   authorization allows instead of stopping early or rewriting it locally?
 - Are measured requirements, hashes, health/evidence and rollback boundaries
