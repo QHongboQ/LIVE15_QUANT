@@ -33,6 +33,19 @@ def test_project_brain_has_compact_bootstrap_and_required_pointers() -> None:
         assert pointer in bootstrap
 
 
+def test_project_brain_budget_is_a_lossless_split_threshold() -> None:
+    protocol = (ROOT / "docs" / "agents" / "change-protocol.md").read_text(encoding="utf-8")
+    state = (ROOT / "CURRENT_STATE.md").read_text(encoding="utf-8")
+    progress = (ROOT / "PROJECT_PROGRESS.md").read_text(encoding="utf-8")
+    detail = ROOT / "docs" / "project-brain" / "NOMAD_MIGRATION_STATUS_20260830.md"
+
+    assert "split threshold" in protocol
+    assert "semantically compress" in protocol
+    assert detail.is_file()
+    assert "NOMAD_MIGRATION_STATUS_20260830.md" in state
+    assert "NOMAD_MIGRATION_STATUS_20260830.md" in progress
+
+
 def test_skills_manifest_exposes_required_upstream_workflow_and_preserves_adaptations() -> None:
     manifest = json.loads((ROOT / ".agents" / "skills-manifest.json").read_text(encoding="utf-8"))
 
