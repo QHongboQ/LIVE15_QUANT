@@ -26,7 +26,8 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | --- | --- | --- | --- |
 | WS-RESYNC-001 + GAP-002 | CLOSED / PASS | PR #117 preserves the first Production FAIL receipt; PR #120 preserves the merged second Production PASS receipt. | GAP002 is closed and has no further execution route. |
 | RECORDER_LIFECYCLE_TO_NOMAD | VERIFIED / COMPLETE | `docs/project-brain/capabilities/control-center.md`; `docs/project-brain/dependencies/platform/runtime-ownership.md` | Recorder Production lifecycle is Nomad-owned. |
-| PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | PR_OPEN / CONSOLIDATION_COMPLETE | PR #122 | This PR closes the authority-consolidation step; it does not perform an upstream replacement. |
+| PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | MERGED / CONSOLIDATION_COMPLETE | PR #122 | This is a Project Brain governance closeout; it did not perform an upstream replacement. |
+| RUNTIME-LIFECYCLE-CONSOLIDATION | COMPLETE / VERIFIED | `docs/project-brain/dependencies/platform/runtime-ownership.md`; PR #129 | Nomad + Windows SCM lifecycle replacement is adopted and Production verified; cold boot passed, RuntimeSupervisor and the managed `paper_forward` wrapper are retired, and dual owner is absent. |
 
 ## Superseded standalone work
 
@@ -48,7 +49,7 @@ runtime requires concrete incompatibility evidence.
 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
-| RUNTIME-LIFECYCLE-CONSOLIDATION | PLANNED / NEXT | Resolve the existing Nomad + Windows SCM owners, inventory remaining WinSW / RuntimeSupervisor generic responsibilities, then replace and verify only one selected responsibility before retiring its corresponding old owner. | Separate bounded task; no big-bang deletion or Production action |
+| WEB-APPLICATION-SHELL | PLANNED / NEXT | Select the bounded React Admin + Material UI candidate for generic routing, tables, loading/error handling, refresh plumbing, and theme/shell only. Preserve FastAPI typed domain API, Recorder/settlement/training truth, Hard Risk, and Production authorization. | Separate bounded task; no React Admin migration or Production action in this closeout |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
 
 ## Planning route

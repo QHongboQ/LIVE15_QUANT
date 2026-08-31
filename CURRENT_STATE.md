@@ -9,9 +9,11 @@ Authority and its evidence artifacts.
 
 ## Current phase
 
-**Upstream-consolidation freeze.** GAP002 is closed/pass. Normal feature/model expansion is paused
-while generic responsibilities are consolidated subtractively, one owner and one bounded
-replacement at a time. Training remains blocked by its existing gates.
+**Upstream-consolidation freeze.** GAP002 is closed/pass. Runtime/Lifecycle consolidation is
+**COMPLETE / VERIFIED**: Nomad + Windows SCM lifecycle replacement is adopted and Production
+verified, RuntimeSupervisor is retired, cold boot passed, and no dual owner remains. The next
+generic replacement class is **WEB APPLICATION SHELL**; training remains blocked by its existing
+gates.
 
 ControlCenter current truth is `docs/project-brain/capabilities/control-center.md`. Current task
 closeouts and gates are in `PROJECT_PROGRESS.md`; older completed-foundation history remains in
@@ -23,8 +25,10 @@ Git/PR history and the bounded evidence selected by current authorities.
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **CLOSED / PASS** | `PROJECT_PROGRESS.md`; detailed FAIL/PASS receipts remain evidence only |
 | Archive/purge throughput | **ON_DEMAND_MEASUREMENT** | The standalone ST-005 task is superseded; its bounded contract remains at `docs/project-brain/capabilities/records/recorder/throughput-proof.md` for later measured candidate decisions only |
-| Nomad runtime ownership | **VERIFIED** | `docs/project-brain/dependencies/platform/runtime-ownership.md` |
-| Generic infrastructure | **UPSTREAM_CONSOLIDATION** | `docs/project-brain/constraints/execution/runtime-upstream-boundary.md` |
+| Runtime/Lifecycle consolidation | **COMPLETE / VERIFIED** | `docs/project-brain/dependencies/platform/runtime-ownership.md` |
+| Nomad + Windows SCM lifecycle replacement | **ADOPTED / PRODUCTION VERIFIED** | `docs/project-brain/dependencies/platform/runtime-ownership.md` |
+| RuntimeSupervisor | **RETIRED** | Runtime authority; PR #129 |
+| Next generic replacement | **WEB APPLICATION SHELL / PLANNED** | `docs/project-brain/plan/current-roadmap.md`; React Admin + Material UI candidate |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
 | Hard Risk / Production writes | Human-authorized only | `PROJECT_CHARTER.md`, `AGENTS.md` |

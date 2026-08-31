@@ -184,10 +184,9 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
         "Normal feature/model expansion is temporarily paused",
         "upstream-consolidation freeze",
         "owner resolution -> freeze legacy generic owner",
-        "CLEAN BASELINE",
         "Project Brain authority consolidation COMPLETE",
-        "**NEXT:** complete the bounded final global legacy/dead-code cleanup",
-        "RuntimeSupervisor host retirement",
+        "Runtime/Lifecycle consolidation COMPLETE / VERIFIED",
+        "**NEXT:** select the bounded **WEB APPLICATION SHELL** replacement class",
     ):
         assert expected in roadmap
     current_roadmap = roadmap.split("## Change log", maxsplit=1)[0]
@@ -436,7 +435,7 @@ def test_compact_progress_has_only_current_or_future_gated_rows() -> None:
         "## Planning route", maxsplit=1
     )[0]
 
-    assert "| RUNTIME-LIFECYCLE-CONSOLIDATION | PLANNED / NEXT |" in active
+    assert "| WEB-APPLICATION-SHELL | PLANNED / NEXT |" in active
     assert "| TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED |" in active
     for historical_or_superseded in (
         "WS-RESYNC-001 + GAP-002",
@@ -481,10 +480,12 @@ def test_next_names_one_concrete_responsibility_class() -> None:
     next_section = roadmap.split("**NEXT:**", maxsplit=1)[1].split(
         "Candidate-specific boundaries", maxsplit=1
     )[0]
-    assert "final global legacy/dead-code cleanup" in next_section
-    assert "RuntimeSupervisor host retirement" in next_section
-    assert "Remove only the retired repository owner and its\ncurrent references" in next_section
-    assert "does not authorize parallel lifecycle owners or Production mutation" in next_section
+    assert "WEB APPLICATION SHELL" in next_section
+    assert "React Admin +\nMaterial UI" in next_section
+    assert "FastAPI typed domain API" in next_section
+    assert (
+        "does not begin the React Admin migration or authorize Production mutation" in next_section
+    )
 
 
 def test_task_status_route_is_one_child_at_a_time() -> None:
