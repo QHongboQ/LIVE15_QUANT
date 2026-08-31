@@ -81,7 +81,7 @@ delta closure.
 The heartbeat advanced from `2026-08-31T02:20:49.576417+00:00` to a later observed health
 record while PID `21368` remained present. The final bounded observation reports
 `kalshi_ws_connection_state=synchronized`, `kalshi_ws_synchronized_count=10`, and empty
-fatal fields. Pyth WTI source-staleness and archive/persistence warnings are recorded as
+fatal fields. Pyth WTI source-staleness and the separate archive condition are recorded as
 out-of-GAP002-path conditions and are not used to determine this verdict.
 
 No training, trading writes, holdout access, Recorder restart, additional reconnect, Nomad job
