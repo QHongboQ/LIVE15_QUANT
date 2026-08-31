@@ -21,6 +21,14 @@ WINDOWS_CREATE_NO_WINDOW = 0x08000000
 WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
 WINDOWS_BACKGROUND_FLAGS = WINDOWS_CREATE_NO_WINDOW | WINDOWS_CREATE_NEW_PROCESS_GROUP
 KALSHI_WS_RECONNECT_ACTION = "reconnect_kalshi_ws"
+_RECONNECT_ACTION_FIELDS = (
+    "action",
+    "action_status",
+    "action_requested_at",
+    "action_consuming_at",
+    "action_consumed_at",
+)
+_TERMINAL_RECONNECT_STATUSES = frozenset(("consumed", "failed"))
 
 
 class ManagedRecorderState(StrEnum):
@@ -107,6 +115,24 @@ def request_kalshi_ws_reconnect(path: Path) -> bool:
         action_status="pending",
         action_requested_at=datetime.now(UTC).isoformat(),
     )
+    _atomic_json(path, payload)
+    return True
+
+
+def rearm_kalshi_ws_reconnect(path: Path) -> bool:
+    """Clear one terminal reconnect action without queuing a new action."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    if (
+        not isinstance(payload, dict)
+        or payload.get("action") != KALSHI_WS_RECONNECT_ACTION
+        or payload.get("action_status") not in _TERMINAL_RECONNECT_STATUSES
+    ):
+        return False
+    for field in _RECONNECT_ACTION_FIELDS:
+        payload.pop(field, None)
     _atomic_json(path, payload)
     return True
 
