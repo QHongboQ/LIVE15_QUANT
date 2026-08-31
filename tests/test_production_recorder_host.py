@@ -103,6 +103,7 @@ async def test_current_active_universe_starts_sdk_session_when_commodities_are_c
     host._consumer = None
     host._reconnect_count = 0
     host._final_summary = None
+    host._reconnect_requested = asyncio.Event()
 
     await host._run_session(active_universe, stop)
 
@@ -113,6 +114,98 @@ async def test_current_active_universe_starts_sdk_session_when_commodities_are_c
         ("orderbook", expected_tickers),
     ]
     assert len(expected_tickers) == 7
+
+
+@pytest.mark.asyncio
+async def test_explicit_sdk_reconnect_replaces_one_session_without_stopping_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    universe = {Asset.BTC: "KXBTC15M-CURRENT"}
+    stop = asyncio.Event()
+    first_session_ready = asyncio.Event()
+    session_count = 0
+    reconnect_states: list[str] = []
+
+    class PendingStream:
+        def __aiter__(self) -> PendingStream:
+            return self
+
+        async def __anext__(self) -> object:
+            await asyncio.Event().wait()
+            raise StopAsyncIteration
+
+    class Session:
+        async def subscribe_ticker(self, *, tickers, maxsize):
+            return PendingStream()
+
+        async def subscribe_market_lifecycle(self, *, tickers, maxsize):
+            return PendingStream()
+
+        async def subscribe_orderbook_delta(self, *, tickers, maxsize):
+            if session_count == 1:
+                first_session_ready.set()
+            else:
+                stop.set()
+            return PendingStream()
+
+    class Context:
+        async def __aenter__(self) -> Session:
+            return Session()
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+    class WebSocket:
+        def on(self, _event):
+            def register(handler):
+                return handler
+
+            return register
+
+        def connect(self) -> Context:
+            nonlocal session_count
+            session_count += 1
+            return Context()
+
+    class Gateway:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def build(self, **_kwargs) -> WebSocket:
+            return WebSocket()
+
+    monkeypatch.setattr(
+        "live15_quant.kalshi_gateway.production_recorder_host.production_credentials",
+        lambda _settings: object(),
+    )
+    monkeypatch.setattr(
+        "live15_quant.kalshi_gateway.production_recorder_host.KalshiWebSocketGateway",
+        Gateway,
+    )
+
+    host = SdkProductionRecorderHost(
+        settings=SimpleNamespace(
+            kalshi_websocket_stale_seconds=10.0,
+            kalshi_websocket_read_timeout_seconds=5.0,
+        ),
+        store=SimpleNamespace(bounded_row_count_estimates=lambda: {}),
+        universe=lambda: universe,
+        on_committed=lambda _events: None,
+        on_transport_state=lambda state, _observed_at: reconnect_states.append(state),
+    )
+    run_task = asyncio.create_task(host.run(stop))
+    await asyncio.wait_for(first_session_ready.wait(), 1)
+    assert host.running
+
+    await host.request_reconnect()
+    assert host.running
+    await asyncio.wait_for(run_task, 1)
+
+    assert session_count == 2
+    assert reconnect_states == ["reconnecting"]
+    assert not host.running
+    await asyncio.sleep(0)
+    assert session_count == 2
 
 
 @pytest.mark.asyncio
