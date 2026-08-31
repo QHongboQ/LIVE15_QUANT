@@ -68,7 +68,7 @@ job "live15-kalshi-sdk-ws-shadow" {
 
   # Nomad shutdown maps to CPython's Windows-only SIGBREAK handler.
   constraint {
-    attribute = "${attr.os.name}"
+    attribute = "${attr.kernel.name}"
     value     = "windows"
   }
 
