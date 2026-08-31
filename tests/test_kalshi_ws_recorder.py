@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -11,6 +11,7 @@ import pytest
 
 from live15_quant.config import Settings
 from live15_quant.gaps import GapReason, GapSource, configured_streams, detect_gaps
+from live15_quant.kalshi_lifecycle import KalshiDiscovery
 from live15_quant.kalshi_ws import (
     KalshiAtomicOrderBookCoordinator,
     KalshiAtomicSessionProcessor,
@@ -25,11 +26,19 @@ from live15_quant.kalshi_ws import (
     KalshiWsRuntimeState,
     SynchronizedKalshiOrderBook,
 )
+from live15_quant.market_sessions import MarketSessionPhase, market_session
 from live15_quant.models import Asset, OrderBookLevel
 from live15_quant.native_recorder import KalshiNativeRecorder
 from live15_quant.storage import RecorderStorageError, RecorderStore
 from tests.test_kalshi_lifecycle import NOW
-from tests.test_native_recorder import FakeDiscovery, FakeQuotes, OneTickStream, discovery_for
+from tests.test_native_recorder import (
+    FakeDiscovery,
+    FakeQuotes,
+    OneTickStream,
+    discovery_for,
+    provider,
+    raw_market,
+)
 
 
 def test_forward_shadow_checkpoint_is_predecision_bounded_and_idempotent(tmp_path) -> None:
@@ -246,6 +255,61 @@ class OperatorReconnectProductionWs(FakeProductionWs):
         await asyncio.Event().wait()
 
 
+class ClosedCalendarOperatorReconnectProductionWs(OperatorReconnectProductionWs):
+    """Replacement snapshots for a current Kalshi market during metals closure."""
+
+    def __init__(self, observed_at: datetime) -> None:
+        super().__init__()
+        self.observed_at = observed_at
+        self.delta_seen = asyncio.Event()
+        self.snapshot_requested = asyncio.Event()
+        self.allow_snapshots = asyncio.Event()
+
+    async def send_command(self, command: KalshiSubscriptionCommand) -> None:
+        await super().send_command(command)
+        if self._actions()[-1] == "get_snapshot":
+            self.snapshot_requested.set()
+
+    def _snapshot(self, ticker: str, sequence: int, seconds: int) -> KalshiOrderBookSnapshot:
+        received = self.observed_at + timedelta(seconds=seconds)
+        return replace(
+            super()._snapshot(ticker, sequence, seconds),
+            source_timestamp=received,
+            socket_received_timestamp=received,
+            parse_timestamp=received + timedelta(microseconds=10),
+            enqueue_timestamp=received + timedelta(microseconds=5),
+        )
+
+    def _delta(self, ticker: str, sequence: int) -> KalshiOrderBookDelta:
+        received = self.observed_at + timedelta(seconds=1)
+        return replace(
+            super()._delta(ticker, sequence),
+            source_timestamp=received,
+            socket_received_timestamp=received,
+            parse_timestamp=received + timedelta(microseconds=10),
+            enqueue_timestamp=received + timedelta(microseconds=5),
+        )
+
+    async def messages(self, tickers):
+        exact = tuple(tickers)
+        yield KalshiSubscribed(1, 2, "orderbook_delta")
+        for sequence, ticker in enumerate(exact, 1):
+            yield self._snapshot(ticker, sequence, 0)
+        self.initial_synchronized.set()
+        await self.allow_resync.wait()
+        yield replace(self._delta(exact[0], 20), connection_id="connection-2", subscription_id=3)
+        self.delta_seen.set()
+        await self.allow_snapshots.wait()
+        for offset, ticker in enumerate(exact):
+            yield replace(
+                self._snapshot(ticker, 30 + offset, 2),
+                connection_id="connection-2",
+                subscription_id=3,
+            )
+        self.resync_complete.set()
+        await asyncio.Event().wait()
+
+
 class InvariantRecoveringProductionWs(FakeProductionWs):
     """Inject one impossible depth update, then provide official fresh snapshots."""
 
@@ -429,6 +493,71 @@ async def test_operator_reconnect_uses_recorder_fail_closed_transition(tmp_path)
             gap for gap in store.active_data_gaps() if gap.source is GapSource.KALSHI_WS
         )
         assert source.reconnect_requests == 1
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_current_kalshi_ws_snapshot_recovers_closed_calendar_reconnect_gap(tmp_path) -> None:
+    observed_at = datetime(2026, 8, 28, 22, 5, tzinfo=UTC)
+    source = ClosedCalendarOperatorReconnectProductionWs(observed_at)
+    assets = (Asset.GOLD, Asset.SILVER)
+    markets = tuple(
+        provider().parse_market(
+            asset,
+            raw_market(asset, start=observed_at - timedelta(minutes=5)),
+            observed_at,
+        )
+        for asset in assets
+    )
+    discoveries = tuple(
+        KalshiDiscovery(asset, observed_at, None, market, None, (), ())
+        for asset, market in zip(assets, markets, strict=True)
+    )
+    assert all(
+        market_session(asset).phase(observed_at) is MarketSessionPhase.CLOSED for asset in assets
+    )
+    with RecorderStore(tmp_path / "closed-calendar-reconnect.sqlite3") as store:
+        recorder = KalshiNativeRecorder(
+            Settings(
+                enable_kalshi_production_websocket=True,
+                recorder_health_path=tmp_path / "health.json",
+            ),
+            store,
+            discovery=FakeDiscovery(discoveries),
+            quotes=FakeQuotes(),
+            coinbase_factory=OneTickStream,
+            kalshi_ws_factory=lambda: source,
+            now=lambda: observed_at,
+        )
+        for discovery in discoveries:
+            recorder._accept_discovery(discovery)
+        task = asyncio.create_task(recorder._record_kalshi_ws())
+        await asyncio.wait_for(source.initial_synchronized.wait(), 1)
+        assert recorder._health.kalshi_ws_synchronized == {
+            asset: market.ticker for asset, market in zip(assets, markets, strict=True)
+        }
+
+        await recorder.request_kalshi_ws_reconnect()
+        await asyncio.wait_for(source.delta_seen.wait(), 1)
+        await asyncio.wait_for(source.snapshot_requested.wait(), 1)
+        recorder._flush_kalshi_ws_pending()
+        assert recorder.health().kalshi_ws_connection_state is not KalshiWsRuntimeState.SYNCHRONIZED
+        assert len(store.active_data_gaps()) == 2
+
+        source.allow_snapshots.set()
+        await asyncio.wait_for(source.resync_complete.wait(), 1)
+        recorder._flush_kalshi_ws_pending()
+        assert recorder._health.kalshi_ws_synchronized == {
+            asset: market.ticker for asset, market in zip(assets, markets, strict=True)
+        }
+        assert store.active_data_gaps() == ()
+        assert len(store.replay_data_gaps()) == 4
+
+        recorder._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
+        active = store.active_data_gaps()
+        assert len(active) == 2
+        assert {gap.reason for gap in active} == {GapReason.RECONNECT}
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 

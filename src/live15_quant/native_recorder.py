@@ -1205,7 +1205,14 @@ class KalshiNativeRecorder:
             if received <= active.gap_start:
                 unresolved.append(active)
                 continue
-            intervals = self._gap_open_intervals(stream, active.gap_start, received)
+            # A synchronized Kalshi book is authoritative source truth in its own
+            # right. Commodity underlying-session hours must not veto recovery
+            # after that book has passed the existing snapshot/synchronization gate.
+            intervals = (
+                ((active.gap_start, received),)
+                if source is GapSource.KALSHI_WS
+                else self._gap_open_intervals(stream, active.gap_start, received)
+            )
             if not intervals:
                 # A closed market cannot supply the real observation needed to
                 # close this fact.  Keep it fail-closed rather than inventing an
