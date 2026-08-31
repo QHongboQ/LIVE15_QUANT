@@ -10,8 +10,9 @@ Maps process/service ownership, health truth, and restart authority.
 ## Current truth
 
 `deploy/windows/runtime-ownership.json` remains the machine-readable authority. ControlCenter and
-Recorder and `kalshi_sdk_ws_shadow` are Nomad-managed; RuntimeSupervisor retains its separate WinSW-owned boundary for its remaining children. Recorder
-domain truth remains owned by the Recorder authority leaf, not by Nomad.
+Recorder are Nomad-managed; RuntimeSupervisor retains its separate WinSW-owned boundary for its remaining children. The verified
+`kalshi_sdk_ws_shadow` lifecycle is also Nomad-managed. Recorder domain truth remains owned by
+the Recorder authority leaf, not by Nomad.
 
 ## Canonical Production Python runtime
 
