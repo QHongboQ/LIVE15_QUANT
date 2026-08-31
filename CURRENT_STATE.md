@@ -13,8 +13,9 @@ Authority and its evidence artifacts.
 while generic responsibilities are consolidated subtractively, one owner and one bounded
 replacement at a time. Training remains blocked by its existing gates.
 
-ControlCenter current truth is `docs/project-brain/capabilities/control-center.md`; completed
-foundation evidence is the `PROJECT_PROGRESS.md` ledger.
+ControlCenter current truth is `docs/project-brain/capabilities/control-center.md`. Current task
+closeouts and gates are in `PROJECT_PROGRESS.md`; older completed-foundation history remains in
+Git/PR history and the bounded evidence selected by current authorities.
 
 ## Workstream orientation
 
