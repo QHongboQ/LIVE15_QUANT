@@ -163,7 +163,8 @@ def test_authority_leaves_preserve_moved_current_truth() -> None:
     assert "Holdout-contamination remediation/replacement" in training
     assert "KalshiGateway / immutable adapter" in software
     assert (
-        "ControlCenter,\nRecorder, and the verified `kalshi_sdk_ws_shadow` lifecycle are Nomad-managed"
+        "ControlCenter,\nRecorder, and the verified `kalshi_sdk_ws_shadow` lifecycle are "
+        "Nomad-managed"
         in runtime
     )
     assert "Production writes remain disabled" in boundary
