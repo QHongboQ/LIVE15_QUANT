@@ -17,7 +17,9 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 JOBSPEC = REPOSITORY_ROOT / "deploy" / "nomad" / "live15-kalshi-sdk-ws-shadow.nomad.hcl"
 
 
-def _runner(tmp_path: Path, *, control_path: Path | None) -> tuple[KalshiSdkShadowRunner, ShadowTelemetryStore]:
+def _runner(
+    tmp_path: Path, *, control_path: Path | None
+) -> tuple[KalshiSdkShadowRunner, ShadowTelemetryStore]:
     store = ShadowTelemetryStore(tmp_path / "shadow.sqlite3")
     runner = KalshiSdkShadowRunner(
         settings=SimpleNamespace(),
@@ -36,7 +38,10 @@ def _runner(tmp_path: Path, *, control_path: Path | None) -> tuple[KalshiSdkShad
 
 def test_lifecycle_owner_is_explicit_and_fail_closed() -> None:
     assert _lifecycle_owner({}) == "runtime_supervisor"
-    assert _lifecycle_owner({"LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER": "nomad"}) == "nomad"
+    assert (
+        _lifecycle_owner({"LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER": "nomad"})
+        == "nomad"
+    )
     with pytest.raises(ValueError, match="lifecycle owner"):
         _lifecycle_owner({"LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER": "both"})
 
@@ -94,7 +99,14 @@ def test_nomad_jobspec_owns_only_shadow_process_lifecycle() -> None:
     assert 'type        = "service"' in jobspec
     assert 'driver       = "raw_exec"' in jobspec
     assert "LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER" in jobspec
-    assert '= "nomad"' in jobspec
+    assert 'LIVE15_KALSHI_RUNTIME_ENVIRONMENT                = "PRODUCTION"' in jobspec
+    assert 'LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET        = "true"' in jobspec
+    assert 'KALSHI_DEMO                                      = "false"' in jobspec
+    assert 'KALSHI_BASE_URL                                  = ""' in jobspec
+    assert 'KALSHI_WS_BASE_URL                               = ""' in jobspec
+    assert 'LIVE15_KALSHI_DEMO_API_KEY_ID                    = ""' in jobspec
+    assert 'LIVE15_KALSHI_DEMO_API_KEY_ID_FILE               = ""' in jobspec
+    assert 'LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH              = ""' in jobspec
     assert 'from live15_quant.managed_kalshi_sdk_shadow import main; main()' in jobspec
     assert 'attempts = 3' in jobspec
     assert 'interval = "5m"' in jobspec
