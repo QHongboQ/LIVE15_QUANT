@@ -27,13 +27,8 @@ def test_runtime_supervisor_is_zero_responsibility_and_current_trainable_is_not_
 
     assert "paper_forward" not in components
     assert "current_trainable" not in components
-    assert components["kalshi_sdk_ws_shadow"]["owner_id"] == (
-        "Nomad:live15-kalshi-sdk-ws-shadow"
-    )
-    assert not any(
-        item["owner_id"] == "LIVE15RuntimeSupervisor"
-        for item in components.values()
-    )
+    assert components["kalshi_sdk_ws_shadow"]["owner_id"] == ("Nomad:live15-kalshi-sdk-ws-shadow")
+    assert not any(item["owner_id"] == "LIVE15RuntimeSupervisor" for item in components.values())
 
 
 def test_current_windows_service_overrides_stale_supervisor_telemetry() -> None:

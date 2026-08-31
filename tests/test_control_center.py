@@ -279,9 +279,9 @@ def test_system_preserves_intentional_auxiliary_state_despite_old_child_heartbea
     )
 
     component = (
-        ControlCenterService(configured, clock=lambda: NOW).system().runtime_components[
-            "legacy_auxiliary"
-        ]
+        ControlCenterService(configured, clock=lambda: NOW)
+        .system()
+        .runtime_components["legacy_auxiliary"]
     )
 
     assert component.status == status
