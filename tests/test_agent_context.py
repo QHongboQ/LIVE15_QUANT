@@ -484,8 +484,7 @@ def test_next_names_one_concrete_responsibility_class() -> None:
     assert "React Admin +\nMaterial UI" in next_section
     assert "FastAPI typed domain API" in next_section
     assert (
-        "does not begin the React Admin migration or authorize "
-        "Production mutation" in next_section
+        "does not begin the React Admin migration or authorize Production mutation" in next_section
     )
 
 
