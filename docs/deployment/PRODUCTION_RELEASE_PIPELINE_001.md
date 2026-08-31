@@ -5,8 +5,8 @@
 This is the release mechanism required before DEP-001 can deploy a reviewed
 protected `origin/main` commit. It builds and validates application releases;
 it never starts, stops, restarts, installs, or deploys a Windows service.
-WinSW remains the sole owner and recovery authority for Recorder, Control
-Center, and RuntimeSupervisor.
+Nomad owns current workload lifecycle. Any retained WinSW bootstrap artifact is not a current
+service owner or recovery authority.
 
 ## Existing deployment reality (read-only map)
 
@@ -78,8 +78,8 @@ operation, not part of DEP-PKG-001.
 
 ## Runtime provenance
 
-The stable `bootstrap/release_runner.py` is launched by each existing WinSW
-service definition. It is copied only by `stage-bootstrap` from the selected
+The stable `bootstrap/release_runner.py` is launched only by any retained WinSW
+rollback service definition. It is copied only by `stage-bootstrap` from the selected
 verified release. It validates the active pointer and manifest, changes into the
 mutable Production root so relative `data/`, `runtime/`, and log paths remain
 outside the immutable payload, and prepends immutable `app/src` to `sys.path`.
@@ -114,9 +114,8 @@ Rollback first inspects SCM state. For `RUNNING` with a positive PID it calls
 public entry points to the same internal transition, generation-binding, audit,
 and provenance machinery. Any other precheck state fails closed.
 
-For each independently WinSW-owned service (Recorder, Control Center, and
-RuntimeSupervisor), the gate records an atomic non-empty pre-transition
-receipt. A running service requires this exact sequence:
+For a retained WinSW rollback service, the gate records an atomic non-empty
+pre-transition receipt. A running service requires this exact sequence:
 
 ```text
 PRECHECK -> STOP_REQUESTED -> STOPPED_CONFIRMED -> OLD_PID_GONE

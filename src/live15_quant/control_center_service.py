@@ -35,11 +35,9 @@ from live15_quant.control_center_models import (
 from live15_quant.control_center_store import DashboardReadStore
 from live15_quant.market_sessions import MarketDataState, market_data_state, market_session
 from live15_quant.models import Asset, RecorderEventSeverity
-from live15_quant.recorder_control import RecorderProcessController, process_alive
+from live15_quant.recorder_control import RecorderProcessController
 from live15_quant.research_data_authority import ResearchDataAuthority
-from live15_quant.runtime_status import RuntimeStatusError, read_json
 
-_INTENTIONAL_AUXILIARY_STATUSES = frozenset({"ON_DEMAND", "PAUSED_BY_DESIGN"})
 _CATCH_UP_MINIMUM_OBSERVATION_SECONDS = 60.0
 
 
@@ -518,64 +516,8 @@ class ControlCenterService:
         )
 
     def _runtime_components(self) -> dict[str, RuntimeComponentResponse]:
-        data_parent = self.settings.recorder_data_path.resolve().parent
-        root = data_parent.parent if data_parent.name.lower() == "data" else data_parent
-        try:
-            supervisor = read_json(root / "runtime" / "runtime-supervisor-status.json")
-        except RuntimeStatusError:
-            return {}
-        raw_components = supervisor.get("components") if supervisor else None
-        if not isinstance(raw_components, dict):
-            return {}
-        result: dict[str, RuntimeComponentResponse] = {}
-        checked_at = self._clock().astimezone(UTC)
-        supervisor_heartbeat = self._optional_aware_datetime(supervisor.get("last_heartbeat"))
-        supervisor_age = (
-            max(0.0, (checked_at - supervisor_heartbeat).total_seconds())
-            if supervisor_heartbeat
-            else None
-        )
-        supervisor_current = (
-            supervisor.get("status") == "RUNNING"
-            and supervisor_age is not None
-            and supervisor_age <= self.settings.ui_heartbeat_stale_seconds
-        )
-        for name, raw in raw_components.items():
-            if not isinstance(name, str) or not isinstance(raw, dict):
-                continue
-            pid = self._optional_int(raw.get("pid"))
-            started = self._optional_aware_datetime(raw.get("started_at"))
-            heartbeat = self._optional_aware_datetime(raw.get("last_heartbeat"))
-            age = max(0.0, (checked_at - heartbeat).total_seconds()) if heartbeat else None
-            fresh = age is not None and age <= self.settings.ui_heartbeat_stale_seconds
-            declared_status = str(raw.get("status", "UNKNOWN"))
-            # A current supervisor receipt is the authority for desired component state.
-            # Intentional auxiliaries are not expected to emit a current child heartbeat;
-            # their historic PID can never be projected as live. Every other component
-            # must still satisfy its own heartbeat freshness gate.
-            if not supervisor_current:
-                status = "STALE"
-                effective_pid = None
-                process_is_alive = False
-            elif declared_status in _INTENTIONAL_AUXILIARY_STATUSES:
-                status = declared_status
-                effective_pid = None
-                process_is_alive = False
-            else:
-                status = declared_status if fresh else "STALE"
-                effective_pid = pid if fresh else None
-                process_is_alive = fresh and pid is not None and process_alive(pid)
-            result[name] = RuntimeComponentResponse(
-                status=status,
-                pid=effective_pid,
-                started_at=started,
-                last_heartbeat=heartbeat,
-                heartbeat_age_seconds=age,
-                last_error=self._optional_string(raw.get("last_error")),
-                process_alive=process_is_alive,
-                expected_mode=self._optional_string(raw.get("expected_mode")),
-            )
-        return result
+        """RuntimeSupervisor is retired; retain the response field as an empty projection."""
+        return {}
 
     def recorder_action(self, action: str) -> RecorderControlResponse:
         if self.controller is None:

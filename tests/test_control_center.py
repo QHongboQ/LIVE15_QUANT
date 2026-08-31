@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sqlite3
 import sys
 import tomllib
@@ -218,7 +217,7 @@ def test_health_ignores_new_internal_archive_fields_without_hiding_known_truth(
     assert health.ws_archive.verified == 7
 
 
-def test_system_exposes_generic_supervisor_component_truth(tmp_path: Path) -> None:
+def test_system_ignores_retired_supervisor_receipt(tmp_path: Path) -> None:
     configured = settings(tmp_path)
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -227,17 +226,7 @@ def test_system_exposes_generic_supervisor_component_truth(tmp_path: Path) -> No
             {
                 "status": "RUNNING",
                 "last_heartbeat": NOW.isoformat(),
-                "components": {
-                    "legacy_boundary": {
-                        "status": "RUNNING",
-                        "pid": os.getpid(),
-                        "started_at": NOW.isoformat(),
-                        "last_heartbeat": NOW.isoformat(),
-                        "last_error": None,
-                        "process_alive": True,
-                        "expected_mode": "LEGACY_STATUS_ONLY",
-                    }
-                },
+                "components": {"legacy_boundary": {"status": "RUNNING"}},
             }
         ),
         encoding="utf-8",
@@ -245,109 +234,7 @@ def test_system_exposes_generic_supervisor_component_truth(tmp_path: Path) -> No
 
     system = ControlCenterService(configured, clock=lambda: NOW).system()
 
-    component = system.runtime_components["legacy_boundary"]
-    assert component.status == "RUNNING"
-    assert component.pid == os.getpid()
-    assert component.process_alive is True
-    assert component.heartbeat_age_seconds == 0
-
-
-@pytest.mark.parametrize("status", ["ON_DEMAND", "PAUSED_BY_DESIGN"])
-def test_system_preserves_intentional_auxiliary_state_despite_old_child_heartbeat(
-    tmp_path: Path, status: str
-) -> None:
-    configured = settings(tmp_path, ui_heartbeat_stale_seconds=30)
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    stale = NOW - timedelta(seconds=31)
-    (runtime / "runtime-supervisor-status.json").write_text(
-        json.dumps(
-            {
-                "status": "RUNNING",
-                "last_heartbeat": NOW.isoformat(),
-                "components": {
-                    "legacy_auxiliary": {
-                        "status": status,
-                        "pid": os.getpid(),
-                        "started_at": stale.isoformat(),
-                        "last_heartbeat": stale.isoformat(),
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    component = (
-        ControlCenterService(configured, clock=lambda: NOW)
-        .system()
-        .runtime_components["legacy_auxiliary"]
-    )
-
-    assert component.status == status
-    assert component.pid is None
-    assert component.process_alive is False
-    assert component.heartbeat_age_seconds == 31
-
-
-def test_system_fails_closed_for_stale_supervisor_receipt(tmp_path: Path) -> None:
-    configured = settings(tmp_path, ui_heartbeat_stale_seconds=30)
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    stale = NOW - timedelta(seconds=31)
-    (runtime / "runtime-supervisor-status.json").write_text(
-        json.dumps(
-            {
-                "status": "RUNNING",
-                "last_heartbeat": NOW.isoformat(),
-                "components": {
-                    "recorder": {
-                        "status": "RUNNING",
-                        "pid": os.getpid(),
-                        "started_at": stale.isoformat(),
-                        "last_heartbeat": stale.isoformat(),
-                        "expected_mode": "MANAGED_RECORDER",
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    component = (
-        ControlCenterService(configured, clock=lambda: NOW).system().runtime_components["recorder"]
-    )
-
-    assert component.status == "STALE"
-    assert component.pid is None
-    assert component.process_alive is False
-
-
-def test_system_accepts_zero_child_supervisor_receipt(tmp_path: Path) -> None:
-    configured = settings(tmp_path)
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    (runtime / "runtime-supervisor-status.json").write_text(
-        json.dumps(
-            {
-                "status": "RUNNING",
-                "last_heartbeat": NOW.isoformat(),
-                "components": {},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    assert ControlCenterService(configured, clock=lambda: NOW).system().runtime_components == {}
-
-
-def test_system_hides_components_from_malformed_supervisor_receipt(tmp_path: Path) -> None:
-    configured = settings(tmp_path)
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    (runtime / "runtime-supervisor-status.json").write_text("[]", encoding="utf-8")
-
-    assert ControlCenterService(configured, clock=lambda: NOW).system().runtime_components == {}
+    assert system.runtime_components == {}
 
 
 @pytest.mark.asyncio

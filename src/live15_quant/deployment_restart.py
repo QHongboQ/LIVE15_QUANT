@@ -181,7 +181,6 @@ def _expected_component(service_name: str) -> str:
     components = {
         "LIVE15Recorder": "recorder",
         "LIVE15ControlCenter": "control-center",
-        "LIVE15RuntimeSupervisor": "runtime-supervisor",
     }
     try:
         return components[service_name]

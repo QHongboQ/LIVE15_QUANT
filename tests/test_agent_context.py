@@ -162,7 +162,7 @@ def test_authority_leaves_preserve_moved_current_truth() -> None:
     assert "NO TRAINING_GO" in training and "NO TRAINING_STARTED" in training
     assert "Holdout-contamination remediation/replacement" in training
     assert "KalshiGateway / immutable adapter" in software
-    assert "ControlCenter and\nRecorder are Nomad-managed" in runtime
+    assert "ControlCenter,\nRecorder, and the verified `kalshi_sdk_ws_shadow` lifecycle are Nomad-managed" in runtime
     assert "Production writes remain disabled" in boundary
     assert "all three WinSW services running" in legacy_receipt
     assert "no current-main deployment claim" in legacy_receipt
@@ -183,8 +183,8 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
         "owner resolution -> freeze legacy generic owner",
         "CLEAN BASELINE",
         "Project Brain authority consolidation COMPLETE",
-        "**NEXT:** begin the bounded **RUNTIME / LIFECYCLE CONSOLIDATION**",
-        "Nomad + Windows SCM",
+        "**NEXT:** complete the bounded final global legacy/dead-code cleanup",
+        "RuntimeSupervisor host retirement",
     ):
         assert expected in roadmap
     current_roadmap = roadmap.split("## Change log", maxsplit=1)[0]
@@ -478,11 +478,10 @@ def test_next_names_one_concrete_responsibility_class() -> None:
     next_section = roadmap.split("**NEXT:**", maxsplit=1)[1].split(
         "Candidate-specific boundaries", maxsplit=1
     )[0]
-    assert "RUNTIME / LIFECYCLE CONSOLIDATION" in next_section
-    assert "Nomad + Windows SCM" in next_section
-    assert "select exactly one responsibility" in next_section
-    assert "select one generic responsibility" not in next_section
-    assert "big-bang RuntimeSupervisor/WinSW deletion" in next_section
+    assert "final global legacy/dead-code cleanup" in next_section
+    assert "RuntimeSupervisor host retirement" in next_section
+    assert "Remove only the retired repository owner and its\ncurrent references" in next_section
+    assert "does not authorize parallel lifecycle owners or Production mutation" in next_section
 
 
 def test_task_status_route_is_one_child_at_a_time() -> None:
@@ -580,7 +579,7 @@ def test_current_recorder_runtime_owner_is_machine_readable_and_consistent() -> 
     narrative = read("docs/runtime_ownership_and_self_healing.md")
     adr = read("docs/adr/0003-runtime-ownership.md")
     assert "owned only\nby `deploy/windows/runtime-ownership.json`" in narrative
-    assert "Recorder and ControlCenter currently resolve to Nomad" in narrative
+    assert "Recorder, ControlCenter, and `kalshi_sdk_ws_shadow` resolve to Nomad lifecycle ownership." in narrative
     assert "Recorder and RuntimeSupervisor\nremain independently WinSW-owned" not in narrative
     assert "Current owner\nvalues are resolved from `deploy/windows/runtime-ownership.json`" in adr
     assert "Windows/WinSW owns service lifecycle" not in adr

@@ -555,7 +555,6 @@ def test_first_deploy_can_rollback_to_immutable_legacy_without_a_runner(tmp_path
             "live15_quant.models",
             "live15_quant.ws_retention",
             "live15_quant.research_data_authority",
-            "live15_quant.runtime_supervisor",
         )
     }
     child_environment = {
@@ -601,7 +600,6 @@ def test_legacy_runner_subprocess_leaves_project_modules_importable() -> None:
         "live15_quant.models",
         "live15_quant.ws_retention",
         "live15_quant.research_data_authority",
-        "live15_quant.runtime_supervisor",
     ):
         assert importlib.import_module(name)
 

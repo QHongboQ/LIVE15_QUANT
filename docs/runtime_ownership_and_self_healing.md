@@ -10,19 +10,15 @@ The machine-readable counterpart is [`deploy/windows/runtime-ownership.json`](..
 
 Current component owner, process source, health truth, and restart authority values are owned only
 by `deploy/windows/runtime-ownership.json`; this narrative does not duplicate that registry.
-Recorder and ControlCenter currently resolve to Nomad lifecycle ownership, while
-RuntimeSupervisor remains only as a zero-responsibility legacy WinSW boundary pending final host
-retirement. In-process workers escalate only through their registered parent/restart authority.
-
-The Supervisor never starts, stops, or restarts Recorder or Control Center. It does not infer a
-service failure from an old supervisor receipt. A current owner with an old receipt is reported as
-`STALE_TELEMETRY`; stale telemetry never overrides the registered process authority.
+Recorder, ControlCenter, and `kalshi_sdk_ws_shadow` resolve to Nomad lifecycle ownership.
+RuntimeSupervisor is retired and old supervisor receipts are stale telemetry, never current process
+authority. In-process workers escalate only through their registered parent/restart authority.
 
 ## Service packaging
 
-Nomad owns lifecycle for Recorder and ControlCenter. RuntimeSupervisor retains its WinSW
-definition. Stopped legacy WinSW definitions may remain bounded rollback artifacts; they are not
-current process/restart owners and must not evolve in parallel with Nomad.
+Nomad owns lifecycle for Recorder, ControlCenter, and `kalshi_sdk_ws_shadow`. Shared WinSW
+bootstrap metadata may remain for bounded retained artifacts, but it does not create a current
+process or restart owner.
 
 ## Worker recovery
 
@@ -49,8 +45,7 @@ semantics.
 ## Auxiliary worker modes
 
 `current_trainable` is a mutable checkpointed materializer/training projection, not a runtime
-process. `kalshi_sdk_ws_shadow` is Nomad-managed. No auxiliary worker is currently registered
-under RuntimeSupervisor; the legacy service remains represented only for bounded host retirement.
+process. `kalshi_sdk_ws_shadow` is Nomad-managed.
 
 ## Migration / deployment boundary
 

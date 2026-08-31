@@ -28,6 +28,8 @@ def test_malformed_sddl_fails_closed() -> None:
 
 
 def test_service_scope_is_explicit() -> None:
-    validate_service_name("LIVE15RuntimeSupervisor")
+    validate_service_name("LIVE15Recorder")
     with pytest.raises(ValueError):
         validate_service_name("Spooler")
+    with pytest.raises(ValueError):
+        validate_service_name("LIVE15RuntimeSupervisor")

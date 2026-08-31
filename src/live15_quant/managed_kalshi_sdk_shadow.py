@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import signal
-from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,20 +37,7 @@ from live15_quant.runtime_status import (
 
 logger = logging.getLogger(__name__)
 
-_LIFECYCLE_OWNER_ENV = "LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER"
-_LEGACY_LIFECYCLE_OWNER = "runtime_supervisor"
 _NOMAD_LIFECYCLE_OWNER = "nomad"
-
-
-def _lifecycle_owner(environ: Mapping[str, str] | None = None) -> str:
-    source = os.environ if environ is None else environ
-    owner = source.get(_LIFECYCLE_OWNER_ENV, _LEGACY_LIFECYCLE_OWNER).strip().lower()
-    if owner not in {_LEGACY_LIFECYCLE_OWNER, _NOMAD_LIFECYCLE_OWNER}:
-        raise ValueError(
-            f"{_LIFECYCLE_OWNER_ENV} lifecycle owner must be "
-            f"{_LEGACY_LIFECYCLE_OWNER} or {_NOMAD_LIFECYCLE_OWNER}"
-        )
-    return owner
 
 
 def _sanitized_error_code(error: BaseException) -> str:
@@ -66,20 +52,14 @@ def _sanitized_error_code(error: BaseException) -> str:
     return "/".join(parts)
 
 
-def _paths(root: Path) -> tuple[Path, Path, Path, Path, Path]:
+def _paths(root: Path) -> tuple[Path, Path, Path, Path]:
     runtime = root / "runtime"
     return (
         runtime / "kalshi-sdk-ws-shadow-status.json",
         runtime / "kalshi-sdk-ws-shadow.pid",
-        runtime / "runtime-supervisor-control.json",
         root / "data" / "kalshi_sdk_ws_shadow.sqlite3",
         root / "data" / "kalshi-live-ws-books.json",
     )
-
-
-def _stop_requested(control_path: Path) -> bool:
-    payload = read_json(control_path)
-    return payload is not None and payload.get("desired") == "stopped"
 
 
 def _current_universe(settings: Settings) -> dict[str, Asset]:
@@ -104,14 +84,12 @@ class KalshiSdkShadowRunner:
         old_projection_path: Path,
         status: dict[str, object],
         status_path: Path,
-        control_path: Path | None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.old_projection_path = old_projection_path
         self.status = status
         self.status_path = status_path
-        self.control_path = control_path
         self.stop_event = asyncio.Event()
         self.stop_reason: str | None = None
         self.adapter: KalshiSdkReliabilityAdapter | None = None
@@ -165,9 +143,6 @@ class KalshiSdkShadowRunner:
 
     async def _heartbeat(self) -> None:
         while not self.stop_event.is_set():
-            if self.control_path is not None and _stop_requested(self.control_path):
-                self.request_stop("SUPERVISOR_STOP_REQUESTED")
-                break
             if self.adapter is None:
                 state = "WAITING_TICKERS"
             elif self.adapter.last_state in {"connected", "streaming"}:
@@ -419,9 +394,7 @@ async def _run() -> None:
     settings = load_settings()
     configure_logging(settings.log_level)
     root = Path.cwd().resolve()
-    status_path, lease_path, legacy_control_path, store_path, old_projection = _paths(root)
-    lifecycle_owner = _lifecycle_owner()
-    control_path = legacy_control_path if lifecycle_owner == _LEGACY_LIFECYCLE_OWNER else None
+    status_path, lease_path, store_path, old_projection = _paths(root)
     lease = RuntimePidLease(lease_path)
     lease.acquire()
     started = utc_timestamp()
@@ -438,7 +411,7 @@ async def _run() -> None:
             "store_path": str(store_path),
             "official_recorder_writes": False,
             "sdk_endpoint": "wss://external-api-ws.kalshi.com/trade-api/ws/v2",
-            "lifecycle_owner": lifecycle_owner,
+            "lifecycle_owner": _NOMAD_LIFECYCLE_OWNER,
         },
     )
     atomic_json(status_path, status)
@@ -449,19 +422,17 @@ async def _run() -> None:
         old_projection_path=old_projection,
         status=status,
         status_path=status_path,
-        control_path=control_path,
     )
     sigbreak: Any | None = None
     previous_sigbreak: Any | None = None
     try:
-        if lifecycle_owner == _NOMAD_LIFECYCLE_OWNER:
-            sigbreak = getattr(signal, "SIGBREAK", None)
-            if os.name != "nt" or sigbreak is None:
-                raise RuntimeError("Nomad shadow lifecycle requires Windows SIGBREAK support")
-            previous_sigbreak = signal.signal(
-                sigbreak,
-                _nomad_break_handler(runner, asyncio.get_running_loop()),
-            )
+        sigbreak = getattr(signal, "SIGBREAK", None)
+        if os.name != "nt" or sigbreak is None:
+            raise RuntimeError("Nomad shadow lifecycle requires Windows SIGBREAK support")
+        previous_sigbreak = signal.signal(
+            sigbreak,
+            _nomad_break_handler(runner, asyncio.get_running_loop()),
+        )
         await runner.run()
         status.update(
             {

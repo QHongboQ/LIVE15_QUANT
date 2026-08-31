@@ -542,7 +542,6 @@ def verify_runtime_provenance(
     component_by_service = {
         "LIVE15Recorder": "recorder",
         "LIVE15ControlCenter": "control-center",
-        "LIVE15RuntimeSupervisor": "runtime-supervisor",
     }
     component = component_by_service.get(service_name)
     if component is None or service_pid <= 0 or runner_pid <= 0 or runner_parent_pid <= 0:
