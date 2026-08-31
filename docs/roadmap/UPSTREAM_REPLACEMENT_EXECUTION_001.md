@@ -143,18 +143,18 @@ paths are unsuitable.
 This is a design dependency reference, not current project sequencing. Current execution ordering
 is owned only by `docs/project-brain/plan/current-roadmap.md`.
 
-1. **Nomad + Windows SCM** — finish the first isolated read-only ControlCenter
-   shadow, then migrate additional low-risk workloads one at a time. Recorder
-   is intentionally late in the sequence.
+1. **Nomad + Windows SCM** remains the first generic lifecycle owner. ControlCenter and Recorder
+   are already Nomad-owned; remaining lifecycle consolidation concerns residual
+   WinSW/RuntimeSupervisor generic responsibilities, one bounded responsibility at a time.
 2. **React Admin + Material UI** — first web POC is display-only health and
    markets; keep FastAPI typed projections and domain truth in LIVE15.
 3. **Vector**, then **Grafana** where an operations dashboard is actually
    useful. Use one telemetry collector by default; do not deploy overlapping
    collectors without a measured requirement.
-4. **Measure before adding throughput infrastructure.** Choose NATS JetStream
-   only for demonstrated buffering/replay/backpressure needs. Choose
-   DuckDB/Polars/Arrow only for demonstrated analytical/read-path throughput
-   needs. Use the smallest candidate that addresses the measured bottleneck.
+4. **Measure before adding throughput infrastructure.** Use the retained throughput-proof contract
+   only when a bounded decision needs to classify buffering/replay/backpressure or analytical/read
+   throughput. Choose NATS JetStream or DuckDB/Polars/Arrow only for the measured need, and use the
+   smallest component that addresses it.
 5. Do not introduce Consul, Temporal, Kafka/Redpanda, or another control plane
    merely because it is mature. Require a concrete unmet requirement first.
 
