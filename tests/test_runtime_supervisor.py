@@ -39,50 +39,12 @@ def test_supervisor_never_owns_recorder_or_control_center(tmp_path: Path) -> Non
     components = supervisor.tick()
 
     assert launched == []
-    assert set(components) == {"kalshi_sdk_ws_shadow", "paper_forward"}
-    assert components["kalshi_sdk_ws_shadow"]["status"] == "ON_DEMAND"
+    assert set(components) == {"paper_forward"}
+    assert "kalshi_sdk_ws_shadow" not in supervisor.children
     assert components["paper_forward"]["status"] == "PAUSED_BY_DESIGN"
     source = Path("src/live15_quant/runtime_supervisor.py").read_text(encoding="utf-8")
     assert "RecorderProcessController" not in source
     assert "managed_control_center" not in source
-
-
-def test_supervisor_restarts_only_explicit_automatic_child(tmp_path: Path) -> None:
-    launched: list[FakeProcess] = []
-
-    def popen(command, **_kwargs):
-        process = FakeProcess(command)
-        launched.append(process)
-        return process
-
-    supervisor = RuntimeSupervisor(configured(tmp_path), root=tmp_path, popen=popen)
-    child = supervisor.children["kalshi_sdk_ws_shadow"]
-    child.automatic = True
-
-    components = supervisor.tick()
-
-    assert components["kalshi_sdk_ws_shadow"]["status"] == "STARTING"
-    assert [process.command[-1] for process in launched] == [
-        "live15_quant.managed_kalshi_sdk_shadow"
-    ]
-    assert all("recorder" not in process.command[-1] for process in launched)
-    assert all("control_center" not in process.command[-1] for process in launched)
-
-
-def test_supervisor_pins_legacy_shadow_lifecycle_owner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    captured: dict[str, str] = {}
-
-    def popen(_command, **kwargs):
-        captured.update(kwargs["env"])
-        return FakeProcess([])
-
-    monkeypatch.setenv("LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER", "nomad")
-    supervisor = RuntimeSupervisor(configured(tmp_path), root=tmp_path, popen=popen)
-    supervisor._launch(supervisor.children["kalshi_sdk_ws_shadow"])
-
-    assert captured["LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER"] == "runtime_supervisor"
 
 
 def test_runtime_pid_lease_blocks_duplicate_and_recovers_stale(tmp_path: Path) -> None:
@@ -122,4 +84,4 @@ def test_stop_does_not_issue_recorder_process_command(tmp_path: Path) -> None:
     supervisor.stop_components()
     payload = json.loads((tmp_path / "runtime/runtime-supervisor-status.json").read_text())
     assert payload["status"] == "STOPPED"
-    assert set(payload["components"]) == {"kalshi_sdk_ws_shadow", "paper_forward"}
+    assert set(payload["components"]) == {"paper_forward"}
