@@ -38,10 +38,7 @@ def _runner(
 
 def test_lifecycle_owner_is_explicit_and_fail_closed() -> None:
     assert _lifecycle_owner({}) == "runtime_supervisor"
-    assert (
-        _lifecycle_owner({"LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER": "nomad"})
-        == "nomad"
-    )
+    assert _lifecycle_owner({"LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER": "nomad"}) == "nomad"
     with pytest.raises(ValueError, match="lifecycle owner"):
         _lifecycle_owner({"LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER": "both"})
 
@@ -107,13 +104,13 @@ def test_nomad_jobspec_owns_only_shadow_process_lifecycle() -> None:
     assert 'LIVE15_KALSHI_DEMO_API_KEY_ID                    = ""' in jobspec
     assert 'LIVE15_KALSHI_DEMO_API_KEY_ID_FILE               = ""' in jobspec
     assert 'LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH              = ""' in jobspec
-    assert 'from live15_quant.managed_kalshi_sdk_shadow import main; main()' in jobspec
-    assert 'attempts = 3' in jobspec
+    assert "from live15_quant.managed_kalshi_sdk_shadow import main; main()" in jobspec
+    assert "attempts = 3" in jobspec
     assert 'interval = "5m"' in jobspec
     assert 'delay    = "15s"' in jobspec
     assert 'mode     = "fail"' in jobspec
-    assert 'attempts  = 0' in jobspec
-    assert 'unlimited = false' in jobspec
+    assert "attempts  = 0" in jobspec
+    assert "unlimited = false" in jobspec
     assert "runtime-supervisor-control.json" not in jobspec
     assert "paper_forward" not in jobspec
     assert "current_trainable" not in jobspec
