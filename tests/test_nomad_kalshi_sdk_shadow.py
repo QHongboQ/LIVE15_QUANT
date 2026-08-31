@@ -94,7 +94,8 @@ def test_nomad_jobspec_owns_only_shadow_process_lifecycle() -> None:
 
     assert 'job "live15-kalshi-sdk-ws-shadow"' in jobspec
     assert 'type        = "service"' in jobspec
-    assert 'attribute = "${attr.os.name}"' in jobspec
+    assert 'attribute = "${attr.kernel.name}"' in jobspec
+    assert 'attribute = "${attr.os.name}"' not in jobspec
     assert 'value     = "windows"' in jobspec
     assert 'driver       = "raw_exec"' in jobspec
     assert "LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER" in jobspec
