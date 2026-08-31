@@ -154,6 +154,8 @@ def test_authority_leaves_preserve_moved_current_truth() -> None:
     assert "separate runtime-ownership authority" in control_center
     assert "Recorder process lifecycle is Nomad-owned" in recorder_truth
     assert "ST-005" in throughput and "60-minute proof" in throughput
+    assert "standalone `ST-005` custom-throughput optimization task is retired" in throughput
+    assert "No historical 60-minute proof is claimed to have passed" in throughput
     assert "gap002-closure.md" in reliability
     assert "Research coverage comes from the typed" in research
     assert "Only Kalshi finalized settlement" in validation and "fails closed" in validation
@@ -180,7 +182,9 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
         "upstream-consolidation freeze",
         "owner resolution -> freeze legacy generic owner",
         "CLEAN BASELINE",
-        "**NEXT:** begin the bounded upstream-consolidation phase",
+        "Project Brain authority consolidation COMPLETE",
+        "**NEXT:** begin the bounded **RUNTIME / LIFECYCLE CONSOLIDATION**",
+        "Nomad + Windows SCM",
     ):
         assert expected in roadmap
     current_roadmap = roadmap.split("## Change log", maxsplit=1)[0]
@@ -194,6 +198,8 @@ def test_gap002_historical_baseline_is_preserved_after_durable_closeout() -> Non
     closure = read("docs/project-brain/dependencies/gap002-closure.md")
     evidence = read("docs/evidence/GAP002_DEPENDENCY_CLOSURE_DISCOVERY_001.md")
     baseline = read("docs/evidence/GAP002_FROZEN_BASELINE_001.md")
+    first_acceptance = read("docs/evidence/GAP002_FINAL_EVIDENCE_AND_VERDICT_001.md")
+    second_acceptance = read("docs/evidence/GAP002_SECOND_PRODUCTION_ACCEPTANCE_001.md")
 
     assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = YES" in closure
     assert "MIGRATE_BEFORE_GAP_SET = NONE" in closure
@@ -203,6 +209,9 @@ def test_gap002_historical_baseline_is_preserved_after_durable_closeout() -> Non
     assert "GAP002_EXECUTED = NO" in baseline
     assert "GAP002 closed/pass" in closure
     assert "No Phase-4 execution route remains active" in closure
+    assert "`GAP002 = FAIL`" in first_acceptance
+    assert "`GAP002 = PASS`" in second_acceptance
+    assert "`FIRST_PRODUCTION_GAP002 = FAIL`" in second_acceptance
 
 
 def test_progress_history_and_inventory_preserve_lossless_v2_migration() -> None:
@@ -367,12 +376,12 @@ def test_single_authority_consolidation_contracts() -> None:
     roadmap = read("docs/project-brain/plan/current-roadmap.md")
     progress = read("PROJECT_PROGRESS.md")
     state = read("CURRENT_STATE.md")
-    legacy_pointer = read("PROJECT_ROADMAP.md")
     design_index = read("docs/roadmap/README.md")
 
     assert "docs/project-brain/README.md" in agents
     assert "plan/README.md" in root
     assert "current-roadmap.md" in plan_index
+    assert "../../roadmap/README.md" in plan_index
     assert "The sole current execution-sequence authority" in roadmap
     assert "**NEXT:**" in roadmap
 
@@ -382,9 +391,7 @@ def test_single_authority_consolidation_contracts() -> None:
             claims.append(path.relative_to(ROOT).as_posix())
     assert claims == ["docs/project-brain/plan/current-roadmap.md"]
 
-    assert "SUPERSEDED / POINTER ONLY" in legacy_pointer
     assert "INDEX_ONLY / NON-CURRENT" in design_index
-    assert "not current NEXT/ACTIVE/PLANNED authority" in legacy_pointer
     assert "## Immediate sequence" not in progress
     assert "**NEXT:**" not in progress
     assert "**NEXT:**" not in state
@@ -401,9 +408,7 @@ def test_single_authority_consolidation_contracts() -> None:
         "docs/project-brain/NOMAD_MIGRATION_STATUS_",
         "docs/project-brain/V2_MIGRATION_INVENTORY_",
     )
-    current_directive = re.compile(
-        r"(?im)^(?:\*\*)?(?:NEXT|ACTIVE|PLANNED)(?:\*\*)?\s*(?::|—|-)"
-    )
+    current_directive = re.compile(r"(?im)^(?:\*\*)?(?:NEXT|ACTIVE|PLANNED)(?:\*\*)?\s*(?::|—|-)")
     historical_phase_claim = re.compile(r"(?i)\((?:active|planned after[^)]*)\)")
     scanned = []
     for markdown_path in ROOT.rglob("*.md"):
@@ -419,6 +424,65 @@ def test_single_authority_consolidation_contracts() -> None:
         assert not historical_phase_claim.search(text), path
     assert len(scanned) > 20
     assert authority_path in scanned
+
+
+def test_compact_progress_has_only_current_or_future_gated_rows() -> None:
+    progress = read("PROJECT_PROGRESS.md")
+    assert "## Active and gated work\n\n### Current Production runtime authority" in progress
+    active = progress.split("## Active and gated work", maxsplit=1)[1].split(
+        "## Planning route", maxsplit=1
+    )[0]
+
+    assert "| RUNTIME-LIFECYCLE-CONSOLIDATION | PLANNED / NEXT |" in active
+    assert "| TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED |" in active
+    for historical_or_superseded in (
+        "WS-RESYNC-001 + GAP-002",
+        "SHADOW-REC-001",
+        "NOMAD-POC-SECURE-001",
+        "NOMAD-POC-VALIDATE-001",
+        "NOMAD-MIGRATION-STATUS-20260830",
+        "NOMAD-CONTROL-CENTER-CUTOVER-FINAL-001",
+        "GITHUB-ACTIONS-PUBLIC-20260830",
+        "H2-TRAIN-003",
+        "ST-005",
+        "DEP-001",
+        "DEP-ROOT-HYGIENE-PREVENT-001",
+    ):
+        assert historical_or_superseded not in active
+
+    st005 = next(line for line in progress.splitlines() if line.startswith("| ST-005 |"))
+    assert "CANCELLED / SUPERSEDED" in st005
+    assert "BLOCKED" not in st005
+
+
+def test_design_reference_index_is_recursive_and_non_current() -> None:
+    root = read("docs/project-brain/README.md")
+    plan_index = read("docs/project-brain/plan/README.md")
+    design_index = read("docs/roadmap/README.md")
+
+    assert "plan/README.md" in root
+    assert "../../roadmap/README.md" in plan_index
+    assert "INDEX_ONLY / NON-CURRENT" in design_index
+    assert "Current execution ordering is owned only by" in design_index
+    assert "current NEXT/ACTIVE/PLANNED task" in design_index
+
+    legacy_root_name = "PROJECT_" + "ROADMAP.md"
+    assert not (ROOT / legacy_root_name).exists()
+    for markdown_path in ROOT.rglob("*.md"):
+        assert legacy_root_name not in markdown_path.read_text(encoding="utf-8")
+
+
+def test_next_names_one_concrete_responsibility_class() -> None:
+    roadmap = read("docs/project-brain/plan/current-roadmap.md")
+
+    next_section = roadmap.split("**NEXT:**", maxsplit=1)[1].split(
+        "Candidate-specific boundaries", maxsplit=1
+    )[0]
+    assert "RUNTIME / LIFECYCLE CONSOLIDATION" in next_section
+    assert "Nomad + Windows SCM" in next_section
+    assert "select exactly one responsibility" in next_section
+    assert "select one generic responsibility" not in next_section
+    assert "big-bang RuntimeSupervisor/WinSW deletion" in next_section
 
 
 def test_task_status_route_is_one_child_at_a_time() -> None:

@@ -1,6 +1,6 @@
 # Current roadmap
 
-Revision: R5
+Revision: R6
 Status: approved execution strategy.
 
 ## What it is
@@ -17,8 +17,9 @@ Normal feature/model expansion is temporarily paused. The sole current mainline 
 
 ```text
 GAP002 CLOSED
-  -> Project Brain authority consolidation
+  -> Project Brain authority consolidation COMPLETE
   -> upstream-consolidation freeze
+  -> runtime / lifecycle consolidation first (Nomad + Windows SCM)
   -> bounded responsibility-by-responsibility replacement
        owner resolution -> freeze legacy generic owner -> replace one responsibility
        -> verify -> retire corresponding old owner -> next responsibility
@@ -27,11 +28,15 @@ GAP002 CLOSED
   -> resume data/training/model progression under existing gates
 ```
 
-**NEXT:** begin the bounded upstream-consolidation phase. Select one generic responsibility through
-Existing Owner First and the current replacement classification, freeze its legacy implementation,
-replace it with one clear internal/upstream owner, verify it, and retire only the corresponding old
-owner. Do not use a big-bang rewrite or keep legacy and replacement owners actively evolving in
-parallel.
+The Project Brain authority-consolidation step is complete in this bounded change and is being
+closed by PR #122.
+
+**NEXT:** begin the bounded **RUNTIME / LIFECYCLE CONSOLIDATION** responsibility class using
+Nomad + Windows SCM. The next task must apply Existing Owner First to inventory remaining WinSW /
+RuntimeSupervisor generic responsibilities, select exactly one responsibility, consult current
+official Nomad/SCM sources, freeze only that legacy owner, replace and verify it, then retire only
+its corresponding old owner. This does not authorize a big-bang RuntimeSupervisor/WinSW deletion
+or parallel evolution of old and replacement owners.
 
 Candidate-specific boundaries and classifications remain in
 `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; replacement mechanics remain in
@@ -62,3 +67,4 @@ Update only when an approved phase, freeze, or gate changes.
 | R3 | GAP002-FROZEN-BASELINE-001 | Completed Phase 3 and routed next action to Phase 4A; GAP002 not executed. |
 | R4 | GAP002-CRITICAL-PATH-UPSTREAM-REPLACEMENT-001 | Held Phase 4A for the selected Recorder lifecycle replacement baseline. |
 | R5 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Closed obsolete GAP002 phase routing and established the sole upstream-consolidation mainline. |
+| R6 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 closeout | Completed authority consolidation and selected runtime/lifecycle consolidation as the one concrete next responsibility class. |

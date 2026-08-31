@@ -21,7 +21,7 @@ foundation evidence is the `PROJECT_PROGRESS.md` ledger.
 | Area | State | Authoritative source |
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **CLOSED / PASS** | `PROJECT_PROGRESS.md`; detailed FAIL/PASS receipts remain evidence only |
-| Archive/purge throughput | **EVIDENCE_GATED** | `ST-005`; measure/classify only, with no permission for a custom throughput framework |
+| Archive/purge throughput | **ON_DEMAND_MEASUREMENT** | The standalone ST-005 task is superseded; its bounded contract remains at `docs/project-brain/capabilities/records/recorder/throughput-proof.md` for later measured candidate decisions only |
 | Nomad runtime ownership | **VERIFIED** | `docs/project-brain/dependencies/platform/runtime-ownership.md` |
 | Generic infrastructure | **UPSTREAM_CONSOLIDATION** | `docs/project-brain/constraints/execution/runtime-upstream-boundary.md` |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |

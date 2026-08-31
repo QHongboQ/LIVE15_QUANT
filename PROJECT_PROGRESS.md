@@ -20,21 +20,23 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
   not as canonical or detailed history.
 - Current execution sequence: `docs/project-brain/plan/current-roadmap.md`.
 
-## Recent completed foundations
+## Durable closeouts relevant to current gates
 
 | Task | Status / result | Evidence | Durable implication |
 | --- | --- | --- | --- |
-| DEP-PKG-001 | MERGED / COMPLETE | PR #45 `e6cb02fd` | Auditable SHA-pinned package/activation/rollback prerequisite exists. |
-| DEP-PKG-002 | MERGED / COMPLETE | PR #46 `7fd9b4da` | First-deploy legacy rollback bootstrap compatibility complete; no deployment claim. |
-| H2-TRAIN-001 / NIGHT-001 | MERGED / PARTIAL | PR #47 `7fe9f17a` | H2 code/materialization boundary exists; real H2 remains validation-gated. |
-| H2-TRAIN-002 | MERGED / BLOCKED | PR #48 `6bb24775` | Real snapshot acquisition works; delta endpoint plan-restricted; prior H0 overlap blocked by gap authority. |
-| UI-013 | MERGED / COMPLETE | PR #49 `30fcdd85` | Control Center truth/performance/observability hardened; ST-005 itself remains unresolved. |
-| DEV-TOOLING-GH-001 | VERIFIED / AVAILABLE | Windows development host | GitHub CLI (`gh`) is installed and authenticated; Codex may use it for PR, Actions/CI, issue, review, and GitHub API workflows. Ordinary repo-local maintenance may be autonomously merged after the standing Upstream Reuse First + regression + Checker + green-CI gates; elevated-review zones retain their explicit human gates. |
-| SHADOW-REC-DISCOVERY-CONTRACT-001 | MERGED / CONTRACT | PR #80 | Non-Production validation remains separately authorized. |
+| WS-RESYNC-001 + GAP-002 | CLOSED / PASS | PR #117 preserves the first Production FAIL receipt; PR #120 preserves the merged second Production PASS receipt. | GAP002 is closed and has no further execution route. |
+| RECORDER_LIFECYCLE_TO_NOMAD | VERIFIED / COMPLETE | `docs/project-brain/capabilities/control-center.md`; `docs/project-brain/dependencies/platform/runtime-ownership.md` | Recorder Production lifecycle is Nomad-owned. |
+| PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | PR_OPEN / CONSOLIDATION_COMPLETE | PR #122 | This PR closes the authority-consolidation step; it does not perform an upstream replacement. |
+
+## Superseded standalone work
+
+| Task | Status / result | Retained authority | Durable implication |
+| --- | --- | --- | --- |
+| ST-005 | CANCELLED / SUPERSEDED | `docs/project-brain/capabilities/records/recorder/throughput-proof.md` | The standalone custom-throughput optimization lane is retired. Its bounded 60-minute measurement contract remains available on demand; it is not evidence that the proof passed and does not authorize upstream adoption. |
 
 ## Active and gated work
 
-## Current Production runtime authority
+### Current Production runtime authority
 
 CENTRAL_RUNTIME_AUTHORITY = ESTABLISHED
 CANONICAL_RUNTIME = `CANONICAL_LIVE15_PRODUCTION_RUNTIME`
@@ -46,17 +48,7 @@ runtime requires concrete incompatibility evidence.
 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
-| WS-RESYNC-001 + GAP-002 | CLOSED / PASS | PR #117 preserves the first Production FAIL evidence; PR #120 preserves the merged second Production PASS receipt. No further GAP002 execution is required. | None for GAP002; closed |
-| SHADOW-REC-001 | BLOCKED / STALE_RECEIPTS | PIDs absent; no health/restart. Detail: `docs/reliability/SHADOW_RECORDER_EVIDENCE_AUDIT_20260829.md`. | Non-Production only |
-| NOMAD-POC-SECURE-001 | VERIFIED / isolated POC burn-in + auto-revert + two-hour soak PASS | Final receipt: 24 healthy observations; terminal observer entry and evidence rule are in the POC handoff. No cutover. | POC only; no Production/holdout |
-| NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 remains code evidence only; do not merge or treat it as deployment proof. Its separate restart-validation lineage does not supersede the verified service-model POC evidence. | POC only |
-| NOMAD-MIGRATION-STATUS-20260830 | VERIFIED / COMPLETE | `docs/project-brain/capabilities/control-center.md` | No retirement or Recorder change without separate approval |
-| NOMAD-CONTROL-CENTER-CUTOVER-FINAL-001 | VERIFIED / COMPLETE | `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md` | `capabilities/control-center.md` owns current truth |
-| GITHUB-ACTIONS-PUBLIC-20260830 | VERIFIED / STANDARD_HOSTED_CI_AVAILABLE | Public repo: standard GitHub-hosted CI may run normally; no task-specific quota approval is required. Larger/billable runners remain separately cost-gated. | Normal green-CI merge policy |
-| H2-TRAIN-003 | BLOCKED / historical | Preserve prior blocker evidence. Do not continue as an independent development branch unless WS-RESYNC leaves a new smallest blocker. | Training/holdout |
-| ST-005 | BLOCKED / MEASURED_PROOF_REQUIRED | Retain the bounded 60-minute throughput/catch-up proof. Use it to classify a real bottleneck and, only if proven, select the smallest upstream accelerator/queue/read-path candidate; it is not permission to grow a custom throughput subsystem. | Measurement/deployment remains separately authorized; no infrastructure adoption in ST-005 itself |
-| DEP-001 | BLOCKED / PREFLIGHT_NOT_READY | 2026-08-29 read-only snapshot: dirty protected checkout, 37 commits behind then-main, active legacy `UNPROVEN` pointer. No deployment/restart. Detail: `docs/deployment/DEP001_PHASE_A_PREFLIGHT_20260829.md`. | Deployment/restart requires separate explicit `DEP001_DEPLOY_APPROVED` |
-| DEP-ROOT-HYGIENE-PREVENT-001 | MERGED / ENFORCEMENT_READY | PR #79 merged the pytest cache isolation, WinSW fixture temp storage and fail-closed startup guard; detailed validation remains in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`. | Production cleanup remains separately authorized |
+| RUNTIME-LIFECYCLE-CONSOLIDATION | PLANNED / NEXT | Resolve the existing Nomad + Windows SCM owners, inventory remaining WinSW / RuntimeSupervisor generic responsibilities, then replace and verify only one selected responsibility before retiring its corresponding old owner. | Separate bounded task; no big-bang deletion or Production action |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
 
 ## Planning route
