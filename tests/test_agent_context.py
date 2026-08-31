@@ -162,7 +162,10 @@ def test_authority_leaves_preserve_moved_current_truth() -> None:
     assert "NO TRAINING_GO" in training and "NO TRAINING_STARTED" in training
     assert "Holdout-contamination remediation/replacement" in training
     assert "KalshiGateway / immutable adapter" in software
-    assert "ControlCenter,\nRecorder, and the verified `kalshi_sdk_ws_shadow` lifecycle are Nomad-managed" in runtime
+    assert (
+        "ControlCenter,\nRecorder, and the verified `kalshi_sdk_ws_shadow` lifecycle are Nomad-managed"
+        in runtime
+    )
     assert "Production writes remain disabled" in boundary
     assert "all three WinSW services running" in legacy_receipt
     assert "no current-main deployment claim" in legacy_receipt
@@ -579,7 +582,10 @@ def test_current_recorder_runtime_owner_is_machine_readable_and_consistent() -> 
     narrative = read("docs/runtime_ownership_and_self_healing.md")
     adr = read("docs/adr/0003-runtime-ownership.md")
     assert "owned only\nby `deploy/windows/runtime-ownership.json`" in narrative
-    assert "Recorder, ControlCenter, and `kalshi_sdk_ws_shadow` resolve to Nomad lifecycle ownership." in narrative
+    assert (
+        "Recorder, ControlCenter, and `kalshi_sdk_ws_shadow` resolve to Nomad lifecycle ownership."
+        in narrative
+    )
     assert "Recorder and RuntimeSupervisor\nremain independently WinSW-owned" not in narrative
     assert "Current owner\nvalues are resolved from `deploy/windows/runtime-ownership.json`" in adr
     assert "Windows/WinSW owns service lifecycle" not in adr
