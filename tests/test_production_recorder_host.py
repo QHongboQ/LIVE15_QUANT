@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +12,9 @@ from websockets.exceptions import ConcurrencyError
 
 from live15_quant.kalshi_gateway.canonical_ws import canonical_from_sdk
 from live15_quant.kalshi_gateway.production_recorder_host import SdkProductionRecorderHost
+from live15_quant.kalshi_gateway.recorder_consumer import RecorderMarketDataConsumer
 from live15_quant.kalshi_gateway.recorder_provider import (
+    RecorderMarketDataEvent,
     RecorderProviderState,
     SdkRecorderMarketDataProvider,
 )
@@ -104,6 +107,7 @@ async def test_current_active_universe_starts_sdk_session_when_commodities_are_c
     host._reconnect_count = 0
     host._final_summary = None
     host._reconnect_requested = asyncio.Event()
+    host._projection_epoch = 0
 
     await host._run_session(active_universe, stop)
 
@@ -342,3 +346,125 @@ async def test_new_ten_market_session_requires_all_valid_authoritative_snapshots
         assert provider.gap_count == 0
     finally:
         await provider.stop()
+
+
+@pytest.mark.asyncio
+async def test_explicit_reconnect_rejects_stale_session_epoch_after_durable_commit() -> None:
+    """An old durable delta cannot re-enter Recorder projection after reconnect."""
+
+    ticker = "KXBTC15M-CURRENT"
+    asset_by_ticker = {ticker: Asset.BTC}
+    old_provider = SdkRecorderMarketDataProvider.isolated(
+        asset_by_ticker=asset_by_ticker,
+        connection_id="old-session",
+        stale_seconds=10.0,
+    )
+    new_provider = SdkRecorderMarketDataProvider.isolated(
+        asset_by_ticker=asset_by_ticker,
+        connection_id="new-session",
+        stale_seconds=10.0,
+    )
+    await old_provider.start()
+    await new_provider.start()
+    persisted: list[RecorderMarketDataEvent] = []
+    projected: list[RecorderMarketDataEvent] = []
+    reconnect_gap_active = False
+
+    class Writer:
+        def persist_market_data_events(self, events: tuple[RecorderMarketDataEvent, ...]) -> None:
+            persisted.extend(events)
+
+    def snapshot(sequence: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            type="orderbook_snapshot",
+            sid=1,
+            seq=sequence,
+            msg=SimpleNamespace(
+                market_ticker=ticker,
+                market_id="market-btc",
+                yes={Decimal("0.40"): Decimal("1")},
+                no={Decimal("0.50"): Decimal("1")},
+            ),
+        )
+
+    def delta(sequence: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            type="orderbook_delta",
+            sid=1,
+            seq=sequence,
+            msg=SimpleNamespace(
+                market_ticker=ticker,
+                market_id="market-btc",
+                side="yes",
+                price=Decimal("0.41"),
+                delta=Decimal("1"),
+            ),
+        )
+
+    def accepted(provider: SdkRecorderMarketDataProvider, message: SimpleNamespace):
+        return provider.accept(
+            canonical_from_sdk(
+                message,
+                asset_by_ticker=asset_by_ticker,
+                connection_id=provider.connection_id,
+                received_at=datetime.now(UTC),
+            )
+        )
+
+    def on_committed(events: tuple[RecorderMarketDataEvent, ...]) -> None:
+        nonlocal reconnect_gap_active
+        projected.extend(events)
+        if any(event.authoritative for event in events):
+            reconnect_gap_active = False
+
+    host = SdkProductionRecorderHost(
+        settings=SimpleNamespace(
+            kalshi_websocket_stale_seconds=10.0,
+            kalshi_websocket_read_timeout_seconds=5.0,
+        ),
+        store=SimpleNamespace(bounded_row_count_estimates=lambda: {}),
+        universe=lambda: {Asset.BTC: ticker},
+        on_committed=on_committed,
+        on_transport_state=lambda _state, _observed_at: None,
+    )
+    host._running = True
+    host._provider = old_provider
+    old_epoch = host._projection_epoch
+    old_snapshot = accepted(old_provider, snapshot(1))
+    old_delta = accepted(old_provider, delta(2))
+    host._project_committed_session(old_provider, old_epoch, (old_snapshot,))
+    assert old_snapshot.authoritative is True
+    assert old_delta.authoritative is True
+    assert projected == [old_snapshot]
+
+    await host.request_reconnect()
+    reconnect_gap_active = True
+    old_consumer = RecorderMarketDataConsumer(
+        Writer(),
+        on_committed=lambda events: host._project_committed_session(
+            old_provider, old_epoch, events
+        ),
+    )
+    try:
+        old_consumer.consume(old_delta)
+        assert old_consumer.flush() == 1
+        assert persisted == [old_delta]
+        assert projected == [old_snapshot]
+        assert reconnect_gap_active is True
+
+        new_epoch = host._projection_epoch
+        new_delta = accepted(new_provider, delta(1))
+        assert new_delta.authoritative is False
+        host._project_committed_session(new_provider, new_epoch, (new_delta,))
+        assert reconnect_gap_active is True
+        assert new_provider.state is not RecorderProviderState.SYNCHRONIZED
+
+        new_snapshot = accepted(new_provider, snapshot(2))
+        assert new_snapshot.authoritative is True
+        host._project_committed_session(new_provider, new_epoch, (new_snapshot,))
+        assert new_provider.state is RecorderProviderState.SYNCHRONIZED
+        assert reconnect_gap_active is False
+        assert projected == [old_snapshot, new_delta, new_snapshot]
+    finally:
+        await old_provider.stop()
+        await new_provider.stop()
