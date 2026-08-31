@@ -61,7 +61,7 @@ append-only RECOVERED fact (IDs `63804`--`63813`). Recovery `gap_end` values
 range from `2026-08-31T04:51:01.022797+00:00` through
 `2026-08-31T04:51:01.091529+00:00`; the corresponding facts were detected
 from `2026-08-31T04:51:01.119856+00:00` through
-`2026-08-31T04:51:01.796516+00`.
+`2026-08-31T04:51:01.796516+00:00`.
 
 The replacement connection's first durable events were event IDs
 `545584444`--`545584453`: exactly ten `orderbook_snapshot` events, one for
