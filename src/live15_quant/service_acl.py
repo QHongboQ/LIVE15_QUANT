@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-LIVE15_SERVICES = frozenset({"LIVE15Recorder", "LIVE15ControlCenter", "LIVE15RuntimeSupervisor"})
+LIVE15_SERVICES = frozenset({"LIVE15Recorder", "LIVE15ControlCenter"})
 _SID = re.compile(r"^S-1-5-21-(?:\d+-){2}\d+-\d+$")
 
 

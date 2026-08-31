@@ -18,7 +18,6 @@ from pathlib import Path
 COMPONENTS = {
     "recorder": ("live15_quant.cli", "recorder_main"),
     "control-center": ("live15_quant.control_center", "main"),
-    "runtime-supervisor": ("live15_quant.runtime_supervisor", "main"),
 }
 
 

@@ -25,17 +25,6 @@
       "run_mode": "ALWAYS_ON"
     },
     {
-      "component": "LIVE15RuntimeSupervisor",
-      "owner_type": "SERVICE_MANAGED",
-      "owner_id": "WinSW:LIVE15RuntimeSupervisor",
-      "heartbeat_source": "runtime/runtime-supervisor-status.json",
-      "process_source": "Windows service LIVE15RuntimeSupervisor",
-      "health_source": "Windows service state plus current supervisor heartbeat",
-      "restart_authority": "WinSW:LIVE15RuntimeSupervisor",
-      "criticality": "DEGRADED_BUT_PROCESS_CAN_CONTINUE",
-      "run_mode": "ALWAYS_ON"
-    },
-    {
       "component": "kalshi_sdk_ws_shadow",
       "owner_type": "NOMAD_MANAGED",
       "owner_id": "Nomad:live15-kalshi-sdk-ws-shadow",

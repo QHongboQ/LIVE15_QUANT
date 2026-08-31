@@ -4,7 +4,7 @@ param(
     [string]$BackupPath = "$env:ProgramData\LIVE15\service-acl-backup\service-sddl-original.json"
 )
 $ErrorActionPreference = "Stop"
-$services = @("LIVE15Recorder","LIVE15ControlCenter","LIVE15RuntimeSupervisor")
+$services = @("LIVE15Recorder","LIVE15ControlCenter")
 $ace = "(A;;LCRPWPLO;;;$TargetSid)"
 $original = [ordered]@{}
 $rawOriginal = [ordered]@{}

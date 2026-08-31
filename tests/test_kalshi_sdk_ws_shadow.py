@@ -110,7 +110,6 @@ def test_status_heartbeat_preserves_pid_and_managed_identity(tmp_path: Path) -> 
             "expected_mode": "SDK_WS_SHADOW_NO_RECORDER_WRITES",
         },
         status_path=tmp_path / "status.json",
-        control_path=tmp_path / "control.json",
     )
     try:
         payload = runner._status_payload("WAITING_TICKERS")
@@ -333,7 +332,6 @@ async def test_managed_session_connects_and_subscribes_all_ten_assets(
         old_projection_path=tmp_path / "old.json",
         status={},
         status_path=tmp_path / "status.json",
-        control_path=tmp_path / "control.json",
     )
     try:
         await runner._run_session(universe)
@@ -363,7 +361,6 @@ async def test_rollover_watcher_detects_new_ticker_universe(
         old_projection_path=tmp_path / "old.json",
         status={},
         status_path=tmp_path / "status.json",
-        control_path=tmp_path / "control.json",
     )
     changed = asyncio.Event()
     try:
@@ -395,7 +392,6 @@ async def test_unknown_session_ticker_triggers_clean_rollover_without_accepting_
         old_projection_path=tmp_path / "old.json",
         status={},
         status_path=tmp_path / "status.json",
-        control_path=tmp_path / "control.json",
     )
     runner.adapter = bridge
     rollover = asyncio.Event()
@@ -433,7 +429,6 @@ async def test_unrelated_lifecycle_ticker_is_ignored_without_rollover(
         old_projection_path=tmp_path / "old.json",
         status={},
         status_path=tmp_path / "status.json",
-        control_path=tmp_path / "control.json",
     )
     runner.adapter = bridge
     try:
@@ -466,7 +461,6 @@ async def test_event_fee_update_does_not_restart_market_lifecycle_pump(
         old_projection_path=tmp_path / "old.json",
         status={},
         status_path=tmp_path / "status.json",
-        control_path=tmp_path / "control.json",
     )
     try:
         await runner._pump(FeeStream())
@@ -486,7 +480,6 @@ async def test_heartbeat_treats_sdk_streaming_state_as_running(
         old_projection_path=tmp_path / "old.json",
         status={},
         status_path=tmp_path / "status.json",
-        control_path=tmp_path / "control.json",
     )
     runner.adapter = bridge
     written: list[dict[str, object]] = []

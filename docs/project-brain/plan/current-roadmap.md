@@ -31,12 +31,10 @@ GAP002 CLOSED
 The Project Brain authority-consolidation step is complete in this bounded change and is being
 closed by PR #122.
 
-**NEXT:** begin the bounded **RUNTIME / LIFECYCLE CONSOLIDATION** responsibility class using
-Nomad + Windows SCM. The next task must apply Existing Owner First to inventory remaining WinSW /
-RuntimeSupervisor generic responsibilities, select exactly one responsibility, consult current
-official Nomad/SCM sources, freeze only that legacy owner, replace and verify it, then retire only
-its corresponding old owner. This does not authorize a big-bang RuntimeSupervisor/WinSW deletion
-or parallel evolution of old and replacement owners.
+**NEXT:** complete the bounded final global legacy/dead-code cleanup, beginning with the already
+verified RuntimeSupervisor host retirement. Remove only the retired repository owner and its
+current references; preserve historical evidence and shared infrastructure that still serves a
+retained artifact. This does not authorize parallel lifecycle owners or Production mutation.
 
 Candidate-specific boundaries and classifications remain in
 `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; replacement mechanics remain in

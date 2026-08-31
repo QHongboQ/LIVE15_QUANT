@@ -69,38 +69,6 @@ def test_service_xml_is_direct_python_with_bounded_failure_policy() -> None:
     ]
 
 
-def test_recorder_and_supervisor_are_independent_automatic_winsw_services() -> None:
-    recorder = ElementTree.parse(ROOT / "deploy/windows/live15-recorder.xml").getroot()
-    supervisor = ElementTree.parse(ROOT / "deploy/windows/live15-runtime-supervisor.xml").getroot()
-    recorder_values = {child.tag: (child.text or "") for child in recorder}
-    supervisor_values = {child.tag: (child.text or "") for child in supervisor}
-
-    assert recorder_values["id"] == "LIVE15Recorder"
-    assert recorder_values["startmode"] == "Automatic"
-    assert supervisor_values["id"] == "LIVE15RuntimeSupervisor"
-    assert supervisor_values["arguments"].endswith(
-        "bootstrap\\release_runner.py --component runtime-supervisor"
-    )
-    assert supervisor_values["startmode"] == "Automatic"
-    assert [node.attrib["action"] for node in supervisor.findall("onfailure")] == [
-        "restart",
-        "restart",
-        "restart",
-        "none",
-    ]
-
-
-def test_supervisor_install_scripts_stage_only_supervisor_service() -> None:
-    install = (ROOT / "tools/install_runtime_supervisor_service.ps1").read_text(encoding="utf-8")
-    uninstall = (ROOT / "tools/uninstall_runtime_supervisor_service.ps1").read_text(
-        encoding="utf-8"
-    )
-    assert "LIVE15RuntimeSupervisor" in install
-    assert "LIVE15Recorder" not in install
-    assert "LIVE15ControlCenter" not in install
-    assert "LIVE15RuntimeSupervisor" in uninstall
-
-
 def test_install_scripts_render_only_control_center_and_escape_paths() -> None:
     install = (ROOT / "tools" / "install_control_center_service.ps1").read_text(encoding="utf-8")
     uninstall = (ROOT / "tools" / "uninstall_control_center_service.ps1").read_text(

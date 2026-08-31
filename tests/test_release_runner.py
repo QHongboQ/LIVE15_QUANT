@@ -146,7 +146,7 @@ def test_runner_does_not_leak_its_component_arguments_to_the_application(
 
 @pytest.mark.parametrize(
     ("component", "function_name"),
-    [("recorder", "recorder_main"), ("control-center", "main"), ("runtime-supervisor", "main")],
+    [("recorder", "recorder_main"), ("control-center", "main")],
 )
 def test_component_relative_runtime_writes_stay_outside_immutable_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, component: str, function_name: str
