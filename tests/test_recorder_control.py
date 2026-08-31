@@ -124,6 +124,21 @@ async def test_one_shot_reconnect_action_is_consumed_once_and_unknown_is_ignored
     await asyncio.gather(task, return_exceptions=True)
 
 
+def test_operator_reconnect_requires_a_live_recorder_pid(tmp_path, monkeypatch) -> None:
+    configured = managed_settings(tmp_path)
+    configured.recorder_control_path.parent.mkdir(parents=True)
+    configured.recorder_pid_path.write_text("2468\n", encoding="ascii")
+    original = json.dumps({"desired": "running", "state": "running"}, sort_keys=True)
+    configured.recorder_control_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(cli, "load_settings", lambda: configured)
+    monkeypatch.setattr(cli, "process_alive", lambda _pid: False)
+
+    with pytest.raises(SystemExit, match="not currently running"):
+        cli.recorder_reconnect_main([])
+
+    assert configured.recorder_control_path.read_text(encoding="utf-8") == original
+
+
 def test_startup_phase_diagnostics_are_bounded_and_path_free(tmp_path) -> None:
     path = tmp_path / "data" / "recorder-startup.json"
     clock = iter((10.0, 10.0, 10.25, 10.5)).__next__

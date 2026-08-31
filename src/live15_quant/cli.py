@@ -75,8 +75,10 @@ from live15_quant.recorder_control import (
     ManagedRecorderState,
     RecorderPidLease,
     RecorderProcessController,
+    _read_pid,
     claim_kalshi_ws_reconnect,
     finish_kalshi_ws_reconnect,
+    process_alive,
     request_kalshi_ws_reconnect,
 )
 from live15_quant.secondary_diagnostics import build_secondary_diagnostics
@@ -915,6 +917,9 @@ def recorder_reconnect_main(argv: Sequence[str] | None = None) -> None:
     """Queue one explicit Kalshi Production WebSocket reconnect."""
     _parse_no_args("live15-recorder-reconnect", recorder_reconnect_main.__doc__ or "", argv)
     settings = load_settings()
+    pid = _read_pid(settings.recorder_pid_path)
+    if pid is None or not process_alive(pid):
+        raise SystemExit("Recorder is not currently running; reconnect request not queued")
     if request_kalshi_ws_reconnect(settings.recorder_control_path):
         print("reconnect request queued")
         return

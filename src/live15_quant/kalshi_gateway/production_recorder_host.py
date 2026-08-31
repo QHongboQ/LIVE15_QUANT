@@ -76,6 +76,7 @@ class SdkProductionRecorderHost:
         self._reconnect_count = 0
         self._queue_high_watermark = 0
         self._running = False
+        self._reconnect_requested = asyncio.Event()
         self._final_summary: SdkProductionRecorderHostSummary | None = None
 
     @property
@@ -109,6 +110,12 @@ class SdkProductionRecorderHost:
     @property
     def final_summary(self) -> SdkProductionRecorderHostSummary | None:
         return self._final_summary
+
+    async def request_reconnect(self) -> None:
+        """Request one orderly SDK session replacement without stopping Recorder."""
+        if not self._running:
+            raise RuntimeError("SDK Production WebSocket is not active")
+        self._reconnect_requested.set()
 
     async def _accept_typed_orderbook(
         self,
@@ -293,12 +300,16 @@ class SdkProductionRecorderHost:
             }
             stop_task = asyncio.create_task(stop.wait(), name="sdk-recorder-stop")
             changed_task = asyncio.create_task(changed.wait(), name="sdk-recorder-universe-changed")
+            reconnect_task = asyncio.create_task(
+                self._reconnect_requested.wait(), name="sdk-recorder-reconnect-requested"
+            )
             all_tasks = ancillary | {
                 orderbook_drain_task,
                 consumer_task,
                 timer_task,
                 stop_task,
                 changed_task,
+                reconnect_task,
             }
             done, _pending = await asyncio.wait(all_tasks, return_when=asyncio.FIRST_COMPLETED)
 
@@ -319,10 +330,13 @@ class SdkProductionRecorderHost:
             flushed = consumer.close()
             self._capture_final_summary(consumer, flushed)
 
-            for task in {stop_task, changed_task}:
+            for task in {stop_task, changed_task, reconnect_task}:
                 if task not in done:
                     task.cancel()
-            await asyncio.gather(stop_task, changed_task, return_exceptions=True)
+            await asyncio.gather(stop_task, changed_task, reconnect_task, return_exceptions=True)
+            if reconnect_task in done:
+                self._reconnect_requested.clear()
+                changed.set()
             if changed.is_set() and not stop.is_set():
                 # A new 15-minute ticker invalidates the prior authoritative
                 # set before the next SDK session obtains replacement snapshots.
