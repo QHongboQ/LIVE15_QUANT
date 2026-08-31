@@ -10,6 +10,7 @@ from live15_quant.kalshi_gateway.shadow import ShadowTelemetryStore
 from live15_quant.managed_kalshi_sdk_shadow import (
     KalshiSdkShadowRunner,
     _lifecycle_owner,
+    _nomad_break_handler,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,23 @@ def test_lifecycle_owner_is_explicit_and_fail_closed() -> None:
     assert _lifecycle_owner({"LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER": "nomad"}) == "nomad"
     with pytest.raises(ValueError, match="lifecycle owner"):
         _lifecycle_owner({"LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER": "both"})
+
+
+def test_nomad_ctrl_break_routes_to_existing_stop_event(tmp_path: Path) -> None:
+    runner, store = _runner(tmp_path, control_path=None)
+
+    class ImmediateLoop:
+        @staticmethod
+        def call_soon_threadsafe(callback, *args) -> None:
+            callback(*args)
+
+    try:
+        handler = _nomad_break_handler(runner, ImmediateLoop())
+        handler(0, None)
+        assert runner.stop_event.is_set()
+        assert runner.stop_reason == "NOMAD_CTRL_BREAK"
+    finally:
+        store.close()
 
 
 @pytest.mark.asyncio
@@ -75,7 +93,8 @@ def test_nomad_jobspec_owns_only_shadow_process_lifecycle() -> None:
     assert 'job "live15-kalshi-sdk-ws-shadow"' in jobspec
     assert 'type        = "service"' in jobspec
     assert 'driver       = "raw_exec"' in jobspec
-    assert 'LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER = "nomad"' in jobspec
+    assert "LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER" in jobspec
+    assert '= "nomad"' in jobspec
     assert 'from live15_quant.managed_kalshi_sdk_shadow import main; main()' in jobspec
     assert 'attempts = 3' in jobspec
     assert 'interval = "5m"' in jobspec
