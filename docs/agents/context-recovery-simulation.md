@@ -36,22 +36,22 @@ approval. **Mutations: 0.**
 | Question | Correct recovery answer |
 | --- | --- |
 | Strategic objective | Auditable, reproducible Kalshi-native research for ten fixed 15-minute series before any promotion beyond paper-only behaviour. |
-| Current phase | Pre-training reliability/storage closeout plus current-main deployment proof gate. |
+| Current phase | Resolve `CURRENT_STATE.md`; this simulation deliberately stores no mutable phase value. |
 | Current plan | `docs/project-brain/plan/current-roadmap.md` is the sole execution-sequence authority. |
-| Recent merged work | PR #29–#40 are task-indexed in `PROJECT_PROGRESS.md`; their merged state is not deployment proof. |
-| Deployed and verified | Only bounded runtime evidence can establish deployment/verification. Terminal V3 has historical proof; current-main deployment is unproven. |
-| Training permission | **NO TRAINING_GO**. RUN-004 technical PASS does not authorize long training. |
+| Recent merged work | Resolve `PROJECT_PROGRESS.md` and Git/PR history; this simulation stores no current task snapshot. |
+| Deployed and verified | Resolve the selected runtime authority and bounded evidence; merged code alone is not deployment proof. |
+| Training permission | Resolve the training/promotion authority; technical PASS never implies training authorization. |
 | Frozen holdout | Previous `UNREVEALED_FROZEN` status is invalid after accidental exposure; do not reopen it. Remediation/replacement is required before `TRN-001`. |
 | Verified work | UI-010 has historical Terminal V3 proof and ST-006 is a verified read-only `TEMPORARY_BACKLOG` classification; neither proves current-main deployment. |
-| Active limits | Exact WTI Pyth source is unavailable and feed-locally isolated; service ACL and generic Pyth-worker incidents are resolved history. |
+| Active limits | Resolve `CURRENT_STATE.md` and selected bounded evidence; this simulation stores no incident snapshot. |
 | H0/H1/H2 | Native Recorder/verified archive; official historical evidence; validated credentialed historical L2. |
 | ResearchUniverse | Registry-based authorized source coverage, with deterministic precedence, deduplication, and conflict quarantine. |
 | Training Snapshot / Dataset | Immutable reproduction selection/artifact, not independent history authority. |
 | Why not concatenate v1/v2 | It would collapse immutable experiment lineage and bypass the Research Data Authority/holdout boundaries. |
-| Runtime owners | ControlCenter is Nomad-owned; Recorder and RuntimeSupervisor retain their separate ownership boundaries. |
+| Runtime owners | Resolve `deploy/windows/runtime-ownership.json` through the runtime-ownership leaf. |
 | Kalshi rollover | The pinned SDK acknowledgement receive conflicted with LIVE15's active reader. Replace the SDK session; normalize exactly one missing side only; otherwise fail closed. |
 | Exact WTI policy | No authoritative replacement exists, so it must not silently swap feeds; the circuit breaker isolates and reprobes that source. |
-| Upstream First | Official docs → pinned source/tests → GitHub Issues/PR → reference implementation → web → reproduce → narrow fix → regression → Checker → CI. |
+| Owner/reuse order | Existing Owner First → reuse/consolidate/replace current owner → Upstream Reuse First → thin adapter/config → LIVE15-specific implementation last-last-last. |
 | Human-only decisions | Production writes/deployments, Hard Risk, label/data truth, model promotion, and strategic/major architecture changes. |
 | Full task history | Git commits + PRs; `PROJECT_PROGRESS.md` is the compact task/status ledger. |
 | On-demand evidence | `CONTEXT.md` fast routing, `docs/adr/README.md`, and the linked domain/runtime documents. |

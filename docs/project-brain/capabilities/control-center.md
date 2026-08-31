@@ -1,6 +1,6 @@
 # ControlCenter
 
-Revision: R1
+Revision: R2
 Status: Nomad-owned, verified.
 
 ## What it is
@@ -9,7 +9,9 @@ The read-oriented ControlCenter exposes truthful status and health projections.
 
 ## Current truth
 
-`CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED`. Nomad owns ControlCenter; the stopped WinSW definition is rollback only. Recorder ownership is unchanged; this cutover does not authorize a Recorder migration.
+`CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED`. Nomad owns ControlCenter; the stopped WinSW definition is
+rollback only. That cutover did not itself authorize Recorder migration; Recorder lifecycle was
+later migrated and is now resolved through the separate runtime-ownership authority.
 
 ## Interfaces / dependencies
 
@@ -28,3 +30,4 @@ Update only after an approved ControlCenter ownership, retirement, or health-con
 | Revision | Task / PR | Change |
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 authority baseline. |
+| R2 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Removed the stale implication that Recorder remained outside Nomad ownership. |

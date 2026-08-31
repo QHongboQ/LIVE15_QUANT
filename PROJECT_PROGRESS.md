@@ -54,7 +54,7 @@ runtime requires concrete incompatibility evidence.
 | NOMAD-CONTROL-CENTER-CUTOVER-FINAL-001 | VERIFIED / COMPLETE | `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md` | `capabilities/control-center.md` owns current truth |
 | GITHUB-ACTIONS-PUBLIC-20260830 | VERIFIED / STANDARD_HOSTED_CI_AVAILABLE | Public repo: standard GitHub-hosted CI may run normally; no task-specific quota approval is required. Larger/billable runners remain separately cost-gated. | Normal green-CI merge policy |
 | H2-TRAIN-003 | BLOCKED / historical | Preserve prior blocker evidence. Do not continue as an independent development branch unless WS-RESYNC leaves a new smallest blocker. | Training/holdout |
-| ST-005 | BLOCKED / PROOF_NEEDS_DEPLOYMENT | 2026-08-29 preflight: legacy `UNPROVEN` pointer; then-current main instrumentation was unactivated. A SHA-verifiable deployment gate precedes a fresh 60-minute proof. Detail: `docs/evidence/st-005-current-main-preflight-20260829.md`. | Human-authorized deployment; no restart, storage mutation, or Production write |
+| ST-005 | BLOCKED / MEASURED_PROOF_REQUIRED | Retain the bounded 60-minute throughput/catch-up proof. Use it to classify a real bottleneck and, only if proven, select the smallest upstream accelerator/queue/read-path candidate; it is not permission to grow a custom throughput subsystem. | Measurement/deployment remains separately authorized; no infrastructure adoption in ST-005 itself |
 | DEP-001 | BLOCKED / PREFLIGHT_NOT_READY | 2026-08-29 read-only snapshot: dirty protected checkout, 37 commits behind then-main, active legacy `UNPROVEN` pointer. No deployment/restart. Detail: `docs/deployment/DEP001_PHASE_A_PREFLIGHT_20260829.md`. | Deployment/restart requires separate explicit `DEP001_DEPLOY_APPROVED` |
 | DEP-ROOT-HYGIENE-PREVENT-001 | MERGED / ENFORCEMENT_READY | PR #79 merged the pytest cache isolation, WinSW fixture temp storage and fail-closed startup guard; detailed validation remains in `docs/project-brain/PROJECT_PROGRESS_DETAIL_20260829.md`. | Production cleanup remains separately authorized |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
@@ -64,10 +64,7 @@ runtime requires concrete incompatibility evidence.
 `docs/project-brain/plan/current-roadmap.md` owns execution sequence. The
 training and H2 capability authorities are under `capabilities/README.md`.
 
-## Durable operating rules
+## Governance route
 
-See AGENTS.md for the canonical upstream-reuse, adapter, autonomy, safety, and blocker rules.
-
-### 2026-08-29 architecture replacement decision
-
-Approved incremental replacement: preserve data/API/domain core; gate runtime, UI, telemetry, throughput, environment, lineage, and model-tool candidates. See the replacement matrix.
+Engineering/design rules are owned by `docs/agents/change-protocol.md`; upstream classifications
+are owned by `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`. This ledger does not duplicate them.

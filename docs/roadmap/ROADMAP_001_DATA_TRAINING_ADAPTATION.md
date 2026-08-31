@@ -1,6 +1,6 @@
 # ROADMAP 001 — Global data, training authority, H2 materialization, and adaptive learning
 
-Status: **USER-APPROVED DIRECTION / NOT IMPLEMENTED BY THIS DOCUMENT**
+Status: **DESIGN_REFERENCE / NON-CURRENT / NOT IMPLEMENTED BY THIS DOCUMENT**
 
 This volume records the approved data/training direction for LIVE15. It is intentionally detailed. It does not itself authorize training, holdout access, model promotion, Production deployment, service restart, retention destruction, or Production writes.
 
@@ -213,10 +213,12 @@ Required capabilities:
 
 A future optional architecture may maintain a **Stable Champion** (longer-memory, lower turnover) and an **Adaptive Challenger/Champion** (more current-regime emphasis), with Router-controlled weighting only after sufficient forward validation. This must not become an excuse for unvalidated online weight mutation.
 
-## 10. Planned tasks
+## 10. Historical design task identifiers
 
 - `DATA-GLOBAL-001` — make global RDA/CES/Training Snapshot the only formal current-training authority.
 - `H2-TRAIN-001` — complete DepthFeed L2 validation and training materialization.
 - `ADAPT-001` — drift, recency/regime/quality weighting, triggered/scheduled retraining, Champion/Challenger, rollback.
 
-All remain planned until implemented and validated through their own task/PR/human gates.
+This section preserves design provenance; it is not a current planned-task list. Current status is
+owned by `PROJECT_PROGRESS.md`, current ordering by
+`docs/project-brain/plan/current-roadmap.md`, and training remains separately gated.

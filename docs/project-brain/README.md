@@ -10,7 +10,7 @@ choose one child and repeat to the narrow leaf; no depth limit or default siblin
 | strategy / permanent authority | `PROJECT_CHARTER.md` |
 | vocabulary | `CONTEXT.md` |
 | current state | `CURRENT_STATE.md` |
-| task/status | `PROJECT_PROGRESS.md`, then `status/README.md` |
+| task/status | `status/README.md` |
 | capability | `capabilities/README.md` |
 | dependency / ownership / topology | `dependencies/README.md` |
 | plan | `plan/README.md` |

@@ -6,7 +6,22 @@ This matrix records where a mature GitHub project may replace unstable generic
 LIVE15 infrastructure. It does not install dependencies, change Production,
 alter the Recorder truth contract, authorize training, or permit trading.
 
-## Decision legend
+## Consolidation classification authority
+
+Maturity alone never implies adoption. These five classifications are the stable project taxonomy:
+
+| Classification | Current candidates / retained responsibility |
+| --- | --- |
+| **MUST_REPLACE** | Nomad + Windows SCM for generic workload lifecycle/service-wrapper/deployment state; React Admin + Material UI for the generic web shell; Vector as the default generic telemetry pipeline (OTel only if a measured OTLP/tracing requirement supersedes it) |
+| **CONDITIONAL** | Grafana, NATS JetStream, DuckDB/Polars/Arrow, Consul, Temporal, and MLflow; each requires a measured unmet need and its own bounded decision |
+| **RESEARCH_ONLY** | Time-Series-Library, TLOB/DeepLOB/MLPLOB references, Qlib, EarnHFT, AlphaGPT, and RD-Agent(Q) |
+| **KEEP_LOCAL** | official pinned Kalshi SDK adapter boundary; Recorder/settlement/gap/as-of/provenance truth; authoritative SQLite/archive writes; feature/snapshot/leakage contracts; XGBoost baseline; Router/Decision/Hard Risk/Production authorization |
+| **DO_NOT_INTRODUCE** | Kafka/Redpanda or another large/overlapping control plane without measured failure of the smaller selected owner and a new architecture decision |
+
+The detailed rows below preserve prior evidence state and responsibility boundaries. They do not
+form a second taxonomy or authorize adoption.
+
+## Detail evidence-state legend
 
 - **ADOPTED-POC:** isolated proof exists; production adoption still needs a
   separately reviewed migration task.
@@ -54,7 +69,11 @@ alter the Recorder truth contract, authorize training, or permit trading.
 | Experiment tracking and registry | No Production-authorized replacement | MLflow or equivalent, future review | **CONDITIONAL** | Consider only after the immutable Training Snapshot and Champion/Challenger contracts are stable; never let a registry promote a model by itself. |
 | Decision, Hard Risk, and execution | LIVE15 Decision / Hard Risk / Execution | No generic replacement selected | **DO-NOT-REPLACE** | Models and upstream infrastructure may propose or host work; only independent LIVE15 safety policy can veto or authorize an action. |
 
-## Recommended adoption order
+## Candidate dependency order (design reference only)
+
+Current execution ordering is owned only by
+`docs/project-brain/plan/current-roadmap.md`. The order below preserves dependency/design intent for
+later bounded selection; it does not create NEXT/ACTIVE tasks.
 
 1. Nomad/SCM for one isolated workload, then gradual WinSW retirement per
    workload. Migrate low-risk read-only workloads first; Recorder is late.

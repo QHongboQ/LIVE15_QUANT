@@ -23,6 +23,24 @@ Prefer deletion or freezing of redundant local machinery over preserving it for
 speculative flexibility. A feature is complete when the required behavior is
 reliably provided by one clear owner.
 
+## Replacement lifecycle
+
+Every bounded replacement follows one lifecycle:
+
+```text
+NAVIGATION / OWNER RESOLUTION
+  -> FREEZE LEGACY GENERIC IMPLEMENTATION
+  -> REPLACE ONE RESPONSIBILITY
+  -> VERIFY REPLACEMENT
+  -> RETIRE CORRESPONDING OLD OWNER
+  -> NEXT RESPONSIBILITY
+  -> FINAL DEEP CLEAN
+```
+
+Apply Existing Owner First before selecting upstream. Do not use a big-bang rewrite, keep legacy
+and replacement owners actively evolving in parallel, or delete rollback/evidence before bounded
+replacement proof.
+
 ## Legacy freeze during migration
 
 Once a mature upstream owner is selected for a generic responsibility, the
@@ -120,7 +138,10 @@ is a specifically unauthorized host mutation, may the task record an
 last-last-last option and requires an explicit reason why all reusable upstream
 paths are unsuitable.
 
-## Execution order
+## Candidate dependency order
+
+This is a design dependency reference, not current project sequencing. Current execution ordering
+is owned only by `docs/project-brain/plan/current-roadmap.md`.
 
 1. **Nomad + Windows SCM** — finish the first isolated read-only ControlCenter
    shadow, then migrate additional low-risk workloads one at a time. Recorder

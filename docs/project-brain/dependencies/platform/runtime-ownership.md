@@ -1,6 +1,6 @@
 # Runtime ownership
 
-Revision: R2
+Revision: R3
 Status: machine-readable authority retained.
 
 ## What it is
@@ -9,8 +9,9 @@ Maps process/service ownership, health truth, and restart authority.
 
 ## Current truth
 
-`deploy/windows/runtime-ownership.json` remains the machine-readable authority. ControlCenter is
-Nomad-managed; Recorder and RuntimeSupervisor retain their separately owned boundaries.
+`deploy/windows/runtime-ownership.json` remains the machine-readable authority. ControlCenter and
+Recorder are Nomad-managed; RuntimeSupervisor retains its separate WinSW-owned boundary. Recorder
+domain truth remains owned by the Recorder authority leaf, not by Nomad.
 
 ## Canonical Production Python runtime
 
@@ -70,3 +71,4 @@ Update only when ownership topology changes; change the JSON authority first whe
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 authority baseline, moved without semantic change. |
 | R2 | CANONICAL-PRODUCTION-RUNTIME-AUTHORITY-001 | Established the universal shared Production Python runtime authority and exception rule. |
+| R3 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Reconciled verified Recorder Nomad lifecycle ownership in the machine-readable registry. |

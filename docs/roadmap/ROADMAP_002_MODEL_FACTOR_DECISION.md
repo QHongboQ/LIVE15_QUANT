@@ -1,6 +1,6 @@
 # ROADMAP 002 — Multi-expert models, autonomous factors, Router, and decision surface
 
-Status: **USER-APPROVED DIRECTION / NOT IMPLEMENTED BY THIS DOCUMENT**
+Status: **DESIGN_REFERENCE / NON-CURRENT / NOT IMPLEMENTED BY THIS DOCUMENT**
 
 This volume records the approved model/factor/decision architecture. It does not itself authorize training, model promotion, Paper/Shadow activation, Production deployment, execution, Hard Risk changes, or Production writes.
 
@@ -246,11 +246,13 @@ The desired end-state is not “train one model once.” It is a controlled rese
 
 New architectures are useful only when they survive the same evidence standards and beat the current Champion in fresh forward conditions.
 
-## 17. Planned tasks
+## 17. Historical design task identifiers
 
 - `AUTO-RD-001` — autonomous factor/model research factory.
 - `MODEL-ENSEMBLE-001` — multi-expert model architecture and routing evolution.
 - `DEC-ACT-001` — enforce the conservative first-live eight-action surface and keep ADD/REDUCE gated.
 - existing `MOD-UNC-001 / MOD-004 / MOD-005`, `DEC-001 / SIG-*`, `RISK-001 / EXE-* / SEC-001` remain downstream components of this direction.
 
-All remain planned until their own task, evidence, tests, Checker/CI, and required human approvals complete.
+This section preserves design provenance; it is not a current planned-task list. Current status is
+owned by `PROJECT_PROGRESS.md`, current ordering by
+`docs/project-brain/plan/current-roadmap.md`, and training remains separately gated.

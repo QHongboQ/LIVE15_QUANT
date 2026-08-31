@@ -4,7 +4,7 @@
 
 | Need | Read next |
 | --- | --- |
-| parallel GAP work, freeze, runtime/upstream boundary | `execution/README.md` |
+| runtime/upstream boundary or historical GAP freeze evidence | `execution/README.md` |
 | permanent human authority | `PROJECT_CHARTER.md` |
 
 ## Update rule

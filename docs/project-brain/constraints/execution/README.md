@@ -4,7 +4,7 @@
 
 | Need | Read next |
 | --- | --- |
-| parallel GAP work and frozen surfaces | `parallel-development.md` |
+| historical GAP002 parallel/frozen-surface evidence | `parallel-development.md` |
 | runtime and upstream-replacement boundary | `runtime-upstream-boundary.md` |
 
 ## Update rule

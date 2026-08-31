@@ -1,7 +1,7 @@
 # GAP002 dependency closure
 
-Revision: R3
-Status: dependency closure complete; Phase-3 frozen baseline declared.
+Revision: R5
+Status: dependency closure complete; GAP002 closed/pass.
 
 ## What it is
 
@@ -17,11 +17,10 @@ before GAP002. The compact reserved surface and all supporting classifications a
 recorded separately in `docs/evidence/GAP002_FROZEN_BASELINE_001.md`; classifications are
 unchanged.
 
-`MIGRATE_BEFORE_GAP_SET = NONE` remains the acceptance-path classification: a Recorder lifecycle
-transition is not required to prove the in-process GAP002 predicates. The later revised execution
-strategy separately selects a generic lifecycle replacement before the next Phase-4A baseline; it
-does not change this closure classification. See
-`docs/evidence/GAP002_CRITICAL_PATH_UPSTREAM_REPLACEMENT_001.md`.
+`MIGRATE_BEFORE_GAP_SET = NONE` remains the historical acceptance-path classification: a Recorder
+lifecycle transition was not logically required to prove the in-process predicates. Recorder
+lifecycle migration and both Production GAP002 episodes were later completed; detailed FAIL/PASS
+receipts remain immutable evidence. No Phase-4 execution route remains active.
 
 ## Interfaces / dependencies
 
@@ -29,7 +28,8 @@ does not change this closure classification. See
 
 ## Read next
 
-Use `constraints/execution/parallel-development.md` once the frozen surface is declared.
+Use `plan/current-roadmap.md` for current sequence. The former frozen-surface/parallel-development
+record is historical evidence only.
 
 ## Update rule
 
@@ -43,3 +43,4 @@ Update only when a separately authorized GAP002 audit records its closure.
 | R2 | GAP002-DEPENDENCY-CLOSURE-AUDIT-001B | Recorded closure; no Phase-2 migration or Phase-3 freeze executed. |
 | R3 | GAP002-FROZEN-BASELINE-001 | Linked the declared Phase-3 baseline; classifications unchanged. |
 | R4 | GAP002-CRITICAL-PATH-UPSTREAM-REPLACEMENT-001 | Distinguished unchanged acceptance-path closure from the later lifecycle execution gate. |
+| R5 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Preserved closure classification while retiring obsolete Phase-4 routing after PASS. |

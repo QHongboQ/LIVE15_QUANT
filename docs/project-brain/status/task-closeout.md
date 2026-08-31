@@ -16,8 +16,9 @@ bug in `BUG_REGISTRY.md`; a strategy or architecture decision in the charter or
 ADR; and vocabulary/routing in `CONTEXT.md`. User-facing Codex task specifications must explicitly
 state the selected model and reasoning level, chosen dynamically for the task's complexity, risk,
 and token cost; use the least expensive adequate setting rather than a fixed default. They should
-also state goal, authority, prohibitions, acceptance, validation, and return format. Use the mandatory
-Upstream Reuse First sequence in the relevant diagnosis skill before inventing a local fix.
+also state goal, authority, prohibitions, acceptance, validation, and return format. Use Existing
+Owner First to resolve the current authority/capability/implementation/plan, then apply the
+mandatory Upstream Reuse First sequence before inventing a local fix.
 
 ## Interfaces / dependencies
 
@@ -36,3 +37,4 @@ Update only when the durable closeout authority or copy-ready task requirement c
 | Revision | Task / PR | Change |
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-V2-MERGE-GATE-FINAL | Moved closeout detail out of always entry. |
+| R2 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Aligned closeout with Existing Owner First before upstream resolution. |
