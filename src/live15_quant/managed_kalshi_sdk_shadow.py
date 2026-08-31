@@ -288,6 +288,7 @@ class KalshiSdkShadowRunner:
         websocket = gateway.build(
             on_state_change=state_change,
             on_error=on_error,
+            capture_pre_dispatch=True,
         )
         tickers = sorted(universe)
         self.active_tickers = tuple(tickers)

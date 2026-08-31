@@ -313,7 +313,16 @@ async def test_managed_session_connects_and_subscribes_all_ten_assets(
             assert maxsize == 20_000
             return self.stream
 
-        def build(self, **_kwargs) -> WebSocket:
+        def build(
+            self,
+            *,
+            on_state_change: object,
+            on_error: object,
+            capture_pre_dispatch: bool,
+        ) -> WebSocket:
+            assert callable(on_state_change)
+            assert callable(on_error)
+            assert capture_pre_dispatch is True
             return WebSocket()
 
     monkeypatch.setattr("live15_quant.managed_kalshi_sdk_shadow.KalshiWebSocketGateway", Gateway)
