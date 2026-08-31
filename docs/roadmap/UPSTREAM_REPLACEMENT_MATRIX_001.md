@@ -12,7 +12,7 @@ Maturity alone never implies adoption. These five classifications are the stable
 
 | Classification | Current candidates / retained responsibility |
 | --- | --- |
-| **MUST_REPLACE** | Nomad + Windows SCM for generic workload lifecycle/service-wrapper/deployment state; React Admin + Material UI for the generic web shell; Vector as the default generic telemetry pipeline (OTel only if a measured OTLP/tracing requirement supersedes it) |
+| **MUST_REPLACE** | Nomad + Windows SCM lifecycle replacement is **ADOPTED / PRODUCTION VERIFIED**; React Admin + Material UI is the next generic Web Application Shell candidate; Vector remains a later default telemetry candidate (OTel only if a measured OTLP/tracing requirement supersedes it) |
 | **CONDITIONAL** | Grafana, NATS JetStream, DuckDB/Polars/Arrow, Consul, Temporal, and MLflow; each requires a measured unmet need and its own bounded decision |
 | **RESEARCH_ONLY** | Time-Series-Library, TLOB/DeepLOB/MLPLOB references, Qlib, EarnHFT, AlphaGPT, and RD-Agent(Q) |
 | **KEEP_LOCAL** | official pinned Kalshi SDK adapter boundary; Recorder/settlement/gap/as-of/provenance truth; authoritative SQLite/archive writes; feature/snapshot/leakage contracts; XGBoost baseline; Router/Decision/Hard Risk/Production authorization |
@@ -39,8 +39,8 @@ form a second taxonomy or authorize adoption.
 
 | LIVE15 function | Current unstable/custom surface | Upstream project | Decision | What it replaces / does not replace | Main advantage and gate |
 | --- | --- | --- | --- | --- | --- |
-| Agent and workload lifecycle | Residual WinSW ownership plus `LIVE15RuntimeSupervisor` child-PID restart; ControlCenter and Recorder are already Nomad-owned | [HashiCorp Nomad](https://github.com/hashicorp/nomad) + Windows SCM | **ADOPTED-POC** | Replaces generic scheduling, allocation lifecycle, task restart, deployment health, update, and native revert. Does not replace Recorder semantics, risk, or execution. | One upstream owner for workload recovery; current consolidation targets only remaining generic WinSW/RuntimeSupervisor responsibilities, one bounded responsibility at a time. |
-| Windows service wrapper | Per-component WinSW XML and custom install scripts | Nomad agent installed as native Windows Service; SCM remains the host authority | **REPLACE-CANDIDATE** | Can replace WinSW for workloads moved into Nomad allocations. Does not remove SCM or justify deleting all WinSW before migration. | Removes duplicate wrapper/supervisor paths. Requires workload-specific service, identity, ACL, log, and rollback proof. |
+| Agent and workload lifecycle | Nomad owns Recorder, ControlCenter, and `kalshi_sdk_ws_shadow`; `pyth` and `coinbase` are in-process Recorder workers; RuntimeSupervisor is retired | [HashiCorp Nomad](https://github.com/hashicorp/nomad) + Windows SCM | **ADOPTED / PRODUCTION VERIFIED** | Replaces generic scheduling, allocation lifecycle, task restart, deployment health, update, and native revert. Does not replace Recorder semantics, risk, or execution. | One upstream lifecycle owner; cold boot passed, no dual owner remains, and final repository cleanup merged in PR #129. |
+| Windows service wrapper | Nomad agent installed as native Windows Service; SCM remains the host authority; no current RuntimeSupervisor/WinSW workload owner remains | Nomad agent installed as native Windows Service; SCM remains the host authority | **ADOPTED / PRODUCTION VERIFIED** | Replaced the retired per-component RuntimeSupervisor wrapper; shared WinSW bootstrap artifacts may remain without creating a current lifecycle owner. | Removes duplicate wrapper/supervisor paths. Cold-boot and ownership proof are complete; SCM remains host authority. |
 | Deployment/update/rollback | Local deployment state and ad-hoc restart paths | Nomad `update`/deployment/revert plus existing SHA-pinned release provenance | **ADAPT/KEEP** | Replaces generic deployment state machinery. Does not roll back database truth, labels, risk policy, or arbitrary filesystem state. | Native health-gated update and revert; preserve LIVE15 release hashes and human deployment gates. |
 | Web application shell | Hand-built static `web/app.js`, routes, tables, refresh/error state | [React Admin](https://github.com/marmelab/react-admin) + Material UI | **REPLACE-CANDIDATE** | Replaces custom browser plumbing, routing, tables, loading/error handling, and theme shell. Keeps FastAPI typed projections and read-only domain rules. | Mature REST/GraphQL admin primitives and controllable dark theme. First POC should migrate only health and markets, display-only. |
 | Operations dashboard | Custom operational pages mixed into the Control Center | [Grafana](https://github.com/grafana/grafana) | **CONDITIONAL** | Can replace a metrics/logs/traces dashboard. Does not replace the typed markets, settlement, training-truth, or Recorder UI contracts. | Strong dark operational dashboards and alerting. Keep separate from the primary domain UI; review AGPL obligations and datasource adapters. |
@@ -75,11 +75,11 @@ Current execution ordering is owned only by
 `docs/project-brain/plan/current-roadmap.md`. The order below preserves dependency/design intent for
 later bounded selection; it does not create NEXT/ACTIVE tasks.
 
-1. Nomad/SCM remains the first generic lifecycle owner. ControlCenter and Recorder are already
-   Nomad-owned; remaining lifecycle consolidation concerns residual WinSW/RuntimeSupervisor generic
-   responsibilities and proceeds one bounded responsibility at a time.
-2. React Admin + Material UI for a display-only health/markets web POC.
-3. Vector as the default telemetry/log candidate, then Grafana if a separate
+1. Nomad + Windows SCM lifecycle replacement is **ADOPTED / PRODUCTION VERIFIED**. Recorder,
+   ControlCenter, and `kalshi_sdk_ws_shadow` are Nomad-owned; RuntimeSupervisor is retired.
+2. Web Application Shell: React Admin + Material UI is the next generic replacement class; a later
+   bounded task may consider a display-only health/markets POC.
+3. Vector remains the later default telemetry/log candidate, then Grafana if a separate
    operations dashboard is needed. Compare with OTel only if trace/OTLP
    requirements justify it.
 4. Use the retained throughput-proof measurement contract before choosing NATS JetStream,

@@ -1,6 +1,6 @@
 # Current roadmap
 
-Revision: R6
+Revision: R7
 Status: approved execution strategy.
 
 ## What it is
@@ -17,24 +17,30 @@ Normal feature/model expansion is temporarily paused. The sole current mainline 
 
 ```text
 GAP002 CLOSED
-  -> Project Brain authority consolidation COMPLETE
+  -> Project Brain authority consolidation COMPLETE (governance closeout; not an upstream replacement)
   -> upstream-consolidation freeze
-  -> runtime / lifecycle consolidation first (Nomad + Windows SCM)
+  -> Runtime/Lifecycle consolidation COMPLETE / VERIFIED
+       Nomad + Windows SCM lifecycle replacement ADOPTED / PRODUCTION VERIFIED
+       RuntimeSupervisor RETIRED; managed paper_forward wrapper RETIRED
   -> bounded responsibility-by-responsibility replacement
        owner resolution -> freeze legacy generic owner -> replace one responsibility
        -> verify -> retire corresponding old owner -> next responsibility
-  -> final global legacy/dead-code cleanup
-  -> CLEAN BASELINE
+  -> Web Application Shell is the next generic replacement class
+  -> Vector telemetry remains a later candidate
   -> resume data/training/model progression under existing gates
 ```
 
-The Project Brain authority-consolidation step is complete in this bounded change and is being
-closed by PR #122.
+The Project Brain authority-consolidation step is complete as a governance/status closeout; it was
+not an upstream replacement. Runtime/Lifecycle consolidation is complete and verified: Recorder,
+ControlCenter, and `kalshi_sdk_ws_shadow` are Nomad-managed; `pyth` and `coinbase` remain
+in-process Recorder workers; RuntimeSupervisor and the managed `paper_forward` wrapper are retired.
+Cold-boot proof passed, no dual owner remains, and final repository cleanup merged in PR #129.
 
-**NEXT:** complete the bounded final global legacy/dead-code cleanup, beginning with the already
-verified RuntimeSupervisor host retirement. Remove only the retired repository owner and its
-current references; preserve historical evidence and shared infrastructure that still serves a
-retained artifact. This does not authorize parallel lifecycle owners or Production mutation.
+**NEXT:** select the bounded **WEB APPLICATION SHELL** replacement class, with React Admin +
+Material UI as the candidate upstream owner. Scope is limited to generic routing, tables,
+loading/error handling, refresh plumbing, and theme/shell. Preserve the FastAPI typed domain API,
+Recorder truth, settlement truth, training truth, Hard Risk, and Production authorization. This
+closeout does not begin the React Admin migration or authorize Production mutation.
 
 Candidate-specific boundaries and classifications remain in
 `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; replacement mechanics remain in
@@ -66,3 +72,4 @@ Update only when an approved phase, freeze, or gate changes.
 | R4 | GAP002-CRITICAL-PATH-UPSTREAM-REPLACEMENT-001 | Held Phase 4A for the selected Recorder lifecycle replacement baseline. |
 | R5 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Closed obsolete GAP002 phase routing and established the sole upstream-consolidation mainline. |
 | R6 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 closeout | Completed authority consolidation and selected runtime/lifecycle consolidation as the one concrete next responsibility class. |
+| R7 | RUNTIME-LIFECYCLE-CONSOLIDATION-CLOSEOUT-001 | Recorded verified Nomad/SCM lifecycle adoption, RuntimeSupervisor retirement, and the Web Application Shell as the next generic replacement class. |
