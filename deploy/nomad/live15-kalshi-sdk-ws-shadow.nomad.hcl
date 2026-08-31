@@ -66,6 +66,12 @@ job "live15-kalshi-sdk-ws-shadow" {
   datacenters = ["dc1"]
   type        = "service"
 
+  # Nomad shutdown maps to CPython's Windows-only SIGBREAK handler.
+  constraint {
+    attribute = "${attr.os.name}"
+    value     = "windows"
+  }
+
   update {
     health_check = "task_states"
     auto_revert  = true
