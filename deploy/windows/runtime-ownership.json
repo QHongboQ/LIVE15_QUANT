@@ -59,12 +59,12 @@
     },
     {
       "component": "kalshi_sdk_ws_shadow",
-      "owner_type": "SUPERVISOR_MANAGED",
-      "owner_id": "LIVE15RuntimeSupervisor",
+      "owner_type": "NOMAD_MANAGED",
+      "owner_id": "Nomad:live15-kalshi-sdk-ws-shadow",
       "heartbeat_source": "runtime/kalshi-sdk-ws-shadow-status.json",
-      "process_source": "supervisor child PID",
-      "health_source": "current supervisor heartbeat plus child PID plus child heartbeat",
-      "restart_authority": "LIVE15RuntimeSupervisor",
+      "process_source": "Nomad allocation live15-kalshi-sdk-ws-shadow",
+      "health_source": "Nomad allocation state plus shadow heartbeat",
+      "restart_authority": "Nomad:live15-kalshi-sdk-ws-shadow",
       "criticality": "DEGRADED_BUT_PROCESS_CAN_CONTINUE",
       "run_mode": "ON_DEMAND"
     },

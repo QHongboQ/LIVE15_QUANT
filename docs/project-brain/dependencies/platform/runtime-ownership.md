@@ -1,6 +1,6 @@
 # Runtime ownership
 
-Revision: R3
+Revision: R4
 Status: machine-readable authority retained.
 
 ## What it is
@@ -10,8 +10,9 @@ Maps process/service ownership, health truth, and restart authority.
 ## Current truth
 
 `deploy/windows/runtime-ownership.json` remains the machine-readable authority. ControlCenter and
-Recorder are Nomad-managed; RuntimeSupervisor retains its separate WinSW-owned boundary. Recorder
-domain truth remains owned by the Recorder authority leaf, not by Nomad.
+Recorder are Nomad-managed; RuntimeSupervisor retains its separate WinSW-owned boundary for its remaining children. The verified
+`kalshi_sdk_ws_shadow` lifecycle is also Nomad-managed. Recorder domain truth remains owned by
+the Recorder authority leaf, not by Nomad.
 
 ## Canonical Production Python runtime
 
@@ -72,3 +73,4 @@ Update only when ownership topology changes; change the JSON authority first whe
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 authority baseline, moved without semantic change. |
 | R2 | CANONICAL-PRODUCTION-RUNTIME-AUTHORITY-001 | Established the universal shared Production Python runtime authority and exception rule. |
 | R3 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Reconciled verified Recorder Nomad lifecycle ownership in the machine-readable registry. |
+| R4 | RUNTIME-KALSHI-SDK-SHADOW-NOMAD-001 | Reconciled verified Nomad ownership of the shadow and retired its Supervisor launch path. |
