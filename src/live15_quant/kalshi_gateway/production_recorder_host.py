@@ -77,6 +77,7 @@ class SdkProductionRecorderHost:
         self._queue_high_watermark = 0
         self._running = False
         self._reconnect_requested = asyncio.Event()
+        self._projection_epoch = 0
         self._final_summary: SdkProductionRecorderHostSummary | None = None
 
     @property
@@ -115,7 +116,27 @@ class SdkProductionRecorderHost:
         """Request one orderly SDK session replacement without stopping Recorder."""
         if not self._running:
             raise RuntimeError("SDK Production WebSocket is not active")
+        # This runs immediately after Recorder invalidates its current books.
+        # Advance before yielding to the orderly SDK/consumer drain so that a
+        # previously accepted old-session batch can remain durable history but
+        # can no longer repopulate active Recorder authority.
+        self._projection_epoch += 1
         self._reconnect_requested.set()
+
+    def _project_committed_session(
+        self,
+        provider: SdkRecorderMarketDataProvider,
+        session_epoch: int,
+        events: tuple[RecorderMarketDataEvent, ...],
+    ) -> None:
+        """Forward only durable commits from the active projection epoch."""
+
+        if session_epoch != self._projection_epoch:
+            return
+        current = provider.connection_id
+        accepted = tuple(event for event in events if event.canonical.connection_id == current)
+        if accepted:
+            self._on_committed(accepted)
 
     async def _accept_typed_orderbook(
         self,
@@ -204,6 +225,7 @@ class SdkProductionRecorderHost:
             connection_id=f"sdk-recorder-{uuid.uuid4().hex}",
             stale_seconds=self._settings.kalshi_websocket_stale_seconds,
         )
+        session_epoch = self._projection_epoch
 
         def committed_current_session(events: tuple[RecorderMarketDataEvent, ...]) -> None:
             # A batch accepted before a reconnect may finish its durable
@@ -211,10 +233,7 @@ class SdkProductionRecorderHost:
             # that historical write, but never let it repopulate the active
             # Recorder health/book projection after the old session has been
             # quarantined.
-            current = provider.connection_id
-            accepted = tuple(event for event in events if event.canonical.connection_id == current)
-            if accepted:
-                self._on_committed(accepted)
+            self._project_committed_session(provider, session_epoch, events)
 
         consumer = RecorderMarketDataConsumer(
             RecorderStoreDomainWriter(self._store),
