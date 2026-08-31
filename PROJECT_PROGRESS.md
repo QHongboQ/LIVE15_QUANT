@@ -46,7 +46,7 @@ runtime requires concrete incompatibility evidence.
 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
-| WS-RESYNC-001 + GAP-002 | BLOCKED / EXECUTION_PREREQUISITE_PENDING | Historical evidence: 72 WS/Recorder/SDK-shadow tests passed on `4d088930`. Direct execution awaits the Phase-3 frozen baseline; dependency-closure authority is `docs/project-brain/dependencies/gap002-closure.md`. | Establish Phase-3 frozen baseline before any runtime/deployment live rollout |
+| WS-RESYNC-001 + GAP-002 | CLOSED / PASS | PR #117 preserves the first Production FAIL evidence; PR #120 preserves the merged second Production PASS receipt. | GAP002 dependency closure, Recorder-to-Nomad prerequisite, and repaired WS-resync acceptance are complete; no further GAP002 execution is required |
 | SHADOW-REC-001 | BLOCKED / STALE_RECEIPTS | PIDs absent; no health/restart. Detail: `docs/reliability/SHADOW_RECORDER_EVIDENCE_AUDIT_20260829.md`. | Non-Production only |
 | NOMAD-POC-SECURE-001 | VERIFIED / isolated POC burn-in + auto-revert + two-hour soak PASS | Final receipt: 24 healthy observations; terminal observer entry and evidence rule are in the POC handoff. No cutover. | POC only; no Production/holdout |
 | NOMAD-POC-VALIDATE-001 | PR_OPEN | Draft PR #71 remains code evidence only; do not merge or treat it as deployment proof. Its separate restart-validation lineage does not supersede the verified service-model POC evidence. | POC only |
