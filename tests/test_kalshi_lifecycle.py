@@ -376,6 +376,75 @@ def test_settlement_is_immutable_restart_safe_and_replay_deterministic(tmp_path)
         assert store.count("kalshi_settlement_conflicts") == 1
 
 
+@pytest.mark.parametrize(
+    ("initial_expiration_value", "later_expiration_value"),
+    (
+        (None, "68160.12000000"),
+        ("68160.12000000", "68160.13000000"),
+        ("68160.12000000", None),
+    ),
+)
+def test_expiration_value_is_non_terminal_metadata_and_does_not_replace_stored_truth(
+    tmp_path, initial_expiration_value, later_expiration_value
+) -> None:
+    market = provider().parse_market(
+        Asset.BTC, raw_market(status="finalized", result="yes"), FINALIZED_FETCH
+    )
+    assert market.settlement is not None
+    initial = replace(market.settlement, expiration_value=initial_expiration_value)
+    later_observation = replace(
+        initial,
+        expiration_value=later_expiration_value,
+        fetched_timestamp=initial.fetched_timestamp + timedelta(seconds=15),
+    )
+
+    with RecorderStore(tmp_path / "late-expiration-value.sqlite3") as store:
+        assert store.append_kalshi_settlement(initial)
+        stored_before = store._connection.execute(
+            "SELECT expiration_value,content_hash FROM kalshi_settlements WHERE ticker=?",
+            (initial.ticker,),
+        ).fetchone()
+        assert not store.append_kalshi_settlement(later_observation)
+        stored_after = store._connection.execute(
+            "SELECT expiration_value,content_hash FROM kalshi_settlements WHERE ticker=?",
+            (initial.ticker,),
+        ).fetchone()
+        assert tuple(stored_after) == tuple(stored_before)
+        assert store.count("kalshi_settlement_conflicts") == 0
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"target": Decimal("68161.00")},
+        {"settlement_timestamp": datetime(2026, 8, 20, 12, 15, 25, tzinfo=UTC)},
+        {"result": KalshiResult.NO, "settlement_value": Decimal("0.0000")},
+    ),
+)
+def test_material_settlement_truth_changes_remain_fail_closed(tmp_path, changes) -> None:
+    market = provider().parse_market(
+        Asset.BTC, raw_market(status="finalized", result="yes"), FINALIZED_FETCH
+    )
+    assert market.settlement is not None
+    conflicting = replace(market.settlement, **changes)
+
+    with RecorderStore(tmp_path / "material-settlement-conflict.sqlite3") as store:
+        assert store.append_kalshi_settlement(market.settlement)
+        with pytest.raises(RecorderStorageError, match="conflicting official settlement"):
+            store.append_kalshi_settlement(conflicting)
+        assert store.count("kalshi_settlement_conflicts") == 1
+
+
+def test_binary_settlement_value_cannot_disagree_with_result() -> None:
+    market = provider().parse_market(
+        Asset.BTC, raw_market(status="finalized", result="yes"), FINALIZED_FETCH
+    )
+    assert market.settlement is not None
+
+    with pytest.raises(ValueError, match="binary settlement value conflicts"):
+        replace(market.settlement, settlement_value=Decimal("0.0000"))
+
+
 def test_training_join_has_no_future_or_label_leakage(tmp_path) -> None:
     market = provider().parse_market(
         Asset.BTC, raw_market(status="finalized", result="yes"), FINALIZED_FETCH

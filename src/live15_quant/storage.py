@@ -2589,19 +2589,44 @@ class RecorderStore:
             raise RecorderStorageError(
                 f"settlement metadata does not match lifecycle for {truth.ticker}"
             )
-        immutable: tuple[object, ...] = (
+        terminal_truth: tuple[object, ...] = (
             *truth_identity,
             truth.result.value,
             _timestamp(truth.settlement_timestamp),
             _decimal(truth.settlement_value),
+        )
+        immutable: tuple[object, ...] = (
+            *terminal_truth,
             truth.expiration_value,
         )
         content_hash = _fingerprint(immutable)
         existing = self._connection.execute(
-            "SELECT content_hash FROM kalshi_settlements WHERE ticker = ?", (truth.ticker,)
+            """SELECT asset,series,ticker,event_ticker,window_start,window_end,target,
+            result,settlement_timestamp,settlement_value,expiration_value,content_hash
+            FROM kalshi_settlements WHERE ticker = ?""",
+            (truth.ticker,),
         ).fetchone()
         if existing is not None:
-            if existing["content_hash"] == content_hash:
+            # Kalshi can populate the optional expiration value after publishing the
+            # finalized result. That enrichment is not a second terminal truth.
+            existing_terminal_truth: tuple[object, ...] = (
+                existing["asset"],
+                existing["series"],
+                existing["ticker"],
+                existing["event_ticker"],
+                existing["window_start"],
+                existing["window_end"],
+                existing["target"],
+                existing["result"],
+                existing["settlement_timestamp"],
+                existing["settlement_value"],
+            )
+            existing_content_hash = _fingerprint(
+                (*existing_terminal_truth, existing["expiration_value"])
+            )
+            if existing["content_hash"] != existing_content_hash:
+                raise RecorderStorageError(f"settlement content hash mismatch for {truth.ticker}")
+            if existing_terminal_truth == terminal_truth:
                 return False
             self._connection.execute(
                 """
