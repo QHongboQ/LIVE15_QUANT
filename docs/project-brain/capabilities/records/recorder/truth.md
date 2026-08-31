@@ -1,7 +1,7 @@
 # Recorder truth and ownership
 
-Revision: R1
-Status: LIVE15-owned authority; no migration authorized.
+Revision: R2
+Status: LIVE15 truth authority; Nomad runtime ownership verified.
 
 ## What it is
 
@@ -9,8 +9,9 @@ Recorder/RecorderStore captures authoritative raw truth, persistence, gap/quaran
 
 ## Current truth
 
-Recorder ownership is unchanged by the verified ControlCenter Nomad cutover. Truth, quarantine,
-settlement, as-of, and freshness rules remain local; that cutover does not authorize a Recorder migration.
+Recorder process lifecycle is Nomad-owned under `Nomad:live15-recorder`; truth, quarantine,
+settlement, as-of, freshness, persistence, and gap semantics remain LIVE15-owned. Nomad may own
+allocation/restart/deployment behavior but cannot create, infer, repair, or override Recorder truth.
 
 ## Interfaces / dependencies
 
@@ -30,3 +31,4 @@ Update only for a Recorder authority, truth, or approved ownership decision.
 | Revision | Task / PR | Change |
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 Recorder truth baseline, moved without semantic change. |
+| R2 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Reconciled verified Nomad process ownership while preserving LIVE15 truth ownership. |

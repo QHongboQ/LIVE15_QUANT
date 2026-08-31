@@ -6,7 +6,22 @@ This matrix records where a mature GitHub project may replace unstable generic
 LIVE15 infrastructure. It does not install dependencies, change Production,
 alter the Recorder truth contract, authorize training, or permit trading.
 
-## Decision legend
+## Consolidation classification authority
+
+Maturity alone never implies adoption. These five classifications are the stable project taxonomy:
+
+| Classification | Current candidates / retained responsibility |
+| --- | --- |
+| **MUST_REPLACE** | Nomad + Windows SCM for generic workload lifecycle/service-wrapper/deployment state; React Admin + Material UI for the generic web shell; Vector as the default generic telemetry pipeline (OTel only if a measured OTLP/tracing requirement supersedes it) |
+| **CONDITIONAL** | Grafana, NATS JetStream, DuckDB/Polars/Arrow, Consul, Temporal, and MLflow; each requires a measured unmet need and its own bounded decision |
+| **RESEARCH_ONLY** | Time-Series-Library, TLOB/DeepLOB/MLPLOB references, Qlib, EarnHFT, AlphaGPT, and RD-Agent(Q) |
+| **KEEP_LOCAL** | official pinned Kalshi SDK adapter boundary; Recorder/settlement/gap/as-of/provenance truth; authoritative SQLite/archive writes; feature/snapshot/leakage contracts; XGBoost baseline; Router/Decision/Hard Risk/Production authorization |
+| **DO_NOT_INTRODUCE** | Kafka/Redpanda or another large/overlapping control plane without measured failure of the smaller selected owner and a new architecture decision |
+
+The detailed rows below preserve prior evidence state and responsibility boundaries. They do not
+form a second taxonomy or authorize adoption.
+
+## Detail evidence-state legend
 
 - **ADOPTED-POC:** isolated proof exists; production adoption still needs a
   separately reviewed migration task.
@@ -24,7 +39,7 @@ alter the Recorder truth contract, authorize training, or permit trading.
 
 | LIVE15 function | Current unstable/custom surface | Upstream project | Decision | What it replaces / does not replace | Main advantage and gate |
 | --- | --- | --- | --- | --- | --- |
-| Agent and workload lifecycle | WinSW ownership plus `LIVE15RuntimeSupervisor` child-PID restart | [HashiCorp Nomad](https://github.com/hashicorp/nomad) + Windows SCM | **ADOPTED-POC** | Replaces generic scheduling, allocation lifecycle, task restart, deployment health, update, and native revert. Does not replace Recorder semantics, risk, or execution. | One upstream owner for workload recovery; the isolated v2.0.5 LocalService POC already passed. Migrate one non-Production workload at a time. |
+| Agent and workload lifecycle | Residual WinSW ownership plus `LIVE15RuntimeSupervisor` child-PID restart; ControlCenter and Recorder are already Nomad-owned | [HashiCorp Nomad](https://github.com/hashicorp/nomad) + Windows SCM | **ADOPTED-POC** | Replaces generic scheduling, allocation lifecycle, task restart, deployment health, update, and native revert. Does not replace Recorder semantics, risk, or execution. | One upstream owner for workload recovery; current consolidation targets only remaining generic WinSW/RuntimeSupervisor responsibilities, one bounded responsibility at a time. |
 | Windows service wrapper | Per-component WinSW XML and custom install scripts | Nomad agent installed as native Windows Service; SCM remains the host authority | **REPLACE-CANDIDATE** | Can replace WinSW for workloads moved into Nomad allocations. Does not remove SCM or justify deleting all WinSW before migration. | Removes duplicate wrapper/supervisor paths. Requires workload-specific service, identity, ACL, log, and rollback proof. |
 | Deployment/update/rollback | Local deployment state and ad-hoc restart paths | Nomad `update`/deployment/revert plus existing SHA-pinned release provenance | **ADAPT/KEEP** | Replaces generic deployment state machinery. Does not roll back database truth, labels, risk policy, or arbitrary filesystem state. | Native health-gated update and revert; preserve LIVE15 release hashes and human deployment gates. |
 | Web application shell | Hand-built static `web/app.js`, routes, tables, refresh/error state | [React Admin](https://github.com/marmelab/react-admin) + Material UI | **REPLACE-CANDIDATE** | Replaces custom browser plumbing, routing, tables, loading/error handling, and theme shell. Keeps FastAPI typed projections and read-only domain rules. | Mature REST/GraphQL admin primitives and controllable dark theme. First POC should migrate only health and markets, display-only. |
@@ -33,7 +48,7 @@ alter the Recorder truth contract, authorize training, or permit trading.
 | Event buffering and replay | In-process queues and bespoke consumer coordination | [NATS JetStream](https://github.com/nats-io/nats-server) | **CONDITIONAL** | Can replace generic durable buffering, acknowledgement, replay, and consumer decoupling. Does not replace Recorder truth, idempotency, or gap policy. | At-least-once durable streams and replay. Require a non-Production POC with event IDs, duplicate handling, backpressure, and loss evidence. |
 | Service discovery | Hard-coded or local service addresses | Nomad native service discovery; [Consul](https://github.com/hashicorp/consul) only if required | **ADAPT/CONDITIONAL** | Nomad native discovery is sufficient for the current POC. Consul may replace generic multi-node discovery later, not the current single-host path. | Avoids an unnecessary control plane now. A Consul decision requires DNS/mTLS/KV/scale requirements and a separate shadow task. |
 | Scheduled/batch runtime work | Custom scheduled commands and process wrappers | Nomad periodic/batch jobs; [Temporal](https://github.com/temporalio/temporal) only for durable multi-step workflows | **ADAPT/CONDITIONAL** | Nomad can host bounded jobs. Temporal may replace a true durable workflow engine, not a real-time collector or service supervisor. | Keep the control plane small; require a measured workflow requirement before Temporal. |
-| Data/feature throughput | SQLite scans, archive/purge and materialization bottlenecks under ST-005 | [Polars](https://github.com/pola-rs/polars), [Apache Arrow](https://github.com/apache/arrow), or [DuckDB](https://github.com/duckdb/duckdb) | **CONDITIONAL** | May replace generic batch transformation or read-heavy analytical scans. Does not replace authoritative SQLite writes, settlement labels, gap facts, or immutable archive evidence. | Vectorized execution and columnar scans may address measured throughput. Benchmark against real bounded fixtures first; no speculative migration. |
+| Data/feature throughput | SQLite scans, archive/purge and materialization bottlenecks measured through the retained throughput-proof contract | [Polars](https://github.com/pola-rs/polars), [Apache Arrow](https://github.com/apache/arrow), or [DuckDB](https://github.com/duckdb/duckdb) | **CONDITIONAL** | May replace generic batch transformation or read-heavy analytical scans. Does not replace authoritative SQLite writes, settlement labels, gap facts, or immutable archive evidence. | Vectorized execution and columnar scans may address a measured bottleneck. Benchmark against real bounded fixtures first; no speculative migration. |
 | Very high-volume event streaming | None authorized; Kafka-like systems would add a large control plane | [Redpanda](https://github.com/redpanda-data/redpanda) or Apache Kafka | **DO-NOT-INTRODUCE-NOW** | Possible future streaming substrate only if NATS and measured capacity are insufficient. | Operational cost is disproportionate to the current small system; no adoption without a capacity failure and independent design review. |
 
 ## Data truth, research, models, and decision safety
@@ -54,17 +69,21 @@ alter the Recorder truth contract, authorize training, or permit trading.
 | Experiment tracking and registry | No Production-authorized replacement | MLflow or equivalent, future review | **CONDITIONAL** | Consider only after the immutable Training Snapshot and Champion/Challenger contracts are stable; never let a registry promote a model by itself. |
 | Decision, Hard Risk, and execution | LIVE15 Decision / Hard Risk / Execution | No generic replacement selected | **DO-NOT-REPLACE** | Models and upstream infrastructure may propose or host work; only independent LIVE15 safety policy can veto or authorize an action. |
 
-## Recommended adoption order
+## Candidate dependency order (design reference only)
 
-1. Nomad/SCM for one isolated workload, then gradual WinSW retirement per
-   workload. Migrate low-risk read-only workloads first; Recorder is late.
+Current execution ordering is owned only by
+`docs/project-brain/plan/current-roadmap.md`. The order below preserves dependency/design intent for
+later bounded selection; it does not create NEXT/ACTIVE tasks.
+
+1. Nomad/SCM remains the first generic lifecycle owner. ControlCenter and Recorder are already
+   Nomad-owned; remaining lifecycle consolidation concerns residual WinSW/RuntimeSupervisor generic
+   responsibilities and proceeds one bounded responsibility at a time.
 2. React Admin + Material UI for a display-only health/markets web POC.
 3. Vector as the default telemetry/log candidate, then Grafana if a separate
    operations dashboard is needed. Compare with OTel only if trace/OTLP
    requirements justify it.
-4. Measure ST-005 and Recorder ingress before choosing NATS JetStream,
-   Polars/Arrow, or DuckDB; use the smallest candidate that addresses the
-   measured bottleneck.
+4. Use the retained throughput-proof measurement contract before choosing NATS JetStream,
+   Polars/Arrow, or DuckDB; use the smallest candidate that addresses the measured bottleneck.
 5. Do not add Consul, Temporal, Kafka/Redpanda, or another control plane without
    a concrete unmet requirement.
 6. Preserve the existing LIVE15 data/model/safety contracts; evaluate model

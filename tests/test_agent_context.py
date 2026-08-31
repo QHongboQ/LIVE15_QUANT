@@ -1,5 +1,6 @@
 import json
 import math
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -149,16 +150,19 @@ def test_authority_leaves_preserve_moved_current_truth() -> None:
 
     assert "CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED" in control_center
     assert "rollback only" in control_center
-    assert "does not authorize a Recorder migration" in control_center
-    assert "Recorder ownership is unchanged" in recorder_truth
+    assert "did not itself authorize Recorder migration" in control_center
+    assert "separate runtime-ownership authority" in control_center
+    assert "Recorder process lifecycle is Nomad-owned" in recorder_truth
     assert "ST-005" in throughput and "60-minute proof" in throughput
+    assert "standalone `ST-005` custom-throughput optimization task is retired" in throughput
+    assert "No historical 60-minute proof is claimed to have passed" in throughput
     assert "gap002-closure.md" in reliability
     assert "Research coverage comes from the typed" in research
     assert "Only Kalshi finalized settlement" in validation and "fails closed" in validation
     assert "NO TRAINING_GO" in training and "NO TRAINING_STARTED" in training
     assert "Holdout-contamination remediation/replacement" in training
     assert "KalshiGateway / immutable adapter" in software
-    assert "ControlCenter is\nNomad-managed" in runtime
+    assert "ControlCenter and\nRecorder are Nomad-managed" in runtime
     assert "Production writes remain disabled" in boundary
     assert "all three WinSW services running" in legacy_receipt
     assert "no current-main deployment claim" in legacy_receipt
@@ -173,24 +177,29 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
     assert "## Immediate sequence" not in state
     assert "current-roadmap.md" in state and "current-roadmap.md" in progress
     for expected in (
-        "PHASE 1 — COMPLETE",
-        "PHASE 2 — COMPLETE / NO-OP",
-        "PHASE 3 — COMPLETE",
-        "RECORDER_LIFECYCLE_TO_NOMAD",
-        "Phase 4A",
-        "PHASE 4B — IN PARALLEL",
-        "OUT_OF_GAP002_PATH",
+        "GAP002` is **CLOSED / PASS**",
+        "Normal feature/model expansion is temporarily paused",
+        "upstream-consolidation freeze",
+        "owner resolution -> freeze legacy generic owner",
+        "CLEAN BASELINE",
+        "Project Brain authority consolidation COMPLETE",
+        "**NEXT:** begin the bounded **RUNTIME / LIFECYCLE CONSOLIDATION**",
+        "Nomad + Windows SCM",
     ):
         assert expected in roadmap
-    for text in (state, reliability):
-        normalized = text.replace("\n", " ")
-        assert "frozen" in normalized and "baseline" in normalized
+    current_roadmap = roadmap.split("## Change log", maxsplit=1)[0]
+    for stale in ("Phase 4A", "PHASE 4B", "EXECUTION_PREREQUISITE_PENDING"):
+        assert stale not in current_roadmap
+        assert stale not in state
+        assert stale not in reliability
 
 
-def test_gap002_frozen_baseline_is_declared_without_executing_gap002() -> None:
+def test_gap002_historical_baseline_is_preserved_after_durable_closeout() -> None:
     closure = read("docs/project-brain/dependencies/gap002-closure.md")
     evidence = read("docs/evidence/GAP002_DEPENDENCY_CLOSURE_DISCOVERY_001.md")
     baseline = read("docs/evidence/GAP002_FROZEN_BASELINE_001.md")
+    first_acceptance = read("docs/evidence/GAP002_FINAL_EVIDENCE_AND_VERDICT_001.md")
+    second_acceptance = read("docs/evidence/GAP002_SECOND_PRODUCTION_ACCEPTANCE_001.md")
 
     assert "GAP002_DEPENDENCY_AUDIT_EXECUTED = YES" in closure
     assert "MIGRATE_BEFORE_GAP_SET = NONE" in closure
@@ -198,6 +207,11 @@ def test_gap002_frozen_baseline_is_declared_without_executing_gap002() -> None:
     assert "RUNTIME_SUPERVISOR_MIGRATION_BEFORE_GAP = NOT_REQUIRED" in evidence
     assert "PHASE3_COMPLETE = YES" in baseline
     assert "GAP002_EXECUTED = NO" in baseline
+    assert "GAP002 closed/pass" in closure
+    assert "No Phase-4 execution route remains active" in closure
+    assert "`GAP002 = FAIL`" in first_acceptance
+    assert "`GAP002 = PASS`" in second_acceptance
+    assert "`FIRST_PRODUCTION_GAP002 = FAIL`" in second_acceptance
 
 
 def test_progress_history_and_inventory_preserve_lossless_v2_migration() -> None:
@@ -348,11 +362,228 @@ def test_context_recovery_and_skill_provenance_remain_available() -> None:
     for answer in (
         "ResearchUniverseSnapshot",
         "H0/H1/H2",
-        "ControlCenter is Nomad-owned",
-        "NO TRAINING_GO",
+        "runtime-ownership.json",
+        "training/promotion authority",
         "Git commits + PRs",
     ):
         assert answer in simulation
+
+
+def test_single_authority_consolidation_contracts() -> None:
+    agents = read("AGENTS.md")
+    root = read("docs/project-brain/README.md")
+    plan_index = read("docs/project-brain/plan/README.md")
+    roadmap = read("docs/project-brain/plan/current-roadmap.md")
+    progress = read("PROJECT_PROGRESS.md")
+    state = read("CURRENT_STATE.md")
+    design_index = read("docs/roadmap/README.md")
+
+    assert "docs/project-brain/README.md" in agents
+    assert "plan/README.md" in root
+    assert "current-roadmap.md" in plan_index
+    assert "../../roadmap/README.md" in plan_index
+    assert "The sole current execution-sequence authority" in roadmap
+    assert "**NEXT:**" in roadmap
+
+    claims = []
+    for path in ROOT.rglob("*.md"):
+        if "The sole current execution-sequence authority" in path.read_text(encoding="utf-8"):
+            claims.append(path.relative_to(ROOT).as_posix())
+    assert claims == ["docs/project-brain/plan/current-roadmap.md"]
+
+    assert "INDEX_ONLY / NON-CURRENT" in design_index
+    assert "## Immediate sequence" not in progress
+    assert "**NEXT:**" not in progress
+    assert "**NEXT:**" not in state
+
+    authority_path = "docs/project-brain/plan/current-roadmap.md"
+    historical_prefixes = (
+        "docs/evidence/",
+        "docs/deployment/",
+        "docs/baselines/",
+    )
+    historical_names = (
+        "docs/project-brain/PROJECT_PROGRESS_DETAIL_",
+        "docs/project-brain/NOMAD_OVERNIGHT_HANDOFF_",
+        "docs/project-brain/NOMAD_MIGRATION_STATUS_",
+        "docs/project-brain/V2_MIGRATION_INVENTORY_",
+    )
+    current_directive = re.compile(r"(?im)^(?:\*\*)?(?:NEXT|ACTIVE|PLANNED)(?:\*\*)?\s*(?::|—|-)")
+    historical_phase_claim = re.compile(r"(?i)\((?:active|planned after[^)]*)\)")
+    scanned = []
+    for markdown_path in ROOT.rglob("*.md"):
+        path = markdown_path.relative_to(ROOT).as_posix()
+        if path.startswith(historical_prefixes) or path.startswith(historical_names):
+            continue
+        scanned.append(path)
+        text = markdown_path.read_text(encoding="utf-8")
+        if path == authority_path:
+            assert current_directive.search(text)
+            continue
+        assert not current_directive.search(text), path
+        assert not historical_phase_claim.search(text), path
+    assert len(scanned) > 20
+    assert authority_path in scanned
+
+
+def test_compact_progress_has_only_current_or_future_gated_rows() -> None:
+    progress = read("PROJECT_PROGRESS.md")
+    assert "## Active and gated work\n\n### Current Production runtime authority" in progress
+    active = progress.split("## Active and gated work", maxsplit=1)[1].split(
+        "## Planning route", maxsplit=1
+    )[0]
+
+    assert "| RUNTIME-LIFECYCLE-CONSOLIDATION | PLANNED / NEXT |" in active
+    assert "| TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED |" in active
+    for historical_or_superseded in (
+        "WS-RESYNC-001 + GAP-002",
+        "SHADOW-REC-001",
+        "NOMAD-POC-SECURE-001",
+        "NOMAD-POC-VALIDATE-001",
+        "NOMAD-MIGRATION-STATUS-20260830",
+        "NOMAD-CONTROL-CENTER-CUTOVER-FINAL-001",
+        "GITHUB-ACTIONS-PUBLIC-20260830",
+        "H2-TRAIN-003",
+        "ST-005",
+        "DEP-001",
+        "DEP-ROOT-HYGIENE-PREVENT-001",
+    ):
+        assert historical_or_superseded not in active
+
+    st005 = next(line for line in progress.splitlines() if line.startswith("| ST-005 |"))
+    assert "CANCELLED / SUPERSEDED" in st005
+    assert "BLOCKED" not in st005
+
+
+def test_design_reference_index_is_recursive_and_non_current() -> None:
+    root = read("docs/project-brain/README.md")
+    plan_index = read("docs/project-brain/plan/README.md")
+    design_index = read("docs/roadmap/README.md")
+
+    assert "plan/README.md" in root
+    assert "../../roadmap/README.md" in plan_index
+    assert "INDEX_ONLY / NON-CURRENT" in design_index
+    assert "Current execution ordering is owned only by" in design_index
+    assert "current NEXT/ACTIVE/PLANNED task" in design_index
+
+    legacy_root_name = "PROJECT_" + "ROADMAP.md"
+    assert not (ROOT / legacy_root_name).exists()
+    for markdown_path in ROOT.rglob("*.md"):
+        assert legacy_root_name not in markdown_path.read_text(encoding="utf-8")
+
+
+def test_next_names_one_concrete_responsibility_class() -> None:
+    roadmap = read("docs/project-brain/plan/current-roadmap.md")
+
+    next_section = roadmap.split("**NEXT:**", maxsplit=1)[1].split(
+        "Candidate-specific boundaries", maxsplit=1
+    )[0]
+    assert "RUNTIME / LIFECYCLE CONSOLIDATION" in next_section
+    assert "Nomad + Windows SCM" in next_section
+    assert "select exactly one responsibility" in next_section
+    assert "select one generic responsibility" not in next_section
+    assert "big-bang RuntimeSupervisor/WinSW deletion" in next_section
+
+
+def test_task_status_route_is_one_child_at_a_time() -> None:
+    root = read("docs/project-brain/README.md")
+    status_index = read("docs/project-brain/status/README.md")
+    task_route = next(line for line in root.splitlines() if line.startswith("| task/status |"))
+
+    assert "`status/README.md`" in task_route
+    assert "PROJECT_PROGRESS.md" not in task_route
+    assert "../../../PROJECT_PROGRESS.md" in status_index
+    assert "task-closeout.md" in status_index
+
+
+def test_existing_owner_first_precedes_upstream_reuse_first() -> None:
+    protocol = read("docs/agents/change-protocol.md")
+    agents = read("AGENTS.md")
+    closeout = read("docs/project-brain/status/task-closeout.md")
+
+    owner_position = protocol.index("## Existing Owner First")
+    upstream_position = protocol.index("## Platform-owned failure gate")
+    assert owner_position < upstream_position
+    assert "Existing Owner First precedes Upstream Reuse First" in agents
+    for field in (
+        "EXISTING_AUTHORITY_FOUND",
+        "EXISTING_CAPABILITY_FOUND",
+        "EXISTING_IMPLEMENTATION_FOUND",
+        "EXISTING_PLAN_FOUND",
+        "WHY_EXISTING_OWNER_CANNOT_BE_USED",
+        "WHY_NEW_OWNER_IS_REQUIRED",
+    ):
+        assert field in protocol
+    assert "LIVE15-specific implementation last-last-last" in protocol
+    assert closeout.index("Existing\nOwner First") < closeout.index("Upstream Reuse First")
+
+
+def test_upstream_consolidation_is_subtractive_and_classified() -> None:
+    roadmap = read("docs/project-brain/plan/current-roadmap.md")
+    matrix = read("docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md")
+    execution = read("docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md")
+    throughput = read("docs/project-brain/capabilities/records/recorder/throughput-proof.md")
+
+    for classification in (
+        "MUST_REPLACE",
+        "CONDITIONAL",
+        "RESEARCH_ONLY",
+        "KEEP_LOCAL",
+        "DO_NOT_INTRODUCE",
+    ):
+        assert f"**{classification}**" in matrix
+    for lifecycle_step in (
+        "NAVIGATION / OWNER RESOLUTION",
+        "FREEZE LEGACY GENERIC IMPLEMENTATION",
+        "REPLACE ONE RESPONSIBILITY",
+        "VERIFY REPLACEMENT",
+        "RETIRE CORRESPONDING OLD OWNER",
+        "FINAL DEEP CLEAN",
+    ):
+        assert lifecycle_step in execution
+    assert "Current execution ordering is owned only by" in " ".join(matrix.split())
+    assert "Current execution ordering is owned only by" in " ".join(execution.split())
+    assert "Normal feature/model expansion is temporarily paused" in roadmap
+    assert "does not authorize DuckDB, Polars, Arrow, NATS" in throughput
+
+
+def test_legacy_planning_cannot_masquerade_as_current_authority() -> None:
+    legacy_files = {
+        "docs/roadmap/ROADMAP_001_DATA_TRAINING_ADAPTATION.md": "DESIGN_REFERENCE / NON-CURRENT",
+        "docs/roadmap/ROADMAP_002_MODEL_FACTOR_DECISION.md": "DESIGN_REFERENCE / NON-CURRENT",
+        "docs/roadmap/ROADMAP_003_RUNTIME_OPERATIONAL_ASSURANCE.md": (
+            "HISTORICAL DESIGN_REFERENCE / NON-CURRENT"
+        ),
+    }
+    for path, marker in legacy_files.items():
+        text = read(path)
+        assert marker in text
+        assert "secure isolated service boundary (active)" not in text
+        assert "POC operational proof (planned after N1)" not in text
+    assert "current approved execution sequence" not in read("docs/roadmap/README.md")
+
+
+def test_current_recorder_runtime_owner_is_machine_readable_and_consistent() -> None:
+    ownership = json.loads(read("deploy/windows/runtime-ownership.json"))
+    recorder = next(
+        item for item in ownership["components"] if item["component"] == "LIVE15Recorder"
+    )
+    assert recorder["owner_type"] == "NOMAD_MANAGED"
+    assert recorder["owner_id"] == "Nomad:live15-recorder"
+    assert recorder["restart_authority"] == "Nomad:live15-recorder"
+    assert "Nomad allocation" in recorder["process_source"]
+
+    for component in ("pyth", "coinbase"):
+        worker = next(item for item in ownership["components"] if item["component"] == component)
+        assert worker["restart_authority"] == "LIVE15Recorder then Nomad:live15-recorder"
+
+    narrative = read("docs/runtime_ownership_and_self_healing.md")
+    adr = read("docs/adr/0003-runtime-ownership.md")
+    assert "owned only\nby `deploy/windows/runtime-ownership.json`" in narrative
+    assert "Recorder and ControlCenter currently resolve to Nomad" in narrative
+    assert "Recorder and RuntimeSupervisor\nremain independently WinSW-owned" not in narrative
+    assert "Current owner\nvalues are resolved from `deploy/windows/runtime-ownership.json`" in adr
+    assert "Windows/WinSW owns service lifecycle" not in adr
 
 
 def test_task_time_official_source_safeguards_remain() -> None:

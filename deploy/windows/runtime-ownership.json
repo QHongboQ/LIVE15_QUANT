@@ -4,12 +4,12 @@
   "components": [
     {
       "component": "LIVE15Recorder",
-      "owner_type": "SERVICE_MANAGED",
-      "owner_id": "WinSW:LIVE15Recorder",
+      "owner_type": "NOMAD_MANAGED",
+      "owner_id": "Nomad:live15-recorder",
       "heartbeat_source": "data/health.json",
-      "process_source": "Windows service LIVE15Recorder",
-      "health_source": "Windows service state plus current recorder heartbeat",
-      "restart_authority": "WinSW:LIVE15Recorder",
+      "process_source": "Nomad allocation live15-recorder.recorder[0]",
+      "health_source": "Nomad allocation state plus current recorder heartbeat",
+      "restart_authority": "Nomad:live15-recorder",
       "criticality": "CRITICAL",
       "run_mode": "ALWAYS_ON"
     },
@@ -75,7 +75,7 @@
       "heartbeat_source": "data/health.json worker_health.pyth",
       "process_source": "LIVE15Recorder",
       "health_source": "parent alive plus accepted Pyth observation progress and session-aware availability",
-      "restart_authority": "LIVE15Recorder then WinSW:LIVE15Recorder",
+      "restart_authority": "LIVE15Recorder then Nomad:live15-recorder",
       "criticality": "CRITICAL",
       "run_mode": "ALWAYS_ON_WHEN_ENABLED"
     },
@@ -86,7 +86,7 @@
       "heartbeat_source": "data/health.json worker_health.coinbase",
       "process_source": "LIVE15Recorder",
       "health_source": "parent alive plus accepted observation progress",
-      "restart_authority": "LIVE15Recorder then WinSW:LIVE15Recorder",
+      "restart_authority": "LIVE15Recorder then Nomad:live15-recorder",
       "criticality": "CRITICAL",
       "run_mode": "ALWAYS_ON"
     }

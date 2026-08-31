@@ -23,6 +23,24 @@ Prefer deletion or freezing of redundant local machinery over preserving it for
 speculative flexibility. A feature is complete when the required behavior is
 reliably provided by one clear owner.
 
+## Replacement lifecycle
+
+Every bounded replacement follows one lifecycle:
+
+```text
+NAVIGATION / OWNER RESOLUTION
+  -> FREEZE LEGACY GENERIC IMPLEMENTATION
+  -> REPLACE ONE RESPONSIBILITY
+  -> VERIFY REPLACEMENT
+  -> RETIRE CORRESPONDING OLD OWNER
+  -> NEXT RESPONSIBILITY
+  -> FINAL DEEP CLEAN
+```
+
+Apply Existing Owner First before selecting upstream. Do not use a big-bang rewrite, keep legacy
+and replacement owners actively evolving in parallel, or delete rollback/evidence before bounded
+replacement proof.
+
 ## Legacy freeze during migration
 
 Once a mature upstream owner is selected for a generic responsibility, the
@@ -120,20 +138,23 @@ is a specifically unauthorized host mutation, may the task record an
 last-last-last option and requires an explicit reason why all reusable upstream
 paths are unsuitable.
 
-## Execution order
+## Candidate dependency order
 
-1. **Nomad + Windows SCM** — finish the first isolated read-only ControlCenter
-   shadow, then migrate additional low-risk workloads one at a time. Recorder
-   is intentionally late in the sequence.
+This is a design dependency reference, not current project sequencing. Current execution ordering
+is owned only by `docs/project-brain/plan/current-roadmap.md`.
+
+1. **Nomad + Windows SCM** remains the first generic lifecycle owner. ControlCenter and Recorder
+   are already Nomad-owned; remaining lifecycle consolidation concerns residual
+   WinSW/RuntimeSupervisor generic responsibilities, one bounded responsibility at a time.
 2. **React Admin + Material UI** — first web POC is display-only health and
    markets; keep FastAPI typed projections and domain truth in LIVE15.
 3. **Vector**, then **Grafana** where an operations dashboard is actually
    useful. Use one telemetry collector by default; do not deploy overlapping
    collectors without a measured requirement.
-4. **Measure before adding throughput infrastructure.** Choose NATS JetStream
-   only for demonstrated buffering/replay/backpressure needs. Choose
-   DuckDB/Polars/Arrow only for demonstrated analytical/read-path throughput
-   needs. Use the smallest candidate that addresses the measured bottleneck.
+4. **Measure before adding throughput infrastructure.** Use the retained throughput-proof contract
+   only when a bounded decision needs to classify buffering/replay/backpressure or analytical/read
+   throughput. Choose NATS JetStream or DuckDB/Polars/Arrow only for the measured need, and use the
+   smallest component that addresses it.
 5. Do not introduce Consul, Temporal, Kafka/Redpanda, or another control plane
    merely because it is mature. Require a concrete unmet requirement first.
 

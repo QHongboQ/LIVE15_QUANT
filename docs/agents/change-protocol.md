@@ -21,6 +21,46 @@ Every coding task should make its boundary explicit before editing:
 7. Review the diff and secret/data boundary.
 8. Report facts, changed files, checks, blockers, and rollback/next steps.
 
+## Existing Owner First
+
+Before proposing, designing, planning, or implementing a non-trivial component, manager, service,
+framework, abstraction, model layer, data path, controller, registry, dashboard, queue, scheduler,
+helper, or authority:
+
+1. classify the responsibility;
+2. enter through `AGENTS.md` and the Project Brain root;
+3. recursively locate the existing authority;
+4. determine whether the capability already exists;
+5. determine whether an implementation already owns the responsibility;
+6. determine whether an approved plan already covers it; and
+7. reuse, extend, consolidate, or replace that owner by default.
+
+Create a new owner only when no existing owner can correctly own the responsibility. The design
+decision must answer, in substance:
+
+- `EXISTING_AUTHORITY_FOUND = YES/NO`
+- `EXISTING_CAPABILITY_FOUND = YES/NO`
+- `EXISTING_IMPLEMENTATION_FOUND = YES/NO`
+- `EXISTING_PLAN_FOUND = YES/NO`
+- `WHY_EXISTING_OWNER_CANNOT_BE_USED =`
+- `WHY_NEW_OWNER_IS_REQUIRED =`
+
+This is a mandatory decision boundary for non-trivial additions in both ChatGPT strategy work and
+Codex implementation planning, not boilerplate for an obvious one-line edit. One responsibility
+has one clear owner. Do not create B when A already owns the same responsibility.
+
+Only after this internal owner-resolution pass finds no suitable implementation for generic
+behavior does **Upstream Reuse First** begin. The required order is:
+
+```text
+existing owner discovery
+  -> reuse / extend / consolidate / replace the LIVE15 owner when appropriate
+  -> official upstream mechanism and sources
+  -> mature license-compatible alternatives
+  -> pinned configuration plus thin LIVE15 adapter and validation
+  -> LIVE15-specific implementation last-last-last
+```
+
 The standing authority for ordinary repo-local engineering fixes and maintenance permits change and
 merge only after the required upstream review, regression coverage, Maker/Checker validation, and
 green CI. It never extends to elevated-review zones, Production trading writes, holdout access,

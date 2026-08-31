@@ -1,8 +1,11 @@
 # ROADMAP 003 — Runtime and operational assurance
 
+Status: **HISTORICAL DESIGN_REFERENCE / NON-CURRENT**
+
 ## Purpose and authority
 
-This volume plans operational assurance for LIVE15. It does not authorize a
+This volume preserves the operational-assurance design used during the earlier Nomad POC. It does
+not own current task status or execution ordering and does not authorize a
 Production cutover, Production write, Hard Risk change, training/promotion,
 or frozen-holdout access. Runtime health and bounded evidence remain the truth;
 this document is a route map, not a service receipt.
@@ -55,14 +58,14 @@ this document is a route map, not a service receipt.
 
 ## Nomad migration sequence
 
-### Phase N0 — upstream suitability (completed research, not cutover)
+### Historical Phase N0 — upstream suitability research
 
 Nomad 2.0.5 is a viable candidate for an isolated Windows AMD64 POC under the
 official upstream service, `raw_exec`, restart, check-restart, update/history,
 logging and security documentation. Its CE licensing/security/HA consequences
 remain separate later human decisions.
 
-### Phase N1 — secure isolated service boundary (active)
+### Historical Phase N1 — secure isolated service-boundary design
 
 - Protect and hash-verify the Nomad binary and configuration.
 - Run the service as LocalService with a fixed-action, least-privilege bridge.
@@ -72,7 +75,7 @@ remain separate later human decisions.
 - Do not report end-to-end readiness until the real fixture binds, native health
   passes, service restart succeeds and allocation rediscovery is observed.
 
-### Phase N2 — POC operational proof (planned after N1)
+### Historical Phase N2 — POC operational-proof design
 
 - Ten task-crash recovery cycles and ten health-failure recovery cycles.
 - Five full agent-restart/rediscovery cycles with two spaced, consecutive
@@ -82,7 +85,7 @@ remain separate later human decisions.
 - Native job history, bad deployment, auto-revert/revert and rollback proof.
 - Checker-reviewed evidence package; a green CI/PR documents code only.
 
-### Phase N3 — separate decision point
+### Historical Phase N3 — separate-decision design
 
 Only after N2 is proven may a new explicitly authorized task evaluate any
 Production migration. It must separately resolve HA/single-host trade-offs,
