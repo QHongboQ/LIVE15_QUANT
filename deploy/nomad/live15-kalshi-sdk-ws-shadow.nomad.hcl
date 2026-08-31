@@ -110,14 +110,24 @@ job "live15-kalshi-sdk-ws-shadow" {
         ]
       }
 
+      # Preserve the legacy production_runtime_environment boundary explicitly.
+      # Empty values override any inherited Demo/endpoint variables on the Nomad client.
       env {
-        PYTHONDONTWRITEBYTECODE                           = "1"
-        PYTHONUNBUFFERED                                  = "1"
-        PYTHONUTF8                                        = "1"
-        LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER         = "nomad"
-        LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH          = var.kalshi_api_key_id_path
-        LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH         = var.kalshi_private_key_path
-        LIVE15_RECORDER_HEALTH_PATH                       = var.recorder_health_path
+        PYTHONDONTWRITEBYTECODE                          = "1"
+        PYTHONUNBUFFERED                                 = "1"
+        PYTHONUTF8                                       = "1"
+        KALSHI_DEMO                                      = "false"
+        KALSHI_BASE_URL                                  = ""
+        KALSHI_WS_BASE_URL                               = ""
+        LIVE15_KALSHI_DEMO_API_KEY_ID                    = ""
+        LIVE15_KALSHI_DEMO_API_KEY_ID_FILE               = ""
+        LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH              = ""
+        LIVE15_KALSHI_RUNTIME_ENVIRONMENT                = "PRODUCTION"
+        LIVE15_ENABLE_KALSHI_PRODUCTION_WEBSOCKET        = "true"
+        LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER        = "nomad"
+        LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH         = var.kalshi_api_key_id_path
+        LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH        = var.kalshi_private_key_path
+        LIVE15_RECORDER_HEALTH_PATH                      = var.recorder_health_path
       }
     }
   }
