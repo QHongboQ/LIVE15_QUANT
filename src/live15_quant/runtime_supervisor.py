@@ -24,7 +24,6 @@ from live15_quant.runtime_status import (
     utc_timestamp,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
