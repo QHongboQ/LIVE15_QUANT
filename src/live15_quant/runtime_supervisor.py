@@ -284,6 +284,10 @@ class RuntimeSupervisor:
                     "LIVE15_KALSHI_DEMO_PRIVATE_KEY_PATH",
                 ):
                     environment.pop(name, None)
+            # This is the legacy launch path until a separately authorized Nomad
+            # cutover. Do not inherit a stale Nomad-owner marker and create two
+            # apparent lifecycle owners for the same child process.
+            environment["LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER"] = "runtime_supervisor"
         with child.stdout_path.open("ab") as stdout, child.stderr_path.open("ab") as stderr:
             child.launcher = self._popen(
                 [sys.executable, "-m", child.module],

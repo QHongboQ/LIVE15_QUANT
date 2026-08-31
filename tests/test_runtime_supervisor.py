@@ -69,6 +69,22 @@ def test_supervisor_restarts_only_explicit_automatic_child(tmp_path: Path) -> No
     assert all("control_center" not in process.command[-1] for process in launched)
 
 
+def test_supervisor_pins_legacy_shadow_lifecycle_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, str] = {}
+
+    def popen(_command, **kwargs):
+        captured.update(kwargs["env"])
+        return FakeProcess([])
+
+    monkeypatch.setenv("LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER", "nomad")
+    supervisor = RuntimeSupervisor(configured(tmp_path), root=tmp_path, popen=popen)
+    supervisor._launch(supervisor.children["kalshi_sdk_ws_shadow"])
+
+    assert captured["LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER"] == "runtime_supervisor"
+
+
 def test_runtime_pid_lease_blocks_duplicate_and_recovers_stale(tmp_path: Path) -> None:
     path = tmp_path / "supervisor.pid"
     first = RuntimePidLease(path)
