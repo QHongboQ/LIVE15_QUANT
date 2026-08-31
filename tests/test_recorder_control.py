@@ -23,6 +23,7 @@ from live15_quant.recorder_control import (
     ManagedRecorderState,
     RecorderPidLease,
     RecorderProcessController,
+    rearm_kalshi_ws_reconnect,
     request_kalshi_ws_reconnect,
 )
 
@@ -122,6 +123,97 @@ async def test_one_shot_reconnect_action_is_consumed_once_and_unknown_is_ignored
     assert not stopped.is_set()
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
+
+
+def _write_reconnect_action(path: Path, status: str, **extra: str) -> str:
+    payload = {
+        "action": "reconnect_kalshi_ws",
+        "action_status": status,
+        "action_requested_at": "2026-08-31T00:00:00+00:00",
+        "action_consuming_at": "2026-08-31T00:00:01+00:00",
+        "action_consumed_at": "2026-08-31T00:00:02+00:00",
+        "desired": "running",
+        "state": "running",
+        "message": "recorder is running",
+        **extra,
+    }
+    original = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(original, encoding="utf-8")
+    return original
+
+
+@pytest.mark.parametrize("status", ("consumed", "failed"))
+def test_terminal_reconnect_action_rearms_and_preserves_control_state(tmp_path, status) -> None:
+    control_path = tmp_path / "recorder-control.json"
+    _write_reconnect_action(control_path, status)
+
+    assert rearm_kalshi_ws_reconnect(control_path)
+
+    payload = json.loads(control_path.read_text(encoding="utf-8"))
+    assert payload == {"desired": "running", "state": "running", "message": "recorder is running"}
+    assert "action" not in payload
+    assert "action_status" not in payload
+
+
+@pytest.mark.parametrize("status", ("pending", "consuming"))
+def test_live_reconnect_action_cannot_be_rearmed_or_changed(tmp_path, status) -> None:
+    control_path = tmp_path / "recorder-control.json"
+    original = _write_reconnect_action(control_path, status)
+
+    assert not rearm_kalshi_ws_reconnect(control_path)
+    assert control_path.read_text(encoding="utf-8") == original
+
+
+def test_unknown_reconnect_action_is_rejected_unchanged(tmp_path) -> None:
+    control_path = tmp_path / "recorder-control.json"
+    original = (
+        json.dumps(
+            {"action": "unknown", "action_status": "consumed", "desired": "running"},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    control_path.write_text(original, encoding="utf-8")
+
+    assert not rearm_kalshi_ws_reconnect(control_path)
+    assert control_path.read_text(encoding="utf-8") == original
+
+
+def test_malformed_reconnect_control_is_rejected_unchanged(tmp_path) -> None:
+    control_path = tmp_path / "recorder-control.json"
+    control_path.write_text("not-json", encoding="utf-8")
+
+    assert not rearm_kalshi_ws_reconnect(control_path)
+    assert control_path.read_text(encoding="utf-8") == "not-json"
+
+
+def test_rearmed_action_is_not_pending_and_can_be_requested_once(tmp_path) -> None:
+    control_path = tmp_path / "recorder-control.json"
+    _write_reconnect_action(control_path, "consumed")
+
+    assert rearm_kalshi_ws_reconnect(control_path)
+    payload = json.loads(control_path.read_text(encoding="utf-8"))
+    assert "action" not in payload
+    assert request_kalshi_ws_reconnect(control_path)
+    pending = json.loads(control_path.read_text(encoding="utf-8"))
+    assert pending["action"] == "reconnect_kalshi_ws"
+    assert pending["action_status"] == "pending"
+    assert not request_kalshi_ws_reconnect(control_path)
+
+
+def test_reconnect_rearm_cli_only_clears_terminal_action(tmp_path, monkeypatch, capsys) -> None:
+    configured = managed_settings(tmp_path)
+    configured.recorder_control_path.parent.mkdir(parents=True)
+    _write_reconnect_action(configured.recorder_control_path, "failed")
+    monkeypatch.setattr(cli, "load_settings", lambda: configured)
+
+    cli.recorder_reconnect_rearm_main([])
+
+    assert capsys.readouterr().out == "reconnect action rearmed\n"
+    payload = json.loads(configured.recorder_control_path.read_text(encoding="utf-8"))
+    assert payload["desired"] == "running"
+    assert "action" not in payload
 
 
 def test_operator_reconnect_requires_a_live_recorder_pid(tmp_path, monkeypatch) -> None:

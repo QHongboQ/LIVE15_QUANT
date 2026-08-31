@@ -79,6 +79,7 @@ from live15_quant.recorder_control import (
     claim_kalshi_ws_reconnect,
     finish_kalshi_ws_reconnect,
     process_alive,
+    rearm_kalshi_ws_reconnect,
     request_kalshi_ws_reconnect,
 )
 from live15_quant.secondary_diagnostics import build_secondary_diagnostics
@@ -924,6 +925,20 @@ def recorder_reconnect_main(argv: Sequence[str] | None = None) -> None:
         print("reconnect request queued")
         return
     raise SystemExit("reconnect request already pending or consumed")
+
+
+def recorder_reconnect_rearm_main(argv: Sequence[str] | None = None) -> None:
+    """Clear one terminal Kalshi Production WebSocket reconnect action."""
+    _parse_no_args(
+        "live15-recorder-reconnect-rearm",
+        recorder_reconnect_rearm_main.__doc__ or "",
+        argv,
+    )
+    settings = load_settings()
+    if rearm_kalshi_ws_reconnect(settings.recorder_control_path):
+        print("reconnect action rearmed")
+        return
+    raise SystemExit("reconnect action is not terminal or is invalid")
 
 
 def readiness_main(argv: Sequence[str] | None = None) -> None:
