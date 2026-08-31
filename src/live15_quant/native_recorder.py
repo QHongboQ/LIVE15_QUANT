@@ -837,6 +837,13 @@ class KalshiNativeRecorder:
     def request_stop(self) -> None:
         self._stop_event.set()
 
+    async def request_kalshi_ws_reconnect(self) -> None:
+        """Invoke the existing transport reconnect path exactly once."""
+        source = self._kalshi_ws
+        if source is None:
+            raise RuntimeError("Kalshi Production WebSocket is not active")
+        await source.request_reconnect()
+
     def health(self) -> KalshiNativeHealth:
         observed = self._utc_now()
         database_bytes, wal_bytes = self._store.database_sizes()
