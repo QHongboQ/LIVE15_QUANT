@@ -837,6 +837,25 @@ class KalshiNativeRecorder:
     def request_stop(self) -> None:
         self._stop_event.set()
 
+    async def request_kalshi_ws_reconnect(self) -> None:
+        """Invoke the Recorder-owned fail-closed reconnect transition exactly once."""
+        if self._sdk_recorder_host is not None:
+            self._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
+            self._kalshi_ws_waiting_since_monotonic = None
+            await self._sdk_recorder_host.request_reconnect()
+            return
+        if self._kalshi_ws is None:
+            raise RuntimeError("Kalshi Production WebSocket is not active")
+        processor = self._kalshi_ws_processor
+        if processor is not None:
+            processor.mark_reconnect_requested()
+            self._health.kalshi_ws_ladder_reconnect_requests = (
+                processor.diagnostics.reconnect_requests
+            )
+        self._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
+        self._kalshi_ws_waiting_since_monotonic = None
+        await self._kalshi_ws.request_reconnect()
+
     def health(self) -> KalshiNativeHealth:
         observed = self._utc_now()
         database_bytes, wal_bytes = self._store.database_sizes()
@@ -2336,16 +2355,7 @@ class KalshiNativeRecorder:
                 )
                 self._kalshi_ws_waiting_since_monotonic = self._monotonic()
                 return True
-            if stage is KalshiRecoveryStage.RECONNECT:
-                processor.mark_reconnect_requested()
-                self._health.kalshi_ws_ladder_reconnect_requests = (
-                    processor.diagnostics.reconnect_requests
-                )
-        self._mark_kalshi_ws_unsynchronized(GapReason.RECONNECT)
-        # One reconnect request is enough.  The next connection establishes a
-        # new monotonic snapshot deadline; do not busy-loop while close drains.
-        self._kalshi_ws_waiting_since_monotonic = None
-        await self._kalshi_ws.request_reconnect()
+        await self.request_kalshi_ws_reconnect()
         return True
 
     async def _monitor_kalshi_ws_liveness(self) -> None:

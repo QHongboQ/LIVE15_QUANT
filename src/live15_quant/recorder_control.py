@@ -20,6 +20,7 @@ from live15_quant.kalshi_gateway.client import KalshiGatewayError, production_ru
 WINDOWS_CREATE_NO_WINDOW = 0x08000000
 WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
 WINDOWS_BACKGROUND_FLAGS = WINDOWS_CREATE_NO_WINDOW | WINDOWS_CREATE_NEW_PROCESS_GROUP
+KALSHI_WS_RECONNECT_ACTION = "reconnect_kalshi_ws"
 
 
 class ManagedRecorderState(StrEnum):
@@ -89,6 +90,60 @@ def _atomic_json(path: Path, payload: dict[str, object]) -> None:
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def request_kalshi_ws_reconnect(path: Path) -> bool:
+    """Queue one explicit reconnect action without changing lifecycle state."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        payload = {}
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict) or payload.get("action") is not None:
+        return False
+    payload.update(
+        action=KALSHI_WS_RECONNECT_ACTION,
+        action_status="pending",
+        action_requested_at=datetime.now(UTC).isoformat(),
+    )
+    _atomic_json(path, payload)
+    return True
+
+
+def claim_kalshi_ws_reconnect(path: Path) -> bool:
+    """Atomically claim a pending reconnect so it cannot fire twice."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    if (
+        not isinstance(payload, dict)
+        or payload.get("action") != KALSHI_WS_RECONNECT_ACTION
+        or payload.get("action_status") != "pending"
+    ):
+        return False
+    payload.update(
+        action_status="consuming",
+        action_consuming_at=datetime.now(UTC).isoformat(),
+    )
+    _atomic_json(path, payload)
+    return True
+
+
+def finish_kalshi_ws_reconnect(path: Path, *, success: bool) -> None:
+    """Record terminal action state for audit; never edits Recorder truth."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return
+    if not isinstance(payload, dict) or payload.get("action") != KALSHI_WS_RECONNECT_ACTION:
+        return
+    payload.update(
+        action_status="consumed" if success else "failed",
+        action_consumed_at=datetime.now(UTC).isoformat(),
+    )
+    _atomic_json(path, payload)
 
 
 class RecorderPidLease(AbstractContextManager["RecorderPidLease"]):
@@ -329,6 +384,11 @@ class RecorderProcessController:
 
     def desired_state(self) -> str:
         return str(self._read_control().get("desired", "running"))
+
+    def request_kalshi_ws_reconnect(self) -> bool:
+        if self.status().state is not ManagedRecorderState.RUNNING:
+            raise RuntimeError("recorder must be running for a reconnect request")
+        return request_kalshi_ws_reconnect(self._control_path)
 
     def _acquire_start_lock(self) -> None:
         self._start_lock.parent.mkdir(parents=True, exist_ok=True)

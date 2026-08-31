@@ -75,6 +75,11 @@ from live15_quant.recorder_control import (
     ManagedRecorderState,
     RecorderPidLease,
     RecorderProcessController,
+    _read_pid,
+    claim_kalshi_ws_reconnect,
+    finish_kalshi_ws_reconnect,
+    process_alive,
+    request_kalshi_ws_reconnect,
 )
 from live15_quant.secondary_diagnostics import build_secondary_diagnostics
 from live15_quant.sqlite_attribution import attribute_sqlite_snapshot
@@ -273,12 +278,21 @@ def discover_main() -> None:
 
 
 async def _watch_recorder_control(
-    recorder: KalshiNativeRecorder, controller: RecorderProcessController
+    recorder: KalshiNativeRecorder,
+    controller: RecorderProcessController | None,
+    control_path: Path,
 ) -> None:
     while True:
-        if controller.desired_state() == "paused":
+        if controller is not None and controller.desired_state() == "paused":
             recorder.request_stop()
             return
+        if claim_kalshi_ws_reconnect(control_path):
+            try:
+                await recorder.request_kalshi_ws_reconnect()
+            except Exception:
+                finish_kalshi_ws_reconnect(control_path, success=False)
+                raise
+            finish_kalshi_ws_reconnect(control_path, success=True)
         await asyncio.sleep(0.25)
 
 
@@ -300,8 +314,10 @@ async def _run_recorder(
             ),
         )
         control_task = (
-            asyncio.create_task(_watch_recorder_control(recorder, controller))
-            if controller is not None
+            asyncio.create_task(
+                _watch_recorder_control(recorder, controller, settings.recorder_control_path)
+            )
+            if controller is not None or settings.recorder_control_path is not None
             else None
         )
         if controller is not None:
@@ -895,6 +911,19 @@ def status_main(argv: Sequence[str] | None = None) -> None:
             "Recorder health file does not exist; start live15-record first"
         ) from error
     print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def recorder_reconnect_main(argv: Sequence[str] | None = None) -> None:
+    """Queue one explicit Kalshi Production WebSocket reconnect."""
+    _parse_no_args("live15-recorder-reconnect", recorder_reconnect_main.__doc__ or "", argv)
+    settings = load_settings()
+    pid = _read_pid(settings.recorder_pid_path)
+    if pid is None or not process_alive(pid):
+        raise SystemExit("Recorder is not currently running; reconnect request not queued")
+    if request_kalshi_ws_reconnect(settings.recorder_control_path):
+        print("reconnect request queued")
+        return
+    raise SystemExit("reconnect request already pending or consumed")
 
 
 def readiness_main(argv: Sequence[str] | None = None) -> None:

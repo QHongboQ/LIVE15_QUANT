@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import live15_quant.cli as cli
 import live15_quant.control_center_launcher as launcher
 import live15_quant.managed_recorder as managed
 import live15_quant.recorder_control as control
@@ -22,6 +23,7 @@ from live15_quant.recorder_control import (
     ManagedRecorderState,
     RecorderPidLease,
     RecorderProcessController,
+    request_kalshi_ws_reconnect,
 )
 
 
@@ -74,6 +76,67 @@ def test_managed_restart_reuses_only_valid_last_verified_health(tmp_path) -> Non
         encoding="utf-8",
     )
     assert _last_verified_health(configured) is None
+
+
+@pytest.mark.asyncio
+async def test_one_shot_reconnect_action_is_consumed_once_and_unknown_is_ignored(tmp_path) -> None:
+    control_path = tmp_path / "recorder-control.json"
+    calls = 0
+    stopped = asyncio.Event()
+
+    class Recorder:
+        def request_stop(self) -> None:
+            stopped.set()
+
+        async def request_kalshi_ws_reconnect(self) -> None:
+            nonlocal calls
+            calls += 1
+
+    recorder = Recorder()
+    task = asyncio.create_task(cli._watch_recorder_control(recorder, None, control_path))
+    await asyncio.sleep(0.03)
+    assert calls == 0
+
+    control_path.write_text("not-json", encoding="utf-8")
+    await asyncio.sleep(0.05)
+    assert calls == 0
+    assert not request_kalshi_ws_reconnect(control_path)
+
+    control_path.unlink()
+    assert request_kalshi_ws_reconnect(control_path)
+    for _ in range(20):
+        if calls:
+            break
+        await asyncio.sleep(0.02)
+    assert calls == 1
+    payload = json.loads(control_path.read_text(encoding="utf-8"))
+    assert payload["action_status"] == "consumed"
+    await asyncio.sleep(0.08)
+    assert calls == 1
+
+    payload["action"] = "unknown"
+    payload["action_status"] = "pending"
+    control_path.write_text(json.dumps(payload), encoding="utf-8")
+    await asyncio.sleep(0.05)
+    assert calls == 1
+    assert not stopped.is_set()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+def test_operator_reconnect_requires_a_live_recorder_pid(tmp_path, monkeypatch) -> None:
+    configured = managed_settings(tmp_path)
+    configured.recorder_control_path.parent.mkdir(parents=True)
+    configured.recorder_pid_path.write_text("2468\n", encoding="ascii")
+    original = json.dumps({"desired": "running", "state": "running"}, sort_keys=True)
+    configured.recorder_control_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(cli, "load_settings", lambda: configured)
+    monkeypatch.setattr(cli, "process_alive", lambda _pid: False)
+
+    with pytest.raises(SystemExit, match="not currently running"):
+        cli.recorder_reconnect_main([])
+
+    assert configured.recorder_control_path.read_text(encoding="utf-8") == original
 
 
 def test_startup_phase_diagnostics_are_bounded_and_path_free(tmp_path) -> None:
