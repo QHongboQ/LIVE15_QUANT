@@ -1,10 +1,12 @@
-"""Supervisor-owned kalshi-sdk v12 WebSocket shadow/parity component."""
+"""Kalshi-sdk v12 WebSocket shadow/parity component with explicit lifecycle ownership."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import signal
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -35,6 +37,21 @@ from live15_quant.runtime_status import (
 )
 
 logger = logging.getLogger(__name__)
+
+_LIFECYCLE_OWNER_ENV = "LIVE15_KALSHI_SDK_SHADOW_LIFECYCLE_OWNER"
+_LEGACY_LIFECYCLE_OWNER = "runtime_supervisor"
+_NOMAD_LIFECYCLE_OWNER = "nomad"
+
+
+def _lifecycle_owner(environ: Mapping[str, str] | None = None) -> str:
+    source = os.environ if environ is None else environ
+    owner = source.get(_LIFECYCLE_OWNER_ENV, _LEGACY_LIFECYCLE_OWNER).strip().lower()
+    if owner not in {_LEGACY_LIFECYCLE_OWNER, _NOMAD_LIFECYCLE_OWNER}:
+        raise ValueError(
+            f"{_LIFECYCLE_OWNER_ENV} lifecycle owner must be "
+            f"{_LEGACY_LIFECYCLE_OWNER} or {_NOMAD_LIFECYCLE_OWNER}"
+        )
+    return owner
 
 
 def _sanitized_error_code(error: BaseException) -> str:
@@ -87,7 +104,7 @@ class KalshiSdkShadowRunner:
         old_projection_path: Path,
         status: dict[str, object],
         status_path: Path,
-        control_path: Path,
+        control_path: Path | None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -96,11 +113,17 @@ class KalshiSdkShadowRunner:
         self.status_path = status_path
         self.control_path = control_path
         self.stop_event = asyncio.Event()
+        self.stop_reason: str | None = None
         self.adapter: KalshiSdkReliabilityAdapter | None = None
         self.active_tickers: tuple[str, ...] = ()
         self.rollover_count = 0
         self.last_rollover_reason: str | None = None
         self.last_error: str | None = None
+
+    def request_stop(self, reason: str) -> None:
+        if self.stop_reason is None:
+            self.stop_reason = reason
+        self.stop_event.set()
 
     def _status_payload(self, state: str) -> dict[str, object]:
         health = (
@@ -142,8 +165,8 @@ class KalshiSdkShadowRunner:
 
     async def _heartbeat(self) -> None:
         while not self.stop_event.is_set():
-            if _stop_requested(self.control_path):
-                self.stop_event.set()
+            if self.control_path is not None and _stop_requested(self.control_path):
+                self.request_stop("SUPERVISOR_STOP_REQUESTED")
                 break
             if self.adapter is None:
                 state = "WAITING_TICKERS"
@@ -381,11 +404,23 @@ class KalshiSdkShadowRunner:
             await asyncio.gather(heartbeat, return_exceptions=True)
 
 
+def _nomad_break_handler(
+    runner: KalshiSdkShadowRunner,
+    loop: asyncio.AbstractEventLoop,
+):
+    def handle_break(_signum: int, _frame: object) -> None:
+        loop.call_soon_threadsafe(runner.request_stop, "NOMAD_CTRL_BREAK")
+
+    return handle_break
+
+
 async def _run() -> None:
     settings = load_settings()
     configure_logging(settings.log_level)
     root = Path.cwd().resolve()
-    status_path, lease_path, control_path, store_path, old_projection = _paths(root)
+    status_path, lease_path, legacy_control_path, store_path, old_projection = _paths(root)
+    lifecycle_owner = _lifecycle_owner()
+    control_path = legacy_control_path if lifecycle_owner == _LEGACY_LIFECYCLE_OWNER else None
     lease = RuntimePidLease(lease_path)
     lease.acquire()
     started = utc_timestamp()
@@ -402,6 +437,7 @@ async def _run() -> None:
             "store_path": str(store_path),
             "official_recorder_writes": False,
             "sdk_endpoint": "wss://external-api-ws.kalshi.com/trade-api/ws/v2",
+            "lifecycle_owner": lifecycle_owner,
         },
     )
     atomic_json(status_path, status)
@@ -414,14 +450,24 @@ async def _run() -> None:
         status_path=status_path,
         control_path=control_path,
     )
+    sigbreak: Any | None = None
+    previous_sigbreak: Any | None = None
     try:
+        if lifecycle_owner == _NOMAD_LIFECYCLE_OWNER:
+            sigbreak = getattr(signal, "SIGBREAK", None)
+            if os.name != "nt" or sigbreak is None:
+                raise RuntimeError("Nomad shadow lifecycle requires Windows SIGBREAK support")
+            previous_sigbreak = signal.signal(
+                sigbreak,
+                _nomad_break_handler(runner, asyncio.get_running_loop()),
+            )
         await runner.run()
         status.update(
             {
                 "status": "STOPPED",
                 "last_heartbeat": utc_timestamp(),
                 "last_error": None,
-                "stop_reason": "SUPERVISOR_STOP_REQUESTED",
+                "stop_reason": runner.stop_reason or "STOP_REQUESTED",
             }
         )
         atomic_json(status_path, status)
@@ -436,6 +482,8 @@ async def _run() -> None:
         atomic_json(status_path, status)
         raise
     finally:
+        if sigbreak is not None and previous_sigbreak is not None:
+            signal.signal(sigbreak, previous_sigbreak)
         store.close()
         lease.release()
 
