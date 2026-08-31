@@ -11,8 +11,8 @@ The machine-readable counterpart is [`deploy/windows/runtime-ownership.json`](..
 Current component owner, process source, health truth, and restart authority values are owned only
 by `deploy/windows/runtime-ownership.json`; this narrative does not duplicate that registry.
 Recorder and ControlCenter currently resolve to Nomad lifecycle ownership, while
-RuntimeSupervisor retains its separate WinSW boundary. In-process workers escalate only through
-their registered parent/restart authority.
+RuntimeSupervisor remains only as a zero-responsibility legacy WinSW boundary pending final host
+retirement. In-process workers escalate only through their registered parent/restart authority.
 
 The Supervisor never starts, stops, or restarts Recorder or Control Center. It does not infer a
 service failure from an old supervisor receipt. A current owner with an old receipt is reported as
@@ -48,10 +48,9 @@ semantics.
 
 ## Auxiliary worker modes
 
-The registry marks `current_trainable` and `kalshi_sdk_ws_shadow` `ON_DEMAND` and
-`paper_forward` `PAUSED_BY_DESIGN` in this branch. They are not rendered as stale failures merely
-because they are intentionally not running. A future explicit registration can promote an
-auxiliary worker to `ALWAYS_ON`; only RuntimeSupervisor may then launch it.
+`current_trainable` is a mutable checkpointed materializer/training projection, not a runtime
+process. `kalshi_sdk_ws_shadow` is Nomad-managed. No auxiliary worker is currently registered
+under RuntimeSupervisor; the legacy service remains represented only for bounded host retirement.
 
 ## Migration / deployment boundary
 

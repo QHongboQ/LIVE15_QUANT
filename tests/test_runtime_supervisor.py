@@ -10,41 +10,22 @@ from live15_quant.runtime_status import RuntimePidLease, RuntimeStatusError, ato
 from live15_quant.runtime_supervisor import RuntimeSupervisor
 
 
-class FakeProcess:
-    next_pid = 30_000
-
-    def __init__(self, command: list[str]) -> None:
-        type(self).next_pid += 1
-        self.pid = type(self).next_pid
-        self.command = command
-        self.returncode: int | None = None
-
-    def poll(self) -> int | None:
-        return self.returncode
-
-
 def configured(_tmp_path: Path):
     return object()
 
 
-def test_supervisor_never_owns_recorder_or_control_center(tmp_path: Path) -> None:
-    launched: list[FakeProcess] = []
-
-    def popen(command, **_kwargs):
-        process = FakeProcess(command)
-        launched.append(process)
-        return process
-
-    supervisor = RuntimeSupervisor(configured(tmp_path), root=tmp_path, popen=popen)
+def test_supervisor_has_zero_registered_children(tmp_path: Path) -> None:
+    supervisor = RuntimeSupervisor(configured(tmp_path), root=tmp_path)
     components = supervisor.tick()
 
-    assert launched == []
-    assert set(components) == {"paper_forward"}
-    assert "kalshi_sdk_ws_shadow" not in supervisor.children
-    assert components["paper_forward"]["status"] == "PAUSED_BY_DESIGN"
+    assert supervisor.children == {}
+    assert components == {}
     source = Path("src/live15_quant/runtime_supervisor.py").read_text(encoding="utf-8")
     assert "RecorderProcessController" not in source
     assert "managed_control_center" not in source
+    assert "managed_paper" not in source
+    assert "managed_kalshi_sdk_shadow" not in source
+    assert "PAPER_SHADOW_LOCAL_ONLY" not in source
 
 
 def test_runtime_pid_lease_blocks_duplicate_and_recovers_stale(tmp_path: Path) -> None:
@@ -79,9 +60,9 @@ def test_atomic_status_retries_transient_windows_sharing_violation(tmp_path: Pat
     assert read_json(path) == {"status": "RUNNING"}
 
 
-def test_stop_does_not_issue_recorder_process_command(tmp_path: Path) -> None:
+def test_stop_preserves_zero_child_status(tmp_path: Path) -> None:
     supervisor = RuntimeSupervisor(configured(tmp_path), root=tmp_path, sleep=lambda _seconds: None)
     supervisor.stop_components()
     payload = json.loads((tmp_path / "runtime/runtime-supervisor-status.json").read_text())
     assert payload["status"] == "STOPPED"
-    assert set(payload["components"]) == {"paper_forward"}
+    assert payload["components"] == {}

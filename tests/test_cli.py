@@ -13,6 +13,7 @@ from live15_quant.config import Settings
         (cli.recorder_main, "live15-record"),
         (cli.status_main, "live15-status"),
         (cli.coverage_main, "live15-coverage"),
+        (cli.paper_shadow_main, "live15-paper-shadow"),
     ],
 )
 def test_long_running_entrypoint_help_has_no_side_effects(
@@ -65,3 +66,29 @@ def test_status_is_safe_before_recorder_creates_health_file(
         cli.status_main([])
 
     assert not health_path.exists()
+
+
+def test_paper_shadow_once_uses_forward_runtime_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    class FakeForwardRuntime:
+        def __init__(self, _settings, *, allow_model_materialization: bool) -> None:
+            assert allow_model_materialization is False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def run_once(self) -> dict[str, int]:
+            calls.append("run_once")
+            return {"processed": 0}
+
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings())
+    monkeypatch.setattr(cli, "configure_logging", lambda _level: None)
+    monkeypatch.setattr(cli, "ForwardShadowRuntime", FakeForwardRuntime)
+
+    cli.paper_shadow_main(["--once"])
+
+    assert calls == ["run_once"]

@@ -1,7 +1,7 @@
 <service>
   <id>LIVE15RuntimeSupervisor</id>
   <name>LIVE15 Runtime Supervisor</name>
-  <description>Supervisor for explicitly registered LIVE15 auxiliary workers only.</description>
+  <description>Retained zero-child legacy status boundary pending service retirement.</description>
   <executable>%BASE%\..\..\.venv\Scripts\python.exe</executable>
   <arguments>%BASE%\..\..\bootstrap\release_runner.py --component runtime-supervisor</arguments>
   <workingdirectory>%BASE%\..\..</workingdirectory>
