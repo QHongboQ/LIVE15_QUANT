@@ -253,6 +253,8 @@ def test_chart_reuses_reference_price_line_and_cleans_resource_lifecycles() -> N
     assert "livePoints?: ChartPoint[]" in charts
     assert "const normalizedHistory = useRef" in charts
     assert "const renderedLivePoints = useRef" in charts
+    assert "const LIVE_TAIL_COMPACTION_MAX_POINTS = 128" in charts
+    assert "renderedDataPointCounts" in charts
     assert "line.update(latestPoint)" in charts
     assert "referenceLine.current.applyOptions({ price: reference })" in charts
     assert "referenceLinePrice.current" in charts
