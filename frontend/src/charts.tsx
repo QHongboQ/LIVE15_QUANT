@@ -17,14 +17,29 @@ export type ChartSeries = { id: string; label: string; color: string; points: Ch
 const timestamp = (value: string): UTCTimestamp => Math.floor(Date.parse(value) / 1000) as UTCTimestamp;
 
 function clean(points: ChartPoint[]) {
-  return points
-    .filter((point) => Number.isFinite(point.value) && Number.isFinite(Date.parse(point.time)))
-    .map((point) => ({ time: timestamp(point.time), value: point.value }))
-    .sort((left, right) => Number(left.time) - Number(right.time));
+  const byTime = new Map<number, { time: UTCTimestamp; value: number }>();
+  for (const point of points) {
+    if (!Number.isFinite(point.value) || !Number.isFinite(Date.parse(point.time))) continue;
+    const normalized = { time: timestamp(point.time), value: point.value };
+    byTime.set(Number(normalized.time), normalized);
+  }
+  return [...byTime.values()].sort((left, right) => Number(left.time) - Number(right.time));
+}
+
+function samePoint(left: { time: UTCTimestamp; value: number }, right: { time: UTCTimestamp; value: number }) {
+  return left.time === right.time && left.value === right.value;
+}
+
+function incrementalPoint(previous: { time: UTCTimestamp; value: number }[], next: { time: UTCTimestamp; value: number }[]) {
+  if (!previous.length || !next.length) return undefined;
+  const latestPoint = next.at(-1)!;
+  if (next.length === previous.length + 1 && previous.every((point, index) => samePoint(point, next[index]))) return latestPoint;
+  if (next.length === previous.length && previous.length && previous.slice(0, -1).every((point, index) => samePoint(point, next[index])) && previous.at(-1)!.time === latestPoint.time) return latestPoint;
+  return undefined;
 }
 
 /** A thin local adapter around the Apache-2.0 TradingView Lightweight Charts dependency. */
-export function FinancialChart({ series, reference, height = 300, ariaLabel }: { series: ChartSeries[]; reference?: number | null; height?: number; ariaLabel: string }) {
+export function FinancialChart({ series, reference, height = 300, ariaLabel, resetKey }: { series: ChartSeries[]; reference?: number | null; height?: number; ariaLabel: string; resetKey?: string }) {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi>();
   const chartSeries = useRef<Map<string, ISeriesApi<'Line'>>>(new Map());
@@ -32,6 +47,8 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel }: {
   const referenceLine = useRef<IPriceLine>();
   const referenceSeries = useRef<ISeriesApi<'Line'>>();
   const seriesRef = useRef(series);
+  const renderedPoints = useRef<Map<string, { time: UTCTimestamp; value: number }[]>>(new Map());
+  const previousResetKey = useRef(resetKey);
   const initialHeight = useRef(height);
   const tooltip = useRef<HTMLDivElement>(null);
 
@@ -81,7 +98,11 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel }: {
       seriesMarkers.current.delete(id);
       chart.current.removeSeries(line);
       chartSeries.current.delete(id);
+      renderedPoints.current.delete(id);
     }
+    const resetRequired = previousResetKey.current !== resetKey;
+    previousResetKey.current = resetKey;
+    let fitRequired = resetRequired;
     for (const item of series) {
       let line = chartSeries.current.get(item.id);
       if (!line) {
@@ -89,7 +110,19 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel }: {
         chartSeries.current.set(item.id, line);
       }
       const points = clean(item.points);
-      line.setData(points);
+      const previous = renderedPoints.current.get(item.id);
+      if (!previous || resetRequired) {
+        line.setData(points);
+        fitRequired = true;
+      } else if (points.length !== previous.length || points.some((point, index) => !samePoint(point, previous[index]))) {
+        const latestPoint = incrementalPoint(previous, points);
+        if (latestPoint) line.update(latestPoint);
+        else {
+          line.setData(points);
+          fitRequired = true;
+        }
+      }
+      renderedPoints.current.set(item.id, points);
       if (item === series[0]) {
         let markers = seriesMarkers.current.get(item.id);
         if (!markers) {
@@ -109,9 +142,9 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel }: {
       referenceLine.current = line?.createPriceLine({ price: reference, color: '#a797e8', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'TARGET' });
       referenceSeries.current = line;
     }
-    chart.current.timeScale().fitContent();
+    if (fitRequired) chart.current.timeScale().fitContent();
     chart.current.timeScale().applyOptions({ rightOffsetPixels: Math.max(36, Math.round((host.current?.clientWidth ?? 400) * 0.1)) });
-  }, [series, reference, height]);
+  }, [series, reference, height, resetKey]);
 
   const empty = series.every((item) => item.points.length === 0);
   return <div className="financial-chart" style={{ height }} aria-label={ariaLabel}><div ref={host} className="financial-chart-host" />{empty && <div className="chart-empty" style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', padding: 24, color: '#9994a5', textAlign: 'center' }}>No persisted history is available for this read-only projection.</div>}<div ref={tooltip} className="chart-tooltip" /></div>;

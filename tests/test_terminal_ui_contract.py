@@ -126,3 +126,33 @@ def test_lightweight_chart_marker_plugin_is_reused_and_detached() -> None:
     assert "markers.detach()" in charts
     assert "const markersForCleanup = seriesMarkers.current" in charts
     assert "for (const markers of markersForCleanup.values()) markers.detach()" in charts
+
+
+def test_realtime_chart_uses_incremental_update_without_refitting() -> None:
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "line.update(latestPoint)" in charts
+    assert "line.setData(points)" in charts
+    assert "if (fitRequired) chart.current.timeScale().fitContent()" in charts
+    assert charts.count("fitContent()") == 1
+    assert "resetKey" in charts
+
+
+def test_rollover_history_is_ignored_until_it_matches_active_ticker() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "history.data.ticker !== activeTicker.current" in app
+    assert "reconcileTicker" in app
+    assert "rolloverTarget.current === ticker" in app
+    assert "history.data.ticker" in app
+    assert app.index("history.data.ticker !== activeTicker.current") < app.index("activeTicker.current = history.data.ticker")
+
+
+def test_overview_health_warning_is_truthful_and_scoped() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "const issues = liveHealth.current_health_issues" in app
+    assert "issues.length > 0 && issues.every(isKnownWtiPythIssue)" in app
+    assert "healthIssueSummary(issues)" in app
+    assert 'Status text="1 source issue"' not in app
+    assert "WTI/Pyth needs attention" in app
