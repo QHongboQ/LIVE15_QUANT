@@ -101,6 +101,7 @@ def test_market_detail_realtime_updates_do_not_refetch_history_per_event() -> No
     # Explicit refresh/reconciliation and ticker rollover are the only loads.
     assert app.count("history.load();") == 2
     assert "reconcileRef.current(); reconnectTimer" in app
+    assert "const historicalLastChange = historyMatchesTicker ?" in app
 
 
 def test_realtime_market_points_require_authoritative_timestamps_and_changes() -> None:
