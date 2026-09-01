@@ -82,7 +82,8 @@ def test_terminal_v2_chart_and_view_contracts_remain_local_and_truthful() -> Non
     assert "FinancialChart" in app
     assert "PRICE" in app and "PROBABILITY" in app
     assert "Last actual change" in app
-    assert "Feed latency" in app
+    assert "Underlying latency" in app
+    assert "Projection latency" in app
     assert "live15Sidebar" in app
     assert "accountEquityHistory(portfolioRanges[range])" in app
     assert "close_price" in api
@@ -160,3 +161,41 @@ def test_overview_health_warning_is_truthful_and_scoped() -> None:
     assert "healthIssueSummary(issues)" in app
     assert 'Status text="1 source issue"' not in app
     assert "WTI/Pyth needs attention" in app
+
+
+def test_terminal_status_is_derived_from_health_and_market_authority() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert (
+        "type TerminalStatus = 'LIVE' | 'RECONNECTING' | 'DELAYED' | 'STALE' | 'UNAVAILABLE'" in app
+    )
+    assert "overviewTerminalStatus" in app
+    assert "marketTerminalStatus" in app
+    assert "connection === 'synchronized'" in app
+    assert "recorder === 'running'" in app
+    assert "'RECONNECTING'" in app
+    assert "'DELAYED'" in app
+    assert "'STALE'" in app
+    assert "'UNAVAILABLE'" in app
+    assert "detailStatus === 'LIVE' ? '●' : '○'" in app
+    assert "● LIVE" not in app
+
+
+def test_market_latency_is_mode_specific_and_truthful() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "const probabilityLatency = Number(data.source_transport_latency_ms ?? NaN)" in app
+    assert "const priceLatency = underlyingLatency(data)" in app
+    assert "underlying_received_timestamp" in app
+    assert "underlying_persisted_timestamp" in app
+    assert "const detailLatency = mode === 0 ? priceLatency" in app
+    assert "Number.isFinite(probabilityLatency)" in app
+    assert "timing unavailable" in app
+
+
+def test_non_wti_health_issues_use_a_generic_health_label() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "const issueKind = knownWtiPythOnly ? 'source' : 'health'" in app
+    assert "${issues.length} ${issueKind} issue" in app
+    assert "Current health issues" in app
