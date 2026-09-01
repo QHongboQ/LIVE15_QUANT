@@ -35,6 +35,10 @@ function incrementalPoint(previous: { time: UTCTimestamp; value: number }[], nex
   const latestPoint = next.at(-1)!;
   if (next.length === previous.length + 1 && previous.every((point, index) => samePoint(point, next[index]))) return latestPoint;
   if (next.length === previous.length && previous.length && previous.slice(0, -1).every((point, index) => samePoint(point, next[index])) && previous.at(-1)!.time === latestPoint.time) return latestPoint;
+  if (next.length === previous.length && latestPoint.time > previous.at(-1)!.time) {
+    const divergence = previous.findIndex((point, index) => !samePoint(point, next[index]));
+    if (divergence >= 0 && previous.slice(divergence + 1).every((point, index) => samePoint(point, next[divergence + index]))) return latestPoint;
+  }
   return undefined;
 }
 

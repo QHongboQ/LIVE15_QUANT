@@ -133,6 +133,8 @@ def test_realtime_chart_uses_incremental_update_without_refitting() -> None:
 
     assert "line.update(latestPoint)" in charts
     assert "line.setData(points)" in charts
+    assert "latestPoint.time > previous.at(-1)!.time" in charts
+    assert "previous.slice(divergence + 1)" in charts
     assert "if (fitRequired) chart.current.timeScale().fitContent()" in charts
     assert charts.count("fitContent()") == 1
     assert "resetKey" in charts
