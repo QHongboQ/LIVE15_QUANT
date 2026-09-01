@@ -71,12 +71,45 @@ jobs:
       - name: Build deterministic release frontend
         shell: pwsh
         run: |
-          corepack enable
-          pnpm --dir frontend install --frozen-lockfile
-          pnpm --dir frontend run typecheck
-          pnpm --dir frontend run lint
-          pnpm --dir frontend run build:release
-          git diff --exit-code -- src/live15_quant/terminal
+          $ErrorActionPreference = 'Stop'
+          $pnpmVersion = '11.19.0'
+
+          function Invoke-Native {
+            param(
+              [Parameter(Mandatory)] [string] $Label,
+              [Parameter(Mandatory)] [scriptblock] $Command
+            )
+
+            & $Command
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Label failed with exit code $LASTEXITCODE"
+            }
+          }
+
+          Invoke-Native 'Corepack enable' { corepack enable }
+          Invoke-Native "Corepack install pnpm@$pnpmVersion" { corepack install --global "pnpm@$pnpmVersion" }
+
+          $actualPnpmVersion = & pnpm --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "pnpm --version failed with exit code $LASTEXITCODE"
+          }
+          if ($actualPnpmVersion.Trim() -ne $pnpmVersion) {
+            throw "Pinned pnpm mismatch: expected $pnpmVersion, got $actualPnpmVersion"
+          }
+          Write-Host "pnpm version = $actualPnpmVersion"
+
+          Push-Location frontend
+          try {
+            Invoke-Native 'pnpm install --frozen-lockfile' { pnpm install --frozen-lockfile }
+            Invoke-Native 'pnpm run typecheck' { pnpm run typecheck }
+            Invoke-Native 'pnpm run lint' { pnpm run lint }
+            Invoke-Native 'pnpm run build:release' { pnpm run build:release }
+          }
+          finally {
+            Pop-Location
+          }
+
+          Invoke-Native 'Verify deterministic terminal bundle' { git diff --exit-code -- src/live15_quant/terminal }
       - name: Verify wheel owns terminal bundle
         shell: pwsh
         run: |
