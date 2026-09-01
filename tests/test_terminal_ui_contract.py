@@ -147,7 +147,9 @@ def test_rollover_history_is_ignored_until_it_matches_active_ticker() -> None:
     assert "reconcileTicker" in app
     assert "rolloverTarget.current === ticker" in app
     assert "history.data.ticker" in app
-    assert app.index("history.data.ticker !== activeTicker.current") < app.index("activeTicker.current = history.data.ticker")
+    assert app.index("history.data.ticker !== activeTicker.current") < app.index(
+        "activeTicker.current = history.data.ticker"
+    )
 
 
 def test_overview_health_warning_is_truthful_and_scoped() -> None:
