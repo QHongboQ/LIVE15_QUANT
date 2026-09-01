@@ -87,3 +87,41 @@ def test_terminal_v2_chart_and_view_contracts_remain_local_and_truthful() -> Non
     assert "accountEquityHistory(portfolioRanges[range])" in app
     assert "close_price" in api
     assert "third_party" not in app.lower()
+
+
+def test_market_detail_realtime_updates_do_not_refetch_history_per_event() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "window.setTimeout(history.load" not in app
+    assert "setLivePricePoints" in app
+    assert "setLiveYesPoints" in app
+    assert "setLiveNoPoints" in app
+    assert "historyMatchesTicker" in app
+    assert "activeTicker.current && market.ticker && market.ticker !== activeTicker.current" in app
+    # Explicit refresh/reconciliation and ticker rollover are the only loads.
+    assert app.count("history.load();") == 2
+    assert "reconcileRef.current(); reconnectTimer" in app
+
+
+def test_realtime_market_points_require_authoritative_timestamps_and_changes() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "new Date().toISOString()" not in app
+    assert "Date.now() - Date.parse(event.authoritative_at)" in app  # display telemetry only
+    assert "underlyingTimestamp(market)" in app
+    assert "probabilityTimestamp(market)" in app
+    assert "lastPricePoint.current?.value !== price.value" in app
+    assert "quoteChanged(lastQuote.current, quote)" in app
+    assert "timestamp && (yes || no)" in app
+
+
+def test_lightweight_chart_marker_plugin_is_reused_and_detached() -> None:
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "ISeriesMarkersPluginApi" in charts
+    assert "const seriesMarkers = useRef" in charts
+    assert "seriesMarkers.current.get(item.id)" in charts
+    assert "markers.setMarkers" in charts
+    assert "markers.detach()" in charts
+    assert "const markersForCleanup = seriesMarkers.current" in charts
+    assert "for (const markers of markersForCleanup.values()) markers.detach()" in charts

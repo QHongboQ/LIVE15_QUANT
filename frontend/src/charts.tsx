@@ -5,6 +5,7 @@ import {
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
@@ -27,6 +28,7 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel }: {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi>();
   const chartSeries = useRef<Map<string, ISeriesApi<'Line'>>>(new Map());
+  const seriesMarkers = useRef<Map<string, ISeriesMarkersPluginApi<Time>>>(new Map());
   const referenceLine = useRef<IPriceLine>();
   const referenceSeries = useRef<ISeriesApi<'Line'>>();
   const seriesRef = useRef(series);
@@ -65,7 +67,8 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel }: {
     const seriesMap = chartSeries.current;
     const observer = new ResizeObserver(() => instance.timeScale().applyOptions({ rightOffsetPixels: Math.max(36, Math.round((host.current?.clientWidth ?? 400) * 0.1)) }));
     observer.observe(host.current);
-    return () => { observer.disconnect(); instance.remove(); chart.current = undefined; seriesMap.clear(); };
+    const markersForCleanup = seriesMarkers.current;
+    return () => { observer.disconnect(); for (const markers of markersForCleanup.values()) markers.detach(); markersForCleanup.clear(); instance.remove(); chart.current = undefined; seriesMap.clear(); };
   }, []);
 
   useEffect(() => {
@@ -74,6 +77,8 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel }: {
     const activeIds = new Set(series.map((item) => item.id));
     for (const [id, line] of chartSeries.current) {
       if (activeIds.has(id)) continue;
+      seriesMarkers.current.get(id)?.detach();
+      seriesMarkers.current.delete(id);
       chart.current.removeSeries(line);
       chartSeries.current.delete(id);
     }
@@ -85,7 +90,14 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel }: {
       }
       const points = clean(item.points);
       line.setData(points);
-      if (item === series[0] && points.length) createSeriesMarkers(line, [{ time: points.at(-1)!.time as Time, position: 'inBar', color: item.color, shape: 'circle', text: 'NOW', size: 2 }]);
+      if (item === series[0]) {
+        let markers = seriesMarkers.current.get(item.id);
+        if (!markers) {
+          markers = createSeriesMarkers<Time>(line);
+          seriesMarkers.current.set(item.id, markers);
+        }
+        markers.setMarkers(points.length ? [{ time: points.at(-1)!.time as Time, position: 'inBar', color: item.color, shape: 'circle', text: 'NOW', size: 2 }] : []);
+      }
     }
     if (referenceLine.current && referenceSeries.current) {
       referenceSeries.current.removePriceLine(referenceLine.current);

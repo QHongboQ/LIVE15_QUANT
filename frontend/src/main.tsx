@@ -17,7 +17,13 @@ const dollars = (cents?: number | null) => cents == null ? '—' : new Intl.Numb
 const formatNumber = (value?: string | number | null) => value == null ? '—' : Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
 const seconds = (n?: number | null) => n == null ? '—' : n <= 0 ? 'Closed' : `${Math.floor(n / 60)}m ${Math.floor(n % 60)}s`;
 const age = (n?: number | null) => n == null ? '—' : `${n < 1 ? n.toFixed(2) : n.toFixed(1)}s ago`;
-const point = (time: string, value: string | number | null | undefined): ChartPoint | null => value == null || !Number.isFinite(Number(value)) ? null : { time, value: Number(value) };
+const point = (time: string | null | undefined, value: string | number | null | undefined): ChartPoint | null => time == null || !Number.isFinite(Date.parse(time)) || value == null || !Number.isFinite(Number(value)) ? null : { time, value: Number(value) };
+type QuoteState = Pick<Market, 'yes_bid' | 'yes_ask' | 'no_bid' | 'no_ask'>;
+const quoteState = (market: Market): QuoteState => ({ yes_bid: market.yes_bid, yes_ask: market.yes_ask, no_bid: market.no_bid, no_ask: market.no_ask });
+const quoteChanged = (previous: QuoteState | null, next: QuoteState) => previous != null && (previous.yes_bid !== next.yes_bid || previous.yes_ask !== next.yes_ask || previous.no_bid !== next.no_bid || previous.no_ask !== next.no_ask);
+const appendPoint = (previous: ChartPoint[], next: ChartPoint) => previous.at(-1)?.time === next.time ? [...previous.slice(0, -1), next] : [...previous.slice(-63), next];
+const underlyingTimestamp = (market: Market) => market.underlying_persisted_timestamp ?? market.underlying_received_timestamp;
+const probabilityTimestamp = (market: Market) => market.projection_available_timestamp ?? market.quote_received_timestamp ?? market.quote_source_timestamp;
 const numeric = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
 const formatBytes = (value: unknown) => { const raw = numeric(value); if (raw == null) return String(value ?? '—'); const units = ['B', 'KB', 'MB', 'GB', 'TB']; const index = raw === 0 ? 0 : Math.min(units.length - 1, Math.floor(Math.log(raw) / Math.log(1024))); return `${(raw / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; };
 const human = (label: string, value: unknown) => /bytes|disk|sqlite|archive|wal|growth|compressed|uncompressed/i.test(label) ? formatBytes(value) : /timestamp|_at$/i.test(label) && typeof value === 'string' ? new Date(value).toLocaleString() : /duration|seconds|age/i.test(label) && typeof value === 'number' ? age(value) : typeof value === 'object' ? 'Structured detail available' : String(value ?? '—');
@@ -32,7 +38,7 @@ function Segments({ value, labels, onChange }: { value: number; labels: string[]
 
 function useTerminalStream(channels: string[], receive: (event: TerminalEvent) => void, reconcile: () => void) {
   const receiveRef = useRef(receive); const reconcileRef = useRef(reconcile); useEffect(() => { receiveRef.current = receive; reconcileRef.current = reconcile; }, [receive, reconcile]); const channelKey = channels.join('|');
-  useEffect(() => { let socket: WebSocket | undefined; let reconnectTimer: number | undefined; let stopped = false; let lastSequence = 0; const selected = channelKey.split('|').filter(Boolean); const connect = () => { if (stopped || document.hidden || socket?.readyState === WebSocket.OPEN) return; socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/terminal`); socket.onopen = () => socket?.send(JSON.stringify({ action: 'subscribe', channels: selected })); socket.onmessage = (message) => { let event: TerminalEvent; try { event = JSON.parse(String(message.data)) as TerminalEvent; } catch { return; } if (event.schema_version !== 1 || event.sequence <= lastSequence || !selected.includes(event.channel)) return; lastSequence = event.sequence; if (event.event_type === 'update' && event.authoritative_at) { const sample = Math.max(0, Date.now() - Date.parse(event.authoritative_at)); const samples = [...(window.__LIVE15_TERMINAL_LATENCY_MS__ ?? []).slice(-999), sample]; window.__LIVE15_TERMINAL_LATENCY_MS__ = samples; document.documentElement.dataset.live15LatencySamples = samples.slice(-100).join(','); } receiveRef.current(event); }; socket.onclose = () => { socket = undefined; if (!stopped && !document.hidden) reconnectTimer = window.setTimeout(connect, 500); }; }; const visibility = () => { if (document.hidden) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ action: 'unsubscribe', channels: selected })); socket?.close(); } else { lastSequence = 0; reconcileRef.current(); connect(); } }; document.addEventListener('visibilitychange', visibility); connect(); return () => { stopped = true; document.removeEventListener('visibilitychange', visibility); if (reconnectTimer) window.clearTimeout(reconnectTimer); socket?.close(); }; }, [channelKey]);
+  useEffect(() => { let socket: WebSocket | undefined; let reconnectTimer: number | undefined; let stopped = false; let lastSequence = 0; const selected = channelKey.split('|').filter(Boolean); const connect = () => { if (stopped || document.hidden || socket?.readyState === WebSocket.OPEN) return; socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/terminal`); socket.onopen = () => socket?.send(JSON.stringify({ action: 'subscribe', channels: selected })); socket.onmessage = (message) => { let event: TerminalEvent; try { event = JSON.parse(String(message.data)) as TerminalEvent; } catch { return; } if (event.schema_version !== 1 || event.sequence <= lastSequence || !selected.includes(event.channel)) return; lastSequence = event.sequence; if (event.event_type === 'update' && event.authoritative_at) { const sample = Math.max(0, Date.now() - Date.parse(event.authoritative_at)); const samples = [...(window.__LIVE15_TERMINAL_LATENCY_MS__ ?? []).slice(-999), sample]; window.__LIVE15_TERMINAL_LATENCY_MS__ = samples; document.documentElement.dataset.live15LatencySamples = samples.slice(-100).join(','); } receiveRef.current(event); }; socket.onclose = () => { socket = undefined; if (!stopped && !document.hidden) { reconcileRef.current(); reconnectTimer = window.setTimeout(connect, 500); } }; }; const visibility = () => { if (document.hidden) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ action: 'unsubscribe', channels: selected })); socket?.close(); } else { lastSequence = 0; reconcileRef.current(); connect(); } }; document.addEventListener('visibilitychange', visibility); connect(); return () => { stopped = true; document.removeEventListener('visibilitychange', visibility); if (reconnectTimer) window.clearTimeout(reconnectTimer); socket?.close(); }; }, [channelKey]);
 }
 function useLazyData<T>(loader: () => Promise<T>) { const [data, setData] = useState<T>(); const [error, setError] = useState<unknown>(); const [pending, setPending] = useState(true); const load = useCallback(() => { if (document.hidden) return; setPending(true); setError(undefined); void loader().then(setData).catch(setError).finally(() => setPending(false)); }, [loader]); useEffect(() => { void Promise.resolve().then(load); const visible = () => { if (!document.hidden) load(); }; document.addEventListener('visibilitychange', visible); return () => document.removeEventListener('visibilitychange', visible); }, [load]); return { data, error, pending, load }; }
 
@@ -52,7 +58,7 @@ function Markets() {
     setTrends((previous) => {
       const updated = { ...previous };
       for (const market of next) {
-        const item = point(market.underlying_persisted_timestamp ?? market.projection_available_timestamp ?? new Date().toISOString(), market.underlying_price);
+        const item = point(underlyingTimestamp(market), market.underlying_price);
         if (!item) continue;
         const existing = updated[market.asset] ?? [];
         if (!existing.length || existing.at(-1)?.value !== item.value) updated[market.asset] = [...existing.slice(-31), item];
@@ -64,7 +70,7 @@ function Markets() {
   if (query.isPending || !live) return <Loading />;
   if (query.error) return <ErrorState error={query.error} />;
   return <Page title="Markets" subtitle="Live contracts, compact trends, and synchronized Kalshi books." refresh={reconcile}><div className="market-grid">{live.map((market) => {
-    const initial = point(market.underlying_persisted_timestamp ?? market.projection_available_timestamp ?? '', market.underlying_price);
+    const initial = point(underlyingTimestamp(market), market.underlying_price);
     return <MarketCard key={market.id} market={market} trend={trends[market.asset] ?? (initial ? [initial] : [])} onOpen={() => redirect('show', 'markets', market.id)} />;
   })}</div></Page>;
 }
@@ -75,22 +81,77 @@ function MarketDetail() {
   const history = useLazyData(historyLoader);
   const [stream, setStream] = useState<Market>();
   const [mode, setMode] = useState(0);
-  const timer = useRef<number>();
+  const [livePricePoints, setLivePricePoints] = useState<ChartPoint[]>([]);
+  const [liveYesPoints, setLiveYesPoints] = useState<ChartPoint[]>([]);
+  const [liveNoPoints, setLiveNoPoints] = useState<ChartPoint[]>([]);
+  const [livePriceLastChange, setLivePriceLastChange] = useState<string>();
+  const [liveProbabilityLastChange, setLiveProbabilityLastChange] = useState<string>();
+  const [liveBaseKey, setLiveBaseKey] = useState<string>();
+  const activeTicker = useRef<string>();
+  const lastPricePoint = useRef<ChartPoint>();
+  const lastQuote = useRef<QuoteState | null>(null);
   const reconcile = useCallback(() => { void query.refetch(); history.load(); }, [query, history]);
+  useEffect(() => {
+    if (!history.data) return;
+    activeTicker.current = history.data.ticker;
+    const historicalPrice = history.data.underlying.at(-1);
+    lastPricePoint.current = point(historicalPrice?.observed_at, historicalPrice?.close_price) ?? point(query.data?.underlying_persisted_timestamp ?? query.data?.underlying_received_timestamp, query.data?.underlying_price) ?? undefined;
+    lastQuote.current = history.data.probability.at(-1) ?? (query.data ? quoteState(query.data) : null);
+  }, [history.data, query.data]);
   useTerminalStream([`market:${id}`], (event) => {
-    setStream((current) => ({ ...(event.payload as Market), id, features: current?.features ?? query.data?.features ?? {}, previous_events: current?.previous_events ?? query.data?.previous_events ?? [] }));
-    if (timer.current) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(history.load, 250);
+    const market = event.payload as Market;
+    if (activeTicker.current && market.ticker && market.ticker !== activeTicker.current) {
+      activeTicker.current = market.ticker;
+      lastPricePoint.current = undefined;
+      lastQuote.current = null;
+      setLiveBaseKey(undefined);
+      setLivePricePoints([]);
+      setLiveYesPoints([]);
+      setLiveNoPoints([]);
+      setLivePriceLastChange(undefined);
+      setLiveProbabilityLastChange(undefined);
+      void query.refetch();
+      history.load();
+      return;
+    }
+    if (!activeTicker.current && market.ticker) activeTicker.current = market.ticker;
+    setStream((current) => ({ ...market, id, features: current?.features ?? query.data?.features ?? {}, previous_events: current?.previous_events ?? query.data?.previous_events ?? [] }));
+    const historyKey = history.data?.generated_at;
+    if (liveBaseKey !== historyKey) {
+      setLiveBaseKey(historyKey);
+      setLivePricePoints([]);
+      setLiveYesPoints([]);
+      setLiveNoPoints([]);
+      setLivePriceLastChange(undefined);
+      setLiveProbabilityLastChange(undefined);
+    }
+    const price = point(underlyingTimestamp(market), market.underlying_price);
+    if (price && lastPricePoint.current?.value !== price.value) {
+      lastPricePoint.current = price;
+      setLivePricePoints((previous) => appendPoint(previous, price));
+      setLivePriceLastChange(price.time);
+    }
+    const quote = quoteState(market);
+    if (quoteChanged(lastQuote.current, quote)) {
+      lastQuote.current = quote;
+      const timestamp = probabilityTimestamp(market);
+      const yes = point(timestamp, market.yes_bid);
+      const no = point(timestamp, market.no_bid);
+      if (yes) setLiveYesPoints((previous) => appendPoint(previous, yes));
+      if (no) setLiveNoPoints((previous) => appendPoint(previous, no));
+      if (timestamp && (yes || no)) setLiveProbabilityLastChange(timestamp);
+    }
   }, reconcile);
-  useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
   const data = stream ?? query.data;
   if (query.isPending || !data || history.pending || !history.data) return <Loading />;
   if (query.error || history.error) return <ErrorState error={query.error ?? history.error} retry={reconcile} />;
   const sourceLatency = Number(data.source_transport_latency_ms ?? NaN);
-  const pricePoints = history.data.underlying.map((item) => point(item.observed_at, item.close_price)).filter((item): item is ChartPoint => item != null);
-  const yesPoints = history.data.probability.map((item) => point(item.observed_at, item.yes_bid)).filter((item): item is ChartPoint => item != null);
-  const noPoints = history.data.probability.map((item) => point(item.observed_at, item.no_bid)).filter((item): item is ChartPoint => item != null);
-  const lastChange = mode === 0 ? history.data.underlying_last_actual_change_at : history.data.probability_last_actual_change_at;
+  const historyMatchesTicker = history.data.ticker === data.ticker;
+  const liveMatchesHistory = liveBaseKey === history.data.generated_at;
+  const pricePoints = [...(historyMatchesTicker ? history.data.underlying.map((item) => point(item.observed_at, item.close_price)).filter((item): item is ChartPoint => item != null) : []), ...(liveMatchesHistory ? livePricePoints : [])];
+  const yesPoints = [...(historyMatchesTicker ? history.data.probability.map((item) => point(item.observed_at, item.yes_bid)).filter((item): item is ChartPoint => item != null) : []), ...(liveMatchesHistory ? liveYesPoints : [])];
+  const noPoints = [...(historyMatchesTicker ? history.data.probability.map((item) => point(item.observed_at, item.no_bid)).filter((item): item is ChartPoint => item != null) : []), ...(liveMatchesHistory ? liveNoPoints : [])];
+  const lastChange = mode === 0 ? (liveMatchesHistory ? livePriceLastChange : undefined) ?? history.data.underlying_last_actual_change_at : (liveMatchesHistory ? liveProbabilityLastChange : undefined) ?? history.data.probability_last_actual_change_at;
   return <Page title={`${data.asset} market`} subtitle={data.ticker ?? 'Awaiting active contract'} refresh={reconcile} status={<Status text={data.quote_source} />}><div className="detail-hero"><Metric label="Underlying">{formatNumber(data.underlying_price)}</Metric><Metric label="YES">{formatNumber(data.yes_bid)} / {formatNumber(data.yes_ask)}</Metric><Metric label="NO">{formatNumber(data.no_bid)} / {formatNumber(data.no_ask)}</Metric><Metric label="Remaining">{seconds(data.seconds_remaining)}</Metric><Metric label="Feed latency">{Number.isFinite(sourceLatency) ? `${sourceLatency.toFixed(0)}ms` : '—'}</Metric></div><div className="chart-card"><div className="chart-head"><Box><Typography variant="overline">REALTIME CONTRACT WINDOW</Typography><Typography variant="h6">{mode === 0 ? 'Underlying price' : 'Kalshi probability'}</Typography></Box><Segments value={mode} labels={['PRICE', 'PROBABILITY']} onChange={setMode} /></div>{mode === 0 ? <FinancialChart ariaLabel="Realtime underlying price chart" reference={Number(data.target)} series={[{ id: 'price', label: 'Price', color: '#a68bff', points: pricePoints }]} /> : <FinancialChart ariaLabel="Realtime Kalshi probability chart" series={[{ id: 'yes', label: 'YES', color: '#79e7b1', points: yesPoints }, { id: 'no', label: 'NO', color: '#f0a6cf', points: noPoints }]} /> }<div className="chart-footer"><span>● LIVE · {Number.isFinite(sourceLatency) ? `${sourceLatency.toFixed(0)}ms` : 'feed timing unavailable'}</span><span>Last actual change {lastChange ? new Date(lastChange).toLocaleString() : 'unavailable'}</span><span>Current point has right-side chart room</span></div></div><div className="detail-grid"><Depth title="YES bid depth" levels={data.yes_bid_depth} /><Depth title="NO bid depth" levels={data.no_bid_depth} /><Card className="surface-card"><CardContent><Typography variant="overline">Market state</Typography><Metric label="Order book"><Status text={data.orderbook_status} /></Metric><Metric label="Underlying">{data.underlying_provider ?? '—'} · {data.underlying_status}</Metric><Metric label="Settlement">{data.settlement_followup}</Metric></CardContent></Card></div></Page>;
 }
 function Depth({ title, levels }: { title: string; levels: string[][] }) { return <Card className="surface-card depth"><CardContent><Typography variant="overline">{title}</Typography>{levels.length ? levels.slice(0, 8).map((row, index) => <div className="depth-row" key={`${title}-${index}`}><span>{row[0] ?? '—'}</span><span>{row[1] ?? '—'}</span></div>) : <Typography color="text.secondary">No current depth projection.</Typography>}</CardContent></Card>; }
