@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 from live15_quant.account_service import ProductionAccountService
@@ -40,13 +41,17 @@ def test_missing_production_credentials_is_explicitly_unavailable() -> None:
     assert result.summary.portfolio_value_cents is None
 
 
-def test_terminal_visual_foundation_has_user_first_shell() -> None:
+def test_terminal_visual_foundation_has_packaged_react_shell() -> None:
     app = create_app()
     paths = {str(route.path) for route in app.routes}
     assert "/api/account" in paths
     from importlib.resources import files
 
-    page = files("live15_quant").joinpath("web", "index.html").read_text(encoding="utf-8")
-    assert 'href="#/overview"' in page
-    assert 'use href="#i-chart"' in page
-    assert "TRADING TERMINAL" in page
+    page = files("live15_quant").joinpath("terminal", "index.html").read_text(encoding="utf-8")
+    frontend = (Path(__file__).parents[1] / "frontend" / "src" / "main.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "LIVE15 Terminal" in page
+    assert 'id="root"' in page
+    assert "Overview" in frontend
+    assert "Portfolio" in frontend

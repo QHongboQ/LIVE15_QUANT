@@ -13,5 +13,6 @@ The shell is read-only and consumes the existing FastAPI projections through
 backend is expected at the same origin in development or behind the deployed
 origin in production; `VITE_API_BASE_URL` can override that base URL.
 
-The legacy shell under `src/live15_quant/web/` is intentionally frozen and is
-not imported by this application.
+The packaged React terminal is the sole ControlCenter web owner. Rollback, if
+needed after a deployed cutover, uses the prior immutable application release
+rather than a source-level legacy shell.
