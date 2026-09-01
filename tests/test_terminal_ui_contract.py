@@ -215,3 +215,48 @@ def test_non_live_statuses_use_the_warning_visual_class() -> None:
         "const warning = /error|stale|unavailable|degraded|warning|behind|fallback|missing|"
         "reconnect|delayed|recovery/i.test(text)" in app
     )
+
+
+def test_realtime_resource_bounds_and_market_structural_sharing_are_explicit() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "const LIVE_TAIL_MAX_POINTS = 64" in app
+    assert "const SPARKLINE_MAX_POINTS = 32" in app
+    assert "const LATENCY_SAMPLE_MAX_POINTS = 1000" in app
+    assert "const LATENCY_DATASET_MAX_POINTS = 100" in app
+    assert "appendBoundedPoint" in app
+    assert "marketCardValuesSame" in app
+    assert "return changed ? updated : previous" in app
+    assert (
+        "const previousByAsset = new Map(previous.map((market) => [market.asset, market]))" in app
+    )
+
+
+def test_market_detail_keeps_immutable_history_out_of_realtime_allocations() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "useMemo" in app
+    assert "const historicalPricePoints = useMemo" in app
+    assert "const historicalYesPoints = useMemo" in app
+    assert "const historicalNoPoints = useMemo" in app
+    assert "history: historicalPricePoints" in app
+    assert "livePoints: liveMatchesHistory ? livePricePoints : []" in app
+    assert "const pricePoints = [..." not in app
+    assert "const yesPoints = [..." not in app
+    assert "const noPoints = [..." not in app
+
+
+def test_chart_reuses_reference_price_line_and_cleans_resource_lifecycles() -> None:
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "history?: ChartPoint[]" in charts
+    assert "livePoints?: ChartPoint[]" in charts
+    assert "const normalizedHistory = useRef" in charts
+    assert "const renderedLivePoints = useRef" in charts
+    assert "line.update(latestPoint)" in charts
+    assert "referenceLine.current.applyOptions({ price: reference })" in charts
+    assert "referenceLinePrice.current" in charts
+    assert "referenceSeries.current !== nextReferenceSeries" in charts
+    assert "referenceSeries.current.removePriceLine(referenceLine.current)" in charts
+    assert "observer.disconnect()" in charts
+    assert "instance.remove()" in charts
