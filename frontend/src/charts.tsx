@@ -13,7 +13,6 @@ import { useEffect, useRef } from 'react';
 
 export type ChartPoint = { time: string; value: number };
 export type ChartSeries = { id: string; label: string; color: string; points?: ChartPoint[]; history?: ChartPoint[]; livePoints?: ChartPoint[] };
-const LIVE_TAIL_COMPACTION_MAX_POINTS = 128;
 
 const timestamp = (value: string): UTCTimestamp => Math.floor(Date.parse(value) / 1000) as UTCTimestamp;
 
@@ -61,7 +60,6 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
   const seriesRef = useRef(series);
   const renderedPoints = useRef<Map<string, { time: UTCTimestamp; value: number }[]>>(new Map());
   const renderedLivePoints = useRef<Map<string, { time: UTCTimestamp; value: number }[]>>(new Map());
-  const renderedDataPointCounts = useRef<Map<string, number>>(new Map());
   const normalizedHistory = useRef<Map<string, { source: ChartPoint[]; points: { time: UTCTimestamp; value: number }[] }>>(new Map());
   const previousResetKey = useRef(resetKey);
   const initialHeight = useRef(height);
@@ -101,9 +99,8 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
     observer.observe(host.current);
     const markersForCleanup = seriesMarkers.current;
     const renderedLiveForCleanup = renderedLivePoints.current;
-    const renderedCountsForCleanup = renderedDataPointCounts.current;
     const normalizedHistoryForCleanup = normalizedHistory.current;
-    return () => { observer.disconnect(); for (const markers of markersForCleanup.values()) markers.detach(); markersForCleanup.clear(); if (referenceLine.current && referenceSeries.current) referenceSeries.current.removePriceLine(referenceLine.current); referenceLine.current = undefined; referenceSeries.current = undefined; referenceLinePrice.current = undefined; instance.remove(); chart.current = undefined; seriesMap.clear(); renderedLiveForCleanup.clear(); renderedCountsForCleanup.clear(); normalizedHistoryForCleanup.clear(); };
+    return () => { observer.disconnect(); for (const markers of markersForCleanup.values()) markers.detach(); markersForCleanup.clear(); if (referenceLine.current && referenceSeries.current) referenceSeries.current.removePriceLine(referenceLine.current); referenceLine.current = undefined; referenceSeries.current = undefined; referenceLinePrice.current = undefined; instance.remove(); chart.current = undefined; seriesMap.clear(); renderedLiveForCleanup.clear(); normalizedHistoryForCleanup.clear(); };
   }, []);
 
   useEffect(() => {
@@ -118,7 +115,6 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
       chartSeries.current.delete(id);
       renderedPoints.current.delete(id);
       renderedLivePoints.current.delete(id);
-      renderedDataPointCounts.current.delete(id);
       normalizedHistory.current.delete(id);
     }
     const resetRequired = previousResetKey.current !== resetKey;
@@ -143,20 +139,15 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
         if (!previousLive || resetRequired || historyChanged) {
           const combined = combinePoints(historicalPoints, livePoints);
           line.setData(combined);
-          renderedDataPointCounts.current.set(item.id, combined.length);
           fitRequired = true;
         } else if (livePoints.length !== previousLive.length || livePoints.some((point, index) => !samePoint(point, previousLive[index]))) {
           const latestPoint = incrementalPoint(previousLive, livePoints);
-          const currentCount = renderedDataPointCounts.current.get(item.id) ?? historicalPoints.length + previousLive.length;
-          const replacement = latestPoint && previousLive.at(-1)?.time === latestPoint.time;
-          if (latestPoint && (replacement || currentCount < historicalPoints.length + LIVE_TAIL_COMPACTION_MAX_POINTS)) {
+          if (latestPoint) {
             line.update(latestPoint);
-            if (!replacement) renderedDataPointCounts.current.set(item.id, currentCount + 1);
           } else {
             const combined = combinePoints(historicalPoints, livePoints);
             line.setData(combined);
-            renderedDataPointCounts.current.set(item.id, combined.length);
-            if (!latestPoint) fitRequired = true;
+            fitRequired = true;
           }
         }
         renderedLivePoints.current.set(item.id, livePoints);
@@ -166,17 +157,14 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
         const previous = renderedPoints.current.get(item.id);
         if (!previous || resetRequired || historyChanged) {
           line.setData(points);
-          renderedDataPointCounts.current.set(item.id, points.length);
           fitRequired = true;
         } else if (points.length !== previous.length || points.some((point, index) => !samePoint(point, previous[index]))) {
           const latestPoint = incrementalPoint(previous, points);
           if (latestPoint) {
             line.update(latestPoint);
-            if (latestPoint.time !== previous.at(-1)?.time) renderedDataPointCounts.current.set(item.id, (renderedDataPointCounts.current.get(item.id) ?? previous.length) + 1);
           }
           else {
             line.setData(points);
-            renderedDataPointCounts.current.set(item.id, points.length);
             fitRequired = true;
           }
         }

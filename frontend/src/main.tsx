@@ -14,6 +14,7 @@ const LIVE_TAIL_MAX_POINTS = 64;
 const SPARKLINE_MAX_POINTS = 32;
 const LATENCY_SAMPLE_MAX_POINTS = 1000;
 const LATENCY_DATASET_MAX_POINTS = 100;
+const EMPTY_CHART_POINTS: ChartPoint[] = [];
 const theme = createTheme({ palette: { mode: 'dark', primary: { main: '#a68bff' }, background: { default: '#08080e', paper: '#11111a' }, text: { primary: '#f5f2fb', secondary: '#9996a8' } }, shape: { borderRadius: 10 }, typography: { fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif', h4: { fontWeight: 700, letterSpacing: '-0.045em' } } });
 const emotionNonce = document.querySelector<HTMLMetaElement>('meta[name="csp-nonce"]')?.content;
 const emotionCache = createCache({ key: 'live15', nonce: emotionNonce, prepend: true });
@@ -25,7 +26,19 @@ const point = (time: string | null | undefined, value: string | number | null | 
 type QuoteState = Pick<Market, 'yes_bid' | 'yes_ask' | 'no_bid' | 'no_ask'>;
 const quoteState = (market: Market): QuoteState => ({ yes_bid: market.yes_bid, yes_ask: market.yes_ask, no_bid: market.no_bid, no_ask: market.no_ask });
 const quoteChanged = (previous: QuoteState | null, next: QuoteState) => previous != null && (previous.yes_bid !== next.yes_bid || previous.yes_ask !== next.yes_ask || previous.no_bid !== next.no_bid || previous.no_ask !== next.no_ask);
-const marketCardValuesSame = (left: Market, right: Market) => left.asset === right.asset && left.ticker === right.ticker && left.lifecycle === right.lifecycle && left.underlying_price === right.underlying_price && left.target === right.target && left.yes_bid === right.yes_bid && left.no_bid === right.no_bid && left.seconds_remaining === right.seconds_remaining && left.quote_source === right.quote_source;
+const displayCountdownBucket = (secondsRemaining?: number | null) => secondsRemaining == null ? null : Math.max(0, Math.floor(secondsRemaining));
+const marketCardValuesSame = (left: Market, right: Market) => left.asset === right.asset && left.ticker === right.ticker && left.lifecycle === right.lifecycle && left.underlying_price === right.underlying_price && left.target === right.target && left.yes_bid === right.yes_bid && left.no_bid === right.no_bid && displayCountdownBucket(left.seconds_remaining) === displayCountdownBucket(right.seconds_remaining) && left.quote_source === right.quote_source;
+const shareMarketReferences = (previous: Market[], next: Market[]) => {
+  const previousByAsset = new Map(previous.map((market) => [market.asset, market]));
+  let changed = previous.length !== next.length;
+  const shared = next.map((market) => {
+    const prior = previousByAsset.get(market.asset);
+    const value = prior && marketCardValuesSame(prior, market) ? prior : market;
+    changed ||= value !== prior;
+    return value;
+  });
+  return changed ? shared : previous;
+};
 const appendBoundedPoint = (previous: ChartPoint[], next: ChartPoint, maxPoints: number) => {
   const last = previous.at(-1);
   if (last?.time === next.time) return last.value === next.value ? previous : [...previous.slice(0, -1), next];
@@ -92,13 +105,44 @@ function useTerminalStream(channels: string[], receive: (event: TerminalEvent) =
 }
 function useLazyData<T>(loader: () => Promise<T>) { const [data, setData] = useState<T>(); const [error, setError] = useState<unknown>(); const [pending, setPending] = useState(true); const load = useCallback(() => { if (document.hidden) return; setPending(true); setError(undefined); void loader().then(setData).catch(setError).finally(() => setPending(false)); }, [loader]); useEffect(() => { void Promise.resolve().then(load); const visible = () => { if (!document.hidden) load(); }; document.addEventListener('visibilitychange', visible); return () => document.removeEventListener('visibilitychange', visible); }, [load]); return { data, error, pending, load }; }
 
-const MarketCard = memo(function MarketCard({ market, trend, onOpen }: { market: Market; trend: ChartPoint[]; onOpen: () => void }) { return <button className="market-card" onClick={onOpen}><div className="market-card-top"><div><strong>{market.asset}</strong><small>{market.ticker ?? 'Awaiting contract'}</small></div><Status text={market.lifecycle} /></div><div className="market-card-middle"><span className="market-price">{formatNumber(market.underlying_price ?? market.target)}</span><MiniSparkline points={trend} /></div><div className="quote-line"><span>YES <b>{formatNumber(market.yes_bid)}</b></span><span>NO <b>{formatNumber(market.no_bid)}</b></span></div><small>{seconds(market.seconds_remaining)} · {market.quote_source}</small></button>; });
+const MarketCard = memo(function MarketCard({ market, trend, onOpen }: { market: Market; trend: ChartPoint[]; onOpen: (id: string) => void }) { return <button className="market-card" onClick={() => onOpen(market.id)}><div className="market-card-top"><div><strong>{market.asset}</strong><small>{market.ticker ?? 'Awaiting contract'}</small></div><Status text={market.lifecycle} /></div><div className="market-card-middle"><span className="market-price">{formatNumber(market.underlying_price ?? market.target)}</span><MiniSparkline points={trend} /></div><div className="quote-line"><span>YES <b>{formatNumber(market.yes_bid)}</b></span><span>NO <b>{formatNumber(market.no_bid)}</b></span></div><small>{seconds(market.seconds_remaining)} · {market.quote_source}</small></button>; });
 function MiniSparkline({ points }: { points: ChartPoint[] }) { const values = points.map((item) => item.value); if (values.length < 2) return <span className="sparkline-empty">LIVE</span>; const boundedPoints = points.slice(-SPARKLINE_MAX_POINTS); const boundedValues = boundedPoints.map((item) => item.value); const min = Math.min(...boundedValues); const max = Math.max(...boundedValues); const range = max - min || 1; const coordinates = boundedPoints.map((item, index, all) => `${(index / (all.length - 1)) * 100},${100 - ((item.value - min) / range) * 88 - 6}`).join(' '); return <svg className="sparkline" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Live market trend"><polyline points={coordinates} /></svg>; }
 
-function Overview() { const health = useGetOne<Health>('overview', { id: 'current' }); const markets = useGetList<Market>('markets', { pagination: { page: 1, perPage: 20 }, sort: { field: 'asset', order: 'ASC' }, filter: {} }); const redirect = useRedirect(); const [streamHealth, setStreamHealth] = useState<Health>(); const [streamMarkets, setStreamMarkets] = useState<Market[]>(); const reconcile = useCallback(() => { void health.refetch(); void markets.refetch(); }, [health, markets]); useTerminalStream(['overview', 'markets'], (event) => { if (event.channel === 'overview') setStreamHealth({ ...(event.payload as Health), id: 'current' }); else setStreamMarkets((event.payload as Market[]).map((market) => ({ ...market, id: market.asset }))); }, reconcile); const liveHealth = streamHealth ?? health.data; const liveMarkets = streamMarkets ?? markets.data; if (health.isPending || markets.isPending || !liveHealth || !liveMarkets) return <Loading />; if (health.error || markets.error) return <ErrorState error={health.error ?? markets.error} />; const issues = liveHealth.current_health_issues; const knownWtiPythOnly = issues.length > 0 && issues.every(isKnownWtiPythIssue); const synchronized = liveHealth.recorder_state === 'running' && liveHealth.kalshi_ws_connection_state === 'synchronized'; const terminalStatus = overviewTerminalStatus(liveHealth); const issueKind = knownWtiPythOnly ? 'source' : 'health'; return <Page title="Overview" subtitle="Synchronized market state from local LIVE15 authority." refresh={reconcile} status={<Status text={terminalStatus} />}><div className="terminal-status"><span className={terminalStatus === 'LIVE' ? 'live-dot' : 'status-dot'} /> {terminalStatus} <span>Recorder {liveHealth.recorder_state}</span><span>{liveHealth.kalshi_ws_synchronized_count} markets synchronized</span><span>WS {liveHealth.kalshi_ws_connection_state}</span><span>{liveHealth.kalshi_ws_seq_gaps} sequence gaps</span></div>{issues.length > 0 && <Card className="warning-card"><CardContent><Status text={`${issues.length} ${issueKind} issue${issues.length === 1 ? '' : 's'}`} /><Box><strong>{knownWtiPythOnly ? 'WTI/Pyth needs attention' : 'Current health issues'}</strong><Typography>{knownWtiPythOnly ? `${synchronized ? 'Recorder and synchronized market feeds remain live. ' : `Recorder state is ${liveHealth.recorder_state}; synchronized feed state is ${liveHealth.kalshi_ws_connection_state}. `}WTI has a source-specific degradation; no substitute is shown.` : healthIssueSummary(issues)}</Typography></Box></CardContent></Card>}<div className="market-grid overview-markets">{liveMarkets.map((market) => <MarketCard key={market.id} market={market} trend={[]} onOpen={() => redirect('show', 'markets', market.id)} />)}</div></Page>; }
+function Overview() {
+  const health = useGetOne<Health>('overview', { id: 'current' });
+  const markets = useGetList<Market>('markets', { pagination: { page: 1, perPage: 20 }, sort: { field: 'asset', order: 'ASC' }, filter: {} });
+  const redirect = useRedirect();
+  const openMarket = useCallback((id: string) => redirect('show', 'markets', id), [redirect]);
+  const [streamHealth, setStreamHealth] = useState<Health>();
+  const [streamMarkets, setStreamMarkets] = useState<Market[]>();
+  const reconcile = useCallback(() => { void health.refetch(); void markets.refetch(); }, [health, markets]);
+  useTerminalStream(['overview', 'markets'], (event) => {
+    if (event.channel === 'overview') {
+      setStreamHealth({ ...(event.payload as Health), id: 'current' });
+    } else {
+      const next = (event.payload as Market[]).map((market) => ({ ...market, id: market.asset }));
+      setStreamMarkets((previous) => previous ? shareMarketReferences(previous, next) : next);
+    }
+  }, reconcile);
+  const liveHealth = streamHealth ?? health.data;
+  const liveMarkets = streamMarkets ?? markets.data;
+  if (health.isPending || markets.isPending || !liveHealth || !liveMarkets) return <Loading />;
+  if (health.error || markets.error) return <ErrorState error={health.error ?? markets.error} />;
+  const issues = liveHealth.current_health_issues;
+  const knownWtiPythOnly = issues.length > 0 && issues.every(isKnownWtiPythIssue);
+  const synchronized = liveHealth.recorder_state === 'running' && liveHealth.kalshi_ws_connection_state === 'synchronized';
+  const terminalStatus = overviewTerminalStatus(liveHealth);
+  const issueKind = knownWtiPythOnly ? 'source' : 'health';
+  return <Page title="Overview" subtitle="Synchronized market state from local LIVE15 authority." refresh={reconcile} status={<Status text={terminalStatus} />}>
+    <div className="terminal-status"><span className={terminalStatus === 'LIVE' ? 'live-dot' : 'status-dot'} /> {terminalStatus} <span>Recorder {liveHealth.recorder_state}</span><span>{liveHealth.kalshi_ws_synchronized_count} markets synchronized</span><span>WS {liveHealth.kalshi_ws_connection_state}</span><span>{liveHealth.kalshi_ws_seq_gaps} sequence gaps</span></div>
+    {issues.length > 0 && <Card className="warning-card"><CardContent><Status text={`${issues.length} ${issueKind} issue${issues.length === 1 ? '' : 's'}`} /><Box><strong>{knownWtiPythOnly ? 'WTI/Pyth needs attention' : 'Current health issues'}</strong><Typography>{knownWtiPythOnly ? `${synchronized ? 'Recorder and synchronized market feeds remain live. ' : `Recorder state is ${liveHealth.recorder_state}; synchronized feed state is ${liveHealth.kalshi_ws_connection_state}. `}WTI has a source-specific degradation; no substitute is shown.` : healthIssueSummary(issues)}</Typography></Box></CardContent></Card>}
+    <div className="market-grid overview-markets">{liveMarkets.map((market) => <MarketCard key={market.id} market={market} trend={EMPTY_CHART_POINTS} onOpen={openMarket} />)}</div>
+  </Page>;
+}
 function Markets() {
   const query = useGetList<Market>('markets', { pagination: { page: 1, perPage: 20 }, sort: { field: 'asset', order: 'ASC' }, filter: {} });
   const redirect = useRedirect();
+  const openMarket = useCallback((id: string) => redirect('show', 'markets', id), [redirect]);
   const [stream, setStream] = useState<Market[]>();
   const [trends, setTrends] = useState<Record<string, ChartPoint[]>>({});
   const reconcile = useCallback(() => { void query.refetch(); }, [query]);
@@ -106,15 +150,7 @@ function Markets() {
     const next = (event.payload as Market[]).map((market) => ({ ...market, id: market.asset }));
     setStream((previous) => {
       if (!previous) return next;
-      const previousByAsset = new Map(previous.map((market) => [market.asset, market]));
-      let changed = previous.length !== next.length;
-      const shared = next.map((market) => {
-        const prior = previousByAsset.get(market.asset);
-        const value = prior && marketCardValuesSame(prior, market) ? prior : market;
-        changed ||= value !== prior;
-        return value;
-      });
-      return changed ? shared : previous;
+      return shareMarketReferences(previous, next);
     });
     setTrends((previous) => {
       const updated = { ...previous };
@@ -134,7 +170,7 @@ function Markets() {
   if (query.error) return <ErrorState error={query.error} />;
   return <Page title="Markets" subtitle="Live contracts, compact trends, and synchronized Kalshi books." refresh={reconcile}><div className="market-grid">{live.map((market) => {
     const initial = point(underlyingTimestamp(market), market.underlying_price);
-    return <MarketCard key={market.id} market={market} trend={trends[market.asset] ?? (initial ? [initial] : [])} onOpen={() => redirect('show', 'markets', market.id)} />;
+    return <MarketCard key={market.id} market={market} trend={trends[market.asset] ?? (initial ? [initial] : EMPTY_CHART_POINTS)} onOpen={openMarket} />;
   })}</div></Page>;
 }
 function MarketDetail() {

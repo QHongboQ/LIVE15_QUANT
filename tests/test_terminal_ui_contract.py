@@ -1,4 +1,5 @@
 import re
+from math import floor
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1] / "frontend" / "src"
@@ -226,6 +227,7 @@ def test_realtime_resource_bounds_and_market_structural_sharing_are_explicit() -
     assert "const LATENCY_DATASET_MAX_POINTS = 100" in app
     assert "appendBoundedPoint" in app
     assert "marketCardValuesSame" in app
+    assert "shareMarketReferences" in app
     assert "return changed ? updated : previous" in app
     assert (
         "const previousByAsset = new Map(previous.map((market) => [market.asset, market]))" in app
@@ -253,12 +255,55 @@ def test_chart_reuses_reference_price_line_and_cleans_resource_lifecycles() -> N
     assert "livePoints?: ChartPoint[]" in charts
     assert "const normalizedHistory = useRef" in charts
     assert "const renderedLivePoints = useRef" in charts
-    assert "const LIVE_TAIL_COMPACTION_MAX_POINTS = 128" in charts
-    assert "renderedDataPointCounts" in charts
+    assert "LIVE_TAIL_COMPACTION_MAX_POINTS" not in charts
+    assert "renderedDataPointCounts" not in charts
     assert "line.update(latestPoint)" in charts
+    assert "const combined = combinePoints(historicalPoints, livePoints)" in charts
+    assert "line.setData(combined)" in charts
     assert "referenceLine.current.applyOptions({ price: reference })" in charts
     assert "referenceLinePrice.current" in charts
     assert "referenceSeries.current !== nextReferenceSeries" in charts
     assert "referenceSeries.current.removePriceLine(referenceLine.current)" in charts
     assert "observer.disconnect()" in charts
     assert "instance.remove()" in charts
+
+
+def _native_append(points: list[tuple[str, int]], point: tuple[str, int]) -> list[tuple[str, int]]:
+    if points and points[-1][0] == point[0]:
+        return [*points[:-1], point]
+    return [*points, point]
+
+
+def test_native_realtime_trajectory_is_not_periodically_truncated() -> None:
+    points = [("history-1", 1), ("history-2", 2)]
+    for index in range(1, 130):
+        points = _native_append(points, (f"realtime-{index}", index))
+
+    assert len(points) == 131
+    assert points[2:5] == [("realtime-1", 1), ("realtime-2", 2), ("realtime-3", 3)]
+    assert points[-1] == ("realtime-129", 129)
+
+    replacement = _native_append(points, ("realtime-129", 999))
+    assert len(replacement) == len(points)
+    assert replacement[-1] == ("realtime-129", 999)
+
+
+def test_market_cards_preserve_stable_inputs_until_visible_values_change() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "const EMPTY_CHART_POINTS: ChartPoint[] = []" in app
+    assert "const displayCountdownBucket" in app
+    assert (
+        "displayCountdownBucket(left.seconds_remaining) === displayCountdownBucket(right.seconds_remaining)"
+        in app
+    )
+    assert "onOpen: (id: string) => void" in app
+    assert "onClick={() => onOpen(market.id)}" in app
+    assert (
+        "const openMarket = useCallback((id: string) => redirect('show', 'markets', id), [redirect])"
+        in app
+    )
+    assert "onOpen={openMarket}" in app
+
+    assert floor(731.821) == floor(731.614)
+    assert floor(731.001) != floor(730.999)
