@@ -1049,20 +1049,35 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
 async def test_terminal_static_assets_and_security_headers(tmp_path: Path) -> None:
     transport = httpx.ASGITransport(app=create_app(settings(tmp_path)))
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
-        page, legacy_stylesheet, legacy_script = await asyncio.gather(
-            client.get("/"), client.get("/assets/app.css"), client.get("/assets/app.js")
+        page, legacy_stylesheet, legacy_script, legacy_web = await asyncio.gather(
+            client.get("/"),
+            client.get("/assets/app.css"),
+            client.get("/assets/app.js"),
+            client.get("/web/index.html"),
         )
         terminal_assets = re.findall(r'(?:href|src)="(/terminal/assets/[^"]+)"', page.text)
         terminal_responses = await asyncio.gather(*(client.get(asset) for asset in terminal_assets))
 
     assert page.status_code == 200
-    assert legacy_stylesheet.status_code == legacy_script.status_code == 404
+    assert "<title>LIVE15 Terminal</title>" in page.text
+    assert 'id="root"' in page.text
+    assert "LIVE15 trading terminal" not in page.text
+    assert page.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+    assert page.headers["pragma"] == "no-cache"
+    assert page.headers["expires"] == "0"
+    assert legacy_stylesheet.status_code == 404
+    assert legacy_script.status_code == 404
+    assert legacy_web.status_code == 404
     assert "default-src 'self'" in page.headers["content-security-policy"]
     assert page.headers["x-frame-options"] == "DENY"
     assert page.headers["referrer-policy"] == "no-referrer"
     assert terminal_assets
     assert all(response.status_code == 200 for response in terminal_responses)
     assert all("/terminal/assets/" in asset for asset in terminal_assets)
+    assert all(
+        response.headers["cache-control"] == "public, max-age=31536000, immutable"
+        for response in terminal_responses
+    )
     assert "/assets/app.css" not in page.text
     assert "/assets/app.js" not in page.text
 

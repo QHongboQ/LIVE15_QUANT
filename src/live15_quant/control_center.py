@@ -38,6 +38,14 @@ from live15_quant.logging_config import configure_logging
 from live15_quant.models import Asset, RecorderEventSeverity
 
 LOCAL_HOST = "127.0.0.1"
+TERMINAL_ENTRY_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+TERMINAL_ASSET_CACHE_HEADERS = {
+    "Cache-Control": "public, max-age=31536000, immutable",
+}
 
 
 def create_app(
@@ -88,14 +96,14 @@ def create_app(
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        return FileResponse(str(terminal_page))
+        return FileResponse(str(terminal_page), headers=TERMINAL_ENTRY_CACHE_HEADERS)
 
     @app.get("/terminal/assets/{asset_path:path}", include_in_schema=False)
     def terminal_static_asset(asset_path: str) -> FileResponse:
         asset = terminal_asset(asset_path)
         if asset is None:
             raise HTTPException(status_code=404, detail="terminal asset not found")
-        return FileResponse(str(asset))
+        return FileResponse(str(asset), headers=TERMINAL_ASSET_CACHE_HEADERS)
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
