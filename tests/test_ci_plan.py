@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 from live15_quant import ci_plan
 from live15_quant.ci_plan import TestGroup, ValidationTier, evaluate_gate, plan_validation
+
+
+def _workflow_step_body(step_name: str) -> str:
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text(
+        encoding="utf-8"
+    )
+    step = re.search(
+        rf"(?ms)^      - name: {re.escape(step_name)}\r?\n.*?^        run: \|\r?\n"
+        rf"(?P<body>.*?)(?=^      - name:|\Z)",
+        workflow,
+    )
+    assert step, f"CI workflow is missing the {step_name!r} step"
+    return step.group("body")
 
 
 def test_tracker_only_change_uses_governance_fast_path() -> None:
@@ -107,3 +121,24 @@ def test_workflow_uses_pr_and_main_push_without_feature_push_duplication() -> No
     assert "branches: [main]" in workflow
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     assert "CI Gate" in workflow
+
+
+def test_frontend_release_build_is_pinned_and_fails_closed() -> None:
+    body = _workflow_step_body("Build deterministic release frontend")
+
+    assert "$pnpmVersion = '11.19.0'" in body
+    assert 'corepack install --global "pnpm@$pnpmVersion"' in body
+    assert 'Write-Host "pnpm version = $actualPnpmVersion"' in body
+    assert "function Invoke-Native" in body
+    assert "if ($LASTEXITCODE -ne 0)" in body
+    assert "pnpm --dir frontend" not in body
+
+    required_commands = (
+        "pnpm install --frozen-lockfile",
+        "pnpm run typecheck",
+        "pnpm run lint",
+        "pnpm run build:release",
+        "git diff --exit-code -- src/live15_quant/terminal",
+    )
+    command_positions = [body.index(command) for command in required_commands]
+    assert command_positions == sorted(command_positions)
