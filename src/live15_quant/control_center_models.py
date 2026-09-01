@@ -142,6 +142,7 @@ class AccountEquityHistoryPoint(StrictResponse):
 class AccountEquityHistoryResponse(StrictResponse):
     profile: str
     status: str
+    range: str = "1D"
     points: list[AccountEquityHistoryPoint] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
@@ -328,6 +329,7 @@ class MarketResponse(StrictResponse):
 class UnderlyingHistoryPoint(StrictResponse):
     observed_at: datetime
     source: str
+    close_price: str
     minimum_price: str
     maximum_price: str
 
@@ -342,7 +344,7 @@ class ProbabilityHistoryPoint(StrictResponse):
 
 
 class MarketHistoryResponse(StrictResponse):
-    schema_version: int = 1
+    schema_version: int = 2
     asset: str
     ticker: str
     window_start: datetime
@@ -352,6 +354,8 @@ class MarketHistoryResponse(StrictResponse):
     probability_source: str = "kalshi_ws_orderbook_events"
     underlying: list[UnderlyingHistoryPoint] = Field(default_factory=list)
     probability: list[ProbabilityHistoryPoint] = Field(default_factory=list)
+    underlying_last_actual_change_at: datetime | None = None
+    probability_last_actual_change_at: datetime | None = None
     probability_complete: bool = True
     notes: list[str] = Field(default_factory=list)
 

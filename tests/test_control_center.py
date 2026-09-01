@@ -398,6 +398,16 @@ async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
                 exchange_time=NOW,
             )
         )
+        store.append_coinbase(
+            MarketTick(
+                symbol="BTC-USD",
+                price=market.target + Decimal("2"),
+                bid=market.target + Decimal("1"),
+                ask=market.target + Decimal("3"),
+                received_at=NOW,
+                exchange_time=NOW,
+            )
+        )
         store.write_kalshi_ws_persistence_event_batch_atomic((event,), (book,))
     write_health(
         configured.recorder_health_path,
@@ -432,6 +442,9 @@ async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
     assert history.json()["ticker"] == market.ticker
     assert history.json()["probability"][0]["sequence"] == 10
     assert history.json()["underlying"][0]["minimum_price"] == str(float(market.target + 1))
+    assert history.json()["underlying"][0]["close_price"] == str(market.target + 2)
+    assert history.json()["underlying_last_actual_change_at"] is not None
+    assert history.json()["probability_last_actual_change_at"] is not None
 
     rollover_event = f"{market.event_ticker}NEXT"
     rollover = replace(

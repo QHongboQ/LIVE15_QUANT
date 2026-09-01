@@ -201,31 +201,120 @@ class ProductionAccountService:
             return []
         return [self._fill(item) for item in self._gateway_or_raise().fills()]
 
-    def equity_history(self, profile: str = "production_primary") -> AccountEquityHistoryResponse:
+    def equity_history(
+        self, profile: str = "production_primary", history_range: str = "1D"
+    ) -> AccountEquityHistoryResponse:
         if profile != "production_primary":
-            return AccountEquityHistoryResponse(profile=profile, status="UNAVAILABLE")
+            return AccountEquityHistoryResponse(
+                profile=profile, status="UNAVAILABLE", range=history_range
+            )
+        cutoffs = {
+            "1D": timedelta(days=1),
+            "1W": timedelta(days=7),
+            "1M": timedelta(days=31),
+            "6M": timedelta(days=183),
+            "ALL": None,
+        }
+        if history_range not in cutoffs:
+            return AccountEquityHistoryResponse(
+                profile=profile, status="UNAVAILABLE", range=history_range
+            )
         try:
             if not self._history_path.is_file():
                 return AccountEquityHistoryResponse(
                     profile=profile,
                     status="NOT_MATERIALIZED",
+                    range=history_range,
                     notes=["history begins with the first successful Terminal summary read"],
                 )
-            size = self._history_path.stat().st_size
-            with self._history_path.open("rb") as handle:
-                handle.seek(max(0, size - 1_048_576))
-                if handle.tell() > 0:
-                    handle.readline()
-                rows = deque(handle, maxlen=2000)
-            points = [json.loads(row) for row in rows]
+            cutoff = (
+                None
+                if cutoffs[history_range] is None
+                else self._clock().astimezone(UTC) - cutoffs[history_range]
+            )
+            points, bounded = self._read_equity_range(cutoff)
+            points = self._downsample_equity(points)
+            notes = ["forward-collected only; no synthetic or backfilled observations"]
+            if bounded:
+                notes.append("history scan reached the bounded local read limit")
             return AccountEquityHistoryResponse(
                 profile=profile,
                 status="AVAILABLE",
                 points=points,
-                notes=["forward-collected only; no synthetic or backfilled observations"],
+                range=history_range,
+                notes=notes,
             )
         except (OSError, ValueError, json.JSONDecodeError):
-            return AccountEquityHistoryResponse(profile=profile, status="UNAVAILABLE")
+            return AccountEquityHistoryResponse(
+                profile=profile, status="UNAVAILABLE", range=history_range
+            )
+
+    def _read_equity_range(
+        self, cutoff: datetime | None, *, maximum_bytes: int = 16 * 1024 * 1024
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Read a bounded suffix of append-only history; never manufacture older points."""
+
+        size = self._history_path.stat().st_size
+        position = size
+        scanned = 0
+        trailing = b""
+        newest_first: list[dict[str, Any]] = []
+        reached_cutoff = False
+        with self._history_path.open("rb") as handle:
+            while position > 0 and scanned < maximum_bytes and not reached_cutoff:
+                width = min(64 * 1024, position, maximum_bytes - scanned)
+                position -= width
+                handle.seek(position)
+                block = handle.read(width) + trailing
+                scanned += width
+                lines = block.splitlines()
+                trailing = lines.pop(0) if position > 0 and lines else b""
+                for raw in reversed(lines):
+                    if not raw:
+                        continue
+                    point = json.loads(raw)
+                    observed = _dt(point, "observed_at")
+                    if observed is None:
+                        continue
+                    if cutoff is not None and observed < cutoff:
+                        reached_cutoff = True
+                        break
+                    newest_first.append(point)
+            if position == 0 and trailing and not reached_cutoff:
+                point = json.loads(trailing)
+                observed = _dt(point, "observed_at")
+                if observed is not None and (cutoff is None or observed >= cutoff):
+                    newest_first.append(point)
+        newest_first.reverse()
+        return newest_first, position > 0 and not reached_cutoff
+
+    @staticmethod
+    def _downsample_equity(
+        points: list[dict[str, Any]], *, maximum: int = 2000
+    ) -> list[dict[str, Any]]:
+        """Return actual observations only, retaining range extrema for visual LOD."""
+
+        if len(points) <= maximum:
+            return points
+        interior = points[1:-1]
+        buckets = max(1, (maximum - 2) // 4)
+        width = max(1, (len(interior) + buckets - 1) // buckets)
+        selected = [points[0]]
+        for offset in range(0, len(interior), width):
+            bucket = interior[offset : offset + width]
+            candidates = [bucket[0], bucket[-1]]
+            priced = [item for item in bucket if isinstance(item.get("portfolio_value_cents"), int)]
+            if priced:
+                candidates.extend(
+                    (
+                        min(priced, key=lambda item: int(item["portfolio_value_cents"])),
+                        max(priced, key=lambda item: int(item["portfolio_value_cents"])),
+                    )
+                )
+            selected.extend(candidates)
+        selected.append(points[-1])
+        unique = {str(item.get("observed_at")): item for item in selected}
+        return [unique[key] for key in sorted(unique)]
 
     def _append_equity(
         self,

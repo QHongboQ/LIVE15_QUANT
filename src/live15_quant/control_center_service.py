@@ -99,8 +99,10 @@ class ControlCenterService:
     def account_fills(self, profile: str = "production_primary"):
         return self.account_service.fills(profile)
 
-    def account_equity_history(self, profile: str = "production_primary"):
-        return self.account_service.equity_history(profile)
+    def account_equity_history(
+        self, profile: str = "production_primary", history_range: str = "1D"
+    ):
+        return self.account_service.equity_history(profile, history_range)
 
     async def run_account_equity_sampler(self, stop: asyncio.Event) -> None:
         """Collect forward-only account equity at low-idle/high-active cadence."""

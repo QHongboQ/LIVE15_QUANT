@@ -1,4 +1,25 @@
 {
+  "lightweight_charts": {
+    "dependency_name": "lightweight-charts",
+    "package_name": "lightweight-charts",
+    "upstream_repository": "https://github.com/tradingview/lightweight-charts",
+    "locked_version": "5.2.1",
+    "license": "Apache-2.0",
+    "integration_mode": "dependency + thin LIVE15 terminal chart adapter",
+    "locally_patched": false,
+    "ownership_boundary": {
+      "upstream": [
+        "canvas financial-chart rendering",
+        "crosshair and chart interaction",
+        "visible-range price autoscaling"
+      ],
+      "live15": [
+        "authoritative typed data contracts",
+        "local WebSocket subscription lifecycle",
+        "chart data selection and truth labels"
+      ]
+    }
+  },
   "kalshi_sdk": {
     "dependency_name": "kalshi-sdk",
     "package_name": "kalshi-sdk",

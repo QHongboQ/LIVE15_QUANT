@@ -70,3 +70,20 @@ def test_terminal_stream_and_lazy_network_contract_is_fail_closed() -> None:
     combined = f"{app}\n{api}".lower()
     for host in ("kalshi.com", "coinbase.com", "pyth.network", "depthfeed"):
         assert host not in combined
+
+
+def test_terminal_v2_chart_and_view_contracts_remain_local_and_truthful() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    api = (ROOT / "api.ts").read_text(encoding="utf-8")
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "lightweight-charts" in charts
+    assert "No persisted history is available" in charts
+    assert "FinancialChart" in app
+    assert "PRICE" in app and "PROBABILITY" in app
+    assert "Last actual change" in app
+    assert "Feed latency" in app
+    assert "live15Sidebar" in app
+    assert "accountEquityHistory(portfolioRanges[range])" in app
+    assert "close_price" in api
+    assert "third_party" not in app.lower()

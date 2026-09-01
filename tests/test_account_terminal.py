@@ -116,3 +116,32 @@ def test_terminal_visual_foundation_has_packaged_react_shell() -> None:
     assert 'id="root"' in page
     assert "Overview" in frontend
     assert "Portfolio" in frontend
+
+
+def test_equity_history_ranges_are_bounded_and_never_backfill(tmp_path) -> None:
+    current = datetime(2026, 1, 10, tzinfo=UTC)
+    service = ProductionAccountService(
+        SimpleNamespace(recorder_data_path=tmp_path / "raw.sqlite3"),
+        gateway=FakeAccountGateway(),
+        clock=lambda: current,
+    )
+    service._history_path.write_text(
+        "\n".join(
+            [
+                '{"observed_at":"2026-01-01T00:00:00+00:00","portfolio_value_cents":100}',
+                '{"observed_at":"2026-01-09T12:00:00+00:00","portfolio_value_cents":110}',
+                '{"observed_at":"2026-01-10T00:00:00+00:00","portfolio_value_cents":120}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    one_day = service.equity_history(history_range="1D")
+    all_history = service.equity_history(history_range="ALL")
+
+    assert one_day.range == "1D"
+    assert [item.portfolio_value_cents for item in one_day.points] == [110, 120]
+    assert all_history.range == "ALL"
+    assert [item.portfolio_value_cents for item in all_history.points] == [100, 110, 120]
+    assert "no synthetic or backfilled" in all_history.notes[0]

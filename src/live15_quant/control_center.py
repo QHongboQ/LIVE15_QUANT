@@ -251,8 +251,9 @@ def create_app(
     @app.get("/api/account/equity-history", response_model=AccountEquityHistoryResponse)
     def account_equity_history(
         profile: str = Query(default="production_primary", min_length=1, max_length=64),
+        history_range: str = Query(default="1D", alias="range", pattern="^(1D|1W|1M|6M|ALL)$"),
     ) -> AccountEquityHistoryResponse:
-        return boundary.account_equity_history(profile)
+        return boundary.account_equity_history(profile, history_range)
 
     @app.get("/api/coverage", response_model=CoverageResponse)
     def coverage() -> CoverageResponse:
