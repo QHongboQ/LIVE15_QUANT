@@ -294,14 +294,14 @@ def test_market_cards_preserve_stable_inputs_until_visible_values_change() -> No
     assert "const EMPTY_CHART_POINTS: ChartPoint[] = []" in app
     assert "const displayCountdownBucket" in app
     assert (
-        "displayCountdownBucket(left.seconds_remaining) === displayCountdownBucket(right.seconds_remaining)"
-        in app
+        "displayCountdownBucket(left.seconds_remaining) === "
+        "displayCountdownBucket(right.seconds_remaining)" in app
     )
     assert "onOpen: (id: string) => void" in app
     assert "onClick={() => onOpen(market.id)}" in app
     assert (
-        "const openMarket = useCallback((id: string) => redirect('show', 'markets', id), [redirect])"
-        in app
+        "const openMarket = useCallback((id: string) => redirect('show', "
+        "'markets', id), [redirect])" in app
     )
     assert "onOpen={openMarket}" in app
 
