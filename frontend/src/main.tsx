@@ -52,6 +52,7 @@ const marketTerminalStatus = (market: Market): TerminalStatus => {
   const underlying = normalized(market.underlying_status);
   if (['reconnect', 'connect', 'disconnect'].some((state) => source.includes(state) || quote.includes(state) || orderbook.includes(state))) return 'RECONNECTING';
   if (['unavailable', 'missing', 'error', 'failed'].some((state) => source.includes(state) || quote.includes(state) || orderbook.includes(state))) return 'UNAVAILABLE';
+  if (['unavailable', 'missing', 'error', 'failed'].some((state) => underlying.includes(state))) return 'UNAVAILABLE';
   if ([source, quote, orderbook, underlying].some((state) => state.includes('stale'))) return 'STALE';
   if (source.includes('rest') || source.includes('recovery') || source.includes('fallback')) return 'DELAYED';
   if (source.includes('ws') || source.includes('synchronized') || quote.includes('synchronized') || orderbook.includes('synchronized')) return 'LIVE';

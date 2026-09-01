@@ -171,6 +171,7 @@ def test_terminal_status_is_derived_from_health_and_market_authority() -> None:
     )
     assert "overviewTerminalStatus" in app
     assert "marketTerminalStatus" in app
+    assert "underlying.includes(state)" in app
     assert "connection === 'synchronized'" in app
     assert "recorder === 'running'" in app
     assert "'RECONNECTING'" in app
