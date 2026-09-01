@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+import threading
+from collections import deque
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Protocol
 
 from live15_quant.control_center_models import (
+    AccountEquityHistoryResponse,
     AccountFillResponse,
     AccountLedgerEntryResponse,
     AccountOrderResponse,
@@ -79,6 +84,9 @@ class ProductionAccountService:
         self.settings = settings
         self._gateway = gateway
         self._clock = clock or (lambda: datetime.now(UTC))
+        recorder_path = getattr(settings, "recorder_data_path", Path("data/live15.sqlite3"))
+        self._history_path = Path(recorder_path).parent / "account-equity-history.jsonl"
+        self._history_lock = threading.Lock()
 
     @staticmethod
     def profiles() -> list[AccountProfileResponse]:
@@ -141,6 +149,129 @@ class ProductionAccountService:
             fills=[self._fill(item) for item in fills],
             ledger=ledger,
         )
+
+    def read_summary(self, profile: str = "production_primary") -> AccountReadResponse:
+        """Read only balance/positions and append one truthful forward equity observation."""
+
+        observed = self._clock()
+        if profile != "production_primary":
+            return self._unavailable(profile, observed, "unknown account profile")
+        try:
+            gateway = self._gateway_or_raise()
+            balance = gateway.balance()
+            positions = tuple(gateway.positions())
+        except Exception as error:
+            status = (
+                "AUTH_ERROR"
+                if isinstance(error, (KalshiGatewayError, PermissionError))
+                else "UNAVAILABLE"
+            )
+            return self._unavailable(profile, observed, status)
+        summary = AccountSummaryResponse(
+            profile=profile,
+            status="AVAILABLE",
+            observed_at=observed,
+            balance_cents=_int(balance, "balance", "balance_cents"),
+            portfolio_value_cents=_int(balance, "portfolio_value", "portfolio_value_cents"),
+        )
+        projected_positions = [self._position(item) for item in positions]
+        self._append_equity(summary, projected_positions)
+        return AccountReadResponse(
+            profile=profile,
+            status="AVAILABLE",
+            observed_at=observed,
+            summary=summary,
+            positions=projected_positions,
+        )
+
+    def sample_equity(self, profile: str = "production_primary") -> float:
+        """Take one read-only account sample and return its next bounded cadence."""
+
+        result = self.read_summary(profile)
+        active = any((position.position or 0) != 0 for position in result.positions)
+        return 60.0 if result.status == "AVAILABLE" and active else 900.0
+
+    def orders(self, profile: str = "production_primary") -> list[AccountOrderResponse]:
+        if profile != "production_primary":
+            return []
+        return [self._order(item) for item in self._gateway_or_raise().orders()]
+
+    def fills(self, profile: str = "production_primary") -> list[AccountFillResponse]:
+        if profile != "production_primary":
+            return []
+        return [self._fill(item) for item in self._gateway_or_raise().fills()]
+
+    def equity_history(self, profile: str = "production_primary") -> AccountEquityHistoryResponse:
+        if profile != "production_primary":
+            return AccountEquityHistoryResponse(profile=profile, status="UNAVAILABLE")
+        try:
+            if not self._history_path.is_file():
+                return AccountEquityHistoryResponse(
+                    profile=profile,
+                    status="NOT_MATERIALIZED",
+                    notes=["history begins with the first successful Terminal summary read"],
+                )
+            size = self._history_path.stat().st_size
+            with self._history_path.open("rb") as handle:
+                handle.seek(max(0, size - 1_048_576))
+                if handle.tell() > 0:
+                    handle.readline()
+                rows = deque(handle, maxlen=2000)
+            points = [json.loads(row) for row in rows]
+            return AccountEquityHistoryResponse(
+                profile=profile,
+                status="AVAILABLE",
+                points=points,
+                notes=["forward-collected only; no synthetic or backfilled observations"],
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            return AccountEquityHistoryResponse(profile=profile, status="UNAVAILABLE")
+
+    def _append_equity(
+        self,
+        summary: AccountSummaryResponse,
+        positions: list[AccountPositionResponse],
+    ) -> bool:
+        active = any((position.position or 0) != 0 for position in positions)
+        point = {
+            "observed_at": summary.observed_at.astimezone(UTC).isoformat(),
+            "balance_cents": summary.balance_cents,
+            "portfolio_value_cents": summary.portfolio_value_cents,
+            "active_positions": active,
+        }
+        with self._history_lock:
+            self._history_path.parent.mkdir(parents=True, exist_ok=True)
+            previous = self._last_equity_point()
+            if previous is not None:
+                changed = any(
+                    previous.get(key) != point[key]
+                    for key in ("balance_cents", "portfolio_value_cents", "active_positions")
+                )
+                previous_at = _dt(previous, "observed_at")
+                cadence = timedelta(seconds=60 if active else 900)
+                if (
+                    not changed
+                    and previous_at is not None
+                    and summary.observed_at.astimezone(UTC) - previous_at < cadence
+                ):
+                    return False
+            with self._history_path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(point, separators=(",", ":")) + "\n")
+            return True
+
+    def _last_equity_point(self) -> dict[str, object] | None:
+        if not self._history_path.is_file():
+            return None
+        size = self._history_path.stat().st_size
+        with self._history_path.open("rb") as handle:
+            handle.seek(max(0, size - 65_536))
+            if handle.tell() > 0:
+                handle.readline()
+            rows = deque(handle, maxlen=1)
+        if not rows:
+            return None
+        parsed = json.loads(rows[0])
+        return parsed if isinstance(parsed, dict) else None
 
     def _unavailable(self, profile: str, observed: datetime, message: str) -> AccountReadResponse:
         summary = AccountSummaryResponse(

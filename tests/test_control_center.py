@@ -6,6 +6,7 @@ import re
 import sqlite3
 import sys
 import tomllib
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -13,6 +14,8 @@ from pathlib import Path
 import fastapi.routing
 import httpx
 import pytest
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 import live15_quant.control_center as control_center
 import live15_quant.control_center_store as control_center_store
@@ -20,11 +23,18 @@ from live15_quant.config import Settings
 from live15_quant.control_center import LOCAL_HOST, create_app
 from live15_quant.control_center_models import RecorderState
 from live15_quant.control_center_service import ControlCenterService
+from live15_quant.control_center_store import DashboardReadStore
 from live15_quant.dataset import FeatureStore
+from live15_quant.kalshi_ws import (
+    KalshiAtomicOrderBookCoordinator,
+    KalshiBookSyncStatus,
+    KalshiOrderBookSnapshot,
+)
 from live15_quant.models import (
     Asset,
     FreshnessState,
     MarketTick,
+    OrderBookLevel,
     RecorderEventSeverity,
     RecorderEventType,
     UnderlyingObservation,
@@ -32,7 +42,7 @@ from live15_quant.models import (
 )
 from live15_quant.recorder_control import ManagedRecorderState, RecorderControlStatus
 from live15_quant.secondary import secondary_from_benchmark_tick
-from live15_quant.storage import RecorderStore
+from live15_quant.storage import KalshiWsPersistenceEvent, RecorderStore
 from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 from tests.test_secondary_underlying import bnb_tick
 
@@ -331,7 +341,12 @@ async def test_market_detail_reuses_native_storage_and_feature_engine(tmp_path: 
                 exchange_time=NOW,
             )
         )
-    write_health(configured.recorder_health_path, current_markets={"BTC": market.ticker})
+    write_health(
+        configured.recorder_health_path,
+        current_markets={"BTC": market.ticker},
+        kalshi_ws_connection_state="synchronized",
+        kalshi_ws_synchronized_markets={"BTC": market.ticker},
+    )
     service = ControlCenterService(configured, clock=lambda: NOW)
 
     transport = httpx.ASGITransport(app=create_app(configured, service))
@@ -346,6 +361,169 @@ async def test_market_detail_reuses_native_storage_and_feature_engine(tmp_path: 
     assert payload["yes_ask"] == "0.5100"
     assert payload["underlying_price"] == str(market.target + 1)
     assert payload["features"]["signed_distance_to_target"]["value"] == "1.00000000"
+
+
+@pytest.mark.asyncio
+async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
+    tmp_path: Path,
+) -> None:
+    configured = settings(tmp_path)
+    market = provider().parse_market(Asset.BTC, raw_market(), NOW)
+    message = KalshiOrderBookSnapshot(
+        connection_id="sdk-session",
+        subscription_id=3,
+        sequence=10,
+        ticker=market.ticker,
+        market_id="test-market-id",
+        yes_bids=(OrderBookLevel(Decimal("0.6000"), Decimal("4")),),
+        no_bids=(OrderBookLevel(Decimal("0.3000"), Decimal("5")),),
+        source_timestamp=NOW,
+        socket_received_timestamp=NOW,
+        parse_timestamp=NOW,
+    )
+    book = KalshiAtomicOrderBookCoordinator("sdk-session", (market.ticker,)).accept(message)
+    event = KalshiWsPersistenceEvent.from_legacy(
+        message, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+    )
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_kalshi_market(market)
+        store.append_kalshi_quote(quote(market.ticker, market.event_ticker, NOW))
+        store.append_coinbase(
+            MarketTick(
+                symbol="BTC-USD",
+                price=market.target + Decimal("1"),
+                bid=market.target,
+                ask=market.target + Decimal("2"),
+                received_at=NOW,
+                exchange_time=NOW,
+            )
+        )
+        store.write_kalshi_ws_persistence_event_batch_atomic((event,), (book,))
+    write_health(
+        configured.recorder_health_path,
+        current_markets={"BTC": market.ticker},
+        kalshi_ws_connection_state="synchronized",
+        kalshi_ws_synchronized_markets={"BTC": market.ticker},
+    )
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    btc_cursor = service.terminal_cursor("market:BTC")
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_coinbase(
+            MarketTick(
+                symbol="ETH-USD",
+                price=Decimal("100"),
+                bid=Decimal("99"),
+                ask=Decimal("101"),
+                received_at=NOW,
+                exchange_time=NOW,
+            )
+        )
+    assert service.terminal_cursor("market:BTC") == btc_cursor
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        current = await client.get("/api/markets/BTC")
+        history = await client.get("/api/markets/BTC/history")
+
+    assert current.status_code == history.status_code == 200
+    assert current.json()["quote_source"] == "kalshi_ws_synchronized"
+    assert current.json()["yes_bid"] == "0.6000"
+    assert current.json()["yes_ask"] == "0.7000"
+    assert current.json()["book_sequence"] == 10
+    assert history.json()["ticker"] == market.ticker
+    assert history.json()["probability"][0]["sequence"] == 10
+    assert history.json()["underlying"][0]["minimum_price"] == str(float(market.target + 1))
+
+    rollover_event = f"{market.event_ticker}NEXT"
+    rollover = replace(
+        market,
+        ticker=f"{rollover_event}-00",
+        event_ticker=rollover_event,
+        window_start=market.window_start + timedelta(minutes=15),
+        window_end=market.window_end + timedelta(minutes=15),
+        fetched_timestamp=NOW + timedelta(seconds=1),
+    )
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_kalshi_market(rollover)
+        store.append_kalshi_quote(quote(rollover.ticker, rollover.event_ticker, NOW))
+    write_health(
+        configured.recorder_health_path,
+        current_markets={"BTC": rollover.ticker},
+        kalshi_ws_connection_state="synchronized",
+        kalshi_ws_synchronized_markets={"BTC": market.ticker},
+    )
+    rolled = service.market(Asset.BTC)
+    assert rolled.ticker == rollover.ticker
+    assert rolled.quote_source == "kalshi_rest_recovery"
+
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.write_kalshi_ws_persistence_event_batch_atomic(
+            (
+                replace(
+                    event,
+                    sequence=11,
+                    sync_status_after=KalshiBookSyncStatus.UNSYNCHRONIZED,
+                ),
+            )
+        )
+    write_health(
+        configured.recorder_health_path,
+        current_markets={"BTC": market.ticker},
+        kalshi_ws_connection_state="reconnecting",
+        kalshi_ws_synchronized_markets={},
+    )
+    fallback = service.market(Asset.BTC)
+    assert fallback.quote_source == "kalshi_rest_recovery"
+    assert fallback.yes_bid == "0.5000"
+
+
+def test_terminal_websocket_is_typed_subscribable_and_local(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    write_health(configured.recorder_health_path)
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    with TestClient(create_app(configured, service)) as client:
+        with client.websocket_connect("/ws/terminal") as socket:
+            socket.send_json({"action": "subscribe", "channels": ["overview"]})
+            event = socket.receive_json()
+            assert event["schema_version"] == 1
+            assert event["event_type"] == "snapshot"
+            assert event["channel"] == "overview"
+            assert event["sequence"] == 1
+            assert event["payload"]["status"] == "healthy"
+            socket.send_json({"action": "unsubscribe", "channels": ["overview"]})
+        with client.websocket_connect("/ws/terminal") as reconnected:
+            reconnected.send_json({"action": "subscribe", "channels": ["overview"]})
+            recovered = reconnected.receive_json()
+            assert recovered["event_type"] == "snapshot"
+            assert recovered["sequence"] == 1
+        with client.websocket_connect("/ws/terminal") as invalid:
+            invalid.send_json({"action": "subscribe", "channels": ["market:UNKNOWN"]})
+            with pytest.raises(WebSocketDisconnect) as closed:
+                invalid.receive_json()
+            assert closed.value.code == 1008
+
+
+def test_probability_downsampling_preserves_all_quote_extrema() -> None:
+    points = [
+        {
+            "observed_at": NOW.isoformat(),
+            "sequence": index,
+            "yes_bid": str((index % 997) / 1000),
+            "yes_ask": str((index % 991) / 1000),
+            "no_bid": str((index % 983) / 1000),
+            "no_ask": str((index % 977) / 1000),
+        }
+        for index in range(5000)
+    ]
+    bounded = DashboardReadStore._downsample_probability(points)
+
+    assert len(bounded) <= 2000
+    for field in ("yes_bid", "yes_ask", "no_bid", "no_ask"):
+        assert min(Decimal(str(point[field])) for point in bounded) == min(
+            Decimal(str(point[field])) for point in points
+        )
+        assert max(Decimal(str(point[field])) for point in bounded) == max(
+            Decimal(str(point[field])) for point in points
+        )
 
 
 @pytest.mark.asyncio
@@ -995,7 +1173,12 @@ def test_coverage_is_bounded_by_short_thread_safe_cache(tmp_path: Path, monkeypa
 
 def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path) -> None:
     app = create_app(settings(tmp_path))
-    routes = {(method, route.path) for route in app.routes for method in route.methods or set()}
+    routes = {
+        (method, route.path)
+        for route in app.routes
+        for method in getattr(route, "methods", None) or set()
+    }
+    assert any(route.path == "/ws/terminal" for route in app.routes)
 
     assert {(method, path) for method, path in routes if method == "POST"} == {
         ("POST", "/api/recorder/start"),
@@ -1009,6 +1192,7 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
         "/api/health",
         "/api/markets",
         "/api/markets/{asset}",
+        "/api/markets/{asset}/history",
         "/api/coverage",
         "/api/data",
         "/api/training",
@@ -1024,6 +1208,8 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
         "/api/system",
         "/api/accounts",
         "/api/account",
+        "/api/account/summary",
+        "/api/account/equity-history",
         "/api/account/orders",
         "/api/account/fills",
     }

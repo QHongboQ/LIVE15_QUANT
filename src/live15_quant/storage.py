@@ -228,9 +228,9 @@ class TrainingDataUnavailableError(RecorderStorageError):
 
 
 def _compatible_record_version(value: object) -> bool:
-    """v6-v10 only add tables/nullable timing; immutable v5 rows remain valid."""
+    """v6-v11 only add tables/nullable projections; immutable v5 rows remain valid."""
 
-    return value in {5, 6, 7, 8, 9, SCHEMA_VERSION}
+    return value in {5, 6, 7, 8, 9, 10, SCHEMA_VERSION}
 
 
 class SecondaryAppendStatus(StrEnum):
@@ -673,6 +673,29 @@ CREATE INDEX IF NOT EXISTS idx_kalshi_ws_checkpoint_replay
 ON kalshi_ws_book_checkpoints(ticker, received_timestamp, id)
 """
 
+_KALSHI_WS_CURRENT_BOOK_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS kalshi_ws_current_books (
+    ticker TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    connection_id TEXT NOT NULL,
+    subscription_id INTEGER NOT NULL CHECK (subscription_id > 0),
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    market_id TEXT NOT NULL,
+    yes_bids TEXT NOT NULL,
+    no_bids TEXT NOT NULL,
+    source_timestamp TEXT,
+    socket_received_timestamp TEXT NOT NULL,
+    persisted_timestamp TEXT NOT NULL,
+    provenance TEXT NOT NULL,
+    data_role TEXT NOT NULL
+) STRICT
+"""
+
+_KALSHI_WS_CURRENT_BOOK_SEQUENCE_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_kalshi_ws_current_book_sequence
+ON kalshi_ws_current_books(connection_id, subscription_id, sequence)
+"""
+
 _DATA_GAP_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS data_gaps (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -803,6 +826,8 @@ ON coinbase_ticks(product, received_timestamp, id);
 {_KALSHI_WS_EVENT_TICKER_INDEX_SQL};
 {_KALSHI_WS_CHECKPOINT_TABLE_SQL};
 {_KALSHI_WS_CHECKPOINT_INDEX_SQL};
+{_KALSHI_WS_CURRENT_BOOK_TABLE_SQL};
+{_KALSHI_WS_CURRENT_BOOK_SEQUENCE_INDEX_SQL};
 {_DATA_GAP_TABLE_SQL};
 {_DATA_GAP_REPLAY_INDEX_SQL};
 {_DATA_GAP_OVERLAP_INDEX_SQL};
@@ -946,8 +971,13 @@ class RecorderStore:
             row = self._connection.execute(
                 "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
             ).fetchone()
-        if row is not None and row["value"] == "9" and SCHEMA_VERSION == 10:
+        if row is not None and row["value"] == "9":
             self._migrate_v9_to_v10()
+            row = self._connection.execute(
+                "SELECT value FROM recorder_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        if row is not None and row["value"] == "10" and SCHEMA_VERSION == 11:
+            self._migrate_v10_to_v11()
             self._ensure_schema_objects()
             return
         raise RecorderStorageError(
@@ -1235,6 +1265,21 @@ class RecorderStore:
                 )
             self._connection.execute(
                 "UPDATE recorder_metadata SET value='10' WHERE key='schema_version'"
+            )
+            self._connection.commit()
+        except Exception:
+            self._connection.rollback()
+            raise
+
+    def _migrate_v10_to_v11(self) -> None:
+        """Add the bounded current synchronized-book projection without rewriting history."""
+
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            self._connection.execute(_KALSHI_WS_CURRENT_BOOK_TABLE_SQL)
+            self._connection.execute(_KALSHI_WS_CURRENT_BOOK_SEQUENCE_INDEX_SQL)
+            self._connection.execute(
+                "UPDATE recorder_metadata SET value='11' WHERE key='schema_version'"
             )
             self._connection.commit()
         except Exception:
@@ -1953,13 +1998,27 @@ class RecorderStore:
     def write_kalshi_ws_persistence_event_batch_atomic(
         self,
         events: Sequence[KalshiWsPersistenceEvent],
+        current_books: Sequence[SynchronizedKalshiOrderBook] = (),
     ) -> tuple[int, Decimal | None]:
-        """Persist a bounded verified batch with one duplicate lookup and one transaction."""
+        """Persist raw facts and their bounded synchronized projection atomically."""
 
         if not events:
             return 0, None
         if len(events) > 1024:
             raise RecorderStorageError("Kalshi WS persistence batch exceeds bounded capacity")
+        if len(current_books) > len(events):
+            raise RecorderStorageError("Kalshi WS current-book batch exceeds event batch")
+        final_sync_by_ticker: dict[str, KalshiBookSyncStatus] = {}
+        for message in events:
+            tickers = (
+                message.market_tickers
+                if message.event_kind is KalshiWsEventKind.SUBSCRIPTION_ACK
+                else (message.ticker,)
+                if message.ticker is not None
+                else ()
+            )
+            for ticker in tickers:
+                final_sync_by_ticker[ticker] = message.sync_status_after
         prepared: dict[tuple[str, int, int], tuple[tuple[object, ...], str, int | None]] = {}
         for message in events:
             acknowledgement = (
@@ -2114,6 +2173,71 @@ class RecorderStore:
                         *key,
                     )
                     for key in inserted_keys
+                ),
+            )
+            invalidated_tickers = tuple(
+                ticker
+                for ticker, status in final_sync_by_ticker.items()
+                if status is not KalshiBookSyncStatus.SYNCHRONIZED
+            )
+            self._connection.executemany(
+                "DELETE FROM kalshi_ws_current_books WHERE ticker=?",
+                ((ticker,) for ticker in invalidated_tickers),
+            )
+            latest_books = {
+                book.ticker: book
+                for book in current_books
+                if final_sync_by_ticker.get(book.ticker) is KalshiBookSyncStatus.SYNCHRONIZED
+            }
+            self._connection.executemany(
+                """INSERT INTO kalshi_ws_current_books(
+                    ticker,schema_version,connection_id,subscription_id,sequence,market_id,
+                    yes_bids,no_bids,source_timestamp,socket_received_timestamp,
+                    persisted_timestamp,provenance,data_role
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(ticker) DO UPDATE SET
+                    schema_version=excluded.schema_version,
+                    connection_id=excluded.connection_id,
+                    subscription_id=excluded.subscription_id,
+                    sequence=excluded.sequence,
+                    market_id=excluded.market_id,
+                    yes_bids=excluded.yes_bids,
+                    no_bids=excluded.no_bids,
+                    source_timestamp=excluded.source_timestamp,
+                    socket_received_timestamp=excluded.socket_received_timestamp,
+                    persisted_timestamp=excluded.persisted_timestamp,
+                    provenance=excluded.provenance,
+                    data_role=excluded.data_role
+                WHERE excluded.connection_id != kalshi_ws_current_books.connection_id
+                   OR excluded.subscription_id != kalshi_ws_current_books.subscription_id
+                   OR excluded.sequence >= kalshi_ws_current_books.sequence""",
+                (
+                    (
+                        book.ticker,
+                        SCHEMA_VERSION,
+                        book.connection_id,
+                        book.subscription_id,
+                        book.sequence,
+                        book.market_id,
+                        json.dumps(
+                            [[str(level.price), str(level.quantity)] for level in book.yes_bids],
+                            separators=(",", ":"),
+                        ),
+                        json.dumps(
+                            [[str(level.price), str(level.quantity)] for level in book.no_bids],
+                            separators=(",", ":"),
+                        ),
+                        (
+                            _timestamp(book.source_timestamp)
+                            if book.source_timestamp is not None
+                            else None
+                        ),
+                        _timestamp(book.received_timestamp),
+                        persisted,
+                        book.provenance,
+                        DataRole.CONTRACT_MARKET_QUOTE.value,
+                    )
+                    for book in latest_books.values()
                 ),
             )
         maximum = (

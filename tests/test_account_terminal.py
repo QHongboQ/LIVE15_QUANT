@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +39,67 @@ def test_missing_production_credentials_is_explicitly_unavailable() -> None:
     assert result.status == "UNAVAILABLE"
     assert result.summary.balance_cents is None
     assert result.summary.portfolio_value_cents is None
+
+
+def test_account_tabs_are_lazy_and_equity_history_is_forward_only(tmp_path) -> None:
+    calls: list[str] = []
+    current = [datetime(2026, 1, 1, tzinfo=UTC)]
+    balance_cents = [12500]
+
+    class CountingGateway(FakeAccountGateway):
+        def balance(self, **kwargs):
+            calls.append("balance")
+            return SimpleNamespace(balance=balance_cents[0], portfolio_value=13100)
+
+        def positions(self, **kwargs):
+            calls.append("positions")
+            return super().positions(**kwargs)
+
+        def orders(self, **kwargs):
+            calls.append("orders")
+            return super().orders(**kwargs)
+
+        def fills(self, **kwargs):
+            calls.append("fills")
+            return super().fills(**kwargs)
+
+    service = ProductionAccountService(
+        SimpleNamespace(recorder_data_path=tmp_path / "raw.sqlite3"),
+        gateway=CountingGateway(),
+        clock=lambda: current[0],
+    )
+    summary = service.read_summary()
+    assert summary.status == "AVAILABLE"
+    assert calls == ["balance", "positions"]
+    history = service.equity_history()
+    assert history.status == "AVAILABLE"
+    assert len(history.points) == 1
+    assert "no synthetic or backfilled" in history.notes[0]
+    service.orders()
+    assert calls == ["balance", "positions", "orders"]
+
+    service.read_summary()
+    assert len(service.equity_history().points) == 1
+    current[0] += timedelta(seconds=59)
+    service.read_summary()
+    assert len(service.equity_history().points) == 1
+    current[0] += timedelta(seconds=1)
+    service.read_summary()
+    assert len(service.equity_history().points) == 2
+    current[0] += timedelta(seconds=1)
+    balance_cents[0] += 1
+    assert service.sample_equity() == 60.0
+    assert len(service.equity_history().points) == 3
+
+    idle = ProductionAccountService(
+        SimpleNamespace(recorder_data_path=tmp_path / "idle.sqlite3"),
+        gateway=SimpleNamespace(
+            balance=lambda: SimpleNamespace(balance=1, portfolio_value=1),
+            positions=lambda: (),
+        ),
+        clock=lambda: current[0],
+    )
+    assert idle.sample_equity() == 900.0
 
 
 def test_terminal_visual_foundation_has_packaged_react_shell() -> None:

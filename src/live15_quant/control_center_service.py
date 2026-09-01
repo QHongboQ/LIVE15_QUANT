@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 
 from live15_quant.account_service import ProductionAccountService
@@ -17,6 +18,7 @@ from live15_quant.control_center_models import (
     DataResponse,
     EventSummaryResponse,
     HealthResponse,
+    MarketHistoryResponse,
     MarketResponse,
     OperationsResponse,
     RecorderControlAction,
@@ -28,6 +30,9 @@ from live15_quant.control_center_models import (
     RuntimeComponentResponse,
     StorageResponse,
     SystemResponse,
+    TerminalChannel,
+    TerminalEvent,
+    TerminalEventType,
     TrainingResponse,
     WorkerHealthResponse,
     WsArchiveHealth,
@@ -84,6 +89,31 @@ class ControlCenterService:
 
     def account(self, profile: str = "production_primary"):
         return self.account_service.read(profile)
+
+    def account_summary(self, profile: str = "production_primary"):
+        return self.account_service.read_summary(profile)
+
+    def account_orders(self, profile: str = "production_primary"):
+        return self.account_service.orders(profile)
+
+    def account_fills(self, profile: str = "production_primary"):
+        return self.account_service.fills(profile)
+
+    def account_equity_history(self, profile: str = "production_primary"):
+        return self.account_service.equity_history(profile)
+
+    async def run_account_equity_sampler(self, stop: asyncio.Event) -> None:
+        """Collect forward-only account equity at low-idle/high-active cadence."""
+
+        delay = 60.0
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=delay)
+            except TimeoutError:
+                pass
+            if stop.is_set():
+                return
+            delay = await asyncio.to_thread(self.account_service.sample_equity)
 
     def research_data(self) -> ResearchDataResponse:
         """Return aggregate research-source metadata, never research payloads or secrets."""
@@ -276,7 +306,9 @@ class ControlCenterService:
 
     def markets(self) -> list[MarketResponse]:
         health = self.health()
-        payloads = self.store.summaries(self._clock(), health.current_markets)
+        payloads = self.store.summaries(
+            self._clock(), health.current_markets, self._synchronized_markets(health)
+        )
         return [
             MarketResponse.model_validate(self._apply_underlying_state(payload, health, asset))
             for asset, payload in zip(Asset, payloads, strict=True)
@@ -284,10 +316,115 @@ class ControlCenterService:
 
     def market(self, asset: Asset) -> MarketResponse:
         health = self.health()
-        payload = self.store.asset(asset, self._clock(), health.current_markets.get(asset.value))
+        ticker = health.current_markets.get(asset.value)
+        payload = self.store.asset(
+            asset,
+            self._clock(),
+            ticker,
+            allow_ws=self._synchronized_markets(health).get(asset.value) == ticker,
+        )
         payload = self._apply_underlying_state(payload, health, asset)
         payload["previous_events"] = self.store.previous_events(asset)
         return MarketResponse.model_validate(payload)
+
+    def market_history(self, asset: Asset) -> MarketHistoryResponse:
+        health = self.health()
+        return MarketHistoryResponse.model_validate(
+            self.store.market_history(asset, self._clock(), health.current_markets.get(asset.value))
+        )
+
+    def terminal_cursor(self, channel: TerminalChannel | str) -> tuple[object, ...]:
+        channel = TerminalChannel(channel)
+        try:
+            heartbeat_cursor: object = self.settings.recorder_health_path.stat().st_mtime_ns
+        except OSError:
+            heartbeat_cursor = None
+        if channel is TerminalChannel.OVERVIEW:
+            return (heartbeat_cursor,)
+        if channel is TerminalChannel.MARKETS:
+            return (*self.store.realtime_cursor(), heartbeat_cursor)
+        asset = Asset(channel.value.removeprefix("market:"))
+        health = self.health()
+        ticker = health.current_markets.get(asset.value)
+        return (
+            *self.store.realtime_asset_cursor(asset, ticker),
+            ticker,
+            self._synchronized_markets(health).get(asset.value),
+            health.underlying_market_states.get(asset.value),
+        )
+
+    def terminal_event(
+        self,
+        channel: TerminalChannel | str,
+        sequence: int,
+        event_type: TerminalEventType | str,
+    ) -> TerminalEvent:
+        channel = TerminalChannel(channel)
+        now = self._clock()
+        if channel is TerminalChannel.OVERVIEW:
+            health = self.health()
+            return TerminalEvent(
+                event_type=event_type,
+                channel=channel,
+                observed_at=now,
+                authoritative_at=health.observed_at,
+                sequence=sequence,
+                payload=health,
+            )
+        if channel is TerminalChannel.MARKETS:
+            markets = self.markets()
+            authoritative = self._latest_market_authority(markets)
+            return TerminalEvent(
+                event_type=event_type,
+                channel=channel,
+                observed_at=now,
+                authoritative_at=authoritative,
+                sequence=sequence,
+                payload=markets,
+            )
+        asset = Asset(channel.value.removeprefix("market:"))
+        health = self.health()
+        ticker = health.current_markets.get(asset.value)
+        payload = self.store.realtime_asset(
+            asset,
+            now,
+            ticker,
+            allow_ws=self._synchronized_markets(health).get(asset.value) == ticker,
+        )
+        payload = self._apply_underlying_state(payload, health, asset)
+        market = MarketResponse.model_validate(payload)
+        return TerminalEvent(
+            event_type=event_type,
+            channel=channel,
+            asset=asset.value,
+            ticker=market.ticker,
+            observed_at=now,
+            authoritative_at=self._latest_market_authority((market,)),
+            sequence=sequence,
+            payload=market,
+        )
+
+    @staticmethod
+    def _latest_market_authority(markets: Iterable[MarketResponse]) -> datetime | None:
+        timestamps = [
+            value
+            for market in markets
+            for value in (
+                market.projection_available_timestamp,
+                market.underlying_persisted_timestamp,
+            )
+            if value is not None
+        ]
+        return max(timestamps, default=None)
+
+    @staticmethod
+    def _synchronized_markets(health: HealthResponse) -> dict[str, str]:
+        if (
+            health.recorder_state is not RecorderState.RUNNING
+            or health.kalshi_ws_connection_state != "synchronized"
+        ):
+            return {}
+        return health.kalshi_ws_synchronized_markets
 
     @staticmethod
     def _apply_underlying_state(

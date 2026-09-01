@@ -47,7 +47,8 @@ from live15_quant.providers.kalshi_ws import (
     KalshiReadOnlyWsError,
     websocket_signature_message,
 )
-from live15_quant.storage import RecorderStorageError, RecorderStore
+from live15_quant.records import SCHEMA_VERSION
+from live15_quant.storage import KalshiWsPersistenceEvent, RecorderStorageError, RecorderStore
 
 NOW = datetime(2026, 8, 21, 12, tzinfo=UTC)
 BTC = "KXBTC15M-26AUG211215-15"
@@ -647,6 +648,57 @@ def test_schema_v7_to_v8_storage_is_append_only_and_replay_deterministic(tmp_pat
         assert store._connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_authoritative_raw_event_and_current_book_commit_atomically(tmp_path: Path) -> None:
+    message = snapshot()
+    book = KalshiAtomicOrderBookCoordinator("connection-1", (BTC,)).accept(message)
+    event = KalshiWsPersistenceEvent.from_legacy(
+        message, sync_status_after=KalshiBookSyncStatus.SYNCHRONIZED
+    )
+    with RecorderStore(tmp_path / "projection.sqlite3") as store:
+        inserted, _ = store.write_kalshi_ws_persistence_event_batch_atomic((event,), (book,))
+        row = store._connection.execute(
+            "SELECT * FROM kalshi_ws_current_books WHERE ticker=?", (BTC,)
+        ).fetchone()
+        assert inserted == 1
+        assert row is not None
+        assert row["sequence"] == message.sequence
+        assert json.loads(row["yes_bids"]) == [["0.5000", "12.00"]]
+        assert row["socket_received_timestamp"] == NOW.isoformat(timespec="microseconds")
+
+        unsynchronized = replace(
+            event,
+            sequence=event.sequence + 1,
+            sync_status_after=KalshiBookSyncStatus.UNSYNCHRONIZED,
+        )
+        store.write_kalshi_ws_persistence_event_batch_atomic((unsynchronized,))
+        assert (
+            store._connection.execute(
+                "SELECT 1 FROM kalshi_ws_current_books WHERE ticker=?", (BTC,)
+            ).fetchone()
+            is None
+        )
+
+
+def test_schema_v10_to_v11_adds_empty_current_book_projection(tmp_path: Path) -> None:
+    path = tmp_path / "migration.sqlite3"
+    with RecorderStore(path):
+        pass
+    connection = sqlite3.connect(path)
+    connection.execute("DROP TABLE kalshi_ws_current_books")
+    connection.execute("UPDATE recorder_metadata SET value='10'")
+    connection.commit()
+    connection.close()
+    with RecorderStore(path) as store:
+        version = store._connection.execute(
+            "SELECT value FROM recorder_metadata WHERE key='schema_version'"
+        ).fetchone()[0]
+        count = store._connection.execute(
+            "SELECT count(*) FROM kalshi_ws_current_books"
+        ).fetchone()[0]
+    assert version == "11"
+    assert count == 0
+
+
 def test_schema_v7_to_v8_migration_rolls_back_atomically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -656,6 +708,7 @@ def test_schema_v7_to_v8_migration_rolls_back_atomically(
     connection = sqlite3.connect(path)
     connection.execute("DROP TABLE kalshi_ws_book_checkpoints")
     connection.execute("DROP TABLE kalshi_ws_orderbook_events")
+    connection.execute("DROP TABLE kalshi_ws_current_books")
     connection.execute("UPDATE recorder_metadata SET value='7'")
     connection.commit()
     connection.close()
@@ -697,7 +750,7 @@ def test_schema_v9_to_v10_adds_nullable_enqueue_timing_without_rewriting(tmp_pat
         version = migrated._connection.execute(
             "SELECT value FROM recorder_metadata WHERE key='schema_version'"
         ).fetchone()[0]
-        assert version == "10"
+        assert version == str(SCHEMA_VERSION)
         assert record.enqueue_timestamp is None
         assert record.receive_enqueue_latency_ms is None
         assert migrated.integrity_check() == "ok"

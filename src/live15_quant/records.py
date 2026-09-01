@@ -26,7 +26,7 @@ from live15_quant.models import (
     Venue,
 )
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 @dataclass(frozen=True, slots=True)

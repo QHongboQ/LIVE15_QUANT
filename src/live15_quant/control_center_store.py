@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -85,7 +86,12 @@ class DashboardReadStore:
             return None
 
     def asset(
-        self, asset: Asset, now: datetime, current_ticker: str | None = None
+        self,
+        asset: Asset,
+        now: datetime,
+        current_ticker: str | None = None,
+        *,
+        allow_ws: bool = True,
     ) -> dict[str, Any]:
         """Return the explicit detail projection, including bounded feature computation."""
 
@@ -94,13 +100,120 @@ class DashboardReadStore:
             return self._missing_asset(asset, "raw_store_unavailable")
         try:
             return self._asset(
-                connection, asset, now, current_ticker, include_features=True, include_detail=True
+                connection,
+                asset,
+                now,
+                current_ticker,
+                include_features=True,
+                include_detail=True,
+                allow_ws=allow_ws,
+            )
+        finally:
+            connection.close()
+
+    def realtime_asset(
+        self,
+        asset: Asset,
+        now: datetime,
+        current_ticker: str | None = None,
+        *,
+        allow_ws: bool = True,
+    ) -> dict[str, Any]:
+        """Return detail data without re-running feature research on every stream update."""
+
+        connection = self._open(self.raw_path)
+        if connection is None:
+            return self._missing_asset(asset, "raw_store_unavailable")
+        try:
+            return self._asset(
+                connection,
+                asset,
+                now,
+                current_ticker,
+                include_features=False,
+                include_detail=True,
+                allow_ws=allow_ws,
+            )
+        finally:
+            connection.close()
+
+    def realtime_cursor(self) -> tuple[object, ...]:
+        """Return cheap indexed cursors for all facts consumed by terminal subscriptions."""
+
+        connection = self._open(self.raw_path)
+        if connection is None:
+            return ("unavailable",)
+        try:
+            cursors: list[object] = []
+            for table in (
+                "kalshi_ws_orderbook_events",
+                "coinbase_ticks",
+                "underlying_observations",
+                "secondary_underlying_observations",
+                "kalshi_market_lifecycle",
+            ):
+                if not self._table_exists(connection, table):
+                    cursors.append(None)
+                    continue
+                row = connection.execute(
+                    f"SELECT id FROM {table} ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                cursors.append(None if row is None else int(row["id"]))
+            return tuple(cursors)
+        finally:
+            connection.close()
+
+    def realtime_asset_cursor(self, asset: Asset, ticker: str | None) -> tuple[object, ...]:
+        """Return only cursors capable of changing one market-detail projection."""
+
+        connection = self._open(self.raw_path)
+        if connection is None:
+            return ("unavailable",)
+        try:
+            book = (
+                connection.execute(
+                    "SELECT sequence FROM kalshi_ws_current_books WHERE ticker=?",
+                    (ticker,),
+                ).fetchone()
+                if ticker and self._table_exists(connection, "kalshi_ws_current_books")
+                else None
+            )
+            product = COINBASE_PRODUCT_BY_ASSET.get(asset)
+            if product is not None:
+                underlying = connection.execute(
+                    "SELECT id FROM coinbase_ticks WHERE product=? ORDER BY id DESC LIMIT 1",
+                    (product,),
+                ).fetchone()
+            else:
+                underlying = connection.execute(
+                    """SELECT id FROM underlying_observations
+                    WHERE asset=? AND provider=? ORDER BY id DESC LIMIT 1""",
+                    (asset.value, UnderlyingProvider.PYTH_HERMES.value),
+                ).fetchone()
+            secondary = connection.execute(
+                """SELECT id FROM secondary_underlying_observations
+                WHERE asset=? ORDER BY id DESC LIMIT 1""",
+                (asset.value,),
+            ).fetchone()
+            lifecycle = connection.execute(
+                """SELECT id FROM kalshi_market_lifecycle
+                WHERE asset=? ORDER BY id DESC LIMIT 1""",
+                (asset.value,),
+            ).fetchone()
+            return (
+                None if book is None else int(book["sequence"]),
+                None if underlying is None else int(underlying["id"]),
+                None if secondary is None else int(secondary["id"]),
+                None if lifecycle is None else int(lifecycle["id"]),
             )
         finally:
             connection.close()
 
     def summaries(
-        self, now: datetime, current_markets: dict[str, str | None]
+        self,
+        now: datetime,
+        current_markets: dict[str, str | None],
+        synchronized_markets: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """Return lightweight market cards using one read-only connection per request.
 
@@ -120,6 +233,10 @@ class DashboardReadStore:
                     current_markets.get(asset.value),
                     include_features=False,
                     include_detail=False,
+                    allow_ws=(
+                        synchronized_markets is None
+                        or synchronized_markets.get(asset.value) == current_markets.get(asset.value)
+                    ),
                 )
                 for asset in Asset
             ]
@@ -135,6 +252,7 @@ class DashboardReadStore:
         *,
         include_features: bool,
         include_detail: bool,
+        allow_ws: bool,
     ) -> dict[str, Any]:
         try:
             market = self._market_row(connection, asset, now, current_ticker)
@@ -146,11 +264,13 @@ class DashboardReadStore:
                 if include_detail
                 else "yes_bid,yes_ask,no_bid,no_ask,last_trade,source_timestamp,received_timestamp"
             )
-            quote = connection.execute(
+            rest_quote = connection.execute(
                 f"""SELECT {quote_columns} FROM kalshi_prediction_quotes WHERE ticker=?
                 ORDER BY received_timestamp DESC, id DESC LIMIT 1""",
                 (ticker,),
             ).fetchone()
+            ws_book = self._current_ws_book(connection, ticker) if allow_ws else None
+            quote = ws_book if ws_book is not None else rest_quote
             product = COINBASE_PRODUCT_BY_ASSET.get(asset)
             tick = None
             if product is not None:
@@ -184,7 +304,13 @@ class DashboardReadStore:
                 ).fetchone()
             end = datetime.fromisoformat(str(market["window_end"])).astimezone(UTC)
             quote_received = (
-                datetime.fromisoformat(str(quote["received_timestamp"])).astimezone(UTC)
+                datetime.fromisoformat(
+                    str(
+                        ws_book["socket_received_timestamp"]
+                        if ws_book is not None
+                        else quote["received_timestamp"]
+                    )
+                ).astimezone(UTC)
                 if quote is not None
                 else None
             )
@@ -209,8 +335,38 @@ class DashboardReadStore:
                 if secondary_received is None
                 else max(0, (now - secondary_received).total_seconds())
             )
-            yes_bid = _decimal(quote["yes_bid"]) if quote is not None else None
-            yes_ask = _decimal(quote["yes_ask"]) if quote is not None else None
+            ws_yes = _json(ws_book["yes_bids"], []) if ws_book is not None else []
+            ws_no = _json(ws_book["no_bids"], []) if ws_book is not None else []
+            ws_yes_bid = str(ws_yes[0][0]) if ws_yes else None
+            ws_no_bid = str(ws_no[0][0]) if ws_no else None
+            yes_bid = (
+                ws_yes_bid
+                if ws_book is not None
+                else _decimal(quote["yes_bid"])
+                if quote is not None
+                else None
+            )
+            yes_ask = (
+                str(Decimal(1) - Decimal(ws_no_bid))
+                if ws_book is not None and ws_no_bid is not None
+                else _decimal(quote["yes_ask"])
+                if quote is not None
+                else None
+            )
+            no_bid = (
+                ws_no_bid
+                if ws_book is not None
+                else _decimal(quote["no_bid"])
+                if quote is not None
+                else None
+            )
+            no_ask = (
+                str(Decimal(1) - Decimal(ws_yes_bid))
+                if ws_book is not None and ws_yes_bid is not None
+                else _decimal(quote["no_ask"])
+                if quote is not None
+                else None
+            )
             spread = None
             if yes_bid is not None and yes_ask is not None:
                 spread = str(Decimal(yes_ask) - Decimal(yes_bid))
@@ -263,26 +419,79 @@ class DashboardReadStore:
                 "official_status": str(market["official_status"]),
                 "yes_bid": yes_bid,
                 "yes_ask": yes_ask,
-                "no_bid": _decimal(quote["no_bid"]) if quote is not None else None,
-                "no_ask": _decimal(quote["no_ask"]) if quote is not None else None,
-                "last_trade": _decimal(quote["last_trade"]) if quote is not None else None,
+                "no_bid": no_bid,
+                "no_ask": no_ask,
+                "last_trade": (
+                    _decimal(rest_quote["last_trade"]) if rest_quote is not None else None
+                ),
                 "spread": spread,
                 "quote_age_seconds": quote_age,
                 "quote_status": self._age_status(quote_age, 15),
+                "quote_source": (
+                    "kalshi_ws_synchronized"
+                    if ws_book is not None
+                    else "kalshi_rest_recovery"
+                    if rest_quote is not None
+                    else "unavailable"
+                ),
+                "book_verification_state": (
+                    "synchronized" if ws_book is not None else "rest_fallback"
+                ),
+                "book_sequence": int(ws_book["sequence"]) if ws_book is not None else None,
+                "book_connection_id": (
+                    str(ws_book["connection_id"]) if ws_book is not None else None
+                ),
                 "quote_source_timestamp": (
                     _decimal(quote["source_timestamp"]) if quote is not None else None
                 ),
                 "quote_received_timestamp": (
-                    str(quote["received_timestamp"]) if quote is not None else None
+                    str(
+                        ws_book["socket_received_timestamp"]
+                        if ws_book is not None
+                        else quote["received_timestamp"]
+                    )
+                    if quote is not None
+                    else None
                 ),
-                "orderbook_status": "available" if quote is not None else "missing",
+                "socket_event_age_seconds": quote_age if ws_book is not None else None,
+                "last_market_change_age_seconds": quote_age if ws_book is not None else None,
+                "source_transport_latency_ms": (
+                    str(
+                        max(
+                            0,
+                            (
+                                datetime.fromisoformat(str(ws_book["persisted_timestamp"]))
+                                - datetime.fromisoformat(str(ws_book["socket_received_timestamp"]))
+                            ).total_seconds()
+                            * 1000,
+                        )
+                    )
+                    if ws_book is not None
+                    else None
+                ),
+                "projection_available_timestamp": (
+                    str(ws_book["persisted_timestamp"]) if ws_book is not None else None
+                ),
+                "orderbook_status": (
+                    "synchronized"
+                    if ws_book is not None
+                    else "rest_fallback"
+                    if rest_quote is not None
+                    else "missing"
+                ),
                 "yes_bid_depth": (
-                    _json(quote["yes_bid_depth"], [])
+                    ws_yes
+                    if ws_book is not None and include_detail
+                    else _json(quote["yes_bid_depth"], [])
                     if quote is not None and include_detail
                     else []
                 ),
                 "no_bid_depth": (
-                    _json(quote["no_bid_depth"], []) if quote is not None and include_detail else []
+                    ws_no
+                    if ws_book is not None and include_detail
+                    else _json(quote["no_bid_depth"], [])
+                    if quote is not None and include_detail
+                    else []
                 ),
                 "underlying_provider": (
                     UnderlyingProvider.COINBASE.value
@@ -293,6 +502,14 @@ class DashboardReadStore:
                 "underlying_price": primary_price,
                 "underlying_age_seconds": tick_age,
                 "underlying_status": underlying_status,
+                "underlying_received_timestamp": (
+                    str(tick["received_timestamp"]) if tick is not None else None
+                ),
+                "underlying_persisted_timestamp": (
+                    str(tick["persisted_timestamp"])
+                    if tick is not None and "persisted_timestamp" in tick.keys()
+                    else None
+                ),
                 "primary_provider": (
                     UnderlyingProvider.COINBASE.value
                     if product is not None
@@ -349,6 +566,22 @@ class DashboardReadStore:
             return self._missing_asset(asset, "store_error")
 
     @staticmethod
+    def _current_ws_book(connection: sqlite3.Connection, ticker: str) -> sqlite3.Row | None:
+        if not DashboardReadStore._table_exists(connection, "kalshi_ws_current_books"):
+            return None
+        current_session = connection.execute(
+            """SELECT connection_id,subscription_id FROM kalshi_ws_current_books
+            ORDER BY persisted_timestamp DESC LIMIT 1"""
+        ).fetchone()
+        if current_session is None:
+            return None
+        return connection.execute(
+            """SELECT * FROM kalshi_ws_current_books
+            WHERE ticker=? AND connection_id=? AND subscription_id=? LIMIT 1""",
+            (ticker, current_session["connection_id"], current_session["subscription_id"]),
+        ).fetchone()
+
+    @staticmethod
     def _market_row(
         connection: sqlite3.Connection,
         asset: Asset,
@@ -392,6 +625,8 @@ class DashboardReadStore:
             "lifecycle": "unavailable",
             "availability": reason,
             "quote_status": "missing",
+            "quote_source": "unavailable",
+            "book_verification_state": "unavailable",
             "orderbook_status": "missing",
             "underlying_provider": (
                 UnderlyingProvider.COINBASE.value
@@ -514,6 +749,199 @@ class DashboardReadStore:
             return []
         finally:
             connection.close()
+
+    def market_history(
+        self, asset: Asset, now: datetime, current_ticker: str | None
+    ) -> dict[str, Any]:
+        """Return one current-contract, bounded history from existing Recorder truth."""
+
+        connection = self._open(self.raw_path)
+        if connection is None:
+            raise RecorderStorageError("raw store is unavailable")
+        try:
+            market = self._market_row(connection, asset, now, current_ticker)
+            if market is None:
+                raise RecorderStorageError("current market is unavailable")
+            ticker = str(market["ticker"])
+            start = datetime.fromisoformat(str(market["window_start"])).astimezone(UTC)
+            end = datetime.fromisoformat(str(market["window_end"])).astimezone(UTC)
+            effective_end = min(now, end)
+            underlying, source = self._underlying_history(connection, asset, start, effective_end)
+            probability, complete = self._probability_history(
+                connection, ticker, start, effective_end
+            )
+            notes: list[str] = []
+            if not complete:
+                notes.append("probability history exceeded the bounded 100000-event replay")
+            if not probability:
+                notes.append("no synchronized WebSocket baseline exists in this contract window")
+            return {
+                "asset": asset.value,
+                "ticker": ticker,
+                "window_start": start,
+                "window_end": end,
+                "generated_at": now,
+                "underlying_source": source,
+                "underlying": underlying,
+                "probability": probability,
+                "probability_complete": complete,
+                "notes": notes,
+            }
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _underlying_history(
+        connection: sqlite3.Connection,
+        asset: Asset,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[dict[str, str]], str]:
+        product = COINBASE_PRODUCT_BY_ASSET.get(asset)
+        if product is not None:
+            table = "coinbase_ticks"
+            predicate = "product=?"
+            parameters: tuple[object, ...] = (product, _timestamp(start), _timestamp(end))
+            source = UnderlyingProvider.COINBASE.value
+        else:
+            table = "underlying_observations"
+            predicate = "asset=? AND provider=?"
+            parameters = (
+                asset.value,
+                UnderlyingProvider.PYTH_HERMES.value,
+                _timestamp(start),
+                _timestamp(end),
+            )
+            source = UnderlyingProvider.PYTH_HERMES.value
+        rows = connection.execute(
+            f"""SELECT CAST(strftime('%s',received_timestamp) AS INTEGER) AS bucket,
+                min(CAST(price AS REAL)) AS minimum_price,
+                max(CAST(price AS REAL)) AS maximum_price
+            FROM {table} WHERE {predicate}
+              AND received_timestamp>=? AND received_timestamp<=?
+            GROUP BY bucket ORDER BY bucket ASC LIMIT 1800""",
+            parameters,
+        )
+        return (
+            [
+                {
+                    "observed_at": datetime.fromtimestamp(int(row["bucket"]), UTC).isoformat(),
+                    "source": source,
+                    "minimum_price": str(row["minimum_price"]),
+                    "maximum_price": str(row["maximum_price"]),
+                }
+                for row in rows
+                if row["bucket"] is not None
+            ],
+            source,
+        )
+
+    @staticmethod
+    def _probability_history(
+        connection: sqlite3.Connection,
+        ticker: str,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[dict[str, object]], bool]:
+        rows = tuple(
+            connection.execute(
+                """SELECT sequence,event_kind,side,price,quantity_delta,yes_bids,no_bids,
+                    socket_received_timestamp,sync_status_after
+                FROM kalshi_ws_orderbook_events
+                WHERE ticker=? AND socket_received_timestamp>=? AND socket_received_timestamp<=?
+                ORDER BY socket_received_timestamp ASC,id ASC LIMIT 100001""",
+                (ticker, _timestamp(start), _timestamp(end)),
+            )
+        )
+        complete = len(rows) <= 100000
+        yes: dict[Decimal, Decimal] = {}
+        no: dict[Decimal, Decimal] = {}
+        has_baseline = False
+        points: list[dict[str, object]] = []
+        previous: tuple[str | None, ...] | None = None
+        for row in rows[:100000]:
+            if str(row["sync_status_after"]) != "synchronized":
+                yes.clear()
+                no.clear()
+                has_baseline = False
+                previous = None
+                continue
+            kind = str(row["event_kind"])
+            if kind == "orderbook_snapshot":
+                yes = {
+                    Decimal(str(item[0])): Decimal(str(item[1]))
+                    for item in _json(row["yes_bids"], [])
+                }
+                no = {
+                    Decimal(str(item[0])): Decimal(str(item[1]))
+                    for item in _json(row["no_bids"], [])
+                }
+                has_baseline = True
+            elif kind == "orderbook_delta" and row["side"] in {"yes", "no"}:
+                if not has_baseline:
+                    continue
+                levels = yes if row["side"] == "yes" else no
+                price = Decimal(str(row["price"]))
+                quantity = levels.get(price, Decimal(0)) + Decimal(str(row["quantity_delta"]))
+                if quantity <= 0:
+                    levels.pop(price, None)
+                else:
+                    levels[price] = quantity
+            else:
+                continue
+            yes_bid = str(max(yes)) if yes else None
+            no_bid = str(max(no)) if no else None
+            state = (
+                yes_bid,
+                str(Decimal(1) - Decimal(no_bid)) if no_bid is not None else None,
+                no_bid,
+                str(Decimal(1) - Decimal(yes_bid)) if yes_bid is not None else None,
+            )
+            if state == previous:
+                continue
+            previous = state
+            points.append(
+                {
+                    "observed_at": str(row["socket_received_timestamp"]),
+                    "sequence": int(row["sequence"]),
+                    "yes_bid": state[0],
+                    "yes_ask": state[1],
+                    "no_bid": state[2],
+                    "no_ask": state[3],
+                }
+            )
+        points = DashboardReadStore._downsample_probability(points)
+        return points, complete
+
+    @staticmethod
+    def _downsample_probability(
+        points: list[dict[str, object]], maximum: int = 2000
+    ) -> list[dict[str, object]]:
+        """Bound output while retaining every bucket's extrema for all four quote series."""
+
+        if len(points) <= maximum:
+            return points
+        fields = ("yes_bid", "yes_ask", "no_bid", "no_ask")
+        interior = points[1:-1]
+        # Each bucket can contribute at most min+max for each of four fields.
+        bucket_count = max(1, (maximum - 2) // (len(fields) * 2))
+        width = max(1, math.ceil(len(interior) / bucket_count))
+        selected: list[dict[str, object]] = [points[0]]
+        for offset in range(0, len(interior), width):
+            bucket = interior[offset : offset + width]
+            indices: set[int] = set()
+            for field in fields:
+                available = [
+                    (index, Decimal(str(point[field])))
+                    for index, point in enumerate(bucket)
+                    if point.get(field) is not None
+                ]
+                if available:
+                    indices.add(min(available, key=lambda item: item[1])[0])
+                    indices.add(max(available, key=lambda item: item[1])[0])
+            selected.extend(bucket[index] for index in sorted(indices))
+        selected.append(points[-1])
+        return selected[:maximum]
 
     def coverage(self) -> dict[str, Any]:
         finalized = self._finalized_counts()
