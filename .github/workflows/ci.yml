@@ -57,6 +57,11 @@ jobs:
           python-version: '3.13'
           cache: pip
           cache-dependency-path: requirements.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install pinned static tooling
         run: |
           python -m pip install pip==26.2.1
@@ -65,6 +70,29 @@ jobs:
         run: ruff check .
       - name: Format check
         run: ruff format --check .
+      - name: Build deterministic release frontend
+        shell: pwsh
+        run: |
+          corepack enable
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend run typecheck
+          pnpm --dir frontend run lint
+          pnpm --dir frontend run build:release
+          git diff --exit-code -- src/live15_quant/terminal
+      - name: Verify wheel owns terminal bundle
+        shell: pwsh
+        run: |
+          python -m pip install setuptools==82.0.0
+          python -m pip wheel --no-deps --no-build-isolation --wheel-dir runtime/wheels .
+          $wheel = Get-ChildItem runtime/wheels/*.whl | Select-Object -First 1
+          @'
+          import sys
+          from zipfile import ZipFile
+          with ZipFile(sys.argv[1]) as wheel:
+              names = wheel.namelist()
+          assert any(name.startswith("live15_quant/terminal/assets/") and name.endswith(".js") for name in names)
+          assert "live15_quant/terminal/index.html" in names
+          '@ | python - $wheel.FullName
       - name: Diff integrity
         run: git diff --check HEAD^ HEAD
 

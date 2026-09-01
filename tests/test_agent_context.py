@@ -390,6 +390,8 @@ def test_single_authority_consolidation_contracts() -> None:
 
     claims = []
     for path in ROOT.rglob("*.md"):
+        if "node_modules" in path.parts:
+            continue
         if "The sole current execution-sequence authority" in path.read_text(encoding="utf-8"):
             claims.append(path.relative_to(ROOT).as_posix())
     assert claims == ["docs/project-brain/plan/current-roadmap.md"]
@@ -415,6 +417,8 @@ def test_single_authority_consolidation_contracts() -> None:
     historical_phase_claim = re.compile(r"(?i)\((?:active|planned after[^)]*)\)")
     scanned = []
     for markdown_path in ROOT.rglob("*.md"):
+        if "node_modules" in markdown_path.parts:
+            continue
         path = markdown_path.relative_to(ROOT).as_posix()
         if path.startswith(historical_prefixes) or path.startswith(historical_names):
             continue

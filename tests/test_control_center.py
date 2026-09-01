@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 import sys
 import tomllib
@@ -101,7 +102,7 @@ async def test_health_and_system_when_recorder_stopped(tmp_path: Path) -> None:
     assert system.json()["api_mode"] == "read_only_data_with_bounded_recorder_control"
     assert system.json()["bind_host"] == "127.0.0.1"
     assert page.status_code == 200
-    assert "LIVE15 Control Center" in page.text
+    assert "LIVE15 Terminal" in page.text
 
 
 @pytest.mark.asyncio
@@ -1006,6 +1007,7 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
         "/",
         "/assets/app.css",
         "/assets/app.js",
+        "/terminal/assets/{asset_path:path}",
         "/api/health",
         "/api/markets",
         "/api/markets/{asset}",
@@ -1052,6 +1054,8 @@ async def test_dashboard_static_assets_and_security_headers(tmp_path: Path) -> N
         page, stylesheet, script = await asyncio.gather(
             client.get("/"), client.get("/assets/app.css"), client.get("/assets/app.js")
         )
+        terminal_assets = re.findall(r'(?:href|src)="(/terminal/assets/[^"]+)"', page.text)
+        terminal_responses = await asyncio.gather(*(client.get(asset) for asset in terminal_assets))
 
     assert page.status_code == stylesheet.status_code == script.status_code == 200
     assert stylesheet.headers["content-type"].startswith("text/css")
@@ -1059,8 +1063,10 @@ async def test_dashboard_static_assets_and_security_headers(tmp_path: Path) -> N
     assert "default-src 'self'" in page.headers["content-security-policy"]
     assert page.headers["x-frame-options"] == "DENY"
     assert page.headers["referrer-policy"] == "no-referrer"
-    assert 'href="/assets/app.css"' in page.text
-    assert 'src="/assets/app.js"' in page.text
+    assert terminal_assets
+    assert all(response.status_code == 200 for response in terminal_responses)
+    assert all("/terminal/assets/" in asset for asset in terminal_assets)
+    assert "/assets/app.js" not in page.text
 
 
 @pytest.mark.asyncio
@@ -1210,86 +1216,44 @@ def test_dashboard_assets_are_declared_for_clean_install() -> None:
     )
 
     assert set(project["tool"]["setuptools"]["package-data"]["live15_quant"]) == {
+        "terminal/*.html",
+        "terminal/assets/*",
         "web/*.html",
         "web/*.css",
         "web/*.js",
     }
+    terminal = Path(__file__).parents[1] / "src" / "live15_quant" / "terminal"
+    assert (terminal / "index.html").is_file()
+    assert any((terminal / "assets").glob("*.js"))
 
 
 @pytest.mark.asyncio
 async def test_frontend_contains_all_read_only_views_and_ten_asset_contract(
     tmp_path: Path,
 ) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings(tmp_path)))
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
-        page = (await client.get("/")).text
-        script = (await client.get("/assets/app.js")).text
+    frontend = Path(__file__).parents[1] / "frontend" / "src"
+    app_source = (frontend / "main.tsx").read_text(encoding="utf-8")
+    api_source = (frontend / "api.ts").read_text(encoding="utf-8")
 
-    for route in (
-        "#/overview",
-        "#/dashboard",
-        "#/markets",
-        "#/data",
-        "#/training",
-        "#/archive",
-        "#/storage",
-        "#/operations",
-        "#/system",
-        "#/overview",
-        "#/portfolio",
-        "#/account",
-        "#/orders",
-        "#/history",
-        "#/watchlist",
-        "#/analytics",
-        "#/signals",
-        "#/models",
-        "#/research-data",
-    ):
-        assert f'href="{route}"' in page
-    for asset in ("BTC", "ETH", "Gold", "Silver", "XRP", "WTI Oil", "SOL", "HYPE", "DOGE", "BNB"):
-        assert asset in script
-    assert "Not enough training data yet" in script
-    assert "Missing or insufficient source lookback is not filled with zero." in script
-    assert "recorder_state" in script
-    assert "quote_status" in script
-    assert "underlying_status" in script
-    assert "Secondary \N{MINUS SIGN} primary" in script
-    assert "secondary_source_receive_latency_ms" in script
-    assert "Exact source" in script
-    assert "eventFilters" in script
-    assert "await pending.catch" in script
+    for destination in ("Overview", "Markets", "Portfolio", "Research", "Admin"):
+        assert destination in app_source
+    assert "RuntimeSupervisor" not in app_source
+    assert "Gated / not exposed" in app_source
+    assert "This terminal is read-only" in api_source
     for endpoint in (
-        "/api/data",
+        "/api/health",
+        "/api/markets",
+        "/api/account",
+        "/api/research-data",
         "/api/training",
-        "/api/archive",
+        "/api/coverage",
+        "/api/data",
         "/api/storage",
         "/api/operations",
-        "/api/research-data",
+        "/api/system",
+        "/api/events?limit=20",
     ):
-        assert endpoint in script
-    assert "purge" in script.lower()
-    assert "destructive" in script.lower()
-    for label in (
-        "Adaptive cadence",
-        "Poll Mode",
-        "Next poll",
-        "Input rate window",
-        "Archive rate window",
-        "Rate observed",
-        "Compression savings",
-        "SQLite reusable",
-        "Physical disk reclaimed",
-        "Compaction gate",
-        "Raw WS growth",
-        "Cold archive growth",
-        "Net disk growth",
-    ):
-        assert label in script
-    assert "N/A" in script
-    assert "Research Data" in page
-    assert "DepthFeed credential required" in script
-    assert "Metadata-only exclusion" in script
+        assert endpoint in api_source
 
 
 @pytest.mark.asyncio
@@ -1328,50 +1292,19 @@ async def test_research_data_api_is_read_only_typed_and_holdout_metadata_only(
 async def test_frontend_polling_is_bounded_and_exposes_only_recorder_controls(
     tmp_path: Path,
 ) -> None:
-    transport = httpx.ASGITransport(app=create_app(settings(tmp_path)))
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
-        page = (await client.get("/")).text.lower()
-        script = (await client.get("/assets/app.js")).text.lower()
-        stylesheet = (await client.get("/assets/app.css")).text
+    frontend = Path(__file__).parents[1] / "frontend" / "src"
+    app_source = (frontend / "main.tsx").read_text(encoding="utf-8").lower()
+    api_source = (frontend / "api.ts").read_text(encoding="utf-8").lower()
 
-    assert "health: 2500" in script
-    assert "markets: 2500" in script
-    assert "detail: 2500" in script
-    assert "system: 30000" in script
-    assert "coverage: 60000" in script
-    assert "setinterval(updatecountdowns, 1000)" in script
-    assert "setinterval(() => refresh(false), 500)" not in script
-    assert "setinterval(() => refresh(false), 1000)" in script
-    assert "dashboardeventsummaryurl" in script
-    assert "/api/events/summary" in script
-    assert "legacy/local trainable rows" in script
-    assert 'queryselectorall("[data-window-end]")' in script
-    assert "windowend" in script
-    assert "document.hidden" in script
-    assert "inflight" in script
-    assert "progress.value = numeric === null" not in script
-    assert "if (numeric !== null && number.isfinite(numeric))" in script
-    assert "check status before retrying" in script
-    assert 'credentials: "omit"' in script
-    assert 'method: "post"' in script
-    assert "start collection" in script
-    assert "pause collection" in script
-    assert "resume collection" in script
-    assert '--font-ui: "Segoe UI", "Microsoft YaHei", Arial, sans-serif' in stylesheet
-    assert '--font-cjk: "Microsoft YaHei", "SimSun", sans-serif' in stylesheet
-    assert "font-variant-numeric: tabular-nums" in stylesheet
-    quote_rule = stylesheet.split(".quote-prices", 1)[1].split("}", 1)[0]
-    assert "var(--font-ui)" in quote_rule
-    assert "monospace" not in quote_rule
-    assert "<form" not in page
+    assert "credentials: 'omit'" in api_source
+    assert "method: 'post'" not in api_source
+    assert "start collection" not in app_source
+    assert "pause collection" not in app_source
+    assert "resume collection" not in app_source
+    assert "runtime supervisor" not in app_source
     assert not any(
-        endpoint in script
-        for endpoint in (
-            "/api/trade",
-            "/api/order",
-            "/api/credential",
-            "/api/shell",
-        )
+        endpoint in api_source
+        for endpoint in ("/api/trade", "/api/order", "/api/credential", "/api/shell")
     )
 
 

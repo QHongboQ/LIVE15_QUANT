@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from importlib.resources import files
+from pathlib import PurePosixPath
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -55,9 +56,19 @@ def create_app(
         TrustedHostMiddleware,
         allowed_hosts=["127.0.0.1", "localhost", "testserver"],
     )
-    page = files("live15_quant").joinpath("web", "index.html")
+    terminal_page = files("live15_quant").joinpath("terminal", "index.html")
+    terminal_assets = files("live15_quant").joinpath("terminal", "assets")
+    legacy_page = files("live15_quant").joinpath("web", "index.html")
     stylesheet = files("live15_quant").joinpath("web", "app.css")
     script = files("live15_quant").joinpath("web", "app.js")
+
+    def terminal_asset(path: str):
+        """Return a release-bundled terminal asset without traversal capability."""
+        normalized = PurePosixPath(path)
+        if normalized.is_absolute() or ".." in normalized.parts:
+            return None
+        candidate = terminal_assets.joinpath(*normalized.parts)
+        return candidate if candidate.is_file() else None
 
     @app.middleware("http")
     async def security_headers(
@@ -76,7 +87,9 @@ def create_app(
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        return FileResponse(str(page))
+        # The immutable package bundle is the active localhost shell. The legacy
+        # files remain physical rollback material only until cutover is accepted.
+        return FileResponse(str(terminal_page if terminal_page.is_file() else legacy_page))
 
     @app.get("/assets/app.css", include_in_schema=False)
     def app_css() -> FileResponse:
@@ -85,6 +98,13 @@ def create_app(
     @app.get("/assets/app.js", include_in_schema=False)
     def app_js() -> FileResponse:
         return FileResponse(str(script), media_type="text/javascript")
+
+    @app.get("/terminal/assets/{asset_path:path}", include_in_schema=False)
+    def terminal_static_asset(asset_path: str) -> FileResponse:
+        asset = terminal_asset(asset_path)
+        if asset is None:
+            raise HTTPException(status_code=404, detail="terminal asset not found")
+        return FileResponse(str(asset))
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
