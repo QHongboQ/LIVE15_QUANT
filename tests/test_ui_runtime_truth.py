@@ -20,14 +20,11 @@ def test_ui_data_contract_is_machine_readable_and_live_only() -> None:
 
 def test_ui_renders_intentional_auxiliary_states_neutrally() -> None:
     root = Path(__file__).parents[1]
-    app = (root / "src" / "live15_quant" / "web" / "app.js").read_text(encoding="utf-8")
-    stylesheet = (root / "src" / "live15_quant" / "web" / "app.css").read_text(encoding="utf-8")
+    app = (root / "frontend" / "src" / "main.tsx").read_text(encoding="utf-8")
 
-    assert 'replaceAll("_", " ").toUpperCase()' in app
-    assert ".state-on_demand, .state-paused_by_design" in stylesheet
-    assert "function runtimeComponentMetric(name, component)" in app
-    assert "badge(component.status, stateLabel(component.status))" in app
-    assert "runtimeGrid.append(runtimeComponentMetric(name, component))" in app
+    assert "text.replaceAll('_', ' ')" in app
+    assert "Data is unavailable" in app
+    assert "Gated / not exposed" in app
 
 
 def test_truth_probe_fails_closed_on_unreachable_api(monkeypatch) -> None:

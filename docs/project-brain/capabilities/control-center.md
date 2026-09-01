@@ -1,6 +1,6 @@
 # ControlCenter
 
-Revision: R2
+Revision: R3
 Status: Nomad-owned, verified.
 
 ## What it is
@@ -12,6 +12,10 @@ The read-oriented ControlCenter exposes truthful status and health projections.
 `CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED`. Nomad owns ControlCenter; the stopped WinSW definition is
 rollback only. That cutover did not itself authorize Recorder migration; Recorder lifecycle was
 later migrated and is now resolved through the separate runtime-ownership authority.
+
+The packaged React terminal is the sole ControlCenter web owner. The handwritten legacy Web shell
+is retired and is not a source-level fallback. A rollback after deployed cutover uses the prior
+immutable application release.
 
 ## Interfaces / dependencies
 
@@ -31,3 +35,4 @@ Update only after an approved ControlCenter ownership, retirement, or health-con
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 authority baseline. |
 | R2 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Removed the stale implication that Recorder remained outside Nomad ownership. |
+| R3 | WEB-CUTOVER-CLEANUP-AND-RETIRED-SURFACE-001 | Retired the legacy handwritten Web shell and recorded immutable-release rollback. |

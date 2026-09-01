@@ -90,6 +90,7 @@ jobs:
               names = wheel.namelist()
           assert any(name.startswith("live15_quant/terminal/assets/") and name.endswith(".js") for name in names)
           assert "live15_quant/terminal/index.html" in names
+          assert not any(name.startswith("live15_quant/web/") for name in names)
           '@ | python - $wheel.FullName
       - name: Diff integrity
         run: git diff --check HEAD^ HEAD

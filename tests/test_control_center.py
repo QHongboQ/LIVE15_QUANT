@@ -1005,8 +1005,6 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
     assert all(method in {"GET", "HEAD", "POST"} for method, _path in routes)
     assert {path for _method, path in routes} == {
         "/",
-        "/assets/app.css",
-        "/assets/app.js",
         "/terminal/assets/{asset_path:path}",
         "/api/health",
         "/api/markets",
@@ -1048,24 +1046,24 @@ def test_routes_are_read_only_and_have_no_sensitive_capabilities(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_dashboard_static_assets_and_security_headers(tmp_path: Path) -> None:
+async def test_terminal_static_assets_and_security_headers(tmp_path: Path) -> None:
     transport = httpx.ASGITransport(app=create_app(settings(tmp_path)))
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
-        page, stylesheet, script = await asyncio.gather(
+        page, legacy_stylesheet, legacy_script = await asyncio.gather(
             client.get("/"), client.get("/assets/app.css"), client.get("/assets/app.js")
         )
         terminal_assets = re.findall(r'(?:href|src)="(/terminal/assets/[^"]+)"', page.text)
         terminal_responses = await asyncio.gather(*(client.get(asset) for asset in terminal_assets))
 
-    assert page.status_code == stylesheet.status_code == script.status_code == 200
-    assert stylesheet.headers["content-type"].startswith("text/css")
-    assert script.headers["content-type"].startswith("text/javascript")
+    assert page.status_code == 200
+    assert legacy_stylesheet.status_code == legacy_script.status_code == 404
     assert "default-src 'self'" in page.headers["content-security-policy"]
     assert page.headers["x-frame-options"] == "DENY"
     assert page.headers["referrer-policy"] == "no-referrer"
     assert terminal_assets
     assert all(response.status_code == 200 for response in terminal_responses)
     assert all("/terminal/assets/" in asset for asset in terminal_assets)
+    assert "/assets/app.css" not in page.text
     assert "/assets/app.js" not in page.text
 
 
@@ -1210,7 +1208,7 @@ def test_data_projection_does_not_compute_the_full_training_response(
     assert data.finalized_assets == 2
 
 
-def test_dashboard_assets_are_declared_for_clean_install() -> None:
+def test_terminal_assets_are_declared_for_clean_install() -> None:
     project = tomllib.loads(
         (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     )
@@ -1218,13 +1216,19 @@ def test_dashboard_assets_are_declared_for_clean_install() -> None:
     assert set(project["tool"]["setuptools"]["package-data"]["live15_quant"]) == {
         "terminal/*.html",
         "terminal/assets/*",
-        "web/*.html",
-        "web/*.css",
-        "web/*.js",
     }
     terminal = Path(__file__).parents[1] / "src" / "live15_quant" / "terminal"
     assert (terminal / "index.html").is_file()
     assert any((terminal / "assets").glob("*.js"))
+
+
+def test_control_center_fails_clearly_without_packaged_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("live15_quant.control_center.files", lambda _package: tmp_path)
+
+    with pytest.raises(RuntimeError, match="packaged React terminal bundle is missing"):
+        create_app(settings(tmp_path))
 
 
 @pytest.mark.asyncio

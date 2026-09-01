@@ -14,6 +14,8 @@ SHADOW_ROOT = REPOSITORY_ROOT / "deploy" / "nomad" / "control-center-shadow"
 ARTIFACT = SHADOW_ROOT / "live15-control-center-shadow.ps1"
 JOBSPEC = SHADOW_ROOT / "live15-control-center-shadow.nomad.hcl"
 STAGER = REPOSITORY_ROOT / "tools" / "stage_nomad_control_center_shadow.ps1"
+WINDOWS_CI_TIMEOUT_SECONDS = 30
+POWER_SHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 
 class NomadControlCenterShadowTest(unittest.TestCase):
@@ -43,7 +45,7 @@ class NomadControlCenterShadowTest(unittest.TestCase):
             port = self._available_port()
             process = subprocess.Popen(
                 [
-                    r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                    POWER_SHELL,
                     "-NoLogo",
                     "-NoProfile",
                     "-ExecutionPolicy",
@@ -57,17 +59,17 @@ class NomadControlCenterShadowTest(unittest.TestCase):
                     "-EvidenceLog",
                     str(evidence_log),
                 ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
             try:
-                health = self._request_until_ready(port, "/_nomad/healthz")
+                health = self._request_until_ready(process, port, "/_nomad/healthz")
                 projection = self._request(port, "/api/health")
                 markets = self._request(port, "/api/markets")
                 mutation = self._request(port, "/api/recorder/pause", method="POST")
             finally:
-                process.terminate()
-                process.wait(timeout=10)
+                self._stop_process(process)
 
         self.assertEqual(health[0], 200)
         self.assertEqual(json.loads(health[1])["production"], False)
@@ -79,9 +81,8 @@ class NomadControlCenterShadowTest(unittest.TestCase):
 
     def test_artifact_refuses_a_mismatched_hash_before_binding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            result = subprocess.run(
+            result = self._run_powershell(
                 [
-                    r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
                     "-NoLogo",
                     "-NoProfile",
                     "-ExecutionPolicy",
@@ -94,19 +95,14 @@ class NomadControlCenterShadowTest(unittest.TestCase):
                     "0" * 64,
                     "-EvidenceLog",
                     str(Path(directory) / "artifact.log"),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-                check=False,
+                ]
             )
 
-        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
 
     def test_stager_rejects_a_source_other_than_its_own_checkout(self) -> None:
-        result = subprocess.run(
+        result = self._run_powershell(
             [
-                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
                 "-NoLogo",
                 "-NoProfile",
                 "-ExecutionPolicy",
@@ -115,11 +111,7 @@ class NomadControlCenterShadowTest(unittest.TestCase):
                 str(STAGER),
                 "-ProjectRoot",
                 r"D:\LIVE15_NOMAD_POC\generic-poc",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
+            ]
         )
 
         self.assertNotEqual(result.returncode, 0)
@@ -149,16 +141,55 @@ class NomadControlCenterShadowTest(unittest.TestCase):
             probe.bind(("127.0.0.1", 0))
             return int(probe.getsockname()[1])
 
-    def _request_until_ready(self, port: int, path: str) -> tuple[int, str]:
-        deadline = time.monotonic() + 10
+    def _request_until_ready(
+        self, process: subprocess.Popen[str], port: int, path: str
+    ) -> tuple[int, str]:
+        deadline = time.monotonic() + WINDOWS_CI_TIMEOUT_SECONDS
         last_error: OSError | None = None
         while time.monotonic() < deadline:
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                self.fail(
+                    "shadow artifact exited before binding "
+                    f"(returncode={process.returncode}, stdout={stdout.strip()!r}, "
+                    f"stderr={stderr.strip()!r})"
+                )
             try:
                 return self._request(port, path)
             except OSError as error:
                 last_error = error
                 time.sleep(0.1)
-        self.fail(f"shadow artifact did not bind within 10 seconds: {last_error}")
+        state = "still running" if process.poll() is None else f"exit={process.returncode}"
+        self.fail(
+            "shadow artifact did not bind within "
+            f"{WINDOWS_CI_TIMEOUT_SECONDS} seconds (process {state}): {last_error}"
+        )
+
+    def _run_powershell(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+        command = [POWER_SHELL, *arguments]
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=WINDOWS_CI_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            _stdout, stderr = process.communicate()
+            self.fail(
+                "PowerShell child exceeded the bounded "
+                f"{WINDOWS_CI_TIMEOUT_SECONDS}-second CI timeout; stderr={stderr!r}"
+            )
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+    @staticmethod
+    def _stop_process(process: subprocess.Popen[str]) -> None:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.communicate(timeout=WINDOWS_CI_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
 
     @staticmethod
     def _request(port: int, path: str, *, method: str = "GET") -> tuple[int, str]:

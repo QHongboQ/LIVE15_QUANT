@@ -58,9 +58,10 @@ def create_app(
     )
     terminal_page = files("live15_quant").joinpath("terminal", "index.html")
     terminal_assets = files("live15_quant").joinpath("terminal", "assets")
-    legacy_page = files("live15_quant").joinpath("web", "index.html")
-    stylesheet = files("live15_quant").joinpath("web", "app.css")
-    script = files("live15_quant").joinpath("web", "app.js")
+    if not terminal_page.is_file():
+        raise RuntimeError(
+            "packaged React terminal bundle is missing: live15_quant/terminal/index.html"
+        )
 
     def terminal_asset(path: str):
         """Return a release-bundled terminal asset without traversal capability."""
@@ -87,17 +88,7 @@ def create_app(
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        # The immutable package bundle is the active localhost shell. The legacy
-        # files remain physical rollback material only until cutover is accepted.
-        return FileResponse(str(terminal_page if terminal_page.is_file() else legacy_page))
-
-    @app.get("/assets/app.css", include_in_schema=False)
-    def app_css() -> FileResponse:
-        return FileResponse(str(stylesheet), media_type="text/css")
-
-    @app.get("/assets/app.js", include_in_schema=False)
-    def app_js() -> FileResponse:
-        return FileResponse(str(script), media_type="text/javascript")
+        return FileResponse(str(terminal_page))
 
     @app.get("/terminal/assets/{asset_path:path}", include_in_schema=False)
     def terminal_static_asset(asset_path: str) -> FileResponse:
