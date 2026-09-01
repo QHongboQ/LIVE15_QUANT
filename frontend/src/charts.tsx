@@ -36,15 +36,20 @@ function samePoint(left: { time: UTCTimestamp; value: number }, right: { time: U
   return left.time === right.time && left.value === right.value;
 }
 
-function incrementalPoint(previous: { time: UTCTimestamp; value: number }[], next: { time: UTCTimestamp; value: number }[]) {
+function incrementalPoints(previous: { time: UTCTimestamp; value: number }[], next: { time: UTCTimestamp; value: number }[]) {
   if (!previous.length || !next.length) return undefined;
   const latestPoint = next.at(-1)!;
-  if (next.length === previous.length + 1 && previous.every((point, index) => samePoint(point, next[index]))) return latestPoint;
-  if (next.length === previous.length && previous.length && previous.slice(0, -1).every((point, index) => samePoint(point, next[index])) && previous.at(-1)!.time === latestPoint.time) return latestPoint;
+  if (next.length === previous.length && previous.slice(0, -1).every((point, index) => samePoint(point, next[index])) && previous.at(-1)!.time === latestPoint.time) return [latestPoint];
   if (next.length === previous.length && latestPoint.time > previous.at(-1)!.time) {
-    const divergence = previous.findIndex((point, index) => !samePoint(point, next[index]));
-    if (divergence >= 0 && previous.slice(divergence + 1).every((point, index) => samePoint(point, next[divergence + index]))) return latestPoint;
+    for (let offset = 0; offset < previous.length; offset += 1) {
+      const overlap = Math.min(previous.length - offset, next.length);
+      if (previous.slice(offset, offset + overlap).every((point, index) => samePoint(point, next[index]))) {
+        const added = next.slice(overlap);
+        if (added.length) return added;
+      }
+    }
   }
+  if (next.length > previous.length && previous.every((point, index) => samePoint(point, next[index]))) return next.slice(previous.length);
   return undefined;
 }
 
@@ -141,9 +146,9 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
           line.setData(combined);
           fitRequired = true;
         } else if (livePoints.length !== previousLive.length || livePoints.some((point, index) => !samePoint(point, previousLive[index]))) {
-          const latestPoint = incrementalPoint(previousLive, livePoints);
-          if (latestPoint) {
-            line.update(latestPoint);
+          const newPoints = incrementalPoints(previousLive, livePoints);
+          if (newPoints) {
+            for (const point of newPoints) line.update(point);
           } else {
             const combined = combinePoints(historicalPoints, livePoints);
             line.setData(combined);
@@ -159,9 +164,9 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
           line.setData(points);
           fitRequired = true;
         } else if (points.length !== previous.length || points.some((point, index) => !samePoint(point, previous[index]))) {
-          const latestPoint = incrementalPoint(previous, points);
-          if (latestPoint) {
-            line.update(latestPoint);
+          const newPoints = incrementalPoints(previous, points);
+          if (newPoints) {
+            for (const point of newPoints) line.update(point);
           }
           else {
             line.setData(points);

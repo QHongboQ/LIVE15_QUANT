@@ -133,10 +133,10 @@ def test_lightweight_chart_marker_plugin_is_reused_and_detached() -> None:
 def test_realtime_chart_uses_incremental_update_without_refitting() -> None:
     charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
 
-    assert "line.update(latestPoint)" in charts
+    assert "function incrementalPoints" in charts
+    assert "for (const point of newPoints) line.update(point)" in charts
     assert "line.setData(points)" in charts
     assert "latestPoint.time > previous.at(-1)!.time" in charts
-    assert "previous.slice(divergence + 1)" in charts
     assert "if (fitRequired) chart.current.timeScale().fitContent()" in charts
     assert charts.count("fitContent()") == 1
     assert "resetKey" in charts
@@ -257,9 +257,10 @@ def test_chart_reuses_reference_price_line_and_cleans_resource_lifecycles() -> N
     assert "const renderedLivePoints = useRef" in charts
     assert "LIVE_TAIL_COMPACTION_MAX_POINTS" not in charts
     assert "renderedDataPointCounts" not in charts
-    assert "line.update(latestPoint)" in charts
+    assert "function incrementalPoints" in charts
     assert "const combined = combinePoints(historicalPoints, livePoints)" in charts
     assert "line.setData(combined)" in charts
+    assert "const newPoints = incrementalPoints(previousLive, livePoints)" in charts
     assert "referenceLine.current.applyOptions({ price: reference })" in charts
     assert "referenceLinePrice.current" in charts
     assert "referenceSeries.current !== nextReferenceSeries" in charts
@@ -272,6 +273,35 @@ def _native_append(points: list[tuple[str, int]], point: tuple[str, int]) -> lis
     if points and points[-1][0] == point[0]:
         return [*points[:-1], point]
     return [*points, point]
+
+
+def _forward_suffix(
+    previous: list[tuple[str, int]], next_points: list[tuple[str, int]]
+) -> list[tuple[str, int]] | None:
+    if not previous or not next_points or next_points[-1][0] <= previous[-1][0]:
+        return None
+    for offset in range(len(previous)):
+        overlap = min(len(previous) - offset, len(next_points))
+        if previous[offset : offset + overlap] == next_points[:overlap]:
+            added = next_points[overlap:]
+            if added:
+                return added
+    return None
+
+
+def test_batched_rolling_tail_updates_only_the_forward_suffix() -> None:
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+    previous = [(f"R{index}", index) for index in range(1, 65)]
+    next_points = [(f"R{index}", index) for index in range(4, 68)]
+
+    assert _forward_suffix(previous, next_points) == [("R65", 65), ("R66", 66), ("R67", 67)]
+    assert _forward_suffix(previous, [(f"R{index}", index) for index in range(2, 66)]) == [
+        ("R65", 65)
+    ]
+    assert _native_append(previous, ("R64", 999))[-1] == ("R64", 999)
+    assert "const newPoints = incrementalPoints(previousLive, livePoints)" in charts
+    assert "for (const point of newPoints) line.update(point)" in charts
+    assert "setData(combinePoints(historicalPoints, livePoints))" not in charts
 
 
 def test_native_realtime_trajectory_is_not_periodically_truncated() -> None:
