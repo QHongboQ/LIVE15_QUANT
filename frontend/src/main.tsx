@@ -38,11 +38,14 @@ const overviewTerminalStatus = (health: Health): TerminalStatus => {
   const healthStatus = normalized(health.status);
   const issues = health.current_health_issues;
   const knownWtiPythOnly = issues.length > 0 && issues.every(isKnownWtiPythIssue);
+  const expectedActiveMarkets = Object.values(health.current_markets).filter((ticker) => ticker != null).length;
+  const allMarketsSynchronized = expectedActiveMarkets > 0 && health.kalshi_ws_synchronized_count === expectedActiveMarkets;
   if (['stopped', 'failed', 'unavailable', 'error'].some((state) => recorder.includes(state) || healthStatus.includes(state))) return 'UNAVAILABLE';
   if (['reconnect', 'connect', 'disconnect'].some((state) => recorder.includes(state) || connection.includes(state))) return 'RECONNECTING';
   if (recorder !== 'running' || connection.includes('stale') || healthStatus.includes('stale')) return 'STALE';
   if (connection.includes('rest') || connection.includes('fallback') || connection.includes('degraded') || (healthStatus.includes('degraded') && !knownWtiPythOnly)) return 'DELAYED';
-  if (recorder === 'running' && connection === 'synchronized' && health.kalshi_ws_synchronized_count > 0 && (healthStatus === 'healthy' || knownWtiPythOnly)) return 'LIVE';
+  if (recorder === 'running' && connection === 'synchronized' && !allMarketsSynchronized) return 'DELAYED';
+  if (recorder === 'running' && connection === 'synchronized' && allMarketsSynchronized && (healthStatus === 'healthy' || knownWtiPythOnly)) return 'LIVE';
   return 'UNAVAILABLE';
 };
 const marketTerminalStatus = (market: Market): TerminalStatus => {
@@ -65,7 +68,7 @@ const underlyingLatency = (market: Market) => {
 };
 const displayLatency = (value: number | null) => value == null ? 'timing unavailable' : `${value.toFixed(0)}ms`;
 
-function Status({ text }: { text: string }) { const warning = /error|stale|unavailable|degraded|warning|behind|fallback|missing/i.test(text); return <Chip className={warning ? 'status warning' : 'status'} label={text.replaceAll('_', ' ')} size="small" />; }
+function Status({ text }: { text: string }) { const warning = /error|stale|unavailable|degraded|warning|behind|fallback|missing|reconnect|delayed|recovery/i.test(text); return <Chip className={warning ? 'status warning' : 'status'} label={text.replaceAll('_', ' ')} size="small" />; }
 function Metric({ label, children, title }: { label: string; children: ReactNode; title?: string }) { return <Tooltip title={title ?? ''} disableHoverListener={!title}><div className="metric"><span>{label}</span><strong>{children}</strong></div></Tooltip>; }
 function Loading() { return <div className="skeleton-stack"><Skeleton variant="rounded" height={92} /><Skeleton variant="rounded" height={240} /><Skeleton variant="rounded" height={120} /></div>; }
 function ErrorState({ error, retry }: { error: unknown; retry?: () => void }) { const refresh = useRefresh(); return <Box className="terminal-loading"><Typography variant="h6">Data is unavailable</Typography><Typography color="text.secondary">{error instanceof Error ? error.message : 'The local read-only API could not be reached.'}</Typography><Button onClick={retry ?? refresh}>Retry</Button></Box>; }

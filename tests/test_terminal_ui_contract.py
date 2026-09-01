@@ -172,6 +172,10 @@ def test_terminal_status_is_derived_from_health_and_market_authority() -> None:
     assert "overviewTerminalStatus" in app
     assert "marketTerminalStatus" in app
     assert "underlying.includes(state)" in app
+    assert "Object.values(health.current_markets).filter((ticker) => ticker != null).length" in app
+    assert "const allMarketsSynchronized = expectedActiveMarkets > 0" in app
+    assert "health.kalshi_ws_synchronized_count === expectedActiveMarkets" in app
+    assert "!allMarketsSynchronized) return 'DELAYED'" in app
     assert "connection === 'synchronized'" in app
     assert "recorder === 'running'" in app
     assert "'RECONNECTING'" in app
@@ -200,3 +204,14 @@ def test_non_wti_health_issues_use_a_generic_health_label() -> None:
     assert "const issueKind = knownWtiPythOnly ? 'source' : 'health'" in app
     assert "${issues.length} ${issueKind} issue" in app
     assert "Current health issues" in app
+
+
+def test_non_live_statuses_use_the_warning_visual_class() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "reconnect|delayed|recovery" in app
+    assert "className={warning ? 'status warning' : 'status'}" in app
+    assert (
+        "const warning = /error|stale|unavailable|degraded|warning|behind|fallback|missing|"
+        "reconnect|delayed|recovery/i.test(text)" in app
+    )
