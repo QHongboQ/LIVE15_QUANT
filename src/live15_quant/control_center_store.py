@@ -769,7 +769,7 @@ class DashboardReadStore:
             end = datetime.fromisoformat(str(market["window_end"])).astimezone(UTC)
             effective_end = min(now, end)
             underlying, source = self._underlying_history(connection, asset, start, effective_end)
-            probability, complete = self._probability_history(
+            probability, complete, probability_last_change_at = self._probability_history(
                 connection, ticker, start, effective_end
             )
             notes: list[str] = []
@@ -789,9 +789,7 @@ class DashboardReadStore:
                 "underlying_last_actual_change_at": self._underlying_last_change_at(
                     connection, asset, start, effective_end
                 ),
-                "probability_last_actual_change_at": (
-                    probability[-1]["observed_at"] if probability else None
-                ),
+                "probability_last_actual_change_at": probability_last_change_at,
                 "probability_complete": complete,
                 "notes": notes,
             }
@@ -913,7 +911,7 @@ class DashboardReadStore:
         ticker: str,
         start: datetime,
         end: datetime,
-    ) -> tuple[list[dict[str, object]], bool]:
+    ) -> tuple[list[dict[str, object]], bool, str | None]:
         rows = tuple(
             connection.execute(
                 """SELECT sequence,event_kind,side,price,quantity_delta,yes_bids,no_bids,
@@ -930,6 +928,7 @@ class DashboardReadStore:
         has_baseline = False
         points: list[dict[str, object]] = []
         previous: tuple[str | None, ...] | None = None
+        last_actual_change_at: str | None = None
         for row in rows[:100000]:
             if str(row["sync_status_after"]) != "synchronized":
                 yes.clear()
@@ -970,6 +969,8 @@ class DashboardReadStore:
             )
             if state == previous:
                 continue
+            if previous is not None:
+                last_actual_change_at = str(row["socket_received_timestamp"])
             previous = state
             points.append(
                 {
@@ -982,7 +983,7 @@ class DashboardReadStore:
                 }
             )
         points = DashboardReadStore._downsample_probability(points)
-        return points, complete
+        return points, complete, last_actual_change_at
 
     @staticmethod
     def _downsample_probability(

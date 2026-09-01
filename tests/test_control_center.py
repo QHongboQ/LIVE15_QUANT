@@ -27,8 +27,10 @@ from live15_quant.control_center_store import DashboardReadStore
 from live15_quant.dataset import FeatureStore
 from live15_quant.kalshi_ws import (
     KalshiAtomicOrderBookCoordinator,
+    KalshiBookSide,
     KalshiBookSyncStatus,
     KalshiOrderBookSnapshot,
+    KalshiWsEventKind,
 )
 from live15_quant.models import (
     Asset,
@@ -409,6 +411,23 @@ async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
             )
         )
         store.write_kalshi_ws_persistence_event_batch_atomic((event,), (book,))
+        store.write_kalshi_ws_persistence_event_batch_atomic(
+            (
+                replace(
+                    event,
+                    sequence=11,
+                    event_kind=KalshiWsEventKind.DELTA,
+                    side=KalshiBookSide.YES,
+                    price=Decimal("0.6000"),
+                    quantity_delta=Decimal("1"),
+                    yes_bids=(),
+                    no_bids=(),
+                    source_timestamp=NOW,
+                    received_timestamp=NOW,
+                    parse_timestamp=NOW,
+                ),
+            )
+        )
     write_health(
         configured.recorder_health_path,
         current_markets={"BTC": market.ticker},
@@ -444,7 +463,28 @@ async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
     assert history.json()["underlying"][0]["minimum_price"] == str(float(market.target + 1))
     assert history.json()["underlying"][0]["close_price"] == str(market.target + 2)
     assert history.json()["underlying_last_actual_change_at"] is not None
-    assert history.json()["probability_last_actual_change_at"] is not None
+    assert history.json()["probability_last_actual_change_at"] is None
+
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.write_kalshi_ws_persistence_event_batch_atomic(
+            (
+                replace(
+                    event,
+                    sequence=12,
+                    event_kind=KalshiWsEventKind.DELTA,
+                    side=KalshiBookSide.YES,
+                    price=Decimal("0.7000"),
+                    quantity_delta=Decimal("1"),
+                    yes_bids=(),
+                    no_bids=(),
+                    source_timestamp=NOW,
+                    received_timestamp=NOW,
+                    parse_timestamp=NOW,
+                ),
+            )
+        )
+    changed_probability = service.market_history(Asset.BTC)
+    assert changed_probability.probability_last_actual_change_at == NOW
 
     rollover_event = f"{market.event_ticker}NEXT"
     rollover = replace(
@@ -473,7 +513,7 @@ async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
             (
                 replace(
                     event,
-                    sequence=11,
+                    sequence=13,
                     sync_status_after=KalshiBookSyncStatus.UNSYNCHRONIZED,
                 ),
             )
