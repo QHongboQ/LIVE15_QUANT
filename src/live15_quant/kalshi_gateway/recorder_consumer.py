@@ -165,7 +165,10 @@ class RecorderStoreDomainWriter:
             value for event in events if (value := self._persistence_event(event)) is not None
         )
         if persistence_events:
-            self._store.write_kalshi_ws_persistence_event_batch_atomic(persistence_events)
+            self._store.write_kalshi_ws_persistence_event_batch_atomic(
+                persistence_events,
+                tuple(event.book for event in events if event.authoritative and event.book),
+            )
 
     @staticmethod
     def _persistence_event(

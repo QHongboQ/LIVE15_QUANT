@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import secrets
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime
 from importlib.resources import files
 from pathlib import PurePosixPath
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from live15_quant.config import Settings, load_settings
 from live15_quant.control_center_models import (
+    AccountEquityHistoryResponse,
     AccountFillResponse,
     AccountOrderResponse,
     AccountProfileResponse,
@@ -25,6 +28,7 @@ from live15_quant.control_center_models import (
     DataResponse,
     EventSummaryResponse,
     HealthResponse,
+    MarketHistoryResponse,
     MarketResponse,
     OperationsResponse,
     RecorderControlResponse,
@@ -32,6 +36,8 @@ from live15_quant.control_center_models import (
     ResearchDataResponse,
     StorageResponse,
     SystemResponse,
+    TerminalSubscriptionAction,
+    TerminalSubscriptionRequest,
     TrainingResponse,
 )
 from live15_quant.control_center_service import ControlCenterService
@@ -56,11 +62,23 @@ def create_app(
 ) -> FastAPI:
     configured = settings or load_settings()
     boundary = service or ControlCenterService(configured)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        stop = asyncio.Event()
+        sampler = asyncio.create_task(boundary.run_account_equity_sampler(stop))
+        try:
+            yield
+        finally:
+            stop.set()
+            await sampler
+
     app = FastAPI(
         title="LIVE15 Control Center",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
     app.add_middleware(
         TrustedHostMiddleware,
@@ -135,6 +153,77 @@ def create_app(
     def market(asset: Asset) -> MarketResponse:
         return boundary.market(asset)
 
+    @app.get("/api/markets/{asset}/history", response_model=MarketHistoryResponse)
+    def market_history(asset: Asset) -> MarketHistoryResponse:
+        try:
+            return boundary.market_history(asset)
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.websocket("/ws/terminal")
+    async def terminal_socket(websocket: WebSocket) -> None:
+        client = websocket.client.host if websocket.client is not None else ""
+        port = websocket.url.port or configured.ui_port
+        origin = websocket.headers.get("origin")
+        allowed_origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+        if client not in {"127.0.0.1", "::1", "testclient"} or (
+            origin is not None and origin not in allowed_origins
+        ):
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+        subscriptions: set[str] = set()
+        snapshots_pending: set[str] = set()
+        last_cursors: dict[str, tuple[object, ...]] = {}
+        sequence = 0
+
+        def validated_channels(request: TerminalSubscriptionRequest) -> set[str]:
+            return {channel.value for channel in request.channels}
+
+        try:
+            while True:
+                raw: str | None = None
+                if not subscriptions:
+                    raw = await websocket.receive_text()
+                else:
+                    try:
+                        raw = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
+                    except TimeoutError:
+                        pass
+                if raw is not None:
+                    try:
+                        request = TerminalSubscriptionRequest.model_validate_json(raw)
+                        channels = validated_channels(request)
+                    except (ValueError, TypeError):
+                        await websocket.close(code=1008)
+                        return
+                    if request.action is TerminalSubscriptionAction.SUBSCRIBE:
+                        subscriptions.update(channels)
+                        snapshots_pending.update(channels)
+                    else:
+                        subscriptions.difference_update(channels)
+                        snapshots_pending.difference_update(channels)
+                        for channel in channels:
+                            last_cursors.pop(channel, None)
+                if not subscriptions:
+                    continue
+                for channel in sorted(subscriptions):
+                    cursor = await asyncio.to_thread(boundary.terminal_cursor, channel)
+                    if cursor == last_cursors.get(channel) and channel not in snapshots_pending:
+                        continue
+                    sequence += 1
+                    event = await asyncio.to_thread(
+                        boundary.terminal_event,
+                        channel,
+                        sequence,
+                        "snapshot" if channel in snapshots_pending else "update",
+                    )
+                    await websocket.send_text(event.model_dump_json())
+                    last_cursors[channel] = cursor
+                snapshots_pending.clear()
+        except WebSocketDisconnect:
+            return
+
     @app.get("/api/accounts", response_model=list[AccountProfileResponse])
     def accounts() -> list[AccountProfileResponse]:
         return boundary.account_profiles()
@@ -145,13 +234,25 @@ def create_app(
     ) -> AccountReadResponse:
         return boundary.account(profile)
 
+    @app.get("/api/account/summary", response_model=AccountReadResponse)
+    def account_summary(
+        profile: str = Query(default="production_primary", min_length=1, max_length=64),
+    ) -> AccountReadResponse:
+        return boundary.account_summary(profile)
+
     @app.get("/api/account/orders", response_model=list[AccountOrderResponse])
     def account_orders(profile: str = "production_primary") -> list[AccountOrderResponse]:
-        return boundary.account(profile).orders
+        return boundary.account_orders(profile)
 
     @app.get("/api/account/fills", response_model=list[AccountFillResponse])
     def account_fills(profile: str = "production_primary") -> list[AccountFillResponse]:
-        return boundary.account(profile).fills
+        return boundary.account_fills(profile)
+
+    @app.get("/api/account/equity-history", response_model=AccountEquityHistoryResponse)
+    def account_equity_history(
+        profile: str = Query(default="production_primary", min_length=1, max_length=64),
+    ) -> AccountEquityHistoryResponse:
+        return boundary.account_equity_history(profile)
 
     @app.get("/api/coverage", response_model=CoverageResponse)
     def coverage() -> CoverageResponse:

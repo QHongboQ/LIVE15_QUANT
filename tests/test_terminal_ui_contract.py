@@ -41,3 +41,32 @@ def test_terminal_passes_the_server_nonce_to_emotion() -> None:
     assert "createCache" in app
     assert 'meta[name="csp-nonce"]' in app
     assert "nonce: emotionNonce" in app
+
+
+def test_terminal_stream_and_lazy_network_contract_is_fail_closed() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    api = (ROOT / "api.ts").read_text(encoding="utf-8")
+
+    assert "location.host}/ws/terminal" in app
+    assert "event.sequence <= lastSequence" in app
+    assert "!selected.includes(event.channel)" in app
+    assert "action: 'unsubscribe'" in app
+    assert "document.hidden" in app
+    assert "reconcileRef.current(); connect();" in app
+    assert "const load = useCallback" in app and "[loader]" in app
+    for endpoint in (
+        "/api/account/summary",
+        "/api/account/orders",
+        "/api/account/fills",
+        "/api/research-data",
+        "/api/coverage",
+        "/api/training",
+        "/api/data",
+        "/api/storage",
+        "/api/operations",
+        "/api/system",
+    ):
+        assert endpoint in api
+    combined = f"{app}\n{api}".lower()
+    for host in ("kalshi.com", "coinbase.com", "pyth.network", "depthfeed"):
+        assert host not in combined

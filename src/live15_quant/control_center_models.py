@@ -132,6 +132,20 @@ class AccountReadResponse(StrictResponse):
     message: str | None = None
 
 
+class AccountEquityHistoryPoint(StrictResponse):
+    observed_at: datetime
+    balance_cents: int | None = None
+    portfolio_value_cents: int | None = None
+    active_positions: bool = False
+
+
+class AccountEquityHistoryResponse(StrictResponse):
+    profile: str
+    status: str
+    points: list[AccountEquityHistoryPoint] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class WsArchiveHealth(StrictResponse):
     enabled: bool = False
     chunks: int = 0
@@ -268,8 +282,16 @@ class MarketResponse(StrictResponse):
     spread: str | None = None
     quote_age_seconds: float | None = None
     quote_status: str
+    quote_source: str = "unavailable"
+    book_verification_state: str = "unavailable"
+    book_sequence: int | None = None
+    book_connection_id: str | None = None
     quote_source_timestamp: str | None = None
     quote_received_timestamp: datetime | None = None
+    socket_event_age_seconds: float | None = None
+    last_market_change_age_seconds: float | None = None
+    source_transport_latency_ms: str | None = None
+    projection_available_timestamp: datetime | None = None
     orderbook_status: str
     yes_bid_depth: list[list[str]] = Field(default_factory=list)
     no_bid_depth: list[list[str]] = Field(default_factory=list)
@@ -278,6 +300,8 @@ class MarketResponse(StrictResponse):
     underlying_price: str | None = None
     underlying_age_seconds: float | None = None
     underlying_status: str
+    underlying_received_timestamp: datetime | None = None
+    underlying_persisted_timestamp: datetime | None = None
     primary_provider: str | None = None
     primary_age_seconds: float | None = None
     secondary_provider: str | None = None
@@ -299,6 +323,79 @@ class MarketResponse(StrictResponse):
     settlement_followup: str
     features: dict[str, dict[str, str | None]] = Field(default_factory=dict)
     previous_events: list[dict[str, str | None]] = Field(default_factory=list)
+
+
+class UnderlyingHistoryPoint(StrictResponse):
+    observed_at: datetime
+    source: str
+    minimum_price: str
+    maximum_price: str
+
+
+class ProbabilityHistoryPoint(StrictResponse):
+    observed_at: datetime
+    sequence: int
+    yes_bid: str | None = None
+    yes_ask: str | None = None
+    no_bid: str | None = None
+    no_ask: str | None = None
+
+
+class MarketHistoryResponse(StrictResponse):
+    schema_version: int = 1
+    asset: str
+    ticker: str
+    window_start: datetime
+    window_end: datetime
+    generated_at: datetime
+    underlying_source: str
+    probability_source: str = "kalshi_ws_orderbook_events"
+    underlying: list[UnderlyingHistoryPoint] = Field(default_factory=list)
+    probability: list[ProbabilityHistoryPoint] = Field(default_factory=list)
+    probability_complete: bool = True
+    notes: list[str] = Field(default_factory=list)
+
+
+class TerminalSubscriptionAction(StrEnum):
+    SUBSCRIBE = "subscribe"
+    UNSUBSCRIBE = "unsubscribe"
+
+
+class TerminalEventType(StrEnum):
+    SNAPSHOT = "snapshot"
+    UPDATE = "update"
+
+
+class TerminalChannel(StrEnum):
+    OVERVIEW = "overview"
+    MARKETS = "markets"
+    MARKET_BTC = "market:BTC"
+    MARKET_ETH = "market:ETH"
+    MARKET_GOLD = "market:Gold"
+    MARKET_SILVER = "market:Silver"
+    MARKET_XRP = "market:XRP"
+    MARKET_WTI_OIL = "market:WTI Oil"
+    MARKET_SOL = "market:SOL"
+    MARKET_HYPE = "market:HYPE"
+    MARKET_DOGE = "market:DOGE"
+    MARKET_BNB = "market:BNB"
+
+
+class TerminalSubscriptionRequest(StrictResponse):
+    action: TerminalSubscriptionAction
+    channels: list[TerminalChannel] = Field(min_length=1, max_length=12)
+
+
+class TerminalEvent(StrictResponse):
+    schema_version: int = 1
+    event_type: TerminalEventType
+    channel: TerminalChannel
+    asset: str | None = None
+    ticker: str | None = None
+    observed_at: datetime
+    authoritative_at: datetime | None = None
+    sequence: int
+    payload: HealthResponse | MarketResponse | list[MarketResponse]
 
 
 class EventSummaryResponse(StrictResponse):
