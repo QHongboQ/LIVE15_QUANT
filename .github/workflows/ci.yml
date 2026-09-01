@@ -60,8 +60,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install pinned static tooling
         run: |
           python -m pip install pip==26.2.1
