@@ -131,6 +131,7 @@ def test_frontend_release_build_is_pinned_and_fails_closed() -> None:
     assert 'Write-Host "pnpm version = $actualPnpmVersion"' in body
     assert "function Invoke-Native" in body
     assert "if ($LASTEXITCODE -ne 0)" in body
+    assert 'Write-Host "$Label = PASS"' in body
     assert "pnpm --dir frontend" not in body
 
     required_commands = (
