@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import secrets
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from importlib.resources import files
@@ -46,6 +47,7 @@ TERMINAL_ENTRY_CACHE_HEADERS = {
 TERMINAL_ASSET_CACHE_HEADERS = {
     "Cache-Control": "public, max-age=31536000, immutable",
 }
+TERMINAL_CSP_NONCE_PLACEHOLDER = "__LIVE15_CSP_NONCE__"
 
 
 def create_app(
@@ -83,9 +85,15 @@ def create_app(
     async def security_headers(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
+        nonce = secrets.token_urlsafe(32) if request.url.path == "/" else None
+        request.state.terminal_csp_nonce = nonce
         response = await call_next(request)
+        style_src_elem = "style-src-elem 'self'"
+        if nonce is not None:
+            style_src_elem += f" 'nonce-{nonce}'"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
+            f"{style_src_elem}; style-src-attr 'unsafe-inline'; "
             "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
             "base-uri 'none'; frame-ancestors 'none'"
         )
@@ -95,8 +103,18 @@ def create_app(
         return response
 
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(str(terminal_page), headers=TERMINAL_ENTRY_CACHE_HEADERS)
+    def index(request: Request) -> Response:
+        nonce = getattr(request.state, "terminal_csp_nonce", None)
+        if not isinstance(nonce, str) or not nonce:
+            raise RuntimeError("terminal CSP nonce was not initialized")
+        page = terminal_page.read_text(encoding="utf-8")
+        if page.count(TERMINAL_CSP_NONCE_PLACEHOLDER) != 1:
+            raise RuntimeError("packaged terminal nonce placeholder is invalid")
+        return Response(
+            content=page.replace(TERMINAL_CSP_NONCE_PLACEHOLDER, nonce),
+            media_type="text/html",
+            headers=TERMINAL_ENTRY_CACHE_HEADERS,
+        )
 
     @app.get("/terminal/assets/{asset_path:path}", include_in_schema=False)
     def terminal_static_asset(asset_path: str) -> FileResponse:
