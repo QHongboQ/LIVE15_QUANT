@@ -1083,6 +1083,28 @@ async def test_terminal_static_assets_and_security_headers(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_terminal_csp_nonce_authorizes_emotion_without_inline_scripts(tmp_path: Path) -> None:
+    transport = httpx.ASGITransport(app=create_app(settings(tmp_path)))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        first, second = await asyncio.gather(client.get("/"), client.get("/"))
+
+    nonces = [
+        re.search(r'<meta name="csp-nonce" content="([A-Za-z0-9_-]+)"', response.text)
+        for response in (first, second)
+    ]
+    assert all(match is not None for match in nonces)
+    first_nonce, second_nonce = (match.group(1) for match in nonces if match is not None)
+    assert first_nonce != second_nonce
+    for response, nonce in zip((first, second), (first_nonce, second_nonce), strict=True):
+        policy = response.headers["content-security-policy"]
+        assert f"style-src-elem 'self' 'nonce-{nonce}'" in policy
+        assert "style-src-attr 'unsafe-inline'" in policy
+        assert "script-src 'self'" in policy
+        assert "script-src 'self' 'unsafe-inline'" not in policy
+        assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+
+
+@pytest.mark.asyncio
 async def test_operational_events_api_is_bounded_typed_and_filterable(tmp_path: Path) -> None:
     configured = settings(tmp_path)
     with RecorderStore(configured.recorder_data_path) as store:

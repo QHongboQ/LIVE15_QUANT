@@ -32,3 +32,12 @@ def test_react_admin_telemetry_is_disabled_at_the_terminal_root() -> None:
     app = (ROOT / "main.tsx").read_text(encoding="utf-8")
 
     assert re.search(r"<Admin\b[^>]*\bdisableTelemetry\b", app)
+
+
+def test_terminal_passes_the_server_nonce_to_emotion() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "CacheProvider" in app
+    assert "createCache" in app
+    assert 'meta[name="csp-nonce"]' in app
+    assert "nonce: emotionNonce" in app

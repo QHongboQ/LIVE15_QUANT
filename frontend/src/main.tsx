@@ -1,5 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { Admin, AppBar, DashboardMenuItem, Layout as AdminLayout, Menu, MenuItemLink, Resource, useGetList, useGetOne, useRedirect, useRefresh } from 'react-admin';
+import { CacheProvider } from '@emotion/react';
+import createCache from '@emotion/cache';
 import { Box, Button, Card, CardContent, Chip, CircularProgress, Divider, Stack, Tab, Tabs, Typography, createTheme } from '@mui/material';
 import type { ComponentProps, ReactNode } from 'react';
 import { useState } from 'react';
@@ -8,6 +10,8 @@ import { dataProvider, type Account, type Admin as AdminRecord, type Health, typ
 import './styles.css';
 
 const theme = createTheme({ palette: { mode: 'dark', primary: { main: '#9b7bff' }, background: { default: '#07070a', paper: '#0d0e13' }, text: { primary: '#f3f1f8', secondary: '#92929e' } }, shape: { borderRadius: 8 }, typography: { fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif', h4: { fontWeight: 650, letterSpacing: '-0.035em' } } });
+const emotionNonce = document.querySelector<HTMLMetaElement>('meta[name="csp-nonce"]')?.content;
+const emotionCache = createCache({ key: 'live15', nonce: emotionNonce, prepend: true });
 const value = (item: Record<string, unknown>, key: string) => item[key] == null ? '—' : String(item[key]);
 const dollars = (cents?: number | null) => cents == null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
 const seconds = (n?: number | null) => n == null ? '—' : n <= 0 ? 'Closed' : `${Math.floor(n / 60)}m ${Math.floor(n % 60)}s`;
@@ -36,6 +40,6 @@ function AdminPage() { const { data, isPending, error } = useGetOne<AdminRecord>
 function TerminalMenu() { return <Menu><DashboardMenuItem primaryText="Overview" /><Divider /><MenuItemLink to="/markets" primaryText="Markets" /><MenuItemLink to="/portfolio" primaryText="Portfolio" /><MenuItemLink to="/research" primaryText="Research" /><MenuItemLink to="/admin" primaryText="Admin" /></Menu>; }
 function TerminalBar() { return <AppBar><Typography className="terminal-brand">LIVE15 <span>TERMINAL</span></Typography></AppBar>; }
 function TerminalLayout(props: ComponentProps<typeof AdminLayout>) { return <AdminLayout {...props} appBar={TerminalBar} menu={TerminalMenu} />; }
-function App() { return <Admin title="LIVE15 Terminal" theme={theme} dataProvider={dataProvider} dashboard={Overview} layout={TerminalLayout} requireAuth={false} disableTelemetry><Resource name="markets" list={Markets} show={MarketDetail} /><Resource name="portfolio" list={Portfolio} /><Resource name="research" list={ResearchPage} /><Resource name="admin" list={AdminPage} /></Admin>; }
+function App() { return <CacheProvider value={emotionCache}><Admin title="LIVE15 Terminal" theme={theme} dataProvider={dataProvider} dashboard={Overview} layout={TerminalLayout} requireAuth={false} disableTelemetry><Resource name="markets" list={Markets} show={MarketDetail} /><Resource name="portfolio" list={Portfolio} /><Resource name="research" list={ResearchPage} /><Resource name="admin" list={AdminPage} /></Admin></CacheProvider>; }
 
 const root = document.getElementById('root')!; if (!root.dataset.mounted) { root.dataset.mounted = 'true'; createRoot(root).render(<App />); }
