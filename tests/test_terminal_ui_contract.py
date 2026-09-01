@@ -1,4 +1,5 @@
 import re
+from math import floor
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1] / "frontend" / "src"
@@ -70,3 +71,269 @@ def test_terminal_stream_and_lazy_network_contract_is_fail_closed() -> None:
     combined = f"{app}\n{api}".lower()
     for host in ("kalshi.com", "coinbase.com", "pyth.network", "depthfeed"):
         assert host not in combined
+
+
+def test_terminal_v2_chart_and_view_contracts_remain_local_and_truthful() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    api = (ROOT / "api.ts").read_text(encoding="utf-8")
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "lightweight-charts" in charts
+    assert "No persisted history is available" in charts
+    assert "FinancialChart" in app
+    assert "PRICE" in app and "PROBABILITY" in app
+    assert "Last actual change" in app
+    assert "Underlying latency" in app
+    assert "Projection latency" in app
+    assert "live15Sidebar" in app
+    assert "accountEquityHistory(portfolioRanges[range])" in app
+    assert "close_price" in api
+    assert "third_party" not in app.lower()
+
+
+def test_market_detail_realtime_updates_do_not_refetch_history_per_event() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "window.setTimeout(history.load" not in app
+    assert "setLivePricePoints" in app
+    assert "setLiveYesPoints" in app
+    assert "setLiveNoPoints" in app
+    assert "historyMatchesTicker" in app
+    assert "activeTicker.current && market.ticker && market.ticker !== activeTicker.current" in app
+    # Explicit refresh/reconciliation and ticker rollover are the only loads.
+    assert app.count("history.load();") == 2
+    assert "reconcileRef.current(); reconnectTimer" in app
+    assert "const historicalLastChange = historyMatchesTicker ?" in app
+
+
+def test_realtime_market_points_require_authoritative_timestamps_and_changes() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "new Date().toISOString()" not in app
+    assert "Date.now() - Date.parse(event.authoritative_at)" in app  # display telemetry only
+    assert "underlyingTimestamp(market)" in app
+    assert "probabilityTimestamp(market)" in app
+    assert "lastPricePoint.current?.value !== price.value" in app
+    assert "quoteChanged(lastQuote.current, quote)" in app
+    assert "timestamp && (yes || no)" in app
+
+
+def test_lightweight_chart_marker_plugin_is_reused_and_detached() -> None:
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "ISeriesMarkersPluginApi" in charts
+    assert "const seriesMarkers = useRef" in charts
+    assert "seriesMarkers.current.get(item.id)" in charts
+    assert "markers.setMarkers" in charts
+    assert "markers.detach()" in charts
+    assert "const markersForCleanup = seriesMarkers.current" in charts
+    assert "for (const markers of markersForCleanup.values()) markers.detach()" in charts
+
+
+def test_realtime_chart_uses_incremental_update_without_refitting() -> None:
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "function incrementalPoints" in charts
+    assert "for (const point of newPoints) line.update(point)" in charts
+    assert "line.setData(points)" in charts
+    assert "latestPoint.time > previous.at(-1)!.time" in charts
+    assert "if (fitRequired) chart.current.timeScale().fitContent()" in charts
+    assert charts.count("fitContent()") == 1
+    assert "resetKey" in charts
+
+
+def test_rollover_history_is_ignored_until_it_matches_active_ticker() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "history.data.ticker !== activeTicker.current" in app
+    assert "reconcileTicker" in app
+    assert "rolloverTarget.current === ticker" in app
+    assert "history.data.ticker" in app
+    assert app.index("history.data.ticker !== activeTicker.current") < app.index(
+        "activeTicker.current = history.data.ticker"
+    )
+
+
+def test_overview_health_warning_is_truthful_and_scoped() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "const issues = liveHealth.current_health_issues" in app
+    assert "issues.length > 0 && issues.every(isKnownWtiPythIssue)" in app
+    assert "healthIssueSummary(issues)" in app
+    assert 'Status text="1 source issue"' not in app
+    assert "WTI/Pyth needs attention" in app
+
+
+def test_terminal_status_is_derived_from_health_and_market_authority() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert (
+        "type TerminalStatus = 'LIVE' | 'RECONNECTING' | 'DELAYED' | 'STALE' | 'UNAVAILABLE'" in app
+    )
+    assert "overviewTerminalStatus" in app
+    assert "marketTerminalStatus" in app
+    assert "underlying.includes(state)" in app
+    assert "Object.values(health.current_markets).filter((ticker) => ticker != null).length" in app
+    assert "const allMarketsSynchronized = expectedActiveMarkets > 0" in app
+    assert "health.kalshi_ws_synchronized_count === expectedActiveMarkets" in app
+    assert "!allMarketsSynchronized) return 'DELAYED'" in app
+    assert "connection === 'synchronized'" in app
+    assert "recorder === 'running'" in app
+    assert "'RECONNECTING'" in app
+    assert "'DELAYED'" in app
+    assert "'STALE'" in app
+    assert "'UNAVAILABLE'" in app
+    assert "detailStatus === 'LIVE' ? '●' : '○'" in app
+    assert "● LIVE" not in app
+
+
+def test_market_latency_is_mode_specific_and_truthful() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "const probabilityLatency = Number(data.source_transport_latency_ms ?? NaN)" in app
+    assert "const priceLatency = underlyingLatency(data)" in app
+    assert "underlying_received_timestamp" in app
+    assert "underlying_persisted_timestamp" in app
+    assert "const detailLatency = mode === 0 ? priceLatency" in app
+    assert "Number.isFinite(probabilityLatency)" in app
+    assert "timing unavailable" in app
+
+
+def test_non_wti_health_issues_use_a_generic_health_label() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "const issueKind = knownWtiPythOnly ? 'source' : 'health'" in app
+    assert "${issues.length} ${issueKind} issue" in app
+    assert "Current health issues" in app
+
+
+def test_non_live_statuses_use_the_warning_visual_class() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "reconnect|delayed|recovery" in app
+    assert "className={warning ? 'status warning' : 'status'}" in app
+    assert (
+        "const warning = /error|stale|unavailable|degraded|warning|behind|fallback|missing|"
+        "reconnect|delayed|recovery/i.test(text)" in app
+    )
+
+
+def test_realtime_resource_bounds_and_market_structural_sharing_are_explicit() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "const LIVE_TAIL_MAX_POINTS = 64" in app
+    assert "const SPARKLINE_MAX_POINTS = 32" in app
+    assert "const LATENCY_SAMPLE_MAX_POINTS = 1000" in app
+    assert "const LATENCY_DATASET_MAX_POINTS = 100" in app
+    assert "appendBoundedPoint" in app
+    assert "marketCardValuesSame" in app
+    assert "shareMarketReferences" in app
+    assert "return changed ? updated : previous" in app
+    assert (
+        "const previousByAsset = new Map(previous.map((market) => [market.asset, market]))" in app
+    )
+
+
+def test_market_detail_keeps_immutable_history_out_of_realtime_allocations() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "useMemo" in app
+    assert "const historicalPricePoints = useMemo" in app
+    assert "const historicalYesPoints = useMemo" in app
+    assert "const historicalNoPoints = useMemo" in app
+    assert "history: historicalPricePoints" in app
+    assert "livePoints: liveMatchesHistory ? livePricePoints : []" in app
+    assert "const pricePoints = [..." not in app
+    assert "const yesPoints = [..." not in app
+    assert "const noPoints = [..." not in app
+
+
+def test_chart_reuses_reference_price_line_and_cleans_resource_lifecycles() -> None:
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "history?: ChartPoint[]" in charts
+    assert "livePoints?: ChartPoint[]" in charts
+    assert "const normalizedHistory = useRef" in charts
+    assert "const renderedLivePoints = useRef" in charts
+    assert "LIVE_TAIL_COMPACTION_MAX_POINTS" not in charts
+    assert "renderedDataPointCounts" not in charts
+    assert "function incrementalPoints" in charts
+    assert "const combined = combinePoints(historicalPoints, livePoints)" in charts
+    assert "line.setData(combined)" in charts
+    assert "const newPoints = incrementalPoints(previousLive, livePoints)" in charts
+    assert "referenceLine.current.applyOptions({ price: reference })" in charts
+    assert "referenceLinePrice.current" in charts
+    assert "referenceSeries.current !== nextReferenceSeries" in charts
+    assert "referenceSeries.current.removePriceLine(referenceLine.current)" in charts
+    assert "observer.disconnect()" in charts
+    assert "instance.remove()" in charts
+
+
+def _native_append(points: list[tuple[str, int]], point: tuple[str, int]) -> list[tuple[str, int]]:
+    if points and points[-1][0] == point[0]:
+        return [*points[:-1], point]
+    return [*points, point]
+
+
+def _forward_suffix(
+    previous: list[tuple[str, int]], next_points: list[tuple[str, int]]
+) -> list[tuple[str, int]] | None:
+    if not previous or not next_points or next_points[-1][0] <= previous[-1][0]:
+        return None
+    for offset in range(len(previous)):
+        overlap = min(len(previous) - offset, len(next_points))
+        if previous[offset : offset + overlap] == next_points[:overlap]:
+            added = next_points[overlap:]
+            if added:
+                return added
+    return None
+
+
+def test_batched_rolling_tail_updates_only_the_forward_suffix() -> None:
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+    previous = [(f"R{index}", index) for index in range(1, 65)]
+    next_points = [(f"R{index}", index) for index in range(4, 68)]
+
+    assert _forward_suffix(previous, next_points) == [("R65", 65), ("R66", 66), ("R67", 67)]
+    assert _forward_suffix(previous, [(f"R{index}", index) for index in range(2, 66)]) == [
+        ("R65", 65)
+    ]
+    assert _native_append(previous, ("R64", 999))[-1] == ("R64", 999)
+    assert "const newPoints = incrementalPoints(previousLive, livePoints)" in charts
+    assert "for (const point of newPoints) line.update(point)" in charts
+    assert "setData(combinePoints(historicalPoints, livePoints))" not in charts
+
+
+def test_native_realtime_trajectory_is_not_periodically_truncated() -> None:
+    points = [("history-1", 1), ("history-2", 2)]
+    for index in range(1, 130):
+        points = _native_append(points, (f"realtime-{index}", index))
+
+    assert len(points) == 131
+    assert points[2:5] == [("realtime-1", 1), ("realtime-2", 2), ("realtime-3", 3)]
+    assert points[-1] == ("realtime-129", 129)
+
+    replacement = _native_append(points, ("realtime-129", 999))
+    assert len(replacement) == len(points)
+    assert replacement[-1] == ("realtime-129", 999)
+
+
+def test_market_cards_preserve_stable_inputs_until_visible_values_change() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert "const EMPTY_CHART_POINTS: ChartPoint[] = []" in app
+    assert "const displayCountdownBucket" in app
+    assert (
+        "displayCountdownBucket(left.seconds_remaining) === "
+        "displayCountdownBucket(right.seconds_remaining)" in app
+    )
+    assert "onOpen: (id: string) => void" in app
+    assert "onClick={() => onOpen(market.id)}" in app
+    assert (
+        "const openMarket = useCallback((id: string) => redirect('show', "
+        "'markets', id), [redirect])" in app
+    )
+    assert "onOpen={openMarket}" in app
+
+    assert floor(731.821) == floor(731.614)
+    assert floor(731.001) != floor(730.999)

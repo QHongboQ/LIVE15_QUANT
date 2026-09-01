@@ -454,7 +454,9 @@ class DashboardReadStore:
                     else None
                 ),
                 "socket_event_age_seconds": quote_age if ws_book is not None else None,
-                "last_market_change_age_seconds": quote_age if ws_book is not None else None,
+                # Event delivery age is not evidence that a displayed market value changed.
+                # The detail history contract derives last-change time from the immutable facts.
+                "last_market_change_age_seconds": None,
                 "source_transport_latency_ms": (
                     str(
                         max(
@@ -767,7 +769,7 @@ class DashboardReadStore:
             end = datetime.fromisoformat(str(market["window_end"])).astimezone(UTC)
             effective_end = min(now, end)
             underlying, source = self._underlying_history(connection, asset, start, effective_end)
-            probability, complete = self._probability_history(
+            probability, complete, probability_last_change_at = self._probability_history(
                 connection, ticker, start, effective_end
             )
             notes: list[str] = []
@@ -784,6 +786,10 @@ class DashboardReadStore:
                 "underlying_source": source,
                 "underlying": underlying,
                 "probability": probability,
+                "underlying_last_actual_change_at": self._underlying_last_change_at(
+                    connection, asset, start, effective_end
+                ),
+                "probability_last_actual_change_at": probability_last_change_at,
                 "probability_complete": complete,
                 "notes": notes,
             }
@@ -814,12 +820,24 @@ class DashboardReadStore:
             )
             source = UnderlyingProvider.PYTH_HERMES.value
         rows = connection.execute(
-            f"""SELECT CAST(strftime('%s',received_timestamp) AS INTEGER) AS bucket,
-                min(CAST(price AS REAL)) AS minimum_price,
-                max(CAST(price AS REAL)) AS maximum_price
-            FROM {table} WHERE {predicate}
-              AND received_timestamp>=? AND received_timestamp<=?
-            GROUP BY bucket ORDER BY bucket ASC LIMIT 1800""",
+            f"""WITH bucketed AS (
+                SELECT CAST(strftime('%s', received_timestamp) AS INTEGER) AS bucket,
+                    price, received_timestamp, id,
+                    min(CAST(price AS REAL)) OVER (
+                        PARTITION BY CAST(strftime('%s', received_timestamp) AS INTEGER)
+                    ) AS minimum_price,
+                    max(CAST(price AS REAL)) OVER (
+                        PARTITION BY CAST(strftime('%s', received_timestamp) AS INTEGER)
+                    ) AS maximum_price,
+                    row_number() OVER (
+                        PARTITION BY CAST(strftime('%s', received_timestamp) AS INTEGER)
+                        ORDER BY received_timestamp DESC, id DESC
+                    ) AS newest
+                FROM {table} WHERE {predicate}
+                  AND received_timestamp>=? AND received_timestamp<=?
+            )
+            SELECT bucket, price AS close_price, minimum_price, maximum_price
+            FROM bucketed WHERE newest=1 ORDER BY bucket ASC LIMIT 1800""",
             parameters,
         )
         return (
@@ -827,6 +845,7 @@ class DashboardReadStore:
                 {
                     "observed_at": datetime.fromtimestamp(int(row["bucket"]), UTC).isoformat(),
                     "source": source,
+                    "close_price": str(row["close_price"]),
                     "minimum_price": str(row["minimum_price"]),
                     "maximum_price": str(row["maximum_price"]),
                 }
@@ -837,12 +856,62 @@ class DashboardReadStore:
         )
 
     @staticmethod
+    def _underlying_last_change_at(
+        connection: sqlite3.Connection,
+        asset: Asset,
+        start: datetime,
+        end: datetime,
+    ) -> str | None:
+        """Find the final observed value transition without inventing a bucket average."""
+
+        product = COINBASE_PRODUCT_BY_ASSET.get(asset)
+        if product is not None:
+            table = "coinbase_ticks"
+            predicate = "product=?"
+            predicate_parameters: tuple[object, ...] = (product,)
+        else:
+            table = "underlying_observations"
+            predicate = "asset=? AND provider=?"
+            predicate_parameters = (
+                asset.value,
+                UnderlyingProvider.PYTH_HERMES.value,
+            )
+        row = connection.execute(
+            f"""WITH preceding AS (
+                SELECT received_timestamp, price, id FROM {table}
+                WHERE {predicate} AND received_timestamp<?
+                ORDER BY received_timestamp DESC, id DESC LIMIT 1
+            ), windowed AS (
+                SELECT received_timestamp, price, id FROM {table}
+                WHERE {predicate} AND received_timestamp>=? AND received_timestamp<=?
+            ), observations AS (
+                SELECT * FROM preceding UNION ALL SELECT * FROM windowed
+            ), changes AS (
+                SELECT received_timestamp, id, price,
+                    lag(price) OVER (ORDER BY received_timestamp ASC, id ASC) AS prior_price
+                FROM observations
+            )
+            SELECT received_timestamp FROM changes
+            WHERE received_timestamp>=? AND prior_price IS NOT NULL AND price != prior_price
+            ORDER BY received_timestamp DESC, id DESC LIMIT 1""",
+            (
+                *predicate_parameters,
+                _timestamp(start),
+                *predicate_parameters,
+                _timestamp(start),
+                _timestamp(end),
+                _timestamp(start),
+            ),
+        ).fetchone()
+        return None if row is None else str(row["received_timestamp"])
+
+    @staticmethod
     def _probability_history(
         connection: sqlite3.Connection,
         ticker: str,
         start: datetime,
         end: datetime,
-    ) -> tuple[list[dict[str, object]], bool]:
+    ) -> tuple[list[dict[str, object]], bool, str | None]:
         rows = tuple(
             connection.execute(
                 """SELECT sequence,event_kind,side,price,quantity_delta,yes_bids,no_bids,
@@ -859,6 +928,7 @@ class DashboardReadStore:
         has_baseline = False
         points: list[dict[str, object]] = []
         previous: tuple[str | None, ...] | None = None
+        last_actual_change_at: str | None = None
         for row in rows[:100000]:
             if str(row["sync_status_after"]) != "synchronized":
                 yes.clear()
@@ -899,6 +969,8 @@ class DashboardReadStore:
             )
             if state == previous:
                 continue
+            if previous is not None:
+                last_actual_change_at = str(row["socket_received_timestamp"])
             previous = state
             points.append(
                 {
@@ -911,7 +983,7 @@ class DashboardReadStore:
                 }
             )
         points = DashboardReadStore._downsample_probability(points)
-        return points, complete
+        return points, complete, last_actual_change_at
 
     @staticmethod
     def _downsample_probability(
