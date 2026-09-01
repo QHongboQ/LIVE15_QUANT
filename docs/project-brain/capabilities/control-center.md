@@ -24,6 +24,21 @@ recovery/reconciliation fallback only and never average or silently overwrite sy
 The bounded projection is invalidated atomically on desynchronization and is accepted only when the
 Recorder heartbeat identifies that exact ticker as synchronized.
 
+## Recorder schema and rollout contract
+
+The current Recorder metadata schema is v11. The v10 to v11 migration adds only the bounded derived
+`kalshi_ws_current_books` synchronized-current-book projection; raw immutable WebSocket history is
+unchanged.
+
+Merging this change does not migrate Production. Deployment of a v11-compatible Recorder performs
+the migration. A ControlCenter-only deployment is insufficient while a pre-v11 Recorder is still
+running, because that Recorder cannot create the realtime projection. The deployment plan must
+therefore include an explicit Recorder plus ControlCenter rollout.
+
+After a database has migrated to schema v11, Recorder rollback must use a v11-compatible rollback
+release or an explicitly authorized pre-migration database restore. The pre-v11 Recorder binary is
+not a safe automatic rollback target against a schema-v11 database.
+
 `/ws/terminal` is a localhost/origin-constrained, read-only subscription boundary for `overview`,
 `markets`, and exact `market:<asset>` channels. Clients take an HTTP snapshot before subscribing,
 reject non-increasing connection-local sequences, and reconcile from HTTP after reconnect or tab

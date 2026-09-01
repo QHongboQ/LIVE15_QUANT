@@ -76,8 +76,10 @@ there is no title/fuzzy matching.
 
 ## Persistence and replay
 
-Recorder schema v8 added two role-isolated tables; schema v10 adds nullable enqueue timing to the
-raw event table without fabricating values for historical rows:
+Recorder schema v8 added two role-isolated tables; schema v10 added nullable enqueue timing to the
+raw event table without fabricating values for historical rows. Schema v10 to v11 adds the bounded
+derived `kalshi_ws_current_books` synchronized-current-book projection; raw immutable WebSocket
+history remains unchanged:
 
 - `kalshi_ws_orderbook_events`: every raw snapshot/delta and sequenced subscription acknowledgement
   in local arrival order, including
@@ -86,6 +88,8 @@ raw event table without fabricating values for historical rows:
   monotonic clock.
 - `kalshi_ws_book_checkpoints`: sparse synchronized books written after official snapshot/resync,
   not after every delta.
+- `kalshi_ws_current_books`: the bounded synchronized-current-book projection consumed by the
+  current terminal; it is derived state and does not replace the raw event history.
 
 The raw event sequence is sufficient for deterministic reconstruction. Exact duplicate
 connection/sid/seq events are idempotent; conflicting facts for the same identity fail loudly.
