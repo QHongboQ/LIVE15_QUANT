@@ -239,7 +239,27 @@ jobs:
       - name: Import check
         run: python tools/ci_import_check.py
       - name: Research and model tests
-        run: pytest tests/test_research_data_authority.py tests/test_historical_research.py tests/test_historical_bulk.py tests/test_factor_factory.py tests/test_factor001r.py tests/test_sequence_readiness.py tests/test_model*.py
+        run: |
+          $modelTests = @(
+            Get-ChildItem -LiteralPath tests -Filter 'test_model*.py' -File |
+              Sort-Object Name |
+              ForEach-Object { $_.FullName }
+          )
+          if ($modelTests.Count -eq 0) {
+            throw 'No model tests matched tests/test_model*.py'
+          }
+          $tests = @(
+            'tests/test_research_data_authority.py'
+            'tests/test_historical_research.py'
+            'tests/test_historical_bulk.py'
+            'tests/test_factor_factory.py'
+            'tests/test_factor001r.py'
+            'tests/test_sequence_readiness.py'
+          ) + $modelTests
+          & pytest @tests
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
   full:
     name: Full regression suite
