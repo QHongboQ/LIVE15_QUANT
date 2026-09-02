@@ -350,6 +350,7 @@ def test_visual_polish_contract_keeps_viewport_and_primary_ui_truthful() -> None
     assert "autoFollow.current" in charts
     assert "Reset view" in charts
     assert "tickMarkFormatter" in charts
+    assert "fixLeftEdge: true, fixRightEdge: true" in charts
     assert "line.update(point)" in charts
     assert "UP <b>" in app and "DOWN <b>" in app
     assert "market.ticker ?? 'Awaiting contract'" not in app

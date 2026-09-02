@@ -122,7 +122,8 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
       grid: { vertLines: { color: '#171724' }, horzLines: { color: '#1c1c2a' } },
       crosshair: { vertLine: { color: '#7164a8', labelBackgroundColor: '#51428f' }, horzLine: { color: '#7164a8', labelBackgroundColor: '#51428f' } },
       rightPriceScale: { borderColor: '#272637', scaleMargins: { top: 0.12, bottom: 0.12 } },
-      timeScale: { borderColor: '#272637', rightOffset: 0, rightOffsetPixels: 0, shiftVisibleRangeOnNewBar: false, timeVisible: true, secondsVisible: false, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: (time: Time) => new Date(Number(time) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
+      // Align endpoint labels inside the time scale without extending the truthful contract domain.
+      timeScale: { borderColor: '#272637', rightOffset: 0, rightOffsetPixels: 0, fixLeftEdge: true, fixRightEdge: true, shiftVisibleRangeOnNewBar: false, timeVisible: true, secondsVisible: false, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: (time: Time) => new Date(Number(time) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
       handleScroll: { vertTouchDrag: false },
     });
     chart.current = instance;
