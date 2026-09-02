@@ -413,9 +413,10 @@ def test_terminal_human_language_formats_target_values_and_technical_display_onl
     assert "'ABOVE TARGET'" in app
     assert "'BELOW TARGET'" in app
     assert "'AT TARGET'" in app
-    assert "maximumFractionDigits: 4" in app
+    assert "minimumFractionDigits: 2, maximumFractionDigits: 2" in app
     assert "toFixed(2)" in app
     assert "${difference > 0 ? '+' : difference < 0 ? '-' : ''}$" in app
+    assert "difference?.label === 'BELOW TARGET' ? 'negative' : 'neutral'" in app
     assert "const humanLabel" in app
     assert "typeof value === 'boolean' ? value ? 'Yes' : 'No'" in app
     assert "value.length === 1 ? 'item' : 'items'" in app
