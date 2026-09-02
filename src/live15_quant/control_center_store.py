@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +99,7 @@ class DashboardReadStore:
         if connection is None:
             return self._missing_asset(asset, "raw_store_unavailable")
         try:
+            quote_columns = self._quote_columns(connection, include_detail=True)
             return self._asset(
                 connection,
                 asset,
@@ -107,6 +108,7 @@ class DashboardReadStore:
                 include_features=True,
                 include_detail=True,
                 allow_ws=allow_ws,
+                quote_columns=quote_columns,
             )
         finally:
             connection.close()
@@ -125,6 +127,7 @@ class DashboardReadStore:
         if connection is None:
             return self._missing_asset(asset, "raw_store_unavailable")
         try:
+            quote_columns = self._quote_columns(connection, include_detail=True)
             return self._asset(
                 connection,
                 asset,
@@ -133,6 +136,7 @@ class DashboardReadStore:
                 include_features=False,
                 include_detail=True,
                 allow_ws=allow_ws,
+                quote_columns=quote_columns,
             )
         finally:
             connection.close()
@@ -226,6 +230,7 @@ class DashboardReadStore:
         if connection is None:
             return [self._missing_asset(asset, "raw_store_unavailable") for asset in Asset]
         try:
+            quote_columns = self._quote_columns(connection, include_detail=False)
             return [
                 self._asset(
                     connection,
@@ -238,6 +243,7 @@ class DashboardReadStore:
                         synchronized_markets is None
                         or synchronized_markets.get(asset.value) == current_markets.get(asset.value)
                     ),
+                    quote_columns=quote_columns,
                 )
                 for asset in Asset
             ]
@@ -254,17 +260,13 @@ class DashboardReadStore:
         include_features: bool,
         include_detail: bool,
         allow_ws: bool,
+        quote_columns: str,
     ) -> dict[str, Any]:
         try:
             market = self._market_row(connection, asset, now, current_ticker)
             if market is None:
                 return self._missing_asset(asset, "market_missing")
             ticker = str(market["ticker"])
-            quote_columns = (
-                "*"
-                if include_detail
-                else "yes_bid,yes_ask,no_bid,no_ask,last_trade,source_timestamp,received_timestamp"
-            )
             rest_quote = connection.execute(
                 f"""SELECT {quote_columns} FROM kalshi_prediction_quotes WHERE ticker=?
                 ORDER BY received_timestamp DESC, id DESC LIMIT 1""",
@@ -364,8 +366,8 @@ class DashboardReadStore:
             no_ask = (
                 str(Decimal(1) - Decimal(ws_yes_bid))
                 if ws_book is not None and ws_yes_bid is not None
-                else _decimal(quote["no_ask"])
-                if quote is not None
+                else self._rest_no_ask(rest_quote)
+                if rest_quote is not None
                 else None
             )
             spread = None
@@ -567,6 +569,41 @@ class DashboardReadStore:
             }
         except (sqlite3.Error, ValueError, RecorderStorageError):
             return self._missing_asset(asset, "store_error")
+
+    @staticmethod
+    def _quote_columns(connection: sqlite3.Connection, *, include_detail: bool) -> str:
+        if include_detail:
+            return "*"
+        fields = [
+            "yes_bid",
+            "yes_ask",
+            "no_bid",
+            "last_trade",
+            "source_timestamp",
+            "received_timestamp",
+        ]
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info('kalshi_prediction_quotes')")
+        }
+        if "no_ask" in columns:
+            fields.insert(3, "no_ask")
+        return ",".join(fields)
+
+    @staticmethod
+    def _rest_no_ask(quote: sqlite3.Row) -> str | None:
+        if "no_ask" in quote.keys():
+            return _decimal(quote["no_ask"])
+        yes_bid = _decimal(quote["yes_bid"])
+        if yes_bid is None:
+            return None
+        try:
+            parsed_yes_bid = Decimal(yes_bid)
+        except InvalidOperation:
+            return None
+        if not parsed_yes_bid.is_finite() or not Decimal(0) <= parsed_yes_bid <= Decimal(1):
+            return None
+        return str(Decimal(1) - parsed_yes_bid)
 
     @staticmethod
     def _current_ws_book(connection: sqlite3.Connection, ticker: str) -> sqlite3.Row | None:

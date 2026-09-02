@@ -378,6 +378,86 @@ async def test_market_detail_reuses_native_storage_and_feature_engine(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_markets_legacy_rest_projection_without_no_ask_stays_available(
+    tmp_path: Path,
+) -> None:
+    configured = settings(tmp_path)
+    market = provider().parse_market(Asset.BTC, raw_market(), NOW)
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_kalshi_market(market)
+        store.append_kalshi_quote(quote(market.ticker, market.event_ticker, NOW))
+        store.append_coinbase(
+            MarketTick(
+                symbol="BTC-USD",
+                price=market.target,
+                bid=market.target,
+                ask=market.target,
+                received_at=NOW,
+                exchange_time=NOW,
+            )
+        )
+    with sqlite3.connect(configured.recorder_data_path) as connection:
+        connection.execute("UPDATE kalshi_prediction_quotes SET yes_bid='0.6300', no_ask='0.3700'")
+        columns = [
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info('kalshi_prediction_quotes')")
+            if row[1] != "no_ask"
+        ]
+        selected = ",".join(columns)
+        connection.execute("ALTER TABLE kalshi_prediction_quotes RENAME TO legacy_quotes")
+        connection.execute(
+            f"CREATE TABLE kalshi_prediction_quotes AS SELECT {selected} FROM legacy_quotes"
+        )
+        connection.execute("DROP TABLE legacy_quotes")
+    write_health(configured.recorder_health_path, current_markets={"BTC": market.ticker})
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        markets = await client.get("/api/markets")
+        detail = await client.get("/api/markets/BTC")
+
+    assert markets.status_code == 200
+    assert detail.status_code == 200
+    assert detail.json()["no_ask"] == "0.3700"
+
+
+@pytest.mark.parametrize(
+    ("columns", "values", "expected"),
+    (
+        (("yes_bid",), ("0.6300",), "0.3700"),
+        (("yes_bid", "no_ask"), ("0.6300", "0.3500"), "0.3500"),
+        (("yes_bid",), (None,), None),
+        (("yes_bid",), ("malformed",), None),
+        (("yes_bid",), ("NaN",), None),
+    ),
+    ids=(
+        "legacy-derived",
+        "explicit-authoritative",
+        "missing-quote",
+        "malformed-legacy",
+        "non-finite-legacy",
+    ),
+)
+def test_rest_no_ask_compatibility_projection_is_authoritative_and_fail_closed(
+    columns: tuple[str, ...], values: tuple[str | None, ...], expected: str | None
+) -> None:
+    with sqlite3.connect(":memory:") as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute(
+            f"CREATE TABLE quote ({', '.join(f'{column} TEXT' for column in columns)})"
+        )
+        connection.execute(
+            f"INSERT INTO quote VALUES ({', '.join('?' for _ in columns)})",
+            values,
+        )
+        quote_row = connection.execute("SELECT * FROM quote").fetchone()
+
+    assert quote_row is not None
+    assert DashboardReadStore._rest_no_ask(quote_row) == expected
+
+
+@pytest.mark.asyncio
 async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
     tmp_path: Path,
 ) -> None:
@@ -469,6 +549,7 @@ async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
     assert current.json()["quote_source"] == "kalshi_ws_synchronized"
     assert current.json()["yes_bid"] == "0.6000"
     assert current.json()["yes_ask"] == "0.7000"
+    assert current.json()["no_ask"] == "0.4000"
     assert current.json()["book_sequence"] == 10
     assert history.json()["ticker"] == market.ticker
     assert history.json()["probability"][0]["sequence"] == 10
