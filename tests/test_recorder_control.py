@@ -650,3 +650,21 @@ def test_desktop_launcher_uses_only_authoritative_control_center_service() -> No
     assert "start_runtime_supervisor.cmd" not in lowered
     assert "managed_control_center" not in lowered
     assert "127.0.0.1:8765/api/system" in lowered
+
+
+def test_desktop_shortcut_installer_uses_stable_launcher_and_repository_icon() -> None:
+    root = Path(__file__).parents[1]
+    script = (root / "tools" / "install_live15_desktop_shortcut.ps1").read_text(encoding="utf-8")
+    icon = root / "assets" / "live15-terminal.ico"
+    lowered = script.lower()
+
+    assert icon.is_file()
+    assert icon.stat().st_size > 0
+    assert ".local-tools\\start live15.cmd" in lowered
+    assert "assets\\live15-terminal.ico" in lowered
+    assert ".local-tools\\live15-terminal.ico" in lowered
+    assert 'join-path $desktoppath "live15.lnk"' in lowered
+    assert "$shortcut.targetpath = $launcher" in lowered
+    assert "$shortcut.iconlocation = \"$installedicon,0\"" in lowered
+    assert "127.0.0.1:8765" not in lowered
+    assert "vite" not in lowered
