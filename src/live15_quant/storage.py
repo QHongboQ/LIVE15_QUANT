@@ -3942,6 +3942,14 @@ class RecorderStore:
             )
             if not _compatible_record_version(row["schema_version"]):
                 raise RecorderStorageError("malformed Kalshi-native quote record")
+            yes_bid = _parse_decimal(row["yes_bid"], "yes_bid", optional=True)
+            no_ask = (
+                _parse_decimal(row["no_ask"], "no_ask", optional=True)
+                if "no_ask" in row.keys()
+                else None
+                if yes_bid is None
+                else Decimal(1) - yes_bid
+            )
             quote = KalshiNativeQuote(
                 asset=Asset(row["asset"]),
                 series=row["series"],
@@ -3956,10 +3964,10 @@ class RecorderStore:
                 received_timestamp=_parse_timestamp(
                     row["received_timestamp"], "received_timestamp"
                 ),
-                yes_bid=_parse_decimal(row["yes_bid"], "yes_bid", optional=True),
+                yes_bid=yes_bid,
                 yes_ask=_parse_decimal(row["yes_ask"], "yes_ask", optional=True),
                 no_bid=_parse_decimal(row["no_bid"], "no_bid", optional=True),
-                no_ask=_parse_decimal(row["no_ask"], "no_ask", optional=True),
+                no_ask=no_ask,
                 last_trade=_parse_decimal(row["last_trade"], "last_trade", optional=True),
                 volume=_parse_decimal(row["volume"], "volume", optional=True),
                 yes_bid_depth=yes_depth,

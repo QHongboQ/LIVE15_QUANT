@@ -378,6 +378,50 @@ async def test_market_detail_reuses_native_storage_and_feature_engine(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_markets_legacy_rest_projection_without_no_ask_stays_available(
+    tmp_path: Path,
+) -> None:
+    configured = settings(tmp_path)
+    market = provider().parse_market(Asset.BTC, raw_market(), NOW)
+    with RecorderStore(configured.recorder_data_path) as store:
+        store.append_kalshi_market(market)
+        store.append_kalshi_quote(quote(market.ticker, market.event_ticker, NOW))
+        store.append_coinbase(
+            MarketTick(
+                symbol="BTC-USD",
+                price=market.target,
+                bid=market.target,
+                ask=market.target,
+                received_at=NOW,
+                exchange_time=NOW,
+            )
+        )
+    with sqlite3.connect(configured.recorder_data_path) as connection:
+        columns = [
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info('kalshi_prediction_quotes')")
+            if row[1] != "no_ask"
+        ]
+        selected = ",".join(columns)
+        connection.execute("ALTER TABLE kalshi_prediction_quotes RENAME TO legacy_quotes")
+        connection.execute(
+            f"CREATE TABLE kalshi_prediction_quotes AS SELECT {selected} FROM legacy_quotes"
+        )
+        connection.execute("DROP TABLE legacy_quotes")
+    write_health(configured.recorder_health_path, current_markets={"BTC": market.ticker})
+    service = ControlCenterService(configured, clock=lambda: NOW)
+    transport = httpx.ASGITransport(app=create_app(configured, service))
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        markets = await client.get("/api/markets")
+        detail = await client.get("/api/markets/BTC")
+
+    assert markets.status_code == 200
+    assert detail.status_code == 200
+    assert detail.json()["no_ask"] == "0.5000"
+
+
+@pytest.mark.asyncio
 async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
     tmp_path: Path,
 ) -> None:
