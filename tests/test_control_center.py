@@ -422,6 +422,34 @@ async def test_markets_legacy_rest_projection_without_no_ask_stays_available(
     assert detail.json()["no_ask"] == "0.3700"
 
 
+@pytest.mark.parametrize(
+    ("columns", "values", "expected"),
+    (
+        (("yes_bid",), ("0.6300",), "0.3700"),
+        (("yes_bid", "no_ask"), ("0.6300", "0.3500"), "0.3500"),
+        (("yes_bid",), (None,), None),
+        (("yes_bid",), ("malformed",), None),
+    ),
+    ids=("legacy-derived", "explicit-authoritative", "missing-quote", "malformed-legacy"),
+)
+def test_rest_no_ask_compatibility_projection_is_authoritative_and_fail_closed(
+    columns: tuple[str, ...], values: tuple[str | None, ...], expected: str | None
+) -> None:
+    with sqlite3.connect(":memory:") as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute(
+            f"CREATE TABLE quote ({', '.join(f'{column} TEXT' for column in columns)})"
+        )
+        connection.execute(
+            f"INSERT INTO quote VALUES ({', '.join('?' for _ in columns)})",
+            values,
+        )
+        quote_row = connection.execute("SELECT * FROM quote").fetchone()
+
+    assert quote_row is not None
+    assert DashboardReadStore._rest_no_ask(quote_row) == expected
+
+
 @pytest.mark.asyncio
 async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
     tmp_path: Path,
@@ -514,6 +542,7 @@ async def test_market_uses_synchronized_ws_primary_and_exposes_bounded_history(
     assert current.json()["quote_source"] == "kalshi_ws_synchronized"
     assert current.json()["yes_bid"] == "0.6000"
     assert current.json()["yes_ask"] == "0.7000"
+    assert current.json()["no_ask"] == "0.4000"
     assert current.json()["book_sequence"] == 10
     assert history.json()["ticker"] == market.ticker
     assert history.json()["probability"][0]["sequence"] == 10

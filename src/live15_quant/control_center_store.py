@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -595,7 +595,12 @@ class DashboardReadStore:
         if "no_ask" in quote.keys():
             return _decimal(quote["no_ask"])
         yes_bid = _decimal(quote["yes_bid"])
-        return None if yes_bid is None else str(Decimal(1) - Decimal(yes_bid))
+        if yes_bid is None:
+            return None
+        try:
+            return str(Decimal(1) - Decimal(yes_bid))
+        except InvalidOperation:
+            return None
 
     @staticmethod
     def _current_ws_book(connection: sqlite3.Connection, ticker: str) -> sqlite3.Row | None:
