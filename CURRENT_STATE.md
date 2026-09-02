@@ -9,11 +9,11 @@ Authority and its evidence artifacts.
 
 ## Current phase
 
-**Upstream-consolidation freeze.** GAP002 is closed/pass. Runtime/Lifecycle consolidation is
-**COMPLETE / VERIFIED**: Nomad + Windows SCM lifecycle replacement is adopted and Production
-verified, RuntimeSupervisor is retired, cold boot passed, and no dual owner remains. The next
-generic replacement class is **WEB APPLICATION SHELL**; training remains blocked by its existing
-gates.
+**Upstream-consolidation freeze.** GAP002 is closed/pass. Runtime/Lifecycle consolidation and the
+Web Application Shell replacement are **COMPLETE / VERIFIED**: Nomad + Windows SCM owns lifecycle,
+the React Admin + Material UI terminal is the sole ControlCenter Web owner, RuntimeSupervisor and
+the legacy handwritten shell are retired, cold boot passed, and no dual owner remains. The next
+generic replacement class is **VECTOR TELEMETRY**; training remains blocked by its existing gates.
 
 ControlCenter current truth is `docs/project-brain/capabilities/control-center.md`. Current task
 closeouts and gates are in `PROJECT_PROGRESS.md`; older completed-foundation history remains in
@@ -28,7 +28,8 @@ Git/PR history and the bounded evidence selected by current authorities.
 | Runtime/Lifecycle consolidation | **COMPLETE / VERIFIED** | `docs/project-brain/dependencies/platform/runtime-ownership.md` |
 | Nomad + Windows SCM lifecycle replacement | **ADOPTED / PRODUCTION VERIFIED** | `docs/project-brain/dependencies/platform/runtime-ownership.md` |
 | RuntimeSupervisor | **RETIRED** | Runtime authority; PR #129 |
-| Next generic replacement | **WEB APPLICATION SHELL / PLANNED** | `docs/project-brain/plan/current-roadmap.md`; React Admin + Material UI candidate |
+| Web Application Shell | **COMPLETE / VERIFIED** | `docs/project-brain/capabilities/control-center.md`; React Admin + Material UI terminal |
+| Next generic replacement | **VECTOR TELEMETRY / PLANNED** | `docs/project-brain/plan/current-roadmap.md`; bounded Vector decision/POC required |
 | Research coverage | Typed H0/H1/H2 authority | `docs/research_data_authority.md` and `/api/research-data` |
 | Dataset/model promotion | Requires fresh forward challenger evidence | `docs/model_vnext_contract.md`, model lineage |
 | Hard Risk / Production writes | Human-authorized only | `PROJECT_CHARTER.md`, `AGENTS.md` |

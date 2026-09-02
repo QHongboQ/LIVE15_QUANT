@@ -1,6 +1,6 @@
 # Current roadmap
 
-Revision: R7
+Revision: R8
 Status: approved execution strategy.
 
 ## What it is
@@ -25,8 +25,9 @@ GAP002 CLOSED
   -> bounded responsibility-by-responsibility replacement
        owner resolution -> freeze legacy generic owner -> replace one responsibility
        -> verify -> retire corresponding old owner -> next responsibility
-  -> Web Application Shell is the next generic replacement class
-  -> Vector telemetry remains a later candidate
+  -> Web Application Shell COMPLETE / VERIFIED
+       React Admin + Material UI terminal adopted; legacy handwritten shell retired
+  -> Vector telemetry is the next generic replacement class
   -> resume data/training/model progression under existing gates
 ```
 
@@ -36,11 +37,16 @@ ControlCenter, and `kalshi_sdk_ws_shadow` are Nomad-managed; `pyth` and `coinbas
 in-process Recorder workers; RuntimeSupervisor and the managed `paper_forward` wrapper are retired.
 Cold-boot proof passed, no dual owner remains, and final repository cleanup merged in PR #129.
 
-**NEXT:** select the bounded **WEB APPLICATION SHELL** replacement class, with React Admin +
-Material UI as the candidate upstream owner. Scope is limited to generic routing, tables,
-loading/error handling, refresh plumbing, and theme/shell. Preserve the FastAPI typed domain API,
-Recorder truth, settlement truth, training truth, Hard Risk, and Production authorization. This
-closeout does not begin the React Admin migration or authorize Production mutation.
+The Web Application Shell replacement is **COMPLETE / VERIFIED**. React Admin + Material UI now
+owns the packaged ControlCenter terminal; the legacy handwritten shell is retired. FastAPI typed
+domain projections, Recorder truth, settlement truth, training truth, Hard Risk, and Production
+authorization remain LIVE15-owned.
+
+**NEXT:** select the bounded **VECTOR TELEMETRY** replacement responsibility. Vector is the default
+candidate for generic log/metric collection and routing; compare OTel only if a measured
+OTLP/tracing requirement warrants it. Keep any collector out of the Recorder hot path and preserve
+all LIVE15 truth authorities. This reconciliation does not begin a Vector POC, authorize adoption,
+or authorize Production mutation.
 
 Candidate-specific boundaries and classifications remain in
 `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; replacement mechanics remain in
@@ -73,3 +79,4 @@ Update only when an approved phase, freeze, or gate changes.
 | R5 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Closed obsolete GAP002 phase routing and established the sole upstream-consolidation mainline. |
 | R6 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 closeout | Completed authority consolidation and selected runtime/lifecycle consolidation as the one concrete next responsibility class. |
 | R7 | RUNTIME-LIFECYCLE-CONSOLIDATION-CLOSEOUT-001 | Recorded verified Nomad/SCM lifecycle adoption, RuntimeSupervisor retirement, and the Web Application Shell as the next generic replacement class. |
+| R8 | PROJECT-BRAIN-POST-WEB-RECONCILIATION-001 | Recorded the complete/verified Web Application Shell replacement and selected Vector telemetry as the next generic replacement responsibility. |

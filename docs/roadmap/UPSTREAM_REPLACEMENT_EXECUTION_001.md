@@ -146,8 +146,9 @@ is owned only by `docs/project-brain/plan/current-roadmap.md`.
 1. **Nomad + Windows SCM** remains the first generic lifecycle owner. ControlCenter and Recorder
    are already Nomad-owned; remaining lifecycle consolidation concerns residual
    WinSW/RuntimeSupervisor generic responsibilities, one bounded responsibility at a time.
-2. **React Admin + Material UI** — first web POC is display-only health and
-   markets; keep FastAPI typed projections and domain truth in LIVE15.
+2. **React Admin + Material UI** — the Web Application Shell is adopted and
+   Production verified; the packaged terminal remains a display-only consumer of
+   FastAPI typed projections and LIVE15 domain truth.
 3. **Vector**, then **Grafana** where an operations dashboard is actually
    useful. Use one telemetry collector by default; do not deploy overlapping
    collectors without a measured requirement.
