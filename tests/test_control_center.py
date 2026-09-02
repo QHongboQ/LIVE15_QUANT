@@ -397,6 +397,7 @@ async def test_markets_legacy_rest_projection_without_no_ask_stays_available(
             )
         )
     with sqlite3.connect(configured.recorder_data_path) as connection:
+        connection.execute("UPDATE kalshi_prediction_quotes SET yes_bid='0.6300', no_ask='0.3700'")
         columns = [
             str(row[1])
             for row in connection.execute("PRAGMA table_info('kalshi_prediction_quotes')")
@@ -418,7 +419,7 @@ async def test_markets_legacy_rest_projection_without_no_ask_stays_available(
 
     assert markets.status_code == 200
     assert detail.status_code == 200
-    assert detail.json()["no_ask"] == "0.5000"
+    assert detail.json()["no_ask"] == "0.3700"
 
 
 @pytest.mark.asyncio
