@@ -373,3 +373,27 @@ def test_visual_polish_defects_keep_portfolio_sparse_data_and_admin_units_truthf
     assert app.index("/duration|retention_seconds/") < app.index("/percent|ratio/")
     assert "width: 192px !important" in polish
     assert "margin: 6px 12px !important" in polish
+
+
+def test_market_depth_probability_and_summary_remain_truthful() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    polish = (ROOT / "polish.css").read_text(encoding="utf-8")
+
+    assert "const probabilityCents" in app
+    assert "Number(value) * 100" in app
+    assert "probabilityCents(market.yes_bid)" in app
+    assert "probabilityCents(market.no_bid)" in app
+    assert "probabilityCents(data.yes_bid)" in app
+    assert "probabilityCents(data.no_bid)" in app
+    assert 'Metric label="Difference"' in app
+    assert 'Metric label="DOWN probability"' in app
+    assert "targetDifference(market.underlying_price, market.target)" in app
+    assert "difference / reference * 100" in app
+    assert "const maxVisibleQuantity = Math.max(0" in app
+    assert "quantity / maxVisibleQuantity * 100" in app
+    assert 'className="depth-bar"' in app
+    assert "width: 58%" not in polish
+    assert ".depth-bar" in polish
+    assert ".detail-hero .metric strong { white-space: normal" in (ROOT / "styles.css").read_text(
+        encoding="utf-8"
+    )
