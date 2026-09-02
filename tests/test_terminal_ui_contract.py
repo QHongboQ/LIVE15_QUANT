@@ -83,10 +83,11 @@ def test_terminal_v2_chart_and_view_contracts_remain_local_and_truthful() -> Non
     assert "FinancialChart" in app
     assert "PRICE" in app and "PROBABILITY" in app
     assert "Last actual change" in app
-    assert "Underlying latency" in app
-    assert "Projection latency" in app
+    assert "displayLatency(detailLatency)" in app
+    assert "probabilityLatency" in app
     assert "live15Sidebar" in app
-    assert "accountEquityHistory(portfolioRanges[range])" in app
+    assert "accountEquityHistory(custom ? 'ALL' : portfolioRanges[range])" in app
+    assert "item.observed_at >= from" in app
     assert "close_price" in api
     assert "third_party" not in app.lower()
 
@@ -137,8 +138,8 @@ def test_realtime_chart_uses_incremental_update_without_refitting() -> None:
     assert "for (const point of newPoints) line.update(point)" in charts
     assert "line.setData(points)" in charts
     assert "latestPoint.time > previous.at(-1)!.time" in charts
-    assert "if (fitRequired) chart.current.timeScale().fitContent()" in charts
-    assert charts.count("fitContent()") == 1
+    assert "setVisibleRange" in charts
+    assert "if (autoFollow.current) defaultViewport()" in charts
     assert "resetKey" in charts
 
 
@@ -161,7 +162,7 @@ def test_overview_health_warning_is_truthful_and_scoped() -> None:
     assert "issues.length > 0 && issues.every(isKnownWtiPythIssue)" in app
     assert "healthIssueSummary(issues)" in app
     assert 'Status text="1 source issue"' not in app
-    assert "WTI/Pyth needs attention" in app
+    assert "WTI source degraded" in app
 
 
 def test_terminal_status_is_derived_from_health_and_market_authority() -> None:
@@ -183,7 +184,7 @@ def test_terminal_status_is_derived_from_health_and_market_authority() -> None:
     assert "'DELAYED'" in app
     assert "'STALE'" in app
     assert "'UNAVAILABLE'" in app
-    assert "detailStatus === 'LIVE' ? '●' : '○'" in app
+    assert "detailStatusLabel" in app
     assert "● LIVE" not in app
 
 
@@ -337,3 +338,62 @@ def test_market_cards_preserve_stable_inputs_until_visible_values_change() -> No
 
     assert floor(731.821) == floor(731.614)
     assert floor(731.001) != floor(730.999)
+
+
+def test_visual_polish_contract_keeps_viewport_and_primary_ui_truthful() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "contractStart" in charts
+    assert "setVisibleRange" in charts
+    assert "autoFollow.current" in charts
+    assert "Reset view" in charts
+    assert "tickMarkFormatter" in charts
+    assert "line.update(point)" in charts
+    assert "UP <b>" in app and "DOWN <b>" in app
+    assert "market.ticker ?? 'Awaiting contract'" not in app
+    assert "portfolioRanges = ['1D', '1W', '1M', '3M', '6M', '1Y', 'ALL']" in app
+    assert 'type="date"' in app
+    assert "WTI source degraded" in app
+    assert "Structured detail available" not in app
+    assert "refresh={reconcile}" not in app
+
+
+def test_visual_polish_defects_keep_portfolio_sparse_data_and_admin_units_truthful() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+    polish = (ROOT / "polish.css").read_text(encoding="utf-8")
+
+    assert "const flatPortfolio = points.length > 0" in app
+    assert "showLatestMarker={false} hideRightPriceScale={flatPortfolio}" in app
+    assert "actual samples · {flatPortfolio ? 'flat series' : 'forward-collected'}" in app
+    assert "showLatestMarker = true" in charts
+    assert "priceScale('right').applyOptions({ visible: !hideRightPriceScale })" in charts
+    assert "toolbar={false} userMenu={false}" in app
+    assert app.index("/duration|retention_seconds/") < app.index("/percent|ratio/")
+    assert "width: 192px !important" in polish
+    assert "margin: 6px 12px !important" in polish
+
+
+def test_market_depth_probability_and_summary_remain_truthful() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    polish = (ROOT / "polish.css").read_text(encoding="utf-8")
+
+    assert "const probabilityCents" in app
+    assert "Number(value) * 100" in app
+    assert "probabilityCents(market.yes_bid)" in app
+    assert "probabilityCents(market.no_bid)" in app
+    assert "probabilityCents(data.yes_bid)" in app
+    assert "probabilityCents(data.no_bid)" in app
+    assert 'Metric label="Difference"' in app
+    assert 'Metric label="DOWN probability"' in app
+    assert "targetDifference(market.underlying_price, market.target)" in app
+    assert "difference / reference * 100" in app
+    assert "const maxVisibleQuantity = Math.max(0" in app
+    assert "quantity / maxVisibleQuantity * 100" in app
+    assert 'className="depth-bar"' in app
+    assert "width: 58%" not in polish
+    assert ".depth-bar" in polish
+    assert ".detail-hero .metric strong { white-space: normal" in (ROOT / "styles.css").read_text(
+        encoding="utf-8"
+    )

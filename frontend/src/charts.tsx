@@ -9,7 +9,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export type ChartPoint = { time: string; value: number };
 export type ChartSeries = { id: string; label: string; color: string; points?: ChartPoint[]; history?: ChartPoint[]; livePoints?: ChartPoint[] };
@@ -54,7 +54,7 @@ function incrementalPoints(previous: { time: UTCTimestamp; value: number }[], ne
 }
 
 /** A thin local adapter around the Apache-2.0 TradingView Lightweight Charts dependency. */
-export function FinancialChart({ series, reference, height = 300, ariaLabel, resetKey }: { series: ChartSeries[]; reference?: number | null; height?: number; ariaLabel: string; resetKey?: string }) {
+export function FinancialChart({ series, reference, height = 300, ariaLabel, resetKey, contractStart, showLatestMarker = true, hideRightPriceScale = false }: { series: ChartSeries[]; reference?: number | null; height?: number; ariaLabel: string; resetKey?: string; contractStart?: string | null; showLatestMarker?: boolean; hideRightPriceScale?: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi>();
   const chartSeries = useRef<Map<string, ISeriesApi<'Line'>>>(new Map());
@@ -69,6 +69,15 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
   const previousResetKey = useRef(resetKey);
   const initialHeight = useRef(height);
   const tooltip = useRef<HTMLDivElement>(null);
+  const autoFollow = useRef(true);
+  const [manualView, setManualView] = useState(false);
+  const defaultViewport = useCallback(() => {
+    if (!chart.current || !contractStart) return chart.current?.timeScale().fitContent();
+    const from = timestamp(contractStart);
+    const latest = [...renderedLivePoints.current.values(), ...renderedPoints.current.values()].flat().at(-1)?.time;
+    if (latest && latest >= from) chart.current.timeScale().setVisibleRange({ from: from as Time, to: latest as Time });
+    else chart.current.timeScale().fitContent();
+  }, [contractStart]);
 
   useEffect(() => {
     seriesRef.current = series;
@@ -83,10 +92,12 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
       grid: { vertLines: { color: '#171724' }, horzLines: { color: '#1c1c2a' } },
       crosshair: { vertLine: { color: '#7164a8', labelBackgroundColor: '#51428f' }, horzLine: { color: '#7164a8', labelBackgroundColor: '#51428f' } },
       rightPriceScale: { borderColor: '#272637', scaleMargins: { top: 0.12, bottom: 0.12 } },
-      timeScale: { borderColor: '#272637', rightOffsetPixels: 48, timeVisible: true, secondsVisible: false, lockVisibleTimeRangeOnResize: true },
+      timeScale: { borderColor: '#272637', rightOffsetPixels: 48, timeVisible: true, secondsVisible: true, lockVisibleTimeRangeOnResize: true, tickMarkFormatter: (time: Time) => new Date(Number(time) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) },
       handleScroll: { vertTouchDrag: false },
     });
     chart.current = instance;
+    const onRangeChange = () => { if (autoFollow.current) return; setManualView(true); };
+    instance.timeScale().subscribeVisibleLogicalRangeChange(onRangeChange);
     instance.subscribeCrosshairMove((event) => {
       if (!tooltip.current) return;
       if (!event.point || !event.time || !event.seriesData.size) { tooltip.current.style.opacity = '0'; return; }
@@ -101,16 +112,21 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
     });
     const seriesMap = chartSeries.current;
     const observer = new ResizeObserver(() => instance.timeScale().applyOptions({ rightOffsetPixels: Math.max(36, Math.round((host.current?.clientWidth ?? 400) * 0.1)) }));
-    observer.observe(host.current);
+    const hostElement = host.current;
+    observer.observe(hostElement);
+    const suspendAutoFollow = () => { autoFollow.current = false; setManualView(true); };
+    hostElement.addEventListener('wheel', suspendAutoFollow, { passive: true });
+    hostElement.addEventListener('pointerdown', suspendAutoFollow);
     const markersForCleanup = seriesMarkers.current;
     const renderedLiveForCleanup = renderedLivePoints.current;
     const normalizedHistoryForCleanup = normalizedHistory.current;
-    return () => { observer.disconnect(); for (const markers of markersForCleanup.values()) markers.detach(); markersForCleanup.clear(); if (referenceLine.current && referenceSeries.current) referenceSeries.current.removePriceLine(referenceLine.current); referenceLine.current = undefined; referenceSeries.current = undefined; referenceLinePrice.current = undefined; instance.remove(); chart.current = undefined; seriesMap.clear(); renderedLiveForCleanup.clear(); normalizedHistoryForCleanup.clear(); };
+    return () => { hostElement.removeEventListener('wheel', suspendAutoFollow); hostElement.removeEventListener('pointerdown', suspendAutoFollow); instance.timeScale().unsubscribeVisibleLogicalRangeChange(onRangeChange); observer.disconnect(); for (const markers of markersForCleanup.values()) markers.detach(); markersForCleanup.clear(); if (referenceLine.current && referenceSeries.current) referenceSeries.current.removePriceLine(referenceLine.current); referenceLine.current = undefined; referenceSeries.current = undefined; referenceLinePrice.current = undefined; instance.remove(); chart.current = undefined; seriesMap.clear(); renderedLiveForCleanup.clear(); normalizedHistoryForCleanup.clear(); };
   }, []);
 
   useEffect(() => {
     if (!chart.current) return;
     chart.current.applyOptions({ height });
+    chart.current.priceScale('right').applyOptions({ visible: !hideRightPriceScale });
     const activeIds = new Set(series.map((item) => item.id));
     for (const [id, line] of chartSeries.current) {
       if (activeIds.has(id)) continue;
@@ -124,7 +140,6 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
     }
     const resetRequired = previousResetKey.current !== resetKey;
     previousResetKey.current = resetKey;
-    let fitRequired = resetRequired;
     for (const item of series) {
       let line = chartSeries.current.get(item.id);
       if (!line) {
@@ -144,7 +159,6 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
         if (!previousLive || resetRequired || historyChanged) {
           const combined = combinePoints(historicalPoints, livePoints);
           line.setData(combined);
-          fitRequired = true;
         } else if (livePoints.length !== previousLive.length || livePoints.some((point, index) => !samePoint(point, previousLive[index]))) {
           const newPoints = incrementalPoints(previousLive, livePoints);
           if (newPoints) {
@@ -152,7 +166,6 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
           } else {
             const combined = combinePoints(historicalPoints, livePoints);
             line.setData(combined);
-            fitRequired = true;
           }
         }
         renderedLivePoints.current.set(item.id, livePoints);
@@ -162,7 +175,6 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
         const previous = renderedPoints.current.get(item.id);
         if (!previous || resetRequired || historyChanged) {
           line.setData(points);
-          fitRequired = true;
         } else if (points.length !== previous.length || points.some((point, index) => !samePoint(point, previous[index]))) {
           const newPoints = incrementalPoints(previous, points);
           if (newPoints) {
@@ -170,19 +182,21 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
           }
           else {
             line.setData(points);
-            fitRequired = true;
           }
         }
         renderedPoints.current.set(item.id, points);
         markerPoint = points.at(-1);
       }
-      if (item === series[0]) {
+      if (item === series[0] && showLatestMarker) {
         let markers = seriesMarkers.current.get(item.id);
         if (!markers) {
           markers = createSeriesMarkers<Time>(line);
           seriesMarkers.current.set(item.id, markers);
         }
-        markers.setMarkers(markerPoint ? [{ time: markerPoint.time as Time, position: 'inBar', color: item.color, shape: 'circle', text: 'NOW', size: 2 }] : []);
+        markers.setMarkers(markerPoint ? [{ time: markerPoint.time as Time, position: 'inBar', color: item.color, shape: 'circle', size: 1 }] : []);
+      } else if (item === series[0]) {
+        seriesMarkers.current.get(item.id)?.detach();
+        seriesMarkers.current.delete(item.id);
       }
     }
     const nextReferenceSeries = series[0] ? chartSeries.current.get(series[0].id) : undefined;
@@ -207,10 +221,10 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
       referenceSeries.current = undefined;
       referenceLinePrice.current = undefined;
     }
-    if (fitRequired) chart.current.timeScale().fitContent();
+    if (autoFollow.current) defaultViewport();
     chart.current.timeScale().applyOptions({ rightOffsetPixels: Math.max(36, Math.round((host.current?.clientWidth ?? 400) * 0.1)) });
-  }, [series, reference, height, resetKey]);
+  }, [series, reference, height, resetKey, contractStart, showLatestMarker, hideRightPriceScale, defaultViewport]);
 
   const empty = series.every((item) => (item.history ?? item.points ?? []).length === 0 && (item.livePoints ?? []).length === 0);
-  return <div className="financial-chart" style={{ height }} aria-label={ariaLabel}><div ref={host} className="financial-chart-host" />{empty && <div className="chart-empty" style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', padding: 24, color: '#9994a5', textAlign: 'center' }}>No persisted history is available for this read-only projection.</div>}<div ref={tooltip} className="chart-tooltip" /></div>;
+  return <div className="financial-chart" style={{ height }} aria-label={ariaLabel}><div ref={host} className="financial-chart-host" />{manualView && <button className="chart-reset" onClick={() => { autoFollow.current = true; setManualView(false); defaultViewport(); }}>Reset view</button>}{empty && <div className="chart-empty" style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', padding: 24, color: '#9994a5', textAlign: 'center' }}>No persisted history is available for this read-only projection.</div>}<div ref={tooltip} className="chart-tooltip" /></div>;
 }

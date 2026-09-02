@@ -212,7 +212,9 @@ class ProductionAccountService:
             "1D": timedelta(days=1),
             "1W": timedelta(days=7),
             "1M": timedelta(days=31),
+            "3M": timedelta(days=92),
             "6M": timedelta(days=183),
+            "1Y": timedelta(days=366),
             "ALL": None,
         }
         if history_range not in cutoffs:
