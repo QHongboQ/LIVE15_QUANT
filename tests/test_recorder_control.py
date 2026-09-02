@@ -665,6 +665,6 @@ def test_desktop_shortcut_installer_uses_stable_launcher_and_repository_icon() -
     assert ".local-tools\\live15-terminal.ico" in lowered
     assert 'join-path $desktoppath "live15.lnk"' in lowered
     assert "$shortcut.targetpath = $launcher" in lowered
-    assert "$shortcut.iconlocation = \"$installedicon,0\"" in lowered
+    assert '$shortcut.iconlocation = "$installedicon,0"' in lowered
     assert "127.0.0.1:8765" not in lowered
     assert "vite" not in lowered
