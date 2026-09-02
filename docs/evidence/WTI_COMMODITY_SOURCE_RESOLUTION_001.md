@@ -1,8 +1,8 @@
 # WTI commodity source resolution
 
-**Task:** `WTI-COMMODITY-SOURCE-RESOLUTION-001`  
-**Status:** RESEARCH COMPLETE — implementation intentionally deferred  
-**Observed:** 2026-09-02 UTC  
+**Task:** `WTI-COMMODITY-SOURCE-RESOLUTION-001`
+**Status:** RESEARCH COMPLETE — implementation intentionally deferred
+**Observed:** 2026-09-02 UTC
 **Production mutation:** none
 
 ## Decision
