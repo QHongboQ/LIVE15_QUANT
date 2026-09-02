@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import struct
 from dataclasses import replace
 from pathlib import Path
 
@@ -650,6 +651,8 @@ def test_desktop_launcher_uses_only_authoritative_control_center_service() -> No
     assert "start_runtime_supervisor.cmd" not in lowered
     assert "managed_control_center" not in lowered
     assert "127.0.0.1:8765/api/system" in lowered
+    assert "http://127.0.0.1:8765/#/" in lowered
+    assert "#/overview" not in lowered
 
 
 def test_desktop_shortcut_installer_uses_stable_launcher_and_repository_icon() -> None:
@@ -668,3 +671,26 @@ def test_desktop_shortcut_installer_uses_stable_launcher_and_repository_icon() -
     assert '$shortcut.iconlocation = "$installedicon,0"' in lowered
     assert "127.0.0.1:8765" not in lowered
     assert "vite" not in lowered
+
+
+def test_desktop_icon_is_a_transparent_multiresolution_windows_ico() -> None:
+    icon = Path(__file__).parents[1] / "assets" / "live15-terminal.ico"
+    payload = icon.read_bytes()
+
+    reserved, icon_type, count = struct.unpack_from("<HHH", payload)
+    assert (reserved, icon_type, count) == (0, 1, 4)
+
+    frames: dict[int, tuple[int, int]] = {}
+    for index in range(count):
+        width, height, _, _, _, _, byte_count, offset = struct.unpack_from(
+            "<BBBBHHII", payload, 6 + index * 16
+        )
+        frame_size = 256 if width == 0 else width
+        assert frame_size == (256 if height == 0 else height)
+        assert payload[offset : offset + 8] == b"\x89PNG\r\n\x1a\n"
+        assert byte_count > 0
+        # PNG color type 6 is truecolor plus alpha; every Windows icon frame has alpha.
+        assert payload[offset + 25] == 6
+        frames[frame_size] = (offset, byte_count)
+
+    assert set(frames) == {16, 32, 48, 256}

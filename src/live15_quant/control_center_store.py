@@ -181,7 +181,8 @@ class DashboardReadStore:
             product = COINBASE_PRODUCT_BY_ASSET.get(asset)
             if product is not None:
                 underlying = connection.execute(
-                    "SELECT id FROM coinbase_ticks WHERE product=? ORDER BY id DESC LIMIT 1",
+                    """SELECT id FROM coinbase_ticks WHERE product=?
+                    ORDER BY received_timestamp DESC, id DESC LIMIT 1""",
                     (product,),
                 ).fetchone()
             else:
