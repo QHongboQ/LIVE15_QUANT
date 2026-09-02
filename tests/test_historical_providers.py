@@ -23,7 +23,13 @@ from live15_quant.historical_providers import (
 )
 
 NOW = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
-RANGE = validate_depthfeed_free_plan_range(NOW - timedelta(minutes=15), NOW, now=NOW)
+
+
+def fresh_depthfeed_range() -> DepthFeedHistoricalRange:
+    """Return a real-clock-safe public range for adapter plumbing tests."""
+
+    end = datetime.now(UTC) - timedelta(seconds=1)
+    return validate_depthfeed_free_plan_range(end - timedelta(minutes=15), end, now=end)
 
 
 class FakeHistorical:
@@ -272,7 +278,9 @@ def test_depthfeed_snapshot_pagination_is_bounded_and_key_is_not_logged() -> Non
     adapter = DepthFeedHistoricalOrderbookProvider(
         api_key="opaque-secret", base_url="https://depthfeed.test", session=session
     )
-    snapshots = adapter.snapshots("KXBTC15M-TEST", historical_range=RANGE, max_pages=2, limit=1)
+    snapshots = adapter.snapshots(
+        "KXBTC15M-TEST", historical_range=fresh_depthfeed_range(), max_pages=2, limit=1
+    )
 
     assert len(snapshots) == 2
     assert len(session.calls) == 2
@@ -285,7 +293,7 @@ def test_depthfeed_adapter_appends_v3_to_documented_root() -> None:
     adapter = DepthFeedHistoricalOrderbookProvider(
         api_key="opaque-secret", base_url="https://api.depthfeed.com", session=session
     )
-    adapter.discover_markets(limit=1, historical_range=RANGE)
+    adapter.discover_markets(limit=1, historical_range=fresh_depthfeed_range())
     assert session.calls[0][0].startswith("https://api.depthfeed.com/v3/kalshi/markets")
 
 
@@ -298,7 +306,7 @@ def test_depthfeed_http_errors_are_sanitized_and_endpoint_scoped() -> None:
         api_key="opaque-secret", base_url="https://depthfeed.test", session=RateLimitedSession()
     )
     with pytest.raises(DepthFeedHttpError, match="DEPTHFEED_HTTP_429:snapshots") as error:
-        adapter.snapshots("KXBTC15M-TEST", historical_range=RANGE)
+        adapter.snapshots("KXBTC15M-TEST", historical_range=fresh_depthfeed_range())
     assert error.value.status_code == 429
     assert error.value.endpoint_family == "snapshots"
     assert error.value.retry_after == "2"
