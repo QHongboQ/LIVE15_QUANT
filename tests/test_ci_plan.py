@@ -142,3 +142,15 @@ def test_frontend_release_build_is_pinned_and_fails_closed() -> None:
     )
     command_positions = [body.index(command) for command in required_commands]
     assert command_positions == sorted(command_positions)
+
+
+def test_research_model_workflow_expands_model_files_and_fails_closed() -> None:
+    body = _workflow_step_body("Research and model tests")
+
+    assert "Get-ChildItem -LiteralPath tests -Filter 'test_model*.py' -File" in body
+    assert "Sort-Object Name" in body
+    assert "if ($modelTests.Count -eq 0)" in body
+    assert "throw 'No model tests matched tests/test_model*.py'" in body
+    assert "& pytest @tests" in body
+    assert "if ($LASTEXITCODE -ne 0)" in body
+    assert "exit $LASTEXITCODE" in body
