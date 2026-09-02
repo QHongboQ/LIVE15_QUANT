@@ -421,7 +421,7 @@ def test_human_acceptance_chart_domains_use_actual_times_without_offset_padding(
     assert "const timeDomainSeries = useRef" in charts
     assert "timeDomainSeries.current?.setData(timeDomainWhitespace(from, to))" in charts
     assert "window.setInterval" in charts
-    assert "Math.min(Math.floor(Date.now() / 1000), Number(domainEnd))" in charts
+    assert "Math.min(Math.floor(presentationNowRef.current / 1000), Number(domainEnd))" in charts
     assert "setVisibleRange({ from: from as Time, to: to as Time })" in charts
     domain_helper = charts[
         charts.index("function timeDomainWhitespace") : charts.index("function clean")
@@ -443,3 +443,41 @@ def test_human_acceptance_chart_domains_use_actual_times_without_offset_padding(
     assert "contractEnd={data.window_end}" in app
     assert "Date.parse(item.time) - domainStart" in app
     assert 'className="sparkline-empty">LIVE' not in app
+
+
+def test_presentation_clock_advances_domains_without_creating_or_refetching_data() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "export function usePresentationClock" in charts
+    assert "window.setInterval(() => setPresentationNow(Date.now()), 1000)" in charts
+    assert "const presentationNow = usePresentationClock()" in app
+    assert "portfolioCalendarRange(portfolioRanges[range], new Date(presentationNow))" in app
+    assert "to: new Date(presentationNow).toISOString()" in app
+    assert "data-domain-to={to}" in charts
+    assert "data-actual-samples={actual.length}" in charts
+    assert "accountEquityHistory(custom ? 'ALL' : portfolioRanges[range])" in app
+    portfolio_loader = app[
+        app.index("const loader = useCallback", app.index("function PortfolioSummary")) : app.index(
+            "const query = useLazyData", app.index("function PortfolioSummary")
+        )
+    ]
+    assert "presentationNow" not in portfolio_loader
+    portfolio_chart = charts[charts.index("export function PortfolioEquityChart") :]
+    assert "timeDomainWhitespace" not in portfolio_chart
+    assert "const actual = clean(points).filter" in portfolio_chart
+
+
+def test_contract_rollover_resets_only_the_previous_contract_viewport() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "key={`${data.ticker}:${data.window_start}:price`}" in app
+    assert "key={`${data.ticker}:${data.window_start}:probability`}" in app
+    assert "autoFollow.current = true" in charts
+    assert "const [manualView, setManualView] = useState(false)" in charts
+    assert (
+        "const suspendAutoFollow = () => { autoFollow.current = false; setManualView(true); };"
+        in charts
+    )
+    assert "Reset view" in charts

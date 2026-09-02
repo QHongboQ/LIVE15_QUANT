@@ -18,6 +18,17 @@ export type ChartSeries = { id: string; label: string; color: string; points?: C
 const timestamp = (value: string): UTCTimestamp => Math.floor(Date.parse(value) / 1000) as UTCTimestamp;
 const TIME_DOMAIN_MAX_POINTS = 720;
 
+/** Browser-local presentation time only; it never creates observations or requests data. */
+export function usePresentationClock(enabled = true) {
+  const [presentationNow, setPresentationNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = window.setInterval(() => setPresentationNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [enabled]);
+  return presentationNow;
+}
+
 function timeDomainWhitespace(from: UTCTimestamp, to: UTCTimestamp): WhitespaceData<Time>[] {
   if (from >= to) return [{ time: from as Time }];
   const count = Math.min(TIME_DOMAIN_MAX_POINTS, Number(to) - Number(from) + 1);
@@ -81,12 +92,14 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
   const tooltip = useRef<HTMLDivElement>(null);
   const autoFollow = useRef(true);
   const [manualView, setManualView] = useState(false);
+  const presentationNow = usePresentationClock(Boolean(contractStart && contractEnd));
+  const presentationNowRef = useRef(presentationNow);
   const defaultViewport = useCallback(() => {
     if (!chart.current) return;
     if (!contractStart || !contractEnd) return chart.current.timeScale().fitContent();
     const from = timestamp(contractStart);
     const domainEnd = timestamp(contractEnd);
-    const to = Math.max(Number(from), Math.min(Math.floor(Date.now() / 1000), Number(domainEnd))) as UTCTimestamp;
+    const to = Math.max(Number(from), Math.min(Math.floor(presentationNowRef.current / 1000), Number(domainEnd))) as UTCTimestamp;
     const domainKey = `${from}:${to}`;
     if (renderedTimeDomain.current !== domainKey) {
       // This bounded carrier is presentation-only whitespace, never an observation.
@@ -142,10 +155,9 @@ export function FinancialChart({ series, reference, height = 300, ariaLabel, res
   }, []);
 
   useEffect(() => {
-    if (!contractStart) return;
-    const timer = window.setInterval(() => { if (autoFollow.current) defaultViewport(); }, 1000);
-    return () => window.clearInterval(timer);
-  }, [contractStart, defaultViewport]);
+    presentationNowRef.current = presentationNow;
+    if (autoFollow.current) defaultViewport();
+  }, [presentationNow, defaultViewport]);
 
   useEffect(() => {
     if (!chart.current) return;
@@ -282,5 +294,5 @@ export function PortfolioEquityChart({ points, from, to, height = 300 }: { point
   const path = actual.map((item, index) => `${index ? 'L' : 'M'}${x(Number(item.time)).toFixed(2)} ${y(item.value).toFixed(2)}`).join(' ');
   const ticks = Array.from({ length: PORTFOLIO_TICK_COUNT }, (_, index) => Number(domainFrom) + span * index / (PORTFOLIO_TICK_COUNT - 1));
   const yTicks = Array.from({ length: 3 }, (_, index) => yMinimum + (yMaximum - yMinimum) * index / 2);
-  return <div className="portfolio-equity-chart" style={{ height }} aria-label={`Account equity history with ${actual.length} actual samples`}><svg viewBox={`0 0 ${PORTFOLIO_VIEWBOX_WIDTH} ${height}`} role="img" aria-label="Actual account equity history"><g className="portfolio-grid">{ticks.map((item) => <line key={`x-${item}`} x1={x(item)} x2={x(item)} y1={top} y2={top + plotHeight} />)}{yTicks.map((item) => <line key={`y-${item}`} x1={left} x2={left + plotWidth} y1={y(item)} y2={y(item)} />)}</g>{path && <path className="portfolio-equity-line" d={path} />}{ticks.map((item, index) => <text className="portfolio-x-label" key={`label-${item}`} x={x(item)} y={height - 9} textAnchor={index === 0 ? 'start' : index === PORTFOLIO_TICK_COUNT - 1 ? 'end' : 'middle'}>{portfolioTimeLabel(item, span)}</text>)}{yTicks.map((item) => <text className="portfolio-y-label" key={`value-${item}`} x={PORTFOLIO_VIEWBOX_WIDTH - right} y={y(item) - 5} textAnchor="end">{portfolioValueLabel(item)}</text>)}</svg>{!actual.length && <div className="chart-empty">No actual account observations fall in this calendar range.</div>}</div>;
+  return <div className="portfolio-equity-chart" style={{ height }} aria-label={`Account equity history with ${actual.length} actual samples`} data-domain-from={from} data-domain-to={to} data-actual-samples={actual.length}><svg viewBox={`0 0 ${PORTFOLIO_VIEWBOX_WIDTH} ${height}`} role="img" aria-label="Actual account equity history"><g className="portfolio-grid">{ticks.map((item) => <line key={`x-${item}`} x1={x(item)} x2={x(item)} y1={top} y2={top + plotHeight} />)}{yTicks.map((item) => <line key={`y-${item}`} x1={left} x2={left + plotWidth} y1={y(item)} y2={y(item)} />)}</g>{path && <path className="portfolio-equity-line" d={path} />}{ticks.map((item, index) => <text className="portfolio-x-label" key={`label-${item}`} x={x(item)} y={height - 9} textAnchor={index === 0 ? 'start' : index === PORTFOLIO_TICK_COUNT - 1 ? 'end' : 'middle'}>{portfolioTimeLabel(item, span)}</text>)}{yTicks.map((item) => <text className="portfolio-y-label" key={`value-${item}`} x={PORTFOLIO_VIEWBOX_WIDTH - right} y={y(item) - 5} textAnchor="end">{portfolioValueLabel(item)}</text>)}</svg>{!actual.length && <div className="chart-empty">No actual account observations fall in this calendar range.</div>}</div>;
 }
