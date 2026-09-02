@@ -170,6 +170,16 @@ gate with expected Git SHA `UNPROVEN`; its provenance remains explicitly
 `runtime/deployment-evidence/<deployment-id>/service-restart-<component>.json`.
 If that audit write fails, the gate fails closed.
 
+## ControlCenter Nomad human deployment gate
+
+For every human deployment of `live15-control-center`, use the canonical
+`tools/deploy_live15_control_center_nomad.ps1` helper rather than reconstructing
+a bare `nomad job run` command. It discovers and validates the live job's two
+existing credential-path bindings, supplies the required Nomad variables for
+validation, planning, and an explicit `-Apply`, and rechecks `JobModifyIndex`
+before the check-indexed submission. Its default mode is plan-only. It never
+reads credential content, targets Recorder, or changes the release pipeline.
+
 ## Approved future sequence
 
 1. Freeze a reviewed protected SHA and create a clean source worktree.
