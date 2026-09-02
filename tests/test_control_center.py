@@ -60,6 +60,18 @@ def settings(tmp_path: Path, **overrides: object) -> Settings:
     return Settings(**values)  # type: ignore[arg-type]
 
 
+def test_realtime_coinbase_cursor_uses_the_existing_replay_index_order() -> None:
+    source = (
+        Path(__file__).parents[1] / "src" / "live15_quant" / "control_center_store.py"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "WHERE product=?\n                    ORDER BY received_timestamp DESC, id DESC LIMIT 1"
+        in source
+    )
+    assert "WHERE product=? ORDER BY id DESC LIMIT 1" not in source
+
+
 def write_health(path: Path, observed: datetime = NOW, **extra: object) -> None:
     payload: dict[str, object] = {
         "status": "healthy",

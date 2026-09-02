@@ -87,7 +87,7 @@ def test_terminal_v2_chart_and_view_contracts_remain_local_and_truthful() -> Non
     assert "probabilityLatency" in app
     assert "live15Sidebar" in app
     assert "accountEquityHistory(custom ? 'ALL' : portfolioRanges[range])" in app
-    assert "item.observed_at >= from" in app
+    assert "item.observed_at >= selectedRange.from" in app
     assert "close_price" in api
     assert "third_party" not in app.lower()
 
@@ -109,8 +109,9 @@ def test_market_detail_realtime_updates_do_not_refetch_history_per_event() -> No
 
 def test_realtime_market_points_require_authoritative_timestamps_and_changes() -> None:
     app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    market_detail = app[app.index("function MarketDetail") : app.index("function Depth")]
 
-    assert "new Date().toISOString()" not in app
+    assert "new Date().toISOString()" not in market_detail
     assert "Date.now() - Date.parse(event.authoritative_at)" in app  # display telemetry only
     assert "underlyingTimestamp(market)" in app
     assert "probabilityTimestamp(market)" in app
@@ -365,10 +366,13 @@ def test_visual_polish_defects_keep_portfolio_sparse_data_and_admin_units_truthf
     polish = (ROOT / "polish.css").read_text(encoding="utf-8")
 
     assert "const flatPortfolio = points.length > 0" in app
-    assert "showLatestMarker={false} hideRightPriceScale={flatPortfolio}" in app
+    assert "<PortfolioEquityChart points={points} from={domain.from} to={domain.to} />" in app
     assert "actual samples · {flatPortfolio ? 'flat series' : 'forward-collected'}" in app
     assert "showLatestMarker = true" in charts
     assert "priceScale('right').applyOptions({ visible: !hideRightPriceScale })" in charts
+    assert "const margin = values.length ? Math.max((maximum - minimum) * 0.08" in charts
+    assert "Math.abs(maximum) * 0.02, 1) : 1" in charts
+    assert 'className="portfolio-equity-line"' in charts
     assert "toolbar={false} userMenu={false}" in app
     assert app.index("/duration|retention_seconds/") < app.index("/percent|ratio/")
     assert "width: 192px !important" in polish
@@ -397,3 +401,45 @@ def test_market_depth_probability_and_summary_remain_truthful() -> None:
     assert ".detail-hero .metric strong { white-space: normal" in (ROOT / "styles.css").read_text(
         encoding="utf-8"
     )
+
+
+def test_launcher_legacy_overview_route_has_a_terminal_compatibility_owner() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+
+    assert 'Resource name="overview" list={Overview}' in app
+
+
+def test_human_acceptance_chart_domains_use_actual_times_without_offset_padding() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    charts = (ROOT / "charts.tsx").read_text(encoding="utf-8")
+
+    assert "rightOffsetPixels: 0" in charts
+    assert "shiftVisibleRangeOnNewBar: false" in charts
+    assert "type WhitespaceData" in charts
+    assert "const TIME_DOMAIN_MAX_POINTS = 720" in charts
+    assert "function timeDomainWhitespace" in charts
+    assert "const timeDomainSeries = useRef" in charts
+    assert "timeDomainSeries.current?.setData(timeDomainWhitespace(from, to))" in charts
+    assert "window.setInterval" in charts
+    assert "Math.min(Math.floor(Date.now() / 1000), Number(domainEnd))" in charts
+    assert "setVisibleRange({ from: from as Time, to: to as Time })" in charts
+    domain_helper = charts[
+        charts.index("function timeDomainWhitespace") : charts.index("function clean")
+    ]
+    assert "value:" not in domain_helper
+    assert "function withTimeDomain" not in charts
+    assert "timeRange={timeRange}" not in app
+    assert "portfolioCalendarRange" in app
+    assert "customPortfolioRange" in app
+    assert "localCalendarBoundary(to, true)" in app
+    assert "from.setHours(0, 0, 0, 0)" in app
+    assert "PortfolioEquityChart" in app
+    assert "const PORTFOLIO_TICK_COUNT = 6" in charts
+    assert "const actual = clean(points).filter" in charts
+    assert "(time - Number(domainFrom)) / span" in charts
+    assert "No actual account observations fall in this calendar range." in charts
+    assert "api.marketHistory(asset)" in app
+    assert "contractEnd={market.window_end}" in app
+    assert "contractEnd={data.window_end}" in app
+    assert "Date.parse(item.time) - domainStart" in app
+    assert 'className="sparkline-empty">LIVE' not in app

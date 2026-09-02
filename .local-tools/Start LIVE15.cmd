@@ -19,5 +19,5 @@ if /I not "%STATE%"=="RUNNING" (
   )
 )
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$deadline=(Get-Date).AddSeconds(30); while((Get-Date)-lt $deadline) { try { $system=Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/system' -TimeoutSec 2; if($system.service -eq 'LIVE15 Control Center' -and $system.bind_host -eq '127.0.0.1') { Start-Process 'http://127.0.0.1:8765/#/overview'; exit 0 } } catch {}; Start-Sleep -Milliseconds 500 }; Write-Error 'LIVE15ControlCenter did not expose its identity endpoint within 30 seconds.'; exit 5"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$deadline=(Get-Date).AddSeconds(30); while((Get-Date)-lt $deadline) { try { $system=Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/system' -TimeoutSec 2; if($system.service -eq 'LIVE15 Control Center' -and $system.bind_host -eq '127.0.0.1') { Start-Process 'http://127.0.0.1:8765/#/'; exit 0 } } catch {}; Start-Sleep -Milliseconds 500 }; Write-Error 'LIVE15ControlCenter did not expose its identity endpoint within 30 seconds.'; exit 5"
 exit /b %errorlevel%
