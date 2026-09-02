@@ -82,7 +82,7 @@ def test_terminal_v2_chart_and_view_contracts_remain_local_and_truthful() -> Non
     assert "No persisted history is available" in charts
     assert "FinancialChart" in app
     assert "PRICE" in app and "PROBABILITY" in app
-    assert "Last actual change" in app
+    assert "Last price or quote change" in app
     assert "displayLatency(detailLatency)" in app
     assert "probabilityLatency" in app
     assert "live15Sidebar" in app
@@ -367,7 +367,9 @@ def test_visual_polish_defects_keep_portfolio_sparse_data_and_admin_units_truthf
 
     assert "const flatPortfolio = points.length > 0" in app
     assert "<PortfolioEquityChart points={points} from={domain.from} to={domain.to} />" in app
-    assert "actual samples · {flatPortfolio ? 'flat series' : 'forward-collected'}" in app
+    assert (
+        "recorded samples · {flatPortfolio ? 'no value change' : 'live account reads only'}" in app
+    )
     assert "showLatestMarker = true" in charts
     assert "priceScale('right').applyOptions({ visible: !hideRightPriceScale })" in charts
     assert "const margin = values.length ? Math.max((maximum - minimum) * 0.08" in charts
@@ -389,7 +391,7 @@ def test_market_depth_probability_and_summary_remain_truthful() -> None:
     assert "probabilityCents(market.no_bid)" in app
     assert "probabilityCents(data.yes_bid)" in app
     assert "probabilityCents(data.no_bid)" in app
-    assert 'Metric label="Difference"' in app
+    assert "Metric label={targetDelta?.label ?? 'TARGET DIFFERENCE'}" in app
     assert 'Metric label="DOWN probability"' in app
     assert "targetDifference(market.underlying_price, market.target)" in app
     assert "difference / reference * 100" in app
@@ -401,6 +403,28 @@ def test_market_depth_probability_and_summary_remain_truthful() -> None:
     assert ".detail-hero .metric strong { white-space: normal" in (ROOT / "styles.css").read_text(
         encoding="utf-8"
     )
+
+
+def test_terminal_human_language_formats_target_values_and_technical_display_only() -> None:
+    app = (ROOT / "main.tsx").read_text(encoding="utf-8")
+    api = (ROOT / "api.ts").read_text(encoding="utf-8")
+
+    assert "type TargetDifference" in app
+    assert "'ABOVE TARGET'" in app
+    assert "'BELOW TARGET'" in app
+    assert "'AT TARGET'" in app
+    assert "maximumFractionDigits: 4" in app
+    assert "toFixed(2)" in app
+    assert "${difference > 0 ? '+' : difference < 0 ? '-' : ''}$" in app
+    assert "const humanLabel" in app
+    assert "typeof value === 'boolean' ? value ? 'Yes' : 'No'" in app
+    assert "value.length === 1 ? 'item' : 'items'" in app
+    assert "label={humanLabel(key)}" in app
+    assert "Current 15-minute contract" in app
+    assert "Recorded equity history" in app
+    assert "No verified records are available right now." in app
+    assert "target?: string | null" in api
+    assert "underlying_price?: string | null" in api
 
 
 def test_launcher_legacy_overview_route_has_a_terminal_compatibility_owner() -> None:
