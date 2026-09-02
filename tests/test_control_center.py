@@ -429,8 +429,15 @@ async def test_markets_legacy_rest_projection_without_no_ask_stays_available(
         (("yes_bid", "no_ask"), ("0.6300", "0.3500"), "0.3500"),
         (("yes_bid",), (None,), None),
         (("yes_bid",), ("malformed",), None),
+        (("yes_bid",), ("NaN",), None),
     ),
-    ids=("legacy-derived", "explicit-authoritative", "missing-quote", "malformed-legacy"),
+    ids=(
+        "legacy-derived",
+        "explicit-authoritative",
+        "missing-quote",
+        "malformed-legacy",
+        "non-finite-legacy",
+    ),
 )
 def test_rest_no_ask_compatibility_projection_is_authoritative_and_fail_closed(
     columns: tuple[str, ...], values: tuple[str | None, ...], expected: str | None

@@ -598,9 +598,12 @@ class DashboardReadStore:
         if yes_bid is None:
             return None
         try:
-            return str(Decimal(1) - Decimal(yes_bid))
+            parsed_yes_bid = Decimal(yes_bid)
         except InvalidOperation:
             return None
+        if not parsed_yes_bid.is_finite() or not Decimal(0) <= parsed_yes_bid <= Decimal(1):
+            return None
+        return str(Decimal(1) - parsed_yes_bid)
 
     @staticmethod
     def _current_ws_book(connection: sqlite3.Connection, ticker: str) -> sqlite3.Row | None:
