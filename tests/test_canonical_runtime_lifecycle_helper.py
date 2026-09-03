@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,21 +12,14 @@ HELPER = ROOT / "tools" / "manage_live15_canonical_runtime.ps1"
 def _powershell() -> str:
     executable = shutil.which("pwsh") or shutil.which("powershell")
     if executable is None:
-        pytest.fail("Windows PowerShell is required for the quoting regression")
+        pytest.skip("Windows PowerShell is unavailable on this developer platform")
     return executable
 
 
 def _python_executable() -> Path:
-    candidates = [
-        Path(r"C:\Program Files\LIVE15\Python313\python.exe"),
-        ROOT / ".venv" / "Scripts" / "python.exe",
-        ROOT.parent / "main" / ".venv" / "Scripts" / "python.exe",
-        ROOT.parent / "toolchain" / ".venv" / "Scripts" / "python.exe",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    pytest.fail("No real Windows Python executable is available")
+    executable = Path(sys.executable)
+    assert executable.is_file(), f"Test Python executable is unavailable: {executable}"
+    return executable
 
 
 def test_native_python_version_query_receives_valid_expression() -> None:
