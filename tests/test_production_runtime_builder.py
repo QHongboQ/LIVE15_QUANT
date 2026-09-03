@@ -72,6 +72,8 @@ def test_runtime_preparer_builds_directly_at_immutable_revision_path() -> None:
     assert "Assert-ExactInventory" in source
     assert "pip==$ExpectedPip" in source
     assert "active_runtime_unchanged" in source
+    assert "function Get-FileSha256" in source
+    assert "Get-FileHash" not in source
     assert "Move-Item" not in source
     assert "ControlCenterRuntime" not in source
     assert "Get-Consumers" not in source
