@@ -1,22 +1,43 @@
 # Recorder immutable-release deployment helper
 
-`tools/deploy_live15_recorder_nomad.ps1` is the repository-owned administrator helper for the existing Nomad-owned Recorder. It does not deploy automatically and it does not alter Recorder/archive behavior outside the existing `deploy/nomad/live15-recorder.nomad.hcl` contract.
+`tools/deploy_live15_recorder_nomad.ps1` is the repository-owned thin deployment adapter for the existing Nomad-owned Recorder. Nomad remains the lifecycle/restart/rollback owner; the helper only prepares immutable application/runtime identities, preserves the already-registered mutable paths and credential path references, validates/plans the jobspec, submits it with a Nomad check-index, and verifies the resulting Recorder heartbeat.
 
-The administrator must run it from an elevated PowerShell context that can write the existing immutable release root and contact the existing local Nomad API. It intentionally does not grant permissions or change ACLs.
+The helper never starts WinSW, never repairs ACLs, never moves a Python virtual environment, and never implements a second restart or rollback state machine.
 
-```powershell
-$repo = 'D:\LIVE15_DEV\worktrees\recorder-immutable-release-deploy-helper-001'
-$sha = '<40-character commit SHA reachable from origin/main>'
-& "$repo\tools\deploy_live15_recorder_nomad.ps1" -Repository $repo -GitSha $sha -Preview
-& "$repo\tools\deploy_live15_recorder_nomad.ps1" -Repository $repo -GitSha $sha -Apply
-```
+## Runtime selection
 
-The helper requires a clean repository, an exact 40-character commit reachable from `origin/main`, the existing protected runtime SHA-256 (`72B29481593C5DA37C99248C82777FBFB56217EA7809B771BC760D0A9ECB179B`), one running `live15-recorder` allocation, successful package verification, Nomad validation/plan, and an unchanged Nomad job modify index. It carries forward only the live mutable paths and existing credential path references; it never reads credential contents.
-
-The applied command writes a receipt under `C:\Program Files\LIVE15\ControlCenterReleases\runtime\deployment-evidence`. Roll back the exact receipt only after the active Recorder release matches its `new_release_id`:
+With no `-RuntimePython`, a release-only deployment keeps the runtime Python already registered on the live/stopped Nomad job. To roll a Recorder deployment onto a newly prepared runtime, first build that immutable revision with `tools/prepare_live15_production_runtime.ps1`, then pass its `Scripts\python.exe` explicitly.
 
 ```powershell
-& "$repo\tools\deploy_live15_recorder_nomad.ps1" -Repository $repo -Rollback -ReceiptPath 'C:\Program Files\LIVE15\ControlCenterReleases\runtime\deployment-evidence\recorder-nomad-<release-id>.json' -Apply
+$repo = 'D:\LIVE15_QUANT'
+$sha = '<40-character reviewed commit reachable from origin/main>'
+$runtime = 'C:\Program Files\LIVE15\CanonicalRuntimeRevisions\runtime-py3.13.15-<lock-sha>\Scripts\python.exe'
+
+& "$repo\tools\deploy_live15_recorder_nomad.ps1" -Repository $repo -GitSha $sha -RuntimePython $runtime -Preview
+& "$repo\tools\deploy_live15_recorder_nomad.ps1" -Repository $repo -GitSha $sha -RuntimePython $runtime -Apply
 ```
 
-Post-submit, the helper requires a single running allocation plus synchronized Kalshi WS, a nonzero synchronized-market count, fresh `kalshi_ws` and `kalshi_ws_persistence` progress, bounded queue depth, and no dropped-event regression before it reports success. If any gate fails, it exits nonzero and does not write a success receipt.
+A new target runtime must carry `live15-runtime-manifest.json` under the approved immutable revision root. The helper verifies the manifest, actual Python SHA-256, CPython 3.13.15 identity, and the current `requirements.production.lock` SHA-256. There is no hard-coded active Runtime SHA.
+
+## Writer state and health
+
+Before submission, zero or one running Recorder allocation is valid; more than one is always rejected. Zero is a legitimate maintenance/stopped state, not a duplicate-writer failure. After submission the deployment must converge to exactly one running Recorder allocation.
+
+The helper also requires a heartbeat newer than the pre-submit `observed_at`, synchronized Kalshi WS, a nonzero synchronized-market count, fresh WS/persistence progress, bounded queue depth, and no dropped-event regression before reporting success. The existing jobspec keeps Nomad `auto_revert = true` for failed deployments.
+
+## Native Nomad lifecycle
+
+A stopped Recorder with no release/runtime change is restarted with Nomad's native command, not this helper:
+
+```powershell
+nomad job start -address=http://127.0.0.1:4646 live15-recorder
+```
+
+Deployment rollback is owned by Nomad job version history. The deployment receipt records `previous_job_version`; use the reviewed prior version with Nomad's native revert command:
+
+```powershell
+nomad job history -address=http://127.0.0.1:4646 -p live15-recorder
+nomad job revert -address=http://127.0.0.1:4646 live15-recorder <previous-job-version>
+```
+
+Do not add `-purge` for normal stop/start or rollback operations. WinSW remains rollback-only historical infrastructure and must never run concurrently with the Nomad Recorder.
