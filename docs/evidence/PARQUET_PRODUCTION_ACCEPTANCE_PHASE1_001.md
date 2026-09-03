@@ -59,6 +59,36 @@ current failure of the WTI predictive-underlying path. They do not make Kalshi m
 stale, but they do mean the Recorder is not fully healthy under the Phase 1 gate. Archive acceptance
 remains stopped pending a separately authorized WTI data-path recovery.
 
+## Refined archive-path health gate
+
+The archive acceptance depends on the Recorder's Kalshi WebSocket persistence path, not on the
+WTI predictive-underlying input. The WTI health fact remains truthful and is not suppressed:
+
+- Overall Recorder health: `degraded`.
+- Reason: Pyth entitlement for the WTI predictive-underlying feed is unavailable.
+- Archive dependency impact: `NONE`.
+
+Fresh read-only preflight evidence for the archive dependency path:
+
+- Nomad job `live15-recorder` remained `running`.
+- Kalshi WS was `synchronized` with `10` synchronized markets.
+- `kalshi_ws` and `kalshi_ws_persistence` progress ages were about 0.07 seconds.
+- Queue depth was `0`; queue capacity, dropped events, and full waits were all `0`.
+- The Production WS high-water row ID advanced from `53,715,798` to `53,730,960` in 10.026
+  seconds: 15,162 newly persisted events, or about 1,512 events/second.
+
+## Archive-root configuration stop
+
+The Production Nomad job leaves both `LIVE15_WS_ARCHIVE_ROOT` and
+`LIVE15_WS_ARCHIVE_MANIFEST_PATH` unset. No existing `ws_archive*` path was present in
+`D:\LIVE15_QUANT\data`. The code's development fallback would derive a path below the mutable
+data directory, but the Phase 1 contract explicitly requires a configured, repository-approved
+Production archive root and prohibits inventing a long-term path.
+
+Accordingly, Phase 1 stops before the archive write. Required follow-up is an explicit Production
+configuration of the approved archive root and manifest path. This is a configuration/authority
+decision; this task did not make it.
+
 ## Production-data assertion
 
 `PRODUCTION HOT ROWS DELETED = 0`
