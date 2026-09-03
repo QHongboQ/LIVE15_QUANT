@@ -98,7 +98,9 @@ def test_helper_preserves_live_recorder_configuration_and_archive_stays_disabled
     assert 'LIVE15_ENABLE_ADAPTIVE_WS_RETENTION        = "false"' in jobspec
 
 
-def test_release_identity_stays_structured_when_package_verification_writes_stdout(tmp_path: Path) -> None:
+def test_release_identity_stays_structured_when_package_verification_writes_stdout(
+    tmp_path: Path,
+) -> None:
     helper = _library_helper(tmp_path)
     release_root = tmp_path / "releases"
     release_id = "live15-test"
@@ -145,7 +147,9 @@ def test_release_identity_stays_structured_when_package_verification_writes_stdo
     assert identity["ReleaseId"] == release_id
 
 
-def test_jobspec_resolution_uses_repository_default_and_preserves_explicit_path(tmp_path: Path) -> None:
+def test_jobspec_resolution_uses_repository_default_and_preserves_explicit_path(
+    tmp_path: Path,
+) -> None:
     helper = _library_helper(tmp_path)
     explicit = tmp_path / "explicit.nomad.hcl"
     explicit.write_text('job "live15-recorder" {}\n', encoding="utf-8")
@@ -153,7 +157,10 @@ def test_jobspec_resolution_uses_repository_default_and_preserves_explicit_path(
     wrapper.write_text(
         "param([string]$Helper, [string]$Repository, [string]$Explicit)\n"
         ". $Helper -Repository $Repository -GitSha ('a' * 40)\n"
-        "[pscustomobject]@{ default = Resolve-Jobspec $null; explicit = Resolve-Jobspec $Explicit } | ConvertTo-Json -Compress\n",
+        (
+            "[pscustomobject]@{ default = Resolve-Jobspec $null; "
+            "explicit = Resolve-Jobspec $Explicit } | ConvertTo-Json -Compress\n"
+        ),
         encoding="utf-8",
     )
 
