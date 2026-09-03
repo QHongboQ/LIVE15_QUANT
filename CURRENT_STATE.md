@@ -9,13 +9,17 @@ Authority and its evidence artifacts.
 
 ## Current phase
 
-**Upstream-consolidation freeze with storage/archive reprioritization.** GAP002 is closed/pass.
-Runtime/Lifecycle consolidation and the Web Application Shell replacement are **COMPLETE / VERIFIED**:
-Nomad + Windows SCM owns lifecycle, the React Admin + Material UI terminal is the sole ControlCenter
-Web owner, RuntimeSupervisor and the legacy handwritten shell are retired, cold boot passed, and no
-dual owner remains. A subsequently confirmed storage/archive capacity problem changed the next
-execution priority before Vector adoption began. The current NEXT responsibility is the bounded
-**COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY**; Vector telemetry remains a deferred later candidate.
+**Storage/archive Production-acceptance preparation.** GAP002 is closed/pass. Runtime/Lifecycle
+consolidation and the Web Application Shell replacement are **COMPLETE / VERIFIED**. The storage
+capacity problem has already moved beyond candidate selection: the commercial bakeoff selected
+**Parquet + ZSTD** for the verified cold archive path, the HOT->COLD closed loop and named multi-root
+layout are merged, and the first Production acceptance attempt stopped safely before mutation.
+
+PR #167 resolved the Runtime/deploy blocker that interrupted the archive acceptance path, but
+`MERGED != DEPLOYED`: the host is still on the retained legacy Production runtime until a new immutable
+runtime revision is prepared, verified, and separately rolled out through Nomad. The immediate NEXT is
+that runtime preparation/Recorder rollout verification; after that, WTI is retired completely as its
+own narrow task before a fresh Parquet Production Phase 1 acceptance. Vector telemetry remains deferred.
 Training remains blocked by its existing gates.
 
 ControlCenter current truth is `docs/project-brain/capabilities/control-center.md`. Current task
@@ -27,8 +31,13 @@ Git/PR history and the bounded evidence selected by current authorities.
 | Area | State | Authoritative source |
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **CLOSED / PASS** | `PROJECT_PROGRESS.md`; detailed FAIL/PASS receipts remain evidence only |
-| Archive/package lifecycle | **PLANNED / NEXT** | `docs/project-brain/plan/current-roadmap.md`; `docs/roadmap/COMMERCIAL_ARCHIVE_UPSTREAM_ASSEMBLY_001.md` |
-| Archive/purge throughput | **CAPACITY PROBLEM / PRESERVE SAFETY GATES** | `docs/project-brain/capabilities/records/recorder/throughput-proof.md`; `docs/roadmap/COMMERCIAL_ARCHIVE_UPSTREAM_ASSEMBLY_001.md` |
+| Archive/package format selection | **COMPLETE / PARQUET+ZSTD SELECTED** | `docs/project-brain/plan/current-roadmap.md`; PRs #157/#158 |
+| Parquet HOT->COLD closed loop | **MERGED / NOT YET PRODUCTION-ACCEPTED** | PR #158; `PROJECT_PROGRESS.md` |
+| Named multi-root archive layout | **MERGED** | PR #160; `PROJECT_PROGRESS.md` |
+| Production Parquet acceptance | **PENDING FRESH PHASE1-002** | `docs/project-brain/plan/current-roadmap.md`; PR #159 is historical stop evidence only |
+| Runtime deployment simplification | **MERGED / HOST ROLLOUT PENDING** | `docs/project-brain/dependencies/platform/runtime-ownership.md`; PR #167 |
+| WTI retirement | **PLANNED / AFTER RUNTIME ROLLOUT** | `docs/project-brain/plan/current-roadmap.md` |
+| Archive/purge throughput | **CAPACITY PROBLEM / PRESERVE SAFETY GATES** | `docs/project-brain/capabilities/records/recorder/throughput-proof.md` |
 | Runtime/Lifecycle consolidation | **COMPLETE / VERIFIED** | `docs/project-brain/dependencies/platform/runtime-ownership.md` |
 | Nomad + Windows SCM lifecycle replacement | **ADOPTED / PRODUCTION VERIFIED** | `docs/project-brain/dependencies/platform/runtime-ownership.md` |
 | RuntimeSupervisor | **RETIRED** | Runtime authority; PR #129 |
@@ -41,8 +50,9 @@ Git/PR history and the bounded evidence selected by current authorities.
 ## Current limits
 
 `MERGED != DEPLOYED`; `DEPLOYED != VERIFIED`. `NO_TRAINING_GO` and `NO_TRAINING_STARTED` remain in
-force. Upstream consolidation does not authorize Production mutation, holdout access, training,
-Paper/Shadow activation, Hard Risk changes, or trading writes.
+force. Runtime preparation does not authorize a Recorder deployment; Recorder deployment does not
+authorize archive activation; Production acceptance does not authorize purge. Holdout access,
+training, Paper/Shadow activation, Hard Risk changes, and trading writes remain outside this lane.
 
 ## Current execution route
 
