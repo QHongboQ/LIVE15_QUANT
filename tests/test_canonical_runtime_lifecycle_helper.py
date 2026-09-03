@@ -143,6 +143,53 @@ $json = Get-Content -Raw -LiteralPath $receipt | ConvertFrom-Json
     assert payload["next_root"] == "candidate-B"
 
 
+def test_nomad_running_allocation_count_is_scalar_and_empty_safe() -> None:
+    """Exercise the exact allocation-count helper through Windows PowerShell."""
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell is unavailable on this developer platform")
+    wrapper = ROOT / ".pytest-nomad-allocation-count.ps1"
+    try:
+        wrapper.write_text(
+            """
+param([string]$Helper)
+$source = Get-Content -Raw -LiteralPath $Helper
+$normalized = $source -replace "`r`n", "`n"
+$start = $normalized.IndexOf('function Get-RunningAllocationCount')
+$end = $normalized.IndexOf('function Get-Consumers')
+if ($start -lt 0 -or $end -le $start) { throw 'allocation helper source not found' }
+Invoke-Expression $normalized.Substring($start, $end - $start)
+$one = Get-RunningAllocationCount @([pscustomobject]@{ ClientStatus = 'running' })
+$zero = Get-RunningAllocationCount @()
+$stopped = Get-RunningAllocationCount @([pscustomobject]@{ ClientStatus = 'complete' })
+[ordered]@{ one=$one; zero=$zero; stopped=$stopped } | ConvertTo-Json
+""".strip(),
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(wrapper),
+                "-Helper",
+                str(HELPER),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    finally:
+        wrapper.unlink(missing_ok=True)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload == {"one": 1, "zero": 0, "stopped": 0}
+
+
 def test_production_lock_promotes_pyarrow_and_excludes_dev_only_packages() -> None:
     packages = (ROOT / "requirements.production.lock").read_text(encoding="utf-8").splitlines()
 
@@ -167,6 +214,9 @@ def test_lifecycle_helper_has_preview_apply_and_receipt_bound_rollback_contracts
     assert "stop/drain canonical-runtime consumers through their existing owners" in source
     assert "Move-Item -LiteralPath $CanonicalRuntime -Destination $backup" in source
     assert "Move-Item -LiteralPath $backup -Destination $CanonicalRuntime" in source
+    assert "-Method Get -ErrorAction Stop" in source
+    assert "Get-RunningAllocationCount $allocations" in source
+    assert "$running = -1" in source
     assert (
         "$PythonVersionExpression = \"import sys; print('.'.join(map(str, sys.version_info[:3])))\""
         in source

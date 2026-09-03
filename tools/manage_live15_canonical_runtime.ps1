@@ -51,14 +51,26 @@ function Get-Identity([string]$Runtime) {
     $identity = Get-DependencyIdentity $inventory
     return [pscustomobject]@{ RuntimeRoot=$Runtime; Python=$python; PythonVersion=$version; PythonSha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $python).Hash; DependencyInventory=$inventory; DependencyIdentity=$identity }
 }
+function Get-RunningAllocationCount($Allocations) {
+    if ($null -eq $Allocations) { return 0 }
+    $running = 0
+    foreach ($allocation in @($Allocations)) {
+        if ($null -eq $allocation) { continue }
+        $statusProperty = $allocation.PSObject.Properties['ClientStatus']
+        if ($null -eq $statusProperty) { throw 'Nomad allocation response lacks ClientStatus.' }
+        if ([string]$statusProperty.Value -eq 'running') { $running++ }
+    }
+    return $running
+}
 function Get-Consumers {
     $result = @()
     foreach ($jobId in @('live15-recorder', 'live15-control-center')) {
-        $running = 0
         try {
-            $allocations = @(Invoke-RestMethod -Uri "$NomadAddress/v1/job/$jobId/allocations")
-            $running = @($allocations | Where-Object ClientStatus -eq 'running').Count
-        } catch { $running = -1 }
+            $allocations = Invoke-RestMethod -Uri "$NomadAddress/v1/job/$jobId/allocations" -Method Get -ErrorAction Stop
+            $running = Get-RunningAllocationCount $allocations
+        } catch {
+            $running = -1
+        }
         $result += [pscustomobject]@{ owner="Nomad:$jobId"; running_allocations=$running }
     }
     return $result
