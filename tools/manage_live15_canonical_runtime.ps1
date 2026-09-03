@@ -78,10 +78,11 @@ try {
     if ($baseVersion -ne $ExpectedPython) { throw "Base Python must be $ExpectedPython." }
     $current = Get-Identity $CanonicalRuntime
     $consumers = Get-Consumers
-    $runningConsumers = @($consumers | Where-Object { $_.running_allocations -gt 0 })
-    if ($runningConsumers.Count -gt 0 -and $Apply -and -not $MaintenanceConfirmed) {
-        throw "REQUIRES_MAINTENANCE_BOUNDARY: stop/drain canonical-runtime consumers through their existing owners, then rerun with -MaintenanceConfirmed. Consumers=$($runningConsumers.owner -join ',')"
+    $unsafeConsumers = @($consumers | Where-Object { $_.running_allocations -ne 0 })
+    if ($unsafeConsumers.Count -gt 0 -and $Apply -and -not $MaintenanceConfirmed) {
+        throw "REQUIRES_MAINTENANCE_BOUNDARY: stop/drain canonical-runtime consumers through their existing owners, then rerun with -MaintenanceConfirmed. Consumers=$($unsafeConsumers.owner -join ',')"
     }
+    if ($Apply -and -not $MaintenanceConfirmed) { throw 'Apply requires explicit -MaintenanceConfirmed.' }
     if ($Rollback) {
         if (-not $ReceiptPath -or -not (Test-Path -LiteralPath $ReceiptPath)) { throw 'Rollback requires a promotion receipt.' }
         $receipt = Get-Content -Raw -LiteralPath $ReceiptPath | ConvertFrom-Json
@@ -92,16 +93,30 @@ try {
         $candidate = Join-Path $RevisionRoot "python-$ExpectedPython-$lockHash"
     }
     if (-not $Apply) {
-        [pscustomobject]@{ mode='PREVIEW'; current=$current; candidate_path=$candidate; promotion_path=$CanonicalRuntime; consumers=$consumers; safety=if($runningConsumers.Count){'REQUIRES_MAINTENANCE_BOUNDARY'}else{'SAFE_NOW'}; mutation='NONE' } | ConvertTo-Json -Depth 5
+        [pscustomobject]@{ mode='PREVIEW'; current=$current; candidate_path=$candidate; promotion_path=$CanonicalRuntime; consumers=$consumers; safety=if($unsafeConsumers.Count){'REQUIRES_MAINTENANCE_BOUNDARY'}else{'SAFE_NOW'}; mutation='NONE' } | ConvertTo-Json -Depth 5
         exit 0
     }
     $next = if ($Rollback) { Assert-Verified $candidate } else { New-Candidate (Split-Path -Leaf $candidate) }
+    $consumersBeforeSwitch = Get-Consumers
+    $unsafeBeforeSwitch = @($consumersBeforeSwitch | Where-Object { $_.running_allocations -ne 0 })
+    if ($unsafeBeforeSwitch.Count -gt 0) {
+        throw "REQUIRES_MAINTENANCE_BOUNDARY: canonical-runtime consumers are not stopped or have unknown state: $($unsafeBeforeSwitch.owner -join ',')"
+    }
     $backup = Join-Path $RevisionRoot ("previous-" + $current.DependencyIdentity)
     if (Test-Path -LiteralPath $backup) { throw "Retained revision already exists; refusing to overwrite: $backup" }
     Move-Item -LiteralPath $CanonicalRuntime -Destination $backup
     $current = $current | Select-Object *, @{Name='retained_revision_path';Expression={$backup}}
-    try { Move-Item -LiteralPath $next.RuntimeRoot -Destination $CanonicalRuntime } catch { Move-Item -LiteralPath $backup -Destination $CanonicalRuntime; throw }
-    $promoted = Assert-Verified $CanonicalRuntime
+    try {
+        Move-Item -LiteralPath $next.RuntimeRoot -Destination $CanonicalRuntime
+        $promoted = Assert-Verified $CanonicalRuntime
+    } catch {
+        $failed = Join-Path $RevisionRoot ("failed-" + (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ'))
+        if (Test-Path -LiteralPath $CanonicalRuntime) { Move-Item -LiteralPath $CanonicalRuntime -Destination $failed }
+        Move-Item -LiteralPath $backup -Destination $CanonicalRuntime
+        $restored = Assert-Verified $CanonicalRuntime
+        if ($restored.DependencyIdentity -ne $current.DependencyIdentity) { throw 'Restored canonical runtime identity does not match the original.' }
+        throw
+    }
     $receipt = Write-Receipt $current $promoted
     Write-Output "CANONICAL_RUNTIME_PROMOTION = PASS receipt=$receipt"
 } catch { [Console]::Error.WriteLine("CANONICAL_RUNTIME_ERROR: $($_.Exception.Message)"); exit 1 }
