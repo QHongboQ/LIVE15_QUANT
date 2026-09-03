@@ -39,6 +39,8 @@ def test_recorder_deploy_helper_uses_reviewed_sha_without_hardcoded_runtime_hash
     assert "merge-base --is-ancestor $GitSha origin/main" in source
     assert "Repository must be clean." in source
     assert "$ExpectedRuntimeSha256" not in source
+    assert "Get-FileHash" not in source
+    assert "function Get-FileSha256" in source
     assert "live15-runtime-manifest.json" in source
     assert "$env:NOMAD_VAR_runtime_python_sha256 = $RuntimeIdentity.PythonSha256" in source
     assert "IMMUTABLE_REVISION" in source
@@ -62,12 +64,13 @@ def test_deploy_precondition_allows_zero_or_one_writer_but_never_duplicates() ->
 
     assert "function Assert-AtMostOneRecorderWriter" in source
     assert "if ($count -gt 1)" in source
-    assert "function Assert-OneRecorderWriter" in source
-    assert "if ($count -ne 1)" in source
     assert "preWriterCount = Assert-AtMostOneRecorderWriter" in source
     assert "freshWriterCount = Assert-AtMostOneRecorderWriter" in source
-    assert "Assert-OneRecorderWriter" in source
+    assert "function Wait-OneRecorderWriter" in source
+    assert "if ($count -eq 1) { return }" in source
+    assert "Wait-OneRecorderWriter" in source
     assert "Recorder writer state changed after planning" in source
+    assert "did not converge to one running writer before timeout" in source
 
 
 def test_post_deploy_health_requires_a_new_heartbeat() -> None:
