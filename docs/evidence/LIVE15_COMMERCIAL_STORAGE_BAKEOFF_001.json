@@ -1,0 +1,40 @@
+{
+  "bakeoff_id": "LIVE15-COMMERCIAL-STORAGE-BAKEOFF-001",
+  "stream": {
+    "snapshot_sha256": "3127ffe87c9ff904d4412023081d847286366324aa7611c0c83cbd9906c45173",
+    "events": 1018676,
+    "row_id_range": [232652, 1251327],
+    "connection_id": "sdk-recorder-45e5600463d9451ba28d50a54562b865",
+    "subscription_id": 3,
+    "replay_hash": "8d5b466abbf5201ef4cade2fdfff39f6971bb020ed19beeca99db3b1f5539cee"
+  },
+  "archive_formats": [
+    {"rank": 1, "format": "Parquet+ZSTD", "status": "PASS", "total_bytes": 19876538, "bytes_per_event": 19.512129470017946, "encode_events_per_second": 41979.03552929312, "decode_events_per_second": 23339.98552722184, "replay_events_per_second": 5089.450125102391, "verification": {"exact_round_trip": true, "decimal_fidelity": true, "utc_microsecond_timestamp_fidelity": true, "ordering": true, "deterministic_replay_equivalence": true}},
+    {"rank": 2, "format": "JSONL+zlib", "status": "PASS", "total_bytes": 23371916, "bytes_per_event": 22.94342460213061, "encode_events_per_second": 57886.450055501286, "decode_events_per_second": 45155.29516556847, "replay_events_per_second": 5040.726658704458, "verification": {"exact_round_trip": true, "decimal_fidelity": true, "utc_microsecond_timestamp_fidelity": true, "ordering": true, "deterministic_replay_equivalence": true}},
+    {"rank": 3, "format": "Arrow IPC+ZSTD", "status": "PASS", "total_bytes": 42669274, "bytes_per_event": 41.88699252755538, "encode_events_per_second": 44799.782626895714, "decode_events_per_second": 23571.795308276112, "replay_events_per_second": 5071.796187731278, "verification": {"exact_round_trip": true, "decimal_fidelity": true, "utc_microsecond_timestamp_fidelity": true, "ordering": true, "deterministic_replay_equivalence": true, "truncated_arrow_fails_closed": true}}
+  ],
+  "full_storage_systems": [
+    {"rank": 1, "format": "InfluxDB 3 Core", "status": "DISQUALIFIED", "reason": "The complete 1,018,676-event canonical wire-payload ingest was launched through a detached local process. After uploading 713006684 bytes, the isolated server plateaued at 2596106240 working-set bytes and 3197804544 private bytes; CPU stopped at 37.890625 seconds, no receipt was produced, and its catalog/WAL data total remained 31 bytes. No smaller substitute was run.", "correctness": "not reached; no persisted full stream was available to export", "operational": {"process_count": 1, "startup_health_endpoint": "200", "glue": "canonical event_to_wire JSON base64 string field; connection_id and row_id tags; ordered export and reconstruction", "peak_ram_observed_bytes": 2596106240, "cpu_seconds_observed": 37.890625}},
+    {"rank": 2, "format": "QuestDB", "status": "HOST_INCOMPATIBLE", "reason": "Official portable Windows questdb.exe start returned ACCESS DENIED and requested Administrator. No host change, service installation, Docker, WSL, or Linux runtime was attempted."}
+  ],
+  "recorder_observation": {
+    "source": "read-only observation of D:\\LIVE15_QUANT\\data\\live15.sqlite3",
+    "window_seconds": 62.24521780014038,
+    "start_rows": 5024073,
+    "end_rows": 5024073,
+    "average_kalshi_ws_events_per_second": 0.0,
+    "observed_peak_kalshi_ws_events_per_second": 0.0,
+    "main_db_growth_bytes": 393216,
+    "main_db_growth_bytes_per_second": 6317.6,
+    "health": {"nomad_service": "Running", "status": "degraded", "kalshi_ws_connection_state": "reconnecting", "kalshi_ws_synchronized_count": 0, "fatal_error_type": null},
+    "parquet_encode_events_per_second": 41979.03552929312,
+    "average_headroom_ratio": null,
+    "observed_peak_headroom_ratio": null,
+    "headroom_interpretation": "Not applicable: division by zero is not a capacity result. The observed Recorder Kalshi WS path was degraded/reconnecting and produced no new rows, so a healthy sustained/peak margin must be measured before production adoption."
+  },
+  "recommendation": {
+    "architecture": "Keep LIVE15 hot truth and replay contracts unchanged; use Parquet+ZSTD as the offline archive artifact candidate.",
+    "verdict": "HOLD",
+    "why": "Parquet is the smallest exact archive (19.51 bytes/event, 15.4% smaller than JSONL+zlib) and all required full-stream fidelity checks passed. Operational adoption is held because the direct Recorder observation was degraded and yielded no valid throughput headroom measurement."
+  }
+}
