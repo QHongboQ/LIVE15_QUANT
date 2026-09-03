@@ -102,3 +102,31 @@ Re-run the bounded Phase 1 preflight only after the Recorder heartbeat is health
 failure and stale-source condition are cleared) and independently reconfirm the live Nomad/heartbeat
 facts. The next phase must begin again at pre-acceptance health; it must not treat this receipt as
 archive authorization.
+
+## Resumed configuration preflight — 2026-09-03
+
+- Merged storage-layout base verified: `cf6c6944da70c97992b306bdf1da0df1735b5182`.
+- The only approved empty directories were created: `D:\LIVE15_ARCHIVE\manifest` and
+  `D:\LIVE15_ARCHIVE\parquet-01` through `parquet-04`.
+- PR #159 configures the named roots, active root `parquet-01`, and centralized manifest path while
+  preserving `LIVE15_ENABLE_WS_ARCHIVE=false` and adaptive retention disabled. This deliberately
+  does not start a recurring archive worker.
+- Fresh read-only runtime preflight: Nomad job `live15-recorder` was `running`; Kalshi WS was
+  synchronized with ten markets; `kalshi_ws` and `kalshi_ws_persistence` were fresh; the queue was
+  normal; overall health remained degraded solely for the known WTI Pyth-entitlement condition,
+  whose archive dependency impact is `NONE`.
+
+### Stop boundary
+
+The active Nomad allocation still imports the stale immutable release
+`live15-9cc5bd47ba89-3d60b8ac18d3` (`9cc5bd47ba89c564a5c1a86c8fbe192b7aea5edf`), not the merged
+multi-root implementation. The approved immutable-release builder correctly refused creation under
+`C:\Program Files\LIVE15\ControlCenterReleases\releases` with `PermissionError: [WinError 5]`.
+No supported Recorder release/deployment helper is available to this execution identity to replace
+that allocation safely.
+
+Therefore no allocation replacement, archive CLI invocation, manifest write, Parquet artifact,
+corruption copy, purge, VACUUM, or Production SQLite write was performed. `PRODUCTION HOT ROWS
+DELETED = 0`. Phase 1 remains blocked until an authorized deployment identity stages the reviewed
+immutable release and applies the reviewed Nomad jobspec; it must then restart from the live
+archive-path preflight before selecting its one bounded unit.
