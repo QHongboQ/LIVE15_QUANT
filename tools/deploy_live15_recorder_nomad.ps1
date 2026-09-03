@@ -26,6 +26,18 @@ function Assert-LocalNomad {
     }
 }
 
+function Get-FileSha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash($stream)
+        return ([System.BitConverter]::ToString($hash)).Replace('-', '')
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Invoke-Git([string[]]$Arguments) {
     $value = & git -C $Repository @Arguments
     if ($LASTEXITCODE) { throw "git $($Arguments -join ' ') failed." }
@@ -79,9 +91,15 @@ function Assert-AtMostOneRecorderWriter {
     return $count
 }
 
-function Assert-OneRecorderWriter {
-    $count = Get-RecorderWriterCount
-    if ($count -ne 1) { throw "Recorder deployment did not converge to one writer (running allocations=$count)." }
+function Wait-OneRecorderWriter {
+    $deadline = (Get-Date).ToUniversalTime().AddSeconds($HealthTimeoutSeconds)
+    do {
+        $count = Get-RecorderWriterCount
+        if ($count -gt 1) { throw "Duplicate Recorder writers are unsafe (running allocations=$count)." }
+        if ($count -eq 1) { return }
+        Start-Sleep -Seconds 1
+    } while ((Get-Date).ToUniversalTime() -lt $deadline)
+    throw 'Recorder deployment did not converge to one running writer before timeout.'
 }
 
 function Get-ReleaseIdentity([string]$ReleaseId, [string]$ReleasePython) {
@@ -100,7 +118,7 @@ function Get-ReleaseIdentity([string]$ReleaseId, [string]$ReleasePython) {
         ReleaseId = $ReleaseId
         AppRoot = $app
         Manifest = $manifest
-        ManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash
+        ManifestSha256 = Get-FileSha256 $manifestPath
     }
 }
 
@@ -115,7 +133,7 @@ function Get-RuntimeIdentity([string]$Python, [string]$LivePython) {
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { throw "Runtime Python is unavailable: $resolved" }
     $version = Get-PythonVersion $resolved
     if ($version -ne '3.13.15') { throw 'Recorder runtime must use CPython 3.13.15.' }
-    $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolved).Hash
+    $sha = Get-FileSha256 $resolved
     $runtimeRoot = Split-Path -Parent (Split-Path -Parent $resolved)
     $manifestPath = Join-Path $runtimeRoot $RuntimeManifestName
     $liveResolved = (Resolve-Path -LiteralPath $LivePython -ErrorAction Stop).Path
@@ -139,7 +157,7 @@ function Get-RuntimeIdentity([string]$Python, [string]$LivePython) {
         throw 'Prepared runtime manifest exists outside the approved immutable revision root.'
     }
     $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-    $lockSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ProductionLock).Hash
+    $lockSha = Get-FileSha256 $ProductionLock
     if ([string]$manifest.runtime_root -ne $runtimeRoot -or
         [string]$manifest.python -ne $resolved -or
         [string]$manifest.python_version -ne $version -or
@@ -335,7 +353,7 @@ try {
 
     & $NomadPath job run "-address=$NomadAddress" "-check-index=$($live.JobModifyIndex)" $Jobspec
     if ($LASTEXITCODE) { throw "Nomad job submission failed (exit=$LASTEXITCODE)." }
-    Assert-OneRecorderWriter
+    Wait-OneRecorderWriter
     Assert-HealthyRecorder $droppedBefore $observedBefore $healthPath
     $after = Get-LiveJob
     $receipt = Write-Receipt $previous $next $previousRuntime $nextRuntime $live.Version $after.Version
