@@ -33,6 +33,32 @@ the operator to stop if it is unhealthy. Therefore no archive unit was selected,
 archive root or manifest was opened for writing, no Parquet artifact was created, and no corruption
 copy test was run.
 
+## WTI health adjudication (read-only)
+
+Classification: `REAL_CURRENT_WTI_UNDERLYING_DATA_PATH_FAILURE`, not
+`OBSERVABILITY_STALE`.
+
+- Kalshi owns the current WTI contract-market truth: the active ticker was
+  `KXWTI15M-26SEP031415-15`; its lifecycle row was `open` / `active` and the most recent official
+  Kalshi quote rows were `fresh` / `official_venue_order_book`.
+- The synchronized WebSocket book for that same ticker used connection
+  `sdk-recorder-bbc72726f1214e7080273cb969bac2c5`, subscription `3`, and advanced through
+  sequence `903611` at `2026-09-03T18:14:22.196584+00:00`. This proves the WTI Kalshi contract path
+  is current and synchronized.
+- The WTI predictive-underlying owner is the configured exact Pyth feed
+  `Commodities.USOILSPOT` (`925ca92ff005ae943c158e3563f59698ce7e75c5a8c8dd43303a0a154887b3e6`).
+  Production had no `underlying_observations` rows for `WTI Oil`, while the heartbeat classified
+  the WTI underlying market state as `source_unavailable`.
+- Pyth is not retired or silently optional for this input: project authority defines it as the
+  primary predictive underlying source for WTI, and the Recorder implementation records an exact
+  `feed_unavailable` response as `UPSTREAM_UNAVAILABLE` under `pyth:WTI Oil` and schedules only an
+  exact-feed re-probe. It deliberately does not substitute another feed.
+
+Thus `source_failure:pyth:WTI Oil` and `stale_source:pyth:WTI Oil` describe a real, isolated
+current failure of the WTI predictive-underlying path. They do not make Kalshi market/WS truth
+stale, but they do mean the Recorder is not fully healthy under the Phase 1 gate. Archive acceptance
+remains stopped pending a separately authorized WTI data-path recovery.
+
 ## Production-data assertion
 
 `PRODUCTION HOT ROWS DELETED = 0`
