@@ -38,8 +38,7 @@ def main() -> None:
             ).decode()
             ts = int(r.socket_received_timestamp.timestamp() * 1_000_000_000)
             fields = (
-                f"subscription_id={r.subscription_id}i,sequence={r.sequence}i,"
-                f'wire_b64="{wire}"'
+                f'subscription_id={r.subscription_id}i,sequence={r.sequence}i,wire_b64="{wire}"'
             )
             f.write(
                 f"live15_ws,connection_id={esc(r.connection_id)},row_id={r.row_id} {fields} {ts}\n"
