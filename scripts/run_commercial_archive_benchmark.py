@@ -27,6 +27,7 @@ EXPECTED_FIRST_ROW_ID = 232_652
 EXPECTED_LAST_ROW_ID = 1_251_327
 EXPECTED_RECORDS = 1_018_676
 
+
 def _fixed_connection(snapshot: Path) -> sqlite3.Connection:
     resolved = snapshot.resolve()
     if not resolved.is_file():
@@ -34,9 +35,7 @@ def _fixed_connection(snapshot: Path) -> sqlite3.Connection:
     wal = resolved.with_name(f"{resolved.name}-wal")
     if wal.exists() and wal.stat().st_size:
         raise ValueError("fixed snapshot must be WAL-free")
-    connection = sqlite3.connect(
-        f"file:{resolved.as_posix()}?mode=ro&immutable=1", uri=True
-    )
+    connection = sqlite3.connect(f"file:{resolved.as_posix()}?mode=ro&immutable=1", uri=True)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA query_only=ON")
     return connection
