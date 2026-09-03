@@ -1,6 +1,6 @@
 # Current roadmap
 
-Revision: R8
+Revision: R9
 Status: approved execution strategy.
 
 ## What it is
@@ -22,12 +22,13 @@ GAP002 CLOSED
   -> Runtime/Lifecycle consolidation COMPLETE / VERIFIED
        Nomad + Windows SCM lifecycle replacement ADOPTED / PRODUCTION VERIFIED
        RuntimeSupervisor RETIRED; managed paper_forward wrapper RETIRED
-  -> bounded responsibility-by-responsibility replacement
-       owner resolution -> freeze legacy generic owner -> replace one responsibility
-       -> verify -> retire corresponding old owner -> next responsibility
   -> Web Application Shell COMPLETE / VERIFIED
        React Admin + Material UI terminal adopted; legacy handwritten shell retired
-  -> Vector telemetry is the next generic replacement class
+  -> storage/archive capacity problem reprioritizes execution
+  -> Commercial archive/package upstream assembly is the current NEXT responsibility class
+       preserve LIVE15 replay/purge truth; prefer mature upstream serialization, compression,
+       object-storage, and analytical components responsibility by responsibility
+  -> Vector telemetry remains a deferred later candidate
   -> resume data/training/model progression under existing gates
 ```
 
@@ -42,11 +43,18 @@ owns the packaged ControlCenter terminal; the legacy handwritten shell is retire
 domain projections, Recorder truth, settlement truth, training truth, Hard Risk, and Production
 authorization remain LIVE15-owned.
 
-**NEXT:** select the bounded **VECTOR TELEMETRY** replacement responsibility. Vector is the default
-candidate for generic log/metric collection and routing; compare OTel only if a measured
-OTLP/tracing requirement warrants it. Keep any collector out of the Recorder hot path and preserve
-all LIVE15 truth authorities. This reconciliation does not begin a Vector POC, authorize adoption,
-or authorize Production mutation.
+The previously selected Vector telemetry follow-up was valid at the post-Web reconciliation point,
+but a subsequently confirmed storage/archive capacity problem changed the execution priority before
+Vector adoption began. Vector remains an approved later candidate; it is not the current NEXT.
+
+**NEXT:** advance the bounded **COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY** responsibility from
+`docs/roadmap/COMMERCIAL_ARCHIVE_UPSTREAM_ASSEMBLY_001.md`. Preserve the existing HOT SQLite truth,
+manifest/replay verification, contiguous-range purge authorization, restart recovery, and fail-closed
+safety gates while evaluating mature upstream components one responsibility at a time. The current
+preferred direction is Arrow schema/IPC plus Zstandard for raw immutable packaging, Parquet as a
+derived analytical tier, S3/MinIO for cold durability, and DuckDB/PyArrow for analytical reads.
+No replacement is adopted until its bounded benchmark, semantic-equivalence, recovery, integrity,
+and rollback gates pass. This reprioritization does not authorize Production mutation or training.
 
 Candidate-specific boundaries and classifications remain in
 `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; replacement mechanics remain in
@@ -57,6 +65,7 @@ whole-project orientation.
 ## Interfaces / dependencies
 
 `constraints/execution/runtime-upstream-boundary.md`;
+`docs/roadmap/COMMERCIAL_ARCHIVE_UPSTREAM_ASSEMBLY_001.md`;
 `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`;
 `docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md`.
 
@@ -80,3 +89,4 @@ Update only when an approved phase, freeze, or gate changes.
 | R6 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 closeout | Completed authority consolidation and selected runtime/lifecycle consolidation as the one concrete next responsibility class. |
 | R7 | RUNTIME-LIFECYCLE-CONSOLIDATION-CLOSEOUT-001 | Recorded verified Nomad/SCM lifecycle adoption, RuntimeSupervisor retirement, and the Web Application Shell as the next generic replacement class. |
 | R8 | PROJECT-BRAIN-POST-WEB-RECONCILIATION-001 | Recorded the complete/verified Web Application Shell replacement and selected Vector telemetry as the next generic replacement responsibility. |
+| R9 | STORAGE-ARCHIVE-REPRIORITIZATION-001 | Preserved the valid post-Web Vector decision as historical context, then reprioritized current execution to the storage/archive packaging responsibility after the storage-capacity problem emerged. |
