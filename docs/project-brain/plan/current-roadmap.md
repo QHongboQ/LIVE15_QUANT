@@ -1,6 +1,6 @@
 # Current roadmap
 
-Revision: R9
+Revision: R10
 Status: approved execution strategy.
 
 ## What it is
@@ -17,18 +17,29 @@ Normal feature/model expansion is temporarily paused. The sole current mainline 
 
 ```text
 GAP002 CLOSED
-  -> Project Brain authority consolidation COMPLETE (governance closeout; not an upstream replacement)
-  -> upstream-consolidation freeze
+  -> Project Brain authority consolidation COMPLETE
   -> Runtime/Lifecycle consolidation COMPLETE / VERIFIED
-       Nomad + Windows SCM lifecycle replacement ADOPTED / PRODUCTION VERIFIED
-       RuntimeSupervisor RETIRED; managed paper_forward wrapper RETIRED
   -> Web Application Shell COMPLETE / VERIFIED
-       React Admin + Material UI terminal adopted; legacy handwritten shell retired
-  -> storage/archive capacity problem reprioritizes execution
-  -> Commercial archive/package upstream assembly is the current NEXT responsibility class
-       preserve LIVE15 replay/purge truth; prefer mature upstream serialization, compression,
-       object-storage, and analytical components responsibility by responsibility
-  -> Vector telemetry remains a deferred later candidate
+  -> storage/archive capacity problem reprioritized execution
+  -> commercial storage bakeoff COMPLETE
+       Parquet + ZSTD selected for verified cold archive packaging
+       Arrow IPC prototype/bakeoff is historical evidence, not the selected Production cold format
+  -> Parquet HOT->COLD closed loop MERGED
+       semantic digest + deterministic replay verification + manifest state + bounded purge gates retained
+  -> named multi-root archive layout MERGED
+       centralized manifest; one active writer root; historical roots fail closed
+  -> Production Parquet Phase 1 attempt STOPPED safely before mutation
+       historical PR #159 is a stop receipt only; HOT rows deleted = 0
+  -> Runtime/deploy blocker RESOLVED in PR #167
+       immutable runtime revisions; complete Production dependency closure; native Nomad start/revert ownership
+  -> CURRENT NEXT: prepare and verify the immutable Production runtime, then perform a separately authorized
+       Nomad Recorder rollout and verify the single-writer/heartbeat/WS/no-drop gates
+  -> retire WTI completely as its own narrow task/PR (10 assets -> 9; no compatibility layer)
+  -> rerun fresh PARQUET-PRODUCTION-ACCEPTANCE-PHASE1-002 while Recorder remains RUNNING
+       one bounded historical unit -> Parquet+ZSTD -> semantic/replay verify -> VERIFIED/PURGE_ELIGIBLE
+       STOP BEFORE PURGE; PRODUCTION HOT ROWS DELETED = 0
+  -> only after separate human authorization may a tiny bounded Production purge be evaluated
+  -> Vector telemetry remains deferred
   -> resume data/training/model progression under existing gates
 ```
 
@@ -36,34 +47,39 @@ The Project Brain authority-consolidation step is complete as a governance/statu
 not an upstream replacement. Runtime/Lifecycle consolidation is complete and verified: Recorder,
 ControlCenter, and `kalshi_sdk_ws_shadow` are Nomad-managed; `pyth` and `coinbase` remain
 in-process Recorder workers; RuntimeSupervisor and the managed `paper_forward` wrapper are retired.
-Cold-boot proof passed, no dual owner remains, and final repository cleanup merged in PR #129.
+Cold-boot proof passed and no dual owner remains.
 
-The Web Application Shell replacement is **COMPLETE / VERIFIED**. React Admin + Material UI now
-owns the packaged ControlCenter terminal; the legacy handwritten shell is retired. FastAPI typed
-domain projections, Recorder truth, settlement truth, training truth, Hard Risk, and Production
-authorization remain LIVE15-owned.
+The Web Application Shell replacement is **COMPLETE / VERIFIED**. React Admin + Material UI owns the
+packaged ControlCenter terminal; the legacy handwritten shell is retired. FastAPI typed domain
+projections, Recorder truth, settlement truth, training truth, Hard Risk, and Production authorization
+remain LIVE15-owned.
 
-The previously selected Vector telemetry follow-up was valid at the post-Web reconciliation point,
-but a subsequently confirmed storage/archive capacity problem changed the execution priority before
-Vector adoption began. Vector remains an approved later candidate; it is not the current NEXT.
+The storage/archive responsibility is no longer at candidate-selection stage. The bounded commercial
+bakeoff in PR #157 selected Parquet + ZSTD for the verified cold path; PR #158 merged the Production-capable
+Parquet closed loop while leaving activation disabled; PR #160 added named multi-root storage. The earlier
+Arrow IPC direction is retained only as benchmark/prototype history and must not be treated as the current
+selected cold format.
 
-**NEXT:** advance the bounded **COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY** responsibility from
-`docs/roadmap/COMMERCIAL_ARCHIVE_UPSTREAM_ASSEMBLY_001.md`. Preserve the existing HOT SQLite truth,
-manifest/replay verification, contiguous-range purge authorization, restart recovery, and fail-closed
-safety gates while evaluating mature upstream components one responsibility at a time. The current
-preferred direction is Arrow schema/IPC plus Zstandard for raw immutable packaging, Parquet as a
-derived analytical tier, S3/MinIO for cold durability, and DuckDB/PyArrow for analytical reads.
-No replacement is adopted until its bounded benchmark, semantic-equivalence, recovery, integrity,
-and rollback gates pass. This reprioritization does not authorize Production mutation or training.
+PR #159 is historical evidence of a correctly stopped first Production acceptance attempt. It predates the
+later runtime/deploy work and must not be merged or extended as the current execution branch. A fresh Phase
+1 acceptance must start from current `main` after the runtime rollout and WTI retirement gates are closed.
 
-Candidate-specific boundaries and classifications remain in
-`docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`; replacement mechanics remain in
-`docs/roadmap/UPSTREAM_REPLACEMENT_EXECUTION_001.md`. Those are design/execution references, not
-second current roadmaps. `PROJECT_PROGRESS.md` owns task status; `CURRENT_STATE.md` owns compact
-whole-project orientation.
+PR #167 replaced movable-venv promotion and custom lifecycle recovery with immutable runtime revisions plus
+native Nomad lifecycle ownership. Runtime preparation is non-disruptive; it does not require stopping the
+Recorder. A running workload changes runtime only through a separately reviewed Nomad deployment. `MERGED`
+does not mean the new runtime has been prepared or deployed on the host.
+
+**NEXT:** execute the runtime preparation/verification sequence from the runtime authority, then a separately
+authorized Recorder deployment Preview/Apply/verification. Do not activate archive or purge during this
+step. After runtime deployment verification, retire WTI as its own narrow responsibility before starting a
+fresh `PARQUET-PRODUCTION-ACCEPTANCE-PHASE1-002`.
+
+Vector telemetry remains a deferred later candidate. This roadmap does not authorize Production purge,
+training, holdout access, Hard Risk changes, or trading writes.
 
 ## Interfaces / dependencies
 
+`dependencies/platform/runtime-ownership.md`;
 `constraints/execution/runtime-upstream-boundary.md`;
 `docs/roadmap/COMMERCIAL_ARCHIVE_UPSTREAM_ASSEMBLY_001.md`;
 `docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md`;
@@ -71,7 +87,8 @@ whole-project orientation.
 
 ## Read next
 
-Use the selected capability and constraint authority before executing a phase.
+Use the selected capability and constraint authority before executing a phase. For the immediate next step,
+read `dependencies/platform/runtime-ownership.md` before any host Runtime/Recorder action.
 
 ## Update rule
 
@@ -89,4 +106,5 @@ Update only when an approved phase, freeze, or gate changes.
 | R6 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 closeout | Completed authority consolidation and selected runtime/lifecycle consolidation as the one concrete next responsibility class. |
 | R7 | RUNTIME-LIFECYCLE-CONSOLIDATION-CLOSEOUT-001 | Recorded verified Nomad/SCM lifecycle adoption, RuntimeSupervisor retirement, and the Web Application Shell as the next generic replacement class. |
 | R8 | PROJECT-BRAIN-POST-WEB-RECONCILIATION-001 | Recorded the complete/verified Web Application Shell replacement and selected Vector telemetry as the next generic replacement responsibility. |
-| R9 | STORAGE-ARCHIVE-REPRIORITIZATION-001 | Preserved the valid post-Web Vector decision as historical context, then reprioritized current execution to the storage/archive packaging responsibility after the storage-capacity problem emerged. |
+| R9 | STORAGE-ARCHIVE-REPRIORITIZATION-001 | Reprioritized current execution to the storage/archive packaging responsibility after the storage-capacity problem emerged. |
+| R10 | PROJECT-BRAIN-STORAGE-RUNTIME-RECONCILE-001 | Reconciled PRs #157/#158/#160/#167: Parquet+ZSTD is selected and implemented, the first Production acceptance remains a historical stop receipt, and the immediate next gate is immutable Runtime preparation/Recorder rollout before WTI retirement and fresh Phase1-002. |
