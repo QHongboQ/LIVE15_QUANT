@@ -1,6 +1,6 @@
 # Runtime ownership
 
-Revision: R6
+Revision: R7
 Status: machine-readable authority retained.
 
 ## What it is
@@ -20,52 +20,70 @@ entry.
 
 ## Canonical Production Python runtime
 
-`CANONICAL_LIVE15_PRODUCTION_RUNTIME` is established as LIVE15's default
-shared protected Production Python runtime. It is not owned by ControlCenter,
-Recorder, or any predefined workload list. The verified physical identities are:
+`CANONICAL_LIVE15_PRODUCTION_RUNTIME` is LIVE15's default shared protected Production Python
+runtime authority. It is logical authority over approved immutable runtime revisions; it is not
+owned by ControlCenter, Recorder, or any predefined workload list.
+
+The verified legacy Production revision remains in service until a reviewed Nomad rollout replaces
+it:
 
 - base interpreter: `C:\Program Files\LIVE15\Python313\python.exe`;
-- production interpreter: `C:\Program Files\LIVE15\ControlCenterRuntime\Scripts\python.exe`;
+- legacy/current interpreter: `C:\Program Files\LIVE15\ControlCenterRuntime\Scripts\python.exe`;
 - CPython: `3.13.15`;
-- runtime `python.exe` SHA-256:
+- legacy/current `python.exe` SHA-256:
   `72B29481593C5DA37C99248C82777FBFB56217EA7809B771BC760D0A9ECB179B`.
 
-`ControlCenterRuntime` is historical directory naming, not a ControlCenter-only
-scope. The runtime is separate from each immutable application release and from
-mutable data, logs, WAL/SHM, health/control/PID state, archives, retention state,
-and external credentials. Existing verification is recorded in
-`docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md`.
+`ControlCenterRuntime` is historical directory naming, not a ControlCenter-only scope. It is now
+classified as the retained legacy runtime revision, not the target location for future runtime
+promotion.
 
-The Project Brain authority is the runtime registry: it records the logical
-identity, physical path, base interpreter, Python version, runtime hash/identity,
-dependency environment identity, verification evidence, status, and exception
-rule while the runtime files remain in their protected host location. No runtime
-manager service, runtime database, package server, or selection framework is
-introduced.
+Future Production runtime revisions are created directly at their final immutable path beneath:
 
-Whenever any present or future LIVE15 component, service, worker, tool, daemon,
-or other Python workload needs a Production Python runtime, it must first
-resolve this authority and use the canonical runtime as its runtime source. A
-separate runtime may be proposed only after concrete technical evidence shows
-that a mandatory interpreter or dependency requirement is incompatible. A
-different component/job/service name, application release, directory name, or
-`legacy-unproven-*` application provenance is not evidence of incompatibility;
-stop and report if incompatibility is found rather than provisioning another
-runtime automatically.
+`C:\Program Files\LIVE15\CanonicalRuntimeRevisions\runtime-py<version>-<production-lock-sha>\`
 
-The canonical runtime remains separate from each clean-SHA immutable application
-release, mutable databases/health/PID/archive/retention state, and external
-credential material. `legacy-unproven-*` describes application-release
-provenance and does not invalidate this runtime authority.
+A Python virtual environment is never promoted by moving or copying it. A prepared revision remains
+inactive merely because it exists. Workloads select an approved revision explicitly through their
+Nomad job configuration; Nomad owns rolling deployment, stopped-job start, deployment auto-revert,
+and job-version revert. During a bounded rollout, the old and new immutable revisions may coexist
+on disk while different allocations transition, without creating a second runtime manager.
 
-Production dependency additions first resolve this canonical authority: build a
-separate candidate, verify its exact production-only dependency inventory, then
-perform explicit administrator promotion with a receipt-bound rollback target.
-Only demonstrated incompatibility may justify a separate runtime.
+Each prepared revision carries `live15-runtime-manifest.json` binding its final runtime root,
+interpreter path/version/SHA-256, Production-lock SHA-256, and exact dependency identity. The
+runtime contains shared Production dependencies only; application source remains in immutable
+application releases and is not installed into the dependency runtime.
+
+The canonical runtime remains separate from each immutable application release and from mutable
+data, logs, WAL/SHM, health/control/PID state, archives, retention state, and external credentials.
+Existing legacy verification is recorded in `docs/deployment/NOMAD_CONTROL_CENTER_CUTOVER_FINAL_001.md`.
+
+Whenever any present or future LIVE15 component, service, worker, tool, daemon, or other Python
+workload needs a Production Python runtime, it must first resolve this authority and use an approved
+canonical runtime revision. A separate runtime may be proposed only after concrete technical
+evidence shows that a mandatory interpreter or dependency requirement is incompatible. A different
+component/job/service name, application release, directory name, or `legacy-unproven-*` application
+provenance is not evidence of incompatibility.
+
+Production dependency additions use `requirements.production.lock` as an exact, fully closed
+transitive dependency inventory for the Windows Production interpreter. The immutable runtime
+preparer validates the lock against pip's resolver, installs it in the final revision path, verifies
+that the installed non-tooling inventory equals the lock exactly, runs `pip check`, and verifies
+LIVE15 Production imports through repository/release source. `pytest`, `pytest-asyncio`, and `ruff`
+remain development-only; a package such as `httpx` is not classified development-only when a
+Production dependency requires it transitively.
+
+Runtime preparation is non-disruptive and does not require stopping Recorder or ControlCenter.
+Changing a running workload to a new prepared revision is a Nomad deployment concern. A stopped job
+with no configuration change is resumed with Nomad `job start`; rollback of a submitted job version
+uses Nomad job history/revert rather than a LIVE15 runtime rollback controller.
+
+No runtime manager service, runtime database, package server, symlink switcher, movable-venv
+promotion mechanism, or custom restart/rollback state machine is introduced.
 
 ## Interfaces / dependencies
 
-`docs/runtime_ownership_and_self_healing.md`; `deploy/windows/runtime-ownership.json`.
+`docs/runtime_ownership_and_self_healing.md`; `deploy/windows/runtime-ownership.json`;
+`tools/prepare_live15_production_runtime.ps1`;
+`tools/deploy_live15_recorder_nomad.ps1`.
 
 ## Read next
 
@@ -73,7 +91,8 @@ Use `../../capabilities/control-center.md` or `../../capabilities/records/record
 
 ## Update rule
 
-Update only when ownership topology changes; change the JSON authority first when applicable.
+Update only when ownership topology or canonical runtime policy changes; change the JSON authority
+first when machine-readable ownership changes.
 
 ## Change log
 
@@ -85,3 +104,4 @@ Update only when ownership topology changes; change the JSON authority first whe
 | R4 | RUNTIME-KALSHI-SDK-SHADOW-NOMAD-001 | Reconciled verified Nomad ownership of the shadow and retired its Supervisor launch path. |
 | R5 | RUNTIME-PAPER-FORWARD-WRAPPER-RETIREMENT-001 | Retired the paper wrapper and removed stale Supervisor child ownership; RuntimeSupervisor is now a zero-responsibility legacy boundary. |
 | R6 | RUNTIME-SUPERVISOR-FINAL-REPOSITORY-CLEANUP-001 | Retired the final host service and removed RuntimeSupervisor from current repository ownership. |
+| R7 | RUNTIME-DEPLOY-SIMPLIFICATION-001 | Replaced movable-venv promotion and custom lifecycle recovery with immutable runtime revisions plus native Nomad deployment/start/revert ownership; required exact Production dependency closure. |
