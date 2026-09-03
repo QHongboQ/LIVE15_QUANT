@@ -32,13 +32,23 @@ function Get-Inventory([string]$Python) {
     if ($LASTEXITCODE) { throw 'pip freeze failed.' }
     return @($lines | Where-Object { $_ -match '^[A-Za-z0-9_.-]+==' } | Sort-Object)
 }
+function Get-DependencyIdentity([string[]]$Inventory) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes(($Inventory -join "`n"))
+        $hash = $sha.ComputeHash($bytes)
+        return ([System.BitConverter]::ToString($hash)).Replace('-', '')
+    } finally {
+        $sha.Dispose()
+    }
+}
 function Get-Identity([string]$Runtime) {
     $python = Join-Path $Runtime 'Scripts\python.exe'
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "Runtime python is missing: $python" }
     $version = Get-PythonVersion $python
     if ($LASTEXITCODE -or $version -ne $ExpectedPython) { throw "Runtime Python must be $ExpectedPython." }
     $inventory = Get-Inventory $python
-    $identity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($inventory -join "`n"))))
+    $identity = Get-DependencyIdentity $inventory
     return [pscustomobject]@{ RuntimeRoot=$Runtime; Python=$python; PythonVersion=$version; PythonSha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $python).Hash; DependencyInventory=$inventory; DependencyIdentity=$identity }
 }
 function Get-Consumers {
