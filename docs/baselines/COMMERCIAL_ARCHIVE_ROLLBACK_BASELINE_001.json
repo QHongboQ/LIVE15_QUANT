@@ -1,0 +1,115 @@
+{
+  "baseline_id": "COMMERCIAL_ARCHIVE_ROLLBACK_BASELINE_001",
+  "status": "FROZEN_ROLLBACK_BASELINE",
+  "purpose": "Freeze the current verified LIVE15 WS archive contract before any upstream serialization/compression/storage replacement.",
+  "baseline_main_commit": "3cc4f26beef1993674f8440ba94356ff7b90d790",
+  "production_mutation": false,
+  "source_blobs": {
+    "src/live15_quant/ws_archive.py": "98378d911b3e0cc73bb6b643b882c630aac436f8",
+    "src/live15_quant/ws_retention.py": "e3afd218d73dc5e70bd615e5fb556665fec274dc",
+    "src/live15_quant/config.py": "098416532216d102be6a275b6871efe339495fb2",
+    "tests/test_ws_archive.py": "8bfe826a76c113ffdee801c3be3a7c686a7fa586",
+    "tests/test_ws_retention.py": "53673e94917150baa6fe29119028a97cb95c0ff4",
+    "docs/storage_scaling.md": "f5ac2e01d0bd32b1ddc851dfd6e9441d6cf094bc"
+  },
+  "current_format": {
+    "raw_archive": "canonical JSONL + zlib immutable chunks",
+    "manifest": "SQLite",
+    "hot_store": "SQLite",
+    "wire_version": 1,
+    "default_hot_retention_seconds": 21600,
+    "archive_truth": "raw immutable WS events",
+    "model_projection_is_not_archive_truth": true
+  },
+  "required_state_machine": [
+    "WRITING",
+    "WRITTEN",
+    "CHECKSUM_VERIFIED",
+    "REPLAY_VERIFIED",
+    "COMMITTED",
+    "PURGE_ELIGIBLE",
+    "PURGED"
+  ],
+  "mandatory_contract": {
+    "lossless_exact_values": true,
+    "exact_decimal_semantics": true,
+    "arrival_order_preserved": true,
+    "sequence_gaps_preserved_not_repaired": true,
+    "immutable_chunks": true,
+    "atomic_publish_before_manifest_commit": true,
+    "file_checksum_verification": true,
+    "logical_checksum_verification": true,
+    "deterministic_replay_equivalence": true,
+    "manifest_commit_required_before_purge": true,
+    "purge_reopens_and_reauthorizes_archive": true,
+    "purge_exact_contiguous_id_range_only": true,
+    "partial_purge_restart_requires_exact_contiguous_suffix": true,
+    "failed_chunk_blocks_later_retention": true,
+    "failed_or_unverified_chunk_never_authorizes_purge": true,
+    "restart_safe_archive_progress": true,
+    "restart_safe_purge_progress": true,
+    "no_silent_raw_truth_drop_under_pressure": true
+  },
+  "real_100k_event_benchmark": {
+    "source": "docs/storage_scaling.md four-way benchmark",
+    "sample_records": 100000,
+    "final_book_sha256_prefix_suffix": "3060da16...acd3",
+    "schemes": {
+      "sqlite_row_per_event": {
+        "bytes": 64544768,
+        "bytes_per_event": 645.45,
+        "ratio_vs_current_sqlite": 1.0,
+        "write_events_per_second": 20114,
+        "replay_events_per_second": 4551
+      },
+      "compact_normalized_sqlite": {
+        "bytes": 42078208,
+        "bytes_per_event": 420.78,
+        "ratio_vs_current_sqlite": 1.53,
+        "write_events_per_second": 37355,
+        "replay_events_per_second": 4582
+      },
+      "chunked_canonical_jsonl_zlib": {
+        "bytes": 3233225,
+        "bytes_per_event": 32.33,
+        "ratio_vs_current_sqlite": 19.96,
+        "write_events_per_second": 44787,
+        "replay_events_per_second": 4597
+      },
+      "compressed_chunk_sqlite_manifest": {
+        "bytes": 3249609,
+        "bytes_per_event": 32.50,
+        "ratio_vs_current_sqlite": 19.86,
+        "write_events_per_second": 19509,
+        "replay_events_per_second": 4601
+      }
+    }
+  },
+  "observed_storage_context": {
+    "ws_sqlite_growth_gib_per_day": 63.15,
+    "cold_archive_estimate_gib_per_day_long_sample": 3.2,
+    "cold_archive_estimate_gib_per_day_conservative_first_chunks": 4.3,
+    "strict_six_hour_ws_hot_component_gib": 15.8,
+    "near_term_compact_hot_sqlite_expected_gib": "18-22"
+  },
+  "required_regression_tests": [
+    "tests/test_ws_archive.py::test_archive_round_trip_preserves_decimal_and_replay",
+    "tests/test_ws_archive.py::test_archive_rejects_truncation_and_checksum_mismatch",
+    "tests/test_ws_archive.py::test_manifest_is_idempotent_conflict_loud_and_never_cleans_hot_rows",
+    "tests/test_ws_archive.py::test_crash_before_manifest_commit_leaves_verified_uncommitted_chunk",
+    "tests/test_ws_archive.py::test_sequence_gap_is_preserved_not_repaired",
+    "tests/test_ws_archive.py::test_all_four_benchmark_schemes_replay_identically",
+    "tests/test_ws_retention.py::test_sequential_chunks_are_exact_verified_and_restart_safe",
+    "tests/test_ws_retention.py::test_partial_file_and_manifest_crash_boundaries_recover",
+    "tests/test_ws_retention.py::test_missing_sequence_in_source_is_not_archived_or_repaired",
+    "tests/test_ws_retention.py::test_manifest_cannot_skip_verification_states",
+    "tests/test_ws_retention.py::test_purge_refuses_unverified_and_deletes_only_exact_verified_range",
+    "tests/test_ws_retention.py::test_purge_restart_infers_committed_delete_before_manifest_update",
+    "tests/test_ws_retention.py::test_partial_purge_recovery_rejects_non_prefix_hole",
+    "tests/test_ws_retention.py::test_purge_reopens_and_reauthorizes_archive_before_delete",
+    "tests/test_ws_retention.py::test_purged_archive_can_be_reopened_and_verified",
+    "tests/test_ws_retention.py::test_failed_verification_keeps_raw_source",
+    "tests/test_ws_retention.py::test_failed_archive_blocks_later_ranges_instead_of_skipping_raw_truth"
+  ],
+  "replacement_rule": "Any Arrow/ZSTD/S3/Parquet replacement must meet or exceed this semantic and safety contract before the corresponding current implementation may be retired. Performance gains never compensate for weakened truth, replay, recovery, integrity, or purge authorization."
+}
