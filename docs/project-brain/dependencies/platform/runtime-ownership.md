@@ -58,6 +58,11 @@ release, mutable databases/health/PID/archive/retention state, and external
 credential material. `legacy-unproven-*` describes application-release
 provenance and does not invalidate this runtime authority.
 
+Production dependency additions first resolve this canonical authority: build a
+separate candidate, verify its exact production-only dependency inventory, then
+perform explicit administrator promotion with a receipt-bound rollback target.
+Only demonstrated incompatibility may justify a separate runtime.
+
 ## Interfaces / dependencies
 
 `docs/runtime_ownership_and_self_healing.md`; `deploy/windows/runtime-ownership.json`.
