@@ -9,13 +9,18 @@ import pyarrow as pa
 import pytest
 
 from live15_quant.archive_arrow import (
-    ARROW_WS_EVENT_SCHEMA,
     ArrowArchiveError,
+    batch_to_records,
     read_ipc_snapshot,
     records_to_batch,
     write_ipc_snapshot,
 )
-from live15_quant.kalshi_ws import KalshiBookSide, KalshiBookSyncStatus, KalshiWsEventKind
+from live15_quant.kalshi_ws import (
+    KalshiBookSide,
+    KalshiBookSyncStatus,
+    KalshiWsEventKind,
+    replay_orderbook_events,
+)
 from live15_quant.models import DataRole, OrderBookLevel
 from live15_quant.records import KalshiWsOrderBookEventRecord
 
@@ -27,7 +32,9 @@ def record(sequence: int) -> KalshiWsOrderBookEventRecord:
     kind = (
         KalshiWsEventKind.SUBSCRIPTION_ACK
         if sequence == 1
-        else (KalshiWsEventKind.SNAPSHOT if sequence == 2 else KalshiWsEventKind.DELTA)
+        else KalshiWsEventKind.SNAPSHOT
+        if sequence == 2
+        else KalshiWsEventKind.DELTA
     )
     return KalshiWsOrderBookEventRecord(
         row_id=sequence,
@@ -57,45 +64,87 @@ def record(sequence: int) -> KalshiWsOrderBookEventRecord:
     )
 
 
-def test_arrow_batch_round_trip_preserves_exact_live15_semantics() -> None:
-    records = tuple(record(sequence) for sequence in range(1, 5))
-    batch = records_to_batch(records)
-
-    assert batch.schema == ARROW_WS_EVENT_SCHEMA
-    assert batch.num_rows == 4
-    assert batch.column("price_decimal")[3].as_py() == "0.5000"
-    assert batch.column("quantity_delta_decimal")[3].as_py() == "1.2500"
-
-
-def test_arrow_ipc_zstd_file_round_trip_is_exact_and_atomic(tmp_path: Path) -> None:
-    records = tuple(record(sequence) for sequence in range(1, 5))
+def test_exact_batch_and_ipc_round_trip_and_replay_equivalence(tmp_path: Path) -> None:
+    records = tuple(record(i) for i in range(1, 5))
+    assert batch_to_records(records_to_batch(records)) == records
     path = tmp_path / "snapshot.arrow"
-
-    size = write_ipc_snapshot(path, records, compression_level=3)
+    assert write_ipc_snapshot(path, records) == path.stat().st_size
     decoded = read_ipc_snapshot(path)
-
-    assert size == path.stat().st_size
     assert decoded == records
-    assert decoded[-1].price is not None
-    assert decoded[-1].price.as_tuple() == Decimal("0.5000").as_tuple()
-    assert decoded[-1].quantity_delta is not None
-    assert decoded[-1].quantity_delta.as_tuple() == Decimal("1.2500").as_tuple()
-    assert not (tmp_path / ".snapshot.arrow.tmp").exists()
+    assert [item.row_id for item in decoded] == [item.row_id for item in records]
+    before, after = (
+        replay_orderbook_events(records, (TICKER,))[TICKER],
+        replay_orderbook_events(decoded, (TICKER,))[TICKER],
+    )
+    assert after == before
 
 
-def test_arrow_ipc_uses_zstd_capable_upstream_codec() -> None:
+def test_zstd_is_owned_by_pyarrow(tmp_path: Path) -> None:
+    write_ipc_snapshot(tmp_path / "compressed.arrow", (record(1), record(2)))
     assert pa.Codec.is_available("zstd")
-    assert pa.Codec("zstd", compression_level=3).name == "zstd"
+    assert pa.Codec("zstd").name == "zstd"
 
 
-def test_arrow_snapshot_rejects_mixed_streams_and_nonascending_rows() -> None:
-    first = record(1)
-    with pytest.raises(ArrowArchiveError, match="one subscription stream"):
-        records_to_batch((first, replace(record(2), subscription_id=12)))
-    with pytest.raises(ArrowArchiveError, match="ascending row ids"):
-        records_to_batch((record(2), record(1)))
+def test_decimal_and_timestamp_contract_is_lossless(tmp_path: Path) -> None:
+    special = replace(
+        record(3),
+        price=Decimal("1.2300E-19"),
+        quantity_delta=Decimal("999999999999999999999999999999999999999.000"),
+        receive_enqueue_latency_ms=Decimal("0E-100"),
+    )
+    path = tmp_path / "decimal.arrow"
+    write_ipc_snapshot(path, (record(1), record(2), special))
+    decoded = read_ipc_snapshot(path)[-1]
+    assert decoded.price is not None and decoded.price.as_tuple() == special.price.as_tuple()
+    assert (
+        decoded.quantity_delta is not None
+        and decoded.quantity_delta.as_tuple() == special.quantity_delta.as_tuple()
+    )
+    assert (
+        decoded.receive_enqueue_latency_ms is not None
+        and decoded.receive_enqueue_latency_ms.as_tuple()
+        == special.receive_enqueue_latency_ms.as_tuple()
+    )
+    assert (
+        decoded.parse_timestamp == special.parse_timestamp and decoded.parse_timestamp.tzinfo == UTC
+    )
 
 
-def test_arrow_snapshot_rejects_naive_timestamps() -> None:
+@pytest.mark.parametrize(
+    ("records", "match"),
+    [
+        ((), "cannot be empty"),
+        ((record(2), record(1)), "ascending row ids"),
+        ((record(1), replace(record(2), subscription_id=12)), "one subscription stream"),
+        ((replace(record(1), ticker=TICKER),), "subscription_ack"),
+        ((replace(record(3), yes_bids=(OrderBookLevel(Decimal("1"), Decimal("1")),)),), "delta"),
+    ],
+)
+def test_invalid_input_fails_closed(
+    records: tuple[KalshiWsOrderBookEventRecord, ...], match: str
+) -> None:
+    with pytest.raises(ArrowArchiveError, match=match):
+        records_to_batch(records)
+
+
+def test_naive_timestamp_and_nonfinite_decimal_fail_closed() -> None:
     with pytest.raises(ArrowArchiveError, match="timezone-aware"):
         records_to_batch((replace(record(1), parse_timestamp=datetime(2026, 9, 3, 5, 40)),))
+    with pytest.raises(ArrowArchiveError, match="finite Decimal"):
+        records_to_batch((replace(record(1), receive_enqueue_latency_ms=Decimal("NaN")),))
+
+
+@pytest.mark.parametrize("payload", [b"not Arrow", b"ARROW1", b""])
+def test_corrupt_or_truncated_ipc_fails_loudly(tmp_path: Path, payload: bytes) -> None:
+    path = tmp_path / "bad.arrow"
+    path.write_bytes(payload)
+    with pytest.raises(ArrowArchiveError, match="cannot be decoded"):
+        read_ipc_snapshot(path)
+
+
+def test_truncated_valid_ipc_fails_loudly(tmp_path: Path) -> None:
+    path = tmp_path / "truncated.arrow"
+    write_ipc_snapshot(path, (record(1), record(2)))
+    path.write_bytes(path.read_bytes()[:-8])
+    with pytest.raises(ArrowArchiveError, match="cannot be decoded"):
+        read_ipc_snapshot(path)
