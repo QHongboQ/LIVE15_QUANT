@@ -124,18 +124,13 @@ from live15_quant.storage import (
     SecondaryAppendStatus,
     SettlementConflictError,
 )
-from live15_quant.ws_retention import (
-    ArchiveStorageRoots,
-    DiskQuota,
-    WsArchiveService,
-    WsPurgeService,
-    WsRetentionError,
-    WsRetentionManifest,
-)
 
 logger = logging.getLogger(__name__)
 
 _LIVE_WS_PROJECTION_DEPTH = 16
+# Archive-only dependency is populated on archive execution.  The placeholder
+# preserves the narrow test seam without importing PyArrow during core startup.
+DiskQuota: object | None = None
 
 
 class _BoundedEventRate:
@@ -742,6 +737,19 @@ class KalshiNativeRecorder:
         self._purge_service: WsPurgeService | None = None
         self._adaptive_retention: AdaptiveRetentionController | None = None
         if settings.enable_ws_archive:
+            try:
+                from live15_quant.ws_retention import (
+                    ArchiveStorageRoots,
+                    WsArchiveService,
+                    WsPurgeService,
+                    WsRetentionManifest,
+                )
+            except ModuleNotFoundError as error:
+                if error.name == "pyarrow":
+                    raise RuntimeError(
+                        "WS archive requires Production dependency pyarrow==25.0.1"
+                    ) from error
+                raise
             if (
                 not settings.ws_archive_roots
                 or settings.ws_archive_active_root is None
@@ -3001,10 +3009,14 @@ class KalshiNativeRecorder:
                 return
 
     async def _archive_ws_retention(self) -> None:
+        from live15_quant.ws_retention import DiskQuota as ArchiveDiskQuota
+        from live15_quant.ws_retention import WsRetentionError
+
         assert self._archive_service is not None
         assert self._purge_service is not None
         key = "ws_archive"
-        quota = DiskQuota()
+        quota_factory = DiskQuota or ArchiveDiskQuota
+        quota = quota_factory()
         while not self._stop_event.is_set():
             observed = self._utc_now()
             try:

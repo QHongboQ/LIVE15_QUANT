@@ -16,6 +16,7 @@ dependencies = [
     "intel-openmp==2026.1.1; sys_platform == 'win32'",
     "kalshi-sdk==12.0.0",
     "numpy==2.5.2",
+    "pyarrow==25.0.1",
     "requests==2.34.2",
     "tzdata==2026.3",
     "uvicorn==0.52.4",
@@ -24,9 +25,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-archive-prototype = [
-    "pyarrow==25.0.1",
-]
 dev = [
     "httpx==0.28.1",
     "pytest==9.1.1",
