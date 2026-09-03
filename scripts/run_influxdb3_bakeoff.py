@@ -15,7 +15,7 @@ from run_commercial_archive_benchmark import (
     load_complete_stream,
 )
 
-from live15_quant.ws_archive import event_from_wire, event_to_wire
+from live15_quant.storage_scaling import event_from_wire, event_to_wire
 
 ROOT = Path(r"D:\LIVE15_DEV\storage-bakeoff-001")
 CLI = ROOT / "influxdb3" / "influxdb3.exe"

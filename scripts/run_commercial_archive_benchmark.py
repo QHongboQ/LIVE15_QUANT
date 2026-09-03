@@ -1,4 +1,4 @@
-"""Run the fixed-snapshot JSONL+zlib versus Arrow IPC+ZSTD benchmark.
+"""Run the fixed-snapshot Arrow IPC+ZSTD versus Parquet+ZSTD benchmark.
 
 This offline driver intentionally uses the existing LIVE15 encoders, decoders, and
 replay implementation unchanged.  It refuses any stream other than the fixed PR156
@@ -17,11 +17,16 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from live15_quant.archive_arrow import ArrowArchiveError, read_ipc_snapshot, write_ipc_snapshot
+from live15_quant.archive_arrow import (
+    ArrowArchiveError,
+    read_ipc_snapshot,
+    read_parquet_snapshot,
+    write_ipc_snapshot,
+    write_parquet_snapshot,
+)
 from live15_quant.kalshi_ws import replay_orderbook_events
 from live15_quant.records import KalshiWsOrderBookEventRecord
 from live15_quant.storage import RecorderStore
-from live15_quant.ws_archive import decode_archive_chunk, encode_archive_chunk
 
 EXPECTED_FIRST_ROW_ID = 232_652
 EXPECTED_LAST_ROW_ID = 1_251_327
@@ -145,16 +150,15 @@ def _replay_hash(records: Sequence[KalshiWsOrderBookEventRecord]) -> str:
     return hashlib.sha256(json.dumps(facts, separators=(",", ":")).encode()).hexdigest()
 
 
-def _measure_jsonl(
+def _measure_parquet(
     records: tuple[KalshiWsOrderBookEventRecord, ...], directory: Path
 ) -> dict[str, object]:
-    blob, encode_elapsed = _timed(lambda: encode_archive_chunk(records)[0])
-    path = directory / "archive.zlib"
-    path.write_bytes(blob)
-    decoded, decode_elapsed = _timed(lambda: decode_archive_chunk(path.read_bytes())[0])
+    path = directory / "archive.parquet"
+    _, encode_elapsed = _timed(lambda: write_parquet_snapshot(path, records))
+    decoded, decode_elapsed = _timed(lambda: read_parquet_snapshot(path))
     replay_hash, replay_elapsed = _timed(lambda: _replay_hash(decoded))
     return {
-        "format": "JSONL+zlib",
+        "format": "Parquet+ZSTD",
         "total_bytes": path.stat().st_size,
         "bytes_per_event": path.stat().st_size / len(records),
         "encode_events_per_second": len(records) / encode_elapsed,
@@ -227,8 +231,10 @@ def run(snapshot: Path, sample_size: int, output: Path) -> dict[str, object]:
             "subscription_id": records[0].subscription_id,
         },
         "implementations": {
-            "jsonl_zlib": "live15_quant.ws_archive.encode_archive_chunk/decode_archive_chunk",
             "arrow_ipc_zstd": "live15_quant.archive_arrow.write_ipc_snapshot/read_ipc_snapshot",
+            "parquet_zstd": (
+                "live15_quant.archive_arrow.write_parquet_snapshot/read_parquet_snapshot"
+            ),
             "replay": "live15_quant.kalshi_ws.replay_orderbook_events",
         },
         "runs": {},
@@ -237,16 +243,16 @@ def run(snapshot: Path, sample_size: int, output: Path) -> dict[str, object]:
         with tempfile.TemporaryDirectory(prefix="live15-commercial-archive-benchmark-") as temp:
             directory = Path(temp)
             expected = _replay_hash(selected)
-            jsonl = _measure_jsonl(selected, directory)
+            parquet = _measure_parquet(selected, directory)
             arrow = _measure_arrow(selected, directory)
-            jsonl_verification = _verification(selected, jsonl, expected)
+            parquet_verification = _verification(selected, parquet, expected)
             arrow_verification = _verification(selected, arrow, expected)
             receipt["runs"][name] = {
                 "records": len(selected),
                 "first_row_id": selected[0].row_id,
                 "last_row_id": selected[-1].row_id,
                 "formats": [
-                    {**jsonl, "verification": jsonl_verification},
+                    {**parquet, "verification": parquet_verification},
                     {**arrow, "verification": arrow_verification},
                 ],
             }
