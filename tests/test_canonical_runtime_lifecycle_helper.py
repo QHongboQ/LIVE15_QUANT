@@ -81,10 +81,11 @@ def test_windows_powershell_51_compatibility_primitives() -> None:
 param([string]$Helper, [string]$Python, [string]$RevisionRoot)
 $Repository = (Get-Location).Path
 $source = Get-Content -Raw -LiteralPath $Helper
-$start = $source.IndexOf('$ExpectedPython')
-$end = $source.IndexOf("try {`n    foreach")
+$normalized = $source -replace "`r`n", "`n"
+$start = $normalized.IndexOf('$ExpectedPython')
+$end = $normalized.IndexOf("try {`n    foreach")
 if ($start -lt 0 -or $end -le $start) { throw 'helper primitives not found' }
-Invoke-Expression $source.Substring($start, $end - $start)
+Invoke-Expression $normalized.Substring($start, $end - $start)
 $version = Get-PythonVersion $Python
 $inventory = @('a==1', 'b==2')
 $identity = Get-DependencyIdentity $inventory
