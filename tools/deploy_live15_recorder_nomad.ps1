@@ -3,7 +3,7 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{40}$')][string]$GitSha,
     [Parameter(Mandatory)][string]$Repository,
     [string]$ReleaseRoot = 'C:\Program Files\LIVE15\ControlCenterReleases',
-    [string]$Jobspec = "$PSScriptRoot\..\deploy\nomad\live15-recorder.nomad.hcl",
+    [string]$Jobspec,
     [string]$NomadPath = 'D:\LIVE15_NOMAD_POC\bin\nomad.exe',
     [string]$NomadAddress = 'http://127.0.0.1:4646',
     [string]$RuntimePython = 'C:\Program Files\LIVE15\ControlCenterRuntime\Scripts\python.exe',
@@ -32,8 +32,18 @@ function Invoke-Git([string[]]$Arguments) {
 }
 
 function Invoke-ReleasePipeline([string[]]$Arguments) {
-    & $RuntimePython (Join-Path $Repository 'src\live15_quant\release_pipeline.py') @Arguments
+    # release_pipeline writes normal operational messages to stdout. Send those
+    # messages to the host so a caller such as Get-Identity returns only its
+    # documented structured object while failures still remain terminating.
+    & $RuntimePython (Join-Path $Repository 'src\live15_quant\release_pipeline.py') @Arguments | Out-Host
     if ($LASTEXITCODE) { throw 'Immutable release pipeline failed.' }
+}
+
+function Resolve-Jobspec([string]$Candidate) {
+    if ([string]::IsNullOrWhiteSpace($Candidate)) {
+        return Join-Path $Repository 'deploy\nomad\live15-recorder.nomad.hcl'
+    }
+    return $Candidate
 }
 
 function Get-LiveJob {
@@ -177,6 +187,7 @@ foreach ($name in $nomadVariableNames) { $previousEnvironment[$name] = [Environm
 try {
     if ($Apply -and $Preview) { throw 'Specify either Apply or Preview, not both.' }
     Assert-LocalNomad
+    $Jobspec = Resolve-Jobspec $Jobspec
     foreach ($path in @($Repository, $Jobspec, $NomadPath, $RuntimePython)) {
         if (-not (Test-Path -LiteralPath $path)) { throw "Required path is unavailable: $path" }
     }

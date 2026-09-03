@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,6 +12,22 @@ JOBSPEC = ROOT / "deploy" / "nomad" / "live15-recorder.nomad.hcl"
 
 def _source() -> str:
     return HELPER.read_text(encoding="utf-8")
+
+
+def _powershell() -> str:
+    executable = shutil.which("pwsh") or shutil.which("powershell")
+    if executable is None:
+        pytest.fail("PowerShell is required to verify the Recorder deployment helper")
+    return executable
+
+
+def _library_helper(tmp_path: Path) -> Path:
+    marker = "$nomadVariableNames = @("
+    source = _source()
+    assert marker in source
+    helper = tmp_path / "deploy-helper-library.ps1"
+    helper.write_text(source.replace(marker, f"return\n\n{marker}", 1), encoding="utf-8")
+    return helper
 
 
 def test_recorder_deploy_helper_is_localhost_scoped_and_requires_exact_reviewed_sha() -> None:
@@ -33,6 +50,102 @@ def test_preview_is_non_mutating_and_apply_is_explicit() -> None:
     assert "mode='PREVIEW'" in source
     assert "mutation='NONE'" in source
     assert source.index("if (-not $Apply)") < source.index("job run")
+    assert "$previous.ReleaseId" in source
+    assert "$next.ReleaseId" in source
+
+
+def test_get_identity_returns_one_object_when_package_verification_writes_stdout(
+    tmp_path: Path,
+) -> None:
+    helper = _library_helper(tmp_path)
+    release_root = tmp_path / "releases"
+    release_id = "live15-test"
+    release = release_root / "releases" / release_id
+    (release / "app").mkdir(parents=True)
+    (release / "release-manifest.json").write_text(
+        json.dumps({"release_id": release_id, "git_commit_sha": "a" * 40}), encoding="utf-8"
+    )
+    runtime = tmp_path / "noisy-runtime.cmd"
+    runtime.write_text("@echo verify-package normal stdout\n@exit /b 0\n", encoding="utf-8")
+    wrapper = tmp_path / "assert-identity.ps1"
+    wrapper.write_text(
+        "param([string]$Helper, [string]$Repository, [string]$ReleaseRoot, [string]$Runtime)\n"
+        ". $Helper -Repository $Repository -ReleaseRoot $ReleaseRoot -RuntimePython $Runtime\n"
+        f"$identities = @(Get-Identity '{release_id}')\n"
+        'if ($identities.Count -ne 1) { throw "identity count=$($identities.Count)" }\n'
+        "$identity = $identities[0]\n"
+        "if ($null -eq $identity.ReleaseId -or $null -eq $identity.AppRoot -or "
+        "$null -eq $identity.Manifest -or $null -eq $identity.ManifestSha256) "
+        "{ throw 'identity shape invalid' }\n"
+        "$identity | ConvertTo-Json -Compress\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-File",
+            str(wrapper),
+            "-Helper",
+            str(helper),
+            "-Repository",
+            str(ROOT),
+            "-ReleaseRoot",
+            str(release_root),
+            "-Runtime",
+            str(runtime),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "verify-package normal stdout" in result.stdout
+    identity = json.loads(result.stdout.strip().splitlines()[-1])
+    assert identity["ReleaseId"] == release_id
+    assert identity["AppRoot"].endswith("releases\\live15-test\\app")
+
+
+def test_jobspec_resolution_uses_repository_default_and_preserves_explicit_path(
+    tmp_path: Path,
+) -> None:
+    helper = _library_helper(tmp_path)
+    explicit = tmp_path / "explicit.nomad.hcl"
+    explicit.write_text('job "live15-recorder" {}\n', encoding="utf-8")
+    wrapper = tmp_path / "assert-jobspec.ps1"
+    wrapper.write_text(
+        "param([string]$Helper, [string]$Repository, [string]$Explicit)\n"
+        ". $Helper -Repository $Repository\n"
+        "[pscustomobject]@{ default = Resolve-Jobspec $null; "
+        "explicit = Resolve-Jobspec $Explicit } | "
+        "ConvertTo-Json -Compress\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-File",
+            str(wrapper),
+            "-Helper",
+            str(helper),
+            "-Repository",
+            str(ROOT),
+            "-Explicit",
+            str(explicit),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    resolved = json.loads(result.stdout)
+    assert Path(resolved["default"]) == JOBSPEC
+    assert Path(resolved["explicit"]) == explicit
 
 
 def test_helper_preserves_live_recorder_configuration_and_archive_stays_disabled() -> None:
@@ -89,9 +202,6 @@ def test_jobspec_remains_the_existing_single_recorder_nomad_job() -> None:
 
 
 def test_helper_parses_in_powershell() -> None:
-    executable = shutil.which("pwsh") or shutil.which("powershell")
-    if executable is None:
-        pytest.fail("PowerShell is required to parse the Recorder deployment helper")
     command = (
         "$tokens = $null; "
         "$errors = $null; "
@@ -100,6 +210,9 @@ def test_helper_parses_in_powershell() -> None:
         "if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }"
     )
     result = subprocess.run(
-        [executable, "-NoProfile", "-Command", command], capture_output=True, text=True, check=False
+        [_powershell(), "-NoProfile", "-Command", command],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
