@@ -28,6 +28,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | RECORDER_LIFECYCLE_TO_NOMAD | VERIFIED / COMPLETE | `docs/project-brain/capabilities/control-center.md`; `docs/project-brain/dependencies/platform/runtime-ownership.md` | Recorder Production lifecycle is Nomad-owned. |
 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | MERGED / CONSOLIDATION_COMPLETE | PR #122 | This is a Project Brain governance closeout; it did not perform an upstream replacement. |
 | RUNTIME-LIFECYCLE-CONSOLIDATION | COMPLETE / VERIFIED | `docs/project-brain/dependencies/platform/runtime-ownership.md`; PR #129 | Nomad + Windows SCM lifecycle replacement is adopted and Production verified; cold boot passed, RuntimeSupervisor and the managed `paper_forward` wrapper are retired, and dual owner is absent. |
+| WEB-APPLICATION-SHELL | COMPLETE / VERIFIED | `docs/project-brain/capabilities/control-center.md`; PRs #131–#139 | React Admin + Material UI terminal is the sole ControlCenter Web owner; the legacy handwritten shell is retired and Production verification is complete. |
 
 ## Superseded standalone work
 
@@ -49,7 +50,7 @@ runtime requires concrete incompatibility evidence.
 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
-| WEB-APPLICATION-SHELL | PLANNED / NEXT | Select the bounded React Admin + Material UI candidate for generic routing, tables, loading/error handling, refresh plumbing, and theme/shell only. Preserve FastAPI typed domain API, Recorder/settlement/training truth, Hard Risk, and Production authorization. | Separate bounded task; no React Admin migration or Production action in this closeout |
+| VECTOR-TELEMETRY | PLANNED / NEXT | Select the bounded Vector telemetry/log replacement decision or POC. Preserve Recorder truth and keep the collector out of the Recorder hot path; compare OTel only if a measured OTLP/tracing requirement exists. | Separate bounded task; no Vector adoption or Production action in this closeout |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
 
 ## Planning route

@@ -186,7 +186,8 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
         "owner resolution -> freeze legacy generic owner",
         "Project Brain authority consolidation COMPLETE",
         "Runtime/Lifecycle consolidation COMPLETE / VERIFIED",
-        "**NEXT:** select the bounded **WEB APPLICATION SHELL** replacement class",
+        "Web Application Shell COMPLETE / VERIFIED",
+        "**NEXT:** select the bounded **VECTOR TELEMETRY** replacement responsibility",
     ):
         assert expected in roadmap
     current_roadmap = roadmap.split("## Change log", maxsplit=1)[0]
@@ -439,7 +440,8 @@ def test_compact_progress_has_only_current_or_future_gated_rows() -> None:
         "## Planning route", maxsplit=1
     )[0]
 
-    assert "| WEB-APPLICATION-SHELL | PLANNED / NEXT |" in active
+    assert "| VECTOR-TELEMETRY | PLANNED / NEXT |" in active
+    assert "| WEB-APPLICATION-SHELL | PLANNED / NEXT |" not in active
     assert "| TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED |" in active
     for historical_or_superseded in (
         "WS-RESYNC-001 + GAP-002",
@@ -484,12 +486,28 @@ def test_next_names_one_concrete_responsibility_class() -> None:
     next_section = roadmap.split("**NEXT:**", maxsplit=1)[1].split(
         "Candidate-specific boundaries", maxsplit=1
     )[0]
-    assert "WEB APPLICATION SHELL" in next_section
-    assert "React Admin +\nMaterial UI" in next_section
-    assert "FastAPI typed domain API" in next_section
+    assert "VECTOR TELEMETRY" in next_section
+    assert "Vector is the default" in next_section
+    assert "Recorder hot path" in next_section
     assert (
-        "does not begin the React Admin migration or authorize Production mutation" in next_section
+        "does not begin a Vector POC, authorize adoption,\n"
+        "or authorize Production mutation" in next_section
     )
+
+
+def test_web_reconciliation_records_one_completed_owner_and_one_next_candidate() -> None:
+    progress = read("PROJECT_PROGRESS.md")
+    state = read("CURRENT_STATE.md")
+    control_center = read("docs/project-brain/capabilities/control-center.md")
+    replacement_matrix = read("docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md")
+
+    assert "| WEB-APPLICATION-SHELL | COMPLETE / VERIFIED |" in progress
+    assert "| VECTOR-TELEMETRY | PLANNED / NEXT |" in progress
+    assert "Web Application Shell replacement are **COMPLETE / VERIFIED**" in state
+    assert "generic replacement class is **VECTOR TELEMETRY**" in state
+    assert "packaged React terminal is the sole ControlCenter web owner" in control_center
+    assert "Web Application Shell are **ADOPTED / PRODUCTION VERIFIED**" in replacement_matrix
+    assert "Vector is the next default telemetry candidate" in replacement_matrix
 
 
 def test_task_status_route_is_one_child_at_a_time() -> None:
