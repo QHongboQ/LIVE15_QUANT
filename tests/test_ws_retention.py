@@ -19,6 +19,7 @@ from live15_quant.models import OrderBookLevel
 from live15_quant.storage import RecorderStore
 from live15_quant.ws_retention import (
     ArchiveState,
+    ArchiveStorageRoots,
     CompactionBenefitGate,
     DiskQuota,
     DiskThresholdState,
@@ -97,10 +98,11 @@ def _service(
     database = tmp_path / "raw.sqlite3"
     _populate(database, count=count)
     manifest = WsRetentionManifest(tmp_path / "archive-manifest.sqlite3")
+    storage_roots = ArchiveStorageRoots({"parquet-01": tmp_path / "archive"}, "parquet-01")
     return (
         WsArchiveService(
             database,
-            tmp_path / "archive",
+            storage_roots,
             manifest,
             hot_retention=timedelta(hours=6),
             chunk_records=chunk,
@@ -127,13 +129,62 @@ def test_sequential_chunks_are_exact_verified_and_restart_safe(tmp_path: Path) -
     assert first.chunk.tickers == (TICKER,)
     restarted = WsArchiveService(
         service.source_database,
-        service.archive_root,
+        service.storage_roots,
         WsRetentionManifest(manifest.path),
         hot_retention=timedelta(hours=6),
         chunk_records=10,
     )
     third = restarted.run_once(now=NOW)
     assert third.chunk is not None and third.chunk.first_event_id == 21
+
+
+def test_chunks_keep_their_recorded_root_after_the_active_root_changes(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path, chunk=10)
+    first = service.run_once(now=NOW).chunk
+    assert first is not None
+    switched_roots = ArchiveStorageRoots(
+        {"parquet-01": tmp_path / "archive", "parquet-02": tmp_path / "archive-02"},
+        "parquet-02",
+    )
+    switched = WsArchiveService(
+        service.source_database,
+        switched_roots,
+        WsRetentionManifest(manifest.path),
+        hot_retention=timedelta(hours=6),
+        chunk_records=10,
+    )
+    second = switched.run_once(now=NOW).chunk
+    assert second is not None
+    assert (first.storage_root_id, second.storage_root_id) == ("parquet-01", "parquet-02")
+    assert switched_roots.resolve(first.storage_root_id, first.relative_path).is_file()
+    assert switched_roots.resolve(second.storage_root_id, second.relative_path).is_file()
+
+    purge = WsPurgeService(service.source_database, switched_roots, manifest)
+    purge.verify_preserved_archive(first)
+    purge.verify_preserved_archive(second)
+
+
+def test_unknown_missing_and_escaping_storage_roots_fail_closed(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    chunk = service.run_once(now=NOW).chunk
+    assert chunk is not None
+    with pytest.raises(WsRetentionError, match="unknown or unavailable"):
+        ArchiveStorageRoots({"parquet-02": tmp_path / "archive-02"}, "parquet-02").resolve(
+            chunk.storage_root_id, chunk.relative_path
+        )
+    with pytest.raises(WsRetentionError, match="path is invalid"):
+        service.storage_roots.resolve(chunk.storage_root_id, "../escaped.parquet")
+    connection = sqlite3.connect(manifest.path)
+    with connection:
+        connection.execute(
+            "UPDATE ws_retention_chunks SET storage_root_id='missing-root' WHERE chunk_id=?",
+            (chunk.chunk_id,),
+        )
+    connection.close()
+    with pytest.raises(WsRetentionError, match="unknown or unavailable"):
+        WsPurgeService(
+            service.source_database, service.storage_roots, manifest
+        ).verify_preserved_archive(manifest.chunks()[0])
 
 
 def test_eligibility_is_non_blocking_and_resumable(tmp_path: Path) -> None:
@@ -176,7 +227,12 @@ def test_overlap_conflict_fails_loudly(tmp_path: Path) -> None:
     assert archived is not None
     records = service._range_records(archived)
     with pytest.raises(WsRetentionError, match="overlaps"):
-        manifest.reserve(records[1:], relative_path="conflict.parquet", created_at=NOW)
+        manifest.reserve(
+            records[1:],
+            storage_root_id=service.storage_roots.active_root_id,
+            relative_path="conflict.parquet",
+            created_at=NOW,
+        )
 
 
 def test_manifest_accepts_only_the_parquet_archive_codec(tmp_path: Path) -> None:
@@ -263,7 +319,12 @@ def test_manifest_cannot_skip_verification_states(tmp_path: Path) -> None:
         cutoff=NOW - timedelta(hours=6),
         maximum_records=10,
     )
-    chunk = manifest.reserve(records, relative_path="chunk.parquet", created_at=NOW)
+    chunk = manifest.reserve(
+        records,
+        storage_root_id=service.storage_roots.active_root_id,
+        relative_path="chunk.parquet",
+        created_at=NOW,
+    )
     with pytest.raises(WsRetentionError, match="skipped verification"):
         manifest.advance(chunk.chunk_id, ArchiveState.REPLAY_VERIFIED, now=NOW)
 
@@ -271,14 +332,14 @@ def test_manifest_cannot_skip_verification_states(tmp_path: Path) -> None:
 def test_purge_refuses_unverified_and_deletes_only_exact_verified_range(tmp_path: Path) -> None:
     service, manifest = _service(tmp_path)
     assert (
-        WsPurgeService(service.source_database, service.archive_root, manifest, batch_rows=3)
+        WsPurgeService(service.source_database, service.storage_roots, manifest, batch_rows=3)
         .run_once()
         .chunk_id
         is None
     )
     chunk = service.run_once(now=NOW).chunk
     assert chunk is not None
-    purge = WsPurgeService(service.source_database, service.archive_root, manifest, batch_rows=3)
+    purge = WsPurgeService(service.source_database, service.storage_roots, manifest, batch_rows=3)
     deleted = 0
     while True:
         result = purge.run_once(now=NOW)
@@ -312,7 +373,7 @@ def test_purge_restart_infers_committed_delete_before_manifest_update(
     service, manifest = _service(tmp_path)
     chunk = service.run_once(now=NOW).chunk
     assert chunk is not None
-    purge = WsPurgeService(service.source_database, service.archive_root, manifest, batch_rows=4)
+    purge = WsPurgeService(service.source_database, service.storage_roots, manifest, batch_rows=4)
     original = manifest.update_purge_progress
     monkeypatch.setattr(
         manifest,
@@ -338,7 +399,7 @@ def test_partial_purge_recovery_rejects_non_prefix_hole(tmp_path: Path) -> None:
             (chunk.first_event_id + 4,),
         )
     connection.close()
-    purge = WsPurgeService(service.source_database, service.archive_root, manifest, batch_rows=3)
+    purge = WsPurgeService(service.source_database, service.storage_roots, manifest, batch_rows=3)
     with pytest.raises(WsRetentionError, match="exact contiguous suffix"):
         purge.run_once(now=NOW)
     assert manifest.chunks()[0].purged_events == 0
@@ -348,9 +409,9 @@ def test_purge_reopens_and_reauthorizes_archive_before_delete(tmp_path: Path) ->
     service, manifest = _service(tmp_path)
     chunk = service.run_once(now=NOW).chunk
     assert chunk is not None
-    archive = service.archive_root / chunk.relative_path
+    archive = service.storage_roots.resolve(chunk.storage_root_id, chunk.relative_path)
     archive.write_bytes(b"corrupted-after-verification")
-    purge = WsPurgeService(service.source_database, service.archive_root, manifest, batch_rows=3)
+    purge = WsPurgeService(service.source_database, service.storage_roots, manifest, batch_rows=3)
     with pytest.raises(WsRetentionError, match="checksum changed"):
         purge.run_once(now=NOW)
     connection = sqlite3.connect(service.source_database)
@@ -369,7 +430,7 @@ def test_purged_archive_can_be_reopened_and_verified(tmp_path: Path) -> None:
     chunk = service.run_once(now=NOW).chunk
     assert chunk is not None
     purge = WsPurgeService(
-        service.source_database, service.archive_root, manifest, batch_rows=20_000
+        service.source_database, service.storage_roots, manifest, batch_rows=20_000
     )
     assert purge.run_once(now=NOW).remaining_events == 0
     purged = manifest.chunks()[0]
@@ -383,7 +444,7 @@ def test_bounded_purge_creates_reusable_pages_without_shrinking_file(tmp_path: P
     assert chunk is not None
     physical_before = service.source_database.stat().st_size
     purge = WsPurgeService(
-        service.source_database, service.archive_root, manifest, batch_rows=20_000
+        service.source_database, service.storage_roots, manifest, batch_rows=20_000
     )
     result = purge.run_once(now=NOW)
     assert result.deleted_events == chunk.event_count
@@ -583,7 +644,7 @@ def test_delta_only_chunk_waits_for_baseline_without_publishing_or_failing(
     assert result.chunk is not None
     assert result.chunk.state is ArchiveState.WAITING_FOR_REPLAY_BASELINE
     assert result.chunk.failure == "REPLAY_BASELINE_MISSING"
-    assert not tuple(service.archive_root.rglob("*.parquet"))
+    assert not tuple(service.storage_roots.active_root.rglob("*.parquet"))
     with pytest.raises(WsRetentionError, match="unreplayable archive chunk"):
         service.run_once(now=NOW)
 
@@ -875,7 +936,7 @@ def test_purge_authorization_refuses_quarantine_boundary(
     chunk = service.run_once(now=NOW).chunk
     assert chunk is not None
     monkeypatch.setattr(manifest, "quarantine_overlaps", lambda *_args: (chunk,))
-    purge = WsPurgeService(service.source_database, service.archive_root, manifest)
+    purge = WsPurgeService(service.source_database, service.storage_roots, manifest)
     with pytest.raises(WsRetentionError, match="quarantined replay-baseline gap"):
         purge.run_once(now=NOW)
 

@@ -23,7 +23,7 @@ from .archive_arrow import (
 )
 from .kalshi_ws import KalshiWsEventKind
 from .records import KalshiWsOrderBookEventRecord
-from .ws_retention import ArchiveState, WsRetentionError, _ReplayState
+from .ws_retention import ArchiveState, ArchiveStorageRoots, WsRetentionError, _ReplayState
 
 if TYPE_CHECKING:
     from .canonical_evidence import EvidenceRecord
@@ -254,8 +254,8 @@ class ArchiveResearchSelection:
 class ArchiveResearchSourceAdapter:
     """Read-only, bounded access seam for archived replay-verified order-book state."""
 
-    def __init__(self, archive_root: Path, manifest_path: Path) -> None:
-        self.archive_root = archive_root.resolve()
+    def __init__(self, storage_roots: ArchiveStorageRoots, manifest_path: Path) -> None:
+        self.storage_roots = storage_roots
         self.manifest_path = manifest_path.resolve()
 
     def materialize(self, query: ArchiveResearchQuery) -> ArchiveResearchSelection:
@@ -277,7 +277,7 @@ class ArchiveResearchSourceAdapter:
             return ArchiveResearchSelection(
                 False, "ARCHIVE_QUERY_MAXIMUM_CHUNKS_HARD_LIMIT", query, identity
             )
-        if not self.manifest_path.is_file() or not self.archive_root.is_dir():
+        if not self.manifest_path.is_file():
             return ArchiveResearchSelection(
                 False, "ARCHIVE_RESEARCH_SOURCE_UNAVAILABLE", query, identity
             )
@@ -484,11 +484,13 @@ class ArchiveResearchSourceAdapter:
     def _decode_chunk(
         self, chunk: sqlite3.Row
     ) -> tuple[tuple[KalshiWsOrderBookEventRecord, ...], dict[str, Any]]:
-        relative = Path(str(chunk["relative_path"]))
-        if relative.is_absolute() or ".." in relative.parts or relative.suffix != ".parquet":
-            raise _Unavailable("ARCHIVE_PATH_INVALID")
-        path = (self.archive_root / relative).resolve()
-        if self.archive_root not in path.parents or not path.is_file():
+        try:
+            path = self.storage_roots.resolve(
+                str(chunk["storage_root_id"]), str(chunk["relative_path"])
+            )
+        except WsRetentionError as error:
+            raise _Unavailable("ARCHIVE_STORAGE_ROOT_UNAVAILABLE") from error
+        if not path.is_file():
             raise _Unavailable("ARCHIVE_FILE_UNAVAILABLE")
         digest = hashlib.sha256()
         with path.open("rb") as handle:

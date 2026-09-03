@@ -88,6 +88,7 @@ from live15_quant.storage import RecorderStore
 from live15_quant.storage_scaling import benchmark_snapshot
 from live15_quant.ws_retention import (
     ArchiveState,
+    ArchiveStorageRoots,
     CompactionBenefitGate,
     DiskQuota,
     WsArchiveService,
@@ -1062,14 +1063,20 @@ def ws_retention_main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--destination", type=Path)
     arguments = parser.parse_args(argv)
     settings = load_settings()
-    root = settings.ws_archive_root or (settings.recorder_data_path.parent / "ws_archive")
-    manifest_path = settings.ws_archive_manifest_path or (
-        settings.recorder_data_path.parent / "ws_archive_manifest.sqlite3"
+    if (
+        not settings.ws_archive_roots
+        or settings.ws_archive_active_root is None
+        or settings.ws_archive_manifest_path is None
+    ):
+        raise SystemExit("WS archive roots, active root, and manifest path must be configured")
+    storage_roots = ArchiveStorageRoots(
+        dict(settings.ws_archive_roots), settings.ws_archive_active_root
     )
+    manifest_path = settings.ws_archive_manifest_path
     manifest = WsRetentionManifest(manifest_path)
     service = WsArchiveService(
         settings.recorder_data_path,
-        root,
+        storage_roots,
         manifest,
         hot_retention=timedelta(seconds=settings.ws_archive_hot_retention_seconds),
         chunk_records=settings.ws_archive_chunk_records,
@@ -1090,7 +1097,7 @@ def ws_retention_main(argv: Sequence[str] | None = None) -> None:
     if arguments.action == "purge-once":
         result = WsPurgeService(
             settings.recorder_data_path,
-            root,
+            storage_roots,
             manifest,
             batch_rows=settings.ws_archive_purge_batch_rows,
         ).run_once()
@@ -1148,14 +1155,20 @@ def archive_maintenance_main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--max-purge-batches", type=int, default=8, choices=range(0, 101))
     arguments = parser.parse_args(argv)
     settings = load_settings()
-    root = settings.ws_archive_root or (settings.recorder_data_path.parent / "ws_archive")
-    manifest_path = settings.ws_archive_manifest_path or (
-        settings.recorder_data_path.parent / "ws_archive_manifest.sqlite3"
+    if (
+        not settings.ws_archive_roots
+        or settings.ws_archive_active_root is None
+        or settings.ws_archive_manifest_path is None
+    ):
+        raise SystemExit("WS archive roots, active root, and manifest path must be configured")
+    storage_roots = ArchiveStorageRoots(
+        dict(settings.ws_archive_roots), settings.ws_archive_active_root
     )
+    manifest_path = settings.ws_archive_manifest_path
     manifest = WsRetentionManifest(manifest_path)
     service = WsArchiveService(
         settings.recorder_data_path,
-        root,
+        storage_roots,
         manifest,
         hot_retention=timedelta(seconds=settings.ws_archive_hot_retention_seconds),
         chunk_records=settings.ws_archive_chunk_records,
@@ -1174,7 +1187,7 @@ def archive_maintenance_main(argv: Sequence[str] | None = None) -> None:
             results.append(asdict(result))
     purge = WsPurgeService(
         settings.recorder_data_path,
-        root,
+        storage_roots,
         manifest,
         batch_rows=settings.ws_archive_purge_batch_rows,
     )

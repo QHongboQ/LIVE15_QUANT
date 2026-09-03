@@ -71,8 +71,9 @@ class Settings:
     settlement_followup_interval_seconds: float = 15.0
     settlement_followup_batch_size: int = 25
     recorder_checkpoint_interval_seconds: float = 300.0
-    enable_ws_archive: bool = True
-    ws_archive_root: Path | None = None
+    enable_ws_archive: bool = False
+    ws_archive_roots: tuple[tuple[str, Path], ...] = ()
+    ws_archive_active_root: str | None = None
     ws_archive_manifest_path: Path | None = None
     ws_archive_hot_retention_seconds: float = 21_600.0
     # Keep live archive I/O bursts below the synchronized WS persistence queue budget.
@@ -262,6 +263,26 @@ def _recorder_provider(source: Mapping[str, str], default: str) -> str:
     return value
 
 
+def _archive_roots(value: str) -> tuple[tuple[str, Path], ...]:
+    """Parse ``root-id=absolute-path`` entries separated by semicolons."""
+
+    if not value.strip():
+        return ()
+    roots: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for entry in value.split(";"):
+        root_id, separator, raw_path = entry.partition("=")
+        root_id = root_id.strip()
+        path = Path(raw_path.strip())
+        if not separator or not root_id or not raw_path.strip() or not path.is_absolute():
+            raise ValueError("WS archive roots must be non-empty id=absolute-path entries")
+        if root_id in seen:
+            raise ValueError("WS archive root IDs must be unique")
+        seen.add(root_id)
+        roots.append((root_id, path))
+    return tuple(roots)
+
+
 def _optional_positive_float(
     source: Mapping[str, str], name: str, default: float | None
 ) -> float | None:
@@ -322,14 +343,31 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     recorder_pid_path = Path(
         source.get("LIVE15_RECORDER_PID_PATH", str(defaults.recorder_pid_path))
     )
-    ws_archive_root = (
-        Path(source["LIVE15_WS_ARCHIVE_ROOT"]) if source.get("LIVE15_WS_ARCHIVE_ROOT") else None
-    )
+    ws_archive_roots = _archive_roots(source.get("LIVE15_WS_ARCHIVE_ROOTS", ""))
+    ws_archive_active_root = source.get("LIVE15_WS_ARCHIVE_ACTIVE_ROOT") or None
+    if bool(ws_archive_roots) != bool(ws_archive_active_root):
+        raise ValueError("WS archive roots and active root must be configured together")
+    if ws_archive_active_root is not None and ws_archive_active_root not in dict(ws_archive_roots):
+        raise ValueError("WS archive active root is not configured")
     ws_archive_manifest_path = (
         Path(source["LIVE15_WS_ARCHIVE_MANIFEST_PATH"])
         if source.get("LIVE15_WS_ARCHIVE_MANIFEST_PATH")
         else None
     )
+    if not (
+        bool(ws_archive_roots) == bool(ws_archive_active_root) == bool(ws_archive_manifest_path)
+    ):
+        raise ValueError(
+            "WS archive roots, active root, and manifest path must be configured together"
+        )
+    if ws_archive_roots:
+        resolved_roots = tuple(path.resolve() for _, path in ws_archive_roots)
+        if len(set(resolved_roots)) != len(resolved_roots):
+            raise ValueError("WS archive root paths must be unique")
+        assert ws_archive_manifest_path is not None
+        manifest_path = ws_archive_manifest_path.resolve()
+        if any(manifest_path.is_relative_to(root) for root in resolved_roots):
+            raise ValueError("WS archive manifest path must be independent of archive roots")
     adaptive_retention_state_path = (
         Path(source["LIVE15_ADAPTIVE_RETENTION_STATE_PATH"])
         if source.get("LIVE15_ADAPTIVE_RETENTION_STATE_PATH")
@@ -564,7 +602,8 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             defaults.recorder_checkpoint_interval_seconds,
         ),
         enable_ws_archive=_boolean(source, "LIVE15_ENABLE_WS_ARCHIVE", defaults.enable_ws_archive),
-        ws_archive_root=ws_archive_root,
+        ws_archive_roots=ws_archive_roots,
+        ws_archive_active_root=ws_archive_active_root,
         ws_archive_manifest_path=ws_archive_manifest_path,
         ws_archive_hot_retention_seconds=_positive_float(
             source,

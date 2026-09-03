@@ -16,10 +16,19 @@ from live15_quant.kalshi_ws import (
 from live15_quant.models import OrderBookLevel
 from live15_quant.research_data_authority import ResearchDataAuthority
 from live15_quant.storage import RecorderStore
-from live15_quant.ws_retention import ArchiveState, WsArchiveService, WsRetentionManifest
+from live15_quant.ws_retention import (
+    ArchiveState,
+    ArchiveStorageRoots,
+    WsArchiveService,
+    WsRetentionManifest,
+)
 
 NOW = datetime(2026, 8, 22, 12, tzinfo=UTC)
 TICKER = "KXBTC15M-26AUG221215-15"
+
+
+def _roots(root: Path) -> ArchiveStorageRoots:
+    return ArchiveStorageRoots({"parquet-01": root}, "parquet-01")
 
 
 def _populate(
@@ -141,7 +150,7 @@ def _archive(
     manifest = WsRetentionManifest(manifest_path)
     service = WsArchiveService(
         database,
-        root,
+        _roots(root),
         manifest,
         hot_retention=timedelta(hours=6),
         chunk_records=chunk_records,
@@ -160,7 +169,7 @@ def test_verified_archive_materializes_causal_provenance_bearing_book_states(
     from live15_quant.archive_research import ArchiveResearchQuery, ArchiveResearchSourceAdapter
 
     _database, root, manifest_path, (chunk,) = _archive(tmp_path)
-    result = ArchiveResearchSourceAdapter(root, manifest_path).materialize(
+    result = ArchiveResearchSourceAdapter(_roots(root), manifest_path).materialize(
         ArchiveResearchQuery(
             chunk.first_event_id,
             chunk.last_event_id,
@@ -190,11 +199,24 @@ def test_checksum_mismatch_is_unavailable(tmp_path: Path) -> None:
     from live15_quant.archive_research import ArchiveResearchQuery, ArchiveResearchSourceAdapter
 
     _database, root, manifest_path, (chunk,) = _archive(tmp_path)
-    adapter = ArchiveResearchSourceAdapter(root, manifest_path)
+    adapter = ArchiveResearchSourceAdapter(_roots(root), manifest_path)
     query = ArchiveResearchQuery(chunk.first_event_id, chunk.last_event_id, NOW, maximum_chunks=1)
     archive_path = root / chunk.relative_path
     archive_path.write_bytes(b"broken")
     assert adapter.materialize(query).reason == "ARCHIVE_FILE_CHECKSUM_MISMATCH"
+
+
+def test_research_fails_closed_when_the_chunk_root_is_not_configured(tmp_path: Path) -> None:
+    from live15_quant.archive_research import ArchiveResearchQuery, ArchiveResearchSourceAdapter
+
+    _database, _root, manifest_path, (chunk,) = _archive(tmp_path)
+    result = ArchiveResearchSourceAdapter(
+        ArchiveStorageRoots({"parquet-02": tmp_path / "archive-02"}, "parquet-02"),
+        manifest_path,
+    ).materialize(
+        ArchiveResearchQuery(chunk.first_event_id, chunk.last_event_id, NOW, maximum_chunks=1)
+    )
+    assert result.reason == "ARCHIVE_STORAGE_ROOT_UNAVAILABLE"
 
 
 def test_as_of_excludes_future_delta_and_output_is_deterministic(tmp_path: Path) -> None:
@@ -205,7 +227,7 @@ def test_as_of_excludes_future_delta_and_output_is_deterministic(tmp_path: Path)
     query = ArchiveResearchQuery(
         chunk.first_event_id, chunk.last_event_id, cutoff, maximum_chunks=1
     )
-    adapter = ArchiveResearchSourceAdapter(root, manifest_path)
+    adapter = ArchiveResearchSourceAdapter(_roots(root), manifest_path)
     first = adapter.materialize(query)
     second = adapter.materialize(query)
 
@@ -225,7 +247,7 @@ def test_quarantined_range_and_bounded_range_fail_closed(tmp_path: Path) -> None
     manifest = WsRetentionManifest(manifest_path)
     manifest.advance(second.chunk_id, ArchiveState.FAILED, now=NOW)
     manifest.quarantine_failed_chunk(second.chunk_id, now=NOW)
-    adapter = ArchiveResearchSourceAdapter(root, manifest_path)
+    adapter = ArchiveResearchSourceAdapter(_roots(root), manifest_path)
     crossed = adapter.materialize(
         ArchiveResearchQuery(first.first_event_id, second.last_event_id, NOW, maximum_chunks=2)
     )
@@ -262,7 +284,7 @@ def test_missing_baseline_and_missing_file_fail_closed(tmp_path: Path) -> None:
         connection.commit()
     finally:
         connection.close()
-    adapter = ArchiveResearchSourceAdapter(root, manifest_path)
+    adapter = ArchiveResearchSourceAdapter(_roots(root), manifest_path)
     query = ArchiveResearchQuery(second.first_event_id, second.last_event_id, NOW, maximum_chunks=1)
 
     assert adapter.materialize(query).reason == "ARCHIVE_REPLAY_INVALID"
@@ -277,7 +299,7 @@ def test_as_of_requires_both_source_and_received_timestamps(tmp_path: Path) -> N
         tmp_path, count=3, future_received_sequence=3
     )
     cutoff = NOW - timedelta(hours=8) + timedelta(seconds=4)
-    result = ArchiveResearchSourceAdapter(root, manifest_path).materialize(
+    result = ArchiveResearchSourceAdapter(_roots(root), manifest_path).materialize(
         ArchiveResearchQuery(chunk.first_event_id, chunk.last_event_id, cutoff, maximum_chunks=1)
     )
 
@@ -300,7 +322,7 @@ def test_baseline_source_timestamp_after_as_of_is_unavailable(tmp_path: Path) ->
         connection.close()
 
     assert (
-        ArchiveResearchSourceAdapter(root, manifest_path)
+        ArchiveResearchSourceAdapter(_roots(root), manifest_path)
         .materialize(
             ArchiveResearchQuery(second.first_event_id, second.last_event_id, NOW, maximum_chunks=1)
         )
@@ -315,7 +337,7 @@ def test_reconnect_snapshot_does_not_reuse_another_stream_baseline(tmp_path: Pat
     _database, root, manifest_path, (_first, second) = _archive(
         tmp_path, count=16, chunk_records=8, reconnect_at_event=9
     )
-    result = ArchiveResearchSourceAdapter(root, manifest_path).materialize(
+    result = ArchiveResearchSourceAdapter(_roots(root), manifest_path).materialize(
         ArchiveResearchQuery(second.first_event_id, second.last_event_id, NOW, maximum_chunks=1)
     )
 
@@ -334,7 +356,8 @@ def test_authority_builds_snapshot_and_canonical_evidence_from_explicit_archive_
     settings = Settings(
         recorder_data_path=database,
         current_trainable_path=tmp_path / "current.sqlite3",
-        ws_archive_root=root,
+        ws_archive_roots=(("parquet-01", root),),
+        ws_archive_active_root="parquet-01",
         ws_archive_manifest_path=manifest_path,
         feature_store_path=tmp_path / "features.sqlite3",
         paper_data_path=tmp_path / "paper.sqlite3",
@@ -380,7 +403,8 @@ def test_archive_snapshot_survives_mvn003_typed_input_round_trip(tmp_path: Path)
     settings = Settings(
         recorder_data_path=database,
         current_trainable_path=tmp_path / "current.sqlite3",
-        ws_archive_root=root,
+        ws_archive_roots=(("parquet-01", root),),
+        ws_archive_active_root="parquet-01",
         ws_archive_manifest_path=manifest_path,
         feature_store_path=tmp_path / "features.sqlite3",
         paper_data_path=tmp_path / "paper.sqlite3",

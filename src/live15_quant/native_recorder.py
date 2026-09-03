@@ -125,6 +125,7 @@ from live15_quant.storage import (
     SettlementConflictError,
 )
 from live15_quant.ws_retention import (
+    ArchiveStorageRoots,
     DiskQuota,
     WsArchiveService,
     WsPurgeService,
@@ -741,21 +742,29 @@ class KalshiNativeRecorder:
         self._purge_service: WsPurgeService | None = None
         self._adaptive_retention: AdaptiveRetentionController | None = None
         if settings.enable_ws_archive:
-            archive_root = settings.ws_archive_root or (store.path.parent / "ws_archive")
-            manifest_path = settings.ws_archive_manifest_path or (
-                store.path.parent / "ws_archive_manifest.sqlite3"
+            if (
+                not settings.ws_archive_roots
+                or settings.ws_archive_active_root is None
+                or settings.ws_archive_manifest_path is None
+            ):
+                raise ValueError(
+                    "WS archive roots, active root, and manifest path must be configured"
+                )
+            storage_roots = ArchiveStorageRoots(
+                dict(settings.ws_archive_roots), settings.ws_archive_active_root
             )
+            manifest_path = settings.ws_archive_manifest_path
             manifest = WsRetentionManifest(manifest_path)
             self._archive_service = WsArchiveService(
                 store.path,
-                archive_root,
+                storage_roots,
                 manifest,
                 hot_retention=timedelta(seconds=settings.ws_archive_hot_retention_seconds),
                 chunk_records=settings.ws_archive_chunk_records,
             )
             self._purge_service = WsPurgeService(
                 store.path,
-                archive_root,
+                storage_roots,
                 manifest,
                 batch_rows=settings.ws_archive_purge_batch_rows,
             )
