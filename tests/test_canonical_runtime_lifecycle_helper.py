@@ -1,3 +1,5 @@
+import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -64,6 +66,80 @@ Write-Output $version
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "3.13.15", result.stdout
     assert "..join" not in result.stderr + result.stdout
+
+
+def test_windows_powershell_51_compatibility_primitives() -> None:
+    """Run pure helper primitives under Windows PowerShell 5.1 when available."""
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell 5.1 is unavailable on this developer platform")
+    wrapper = ROOT / ".pytest-powershell51-compatibility.ps1"
+    revision_root = ROOT / ".pytest-powershell51-revisions"
+    try:
+        wrapper.write_text(
+            """
+param([string]$Helper, [string]$Python, [string]$RevisionRoot)
+$Repository = (Get-Location).Path
+$source = Get-Content -Raw -LiteralPath $Helper
+$start = $source.IndexOf('$ExpectedPython')
+$end = $source.IndexOf("try {`n    foreach")
+if ($start -lt 0 -or $end -le $start) { throw 'helper primitives not found' }
+Invoke-Expression $source.Substring($start, $end - $start)
+$version = Get-PythonVersion $Python
+$inventory = @('a==1', 'b==2')
+$identity = Get-DependencyIdentity $inventory
+$RevisionRoot = $RevisionRoot
+$previous = [pscustomobject]@{
+    retained_revision_path = 'previous-A'
+    DependencyIdentity = $identity
+}
+$next = [pscustomobject]@{
+    RuntimeRoot = 'candidate-B'
+    DependencyIdentity = $identity
+}
+$receipt = Write-Receipt $previous $next
+$json = Get-Content -Raw -LiteralPath $receipt | ConvertFrom-Json
+[ordered]@{
+    version = $version
+    identity = $identity
+    receipt_path = $receipt
+    retained = $json.previous.retained_revision_path
+    next_root = $json.next.RuntimeRoot
+} | ConvertTo-Json -Depth 5
+""".strip(),
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(wrapper),
+                "-Helper",
+                str(HELPER),
+                "-Python",
+                sys.executable,
+                "-RevisionRoot",
+                str(revision_root),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    finally:
+        wrapper.unlink(missing_ok=True)
+        if revision_root.exists():
+            shutil.rmtree(revision_root)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["version"] == "3.13.15"
+    assert payload["identity"] == hashlib.sha256(b"a==1\nb==2").hexdigest().upper()
+    assert payload["retained"] == "previous-A"
+    assert payload["next_root"] == "candidate-B"
 
 
 def test_production_lock_promotes_pyarrow_and_excludes_dev_only_packages() -> None:
