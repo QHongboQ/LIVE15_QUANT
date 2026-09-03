@@ -12,8 +12,10 @@ from live15_quant.archive_arrow import (
     ArrowArchiveError,
     batch_to_records,
     read_ipc_snapshot,
+    read_parquet_snapshot,
     records_to_batch,
     write_ipc_snapshot,
+    write_parquet_snapshot,
 )
 from live15_quant.kalshi_ws import (
     KalshiBookSide,
@@ -148,3 +150,17 @@ def test_truncated_valid_ipc_fails_loudly(tmp_path: Path) -> None:
     path.write_bytes(path.read_bytes()[:-8])
     with pytest.raises(ArrowArchiveError, match="cannot be decoded"):
         read_ipc_snapshot(path)
+
+
+def test_parquet_zstd_round_trip_replay_and_truncation_fail_closed(tmp_path: Path) -> None:
+    records = tuple(record(i) for i in range(1, 5))
+    path = tmp_path / "snapshot.parquet"
+    assert write_parquet_snapshot(path, records) == path.stat().st_size
+    decoded = read_parquet_snapshot(path)
+    assert decoded == records
+    assert replay_orderbook_events(decoded, (TICKER,)) == replay_orderbook_events(
+        records, (TICKER,)
+    )
+    path.write_bytes(path.read_bytes()[:-8])
+    with pytest.raises(ArrowArchiveError, match="cannot be decoded"):
+        read_parquet_snapshot(path)

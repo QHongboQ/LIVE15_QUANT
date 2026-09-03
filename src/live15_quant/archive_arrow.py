@@ -12,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 
 from live15_quant.kalshi_ws import KalshiBookSide, KalshiBookSyncStatus, KalshiWsEventKind
 from live15_quant.models import DataRole, OrderBookLevel
@@ -68,6 +69,10 @@ ARROW_WS_EVENT_SCHEMA = pa.schema(
 
 class ArrowArchiveError(RuntimeError):
     """An Arrow snapshot violates the fixed LIVE15 replay contract."""
+
+
+PARQUET_COMPRESSION = "zstd"
+PARQUET_ROW_GROUP_SIZE = 100_000
 
 
 def _decimal_text(value: Decimal | None, field: str) -> str | None:
@@ -332,3 +337,42 @@ def read_ipc_snapshot(path: Path) -> tuple[KalshiWsOrderBookEventRecord, ...]:
         raise
     except (OSError, pa.ArrowException) as error:
         raise ArrowArchiveError("Arrow IPC snapshot cannot be decoded") from error
+
+
+def write_parquet_snapshot(path: Path, records: Sequence[KalshiWsOrderBookEventRecord]) -> int:
+    """Write one exact LIVE15 stream with upstream Parquet+ZSTD defaults."""
+
+    if not pa.Codec.is_available(PARQUET_COMPRESSION):
+        raise ArrowArchiveError("PyArrow was built without Zstandard support")
+    table = pa.Table.from_batches((records_to_batch(records),))
+    try:
+        pq.write_table(
+            table,
+            path,
+            compression=PARQUET_COMPRESSION,
+            use_dictionary=True,
+            row_group_size=PARQUET_ROW_GROUP_SIZE,
+        )
+    except (OSError, pa.ArrowException) as error:
+        raise ArrowArchiveError("Parquet snapshot cannot be written") from error
+    return path.stat().st_size
+
+
+def read_parquet_snapshot(path: Path) -> tuple[KalshiWsOrderBookEventRecord, ...]:
+    """Read Parquet and enforce the same Arrow/LIVE15 semantic contract."""
+
+    try:
+        table = pq.read_table(path)
+        if table.schema != ARROW_WS_EVENT_SCHEMA:
+            raise ArrowArchiveError("Parquet schema does not match the LIVE15 archive schema")
+        records = tuple(
+            record
+            for batch in table.combine_chunks().to_batches()
+            for record in batch_to_records(batch)
+        )
+        _validate_records(records)
+        return records
+    except ArrowArchiveError:
+        raise
+    except (OSError, pa.ArrowException) as error:
+        raise ArrowArchiveError("Parquet snapshot cannot be decoded") from error

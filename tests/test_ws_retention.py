@@ -194,7 +194,7 @@ def test_partial_file_and_manifest_crash_boundaries_recover(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash_state: ArchiveState
 ) -> None:
     service, manifest = _service(tmp_path)
-    partial = tmp_path / "archive" / "2026-08-22" / "04" / "chunk-1-10.zlib.partial"
+    partial = tmp_path / "archive" / "2026-08-22" / "04" / "chunk-1-10.parquet.partial"
     partial.parent.mkdir(parents=True)
     partial.write_bytes(b"truncated")
     original = manifest.advance
@@ -445,7 +445,7 @@ def test_failed_verification_keeps_raw_source(tmp_path: Path, monkeypatch) -> No
     service, manifest = _service(tmp_path)
     before = service.source_database.stat().st_size
     monkeypatch.setattr(
-        "live15_quant.ws_retention.decode_archive_chunk",
+        "live15_quant.ws_retention.read_parquet_snapshot",
         lambda _blob: (_ for _ in ()).throw(WsRetentionError("bad checksum")),
     )
     with pytest.raises(WsRetentionError, match="bad checksum"):
@@ -459,7 +459,7 @@ def test_failed_archive_blocks_later_ranges_instead_of_skipping_raw_truth(
 ) -> None:
     service, manifest = _service(tmp_path)
     monkeypatch.setattr(
-        "live15_quant.ws_retention.decode_archive_chunk",
+        "live15_quant.ws_retention.read_parquet_snapshot",
         lambda _blob: (_ for _ in ()).throw(WsRetentionError("verification failed")),
     )
     with pytest.raises(WsRetentionError, match="verification failed"):
@@ -476,7 +476,7 @@ def test_failed_chunk_can_be_explicitly_quarantined_and_resume_pointer_advances(
 ) -> None:
     service, manifest = _service(tmp_path)
     monkeypatch.setattr(
-        "live15_quant.ws_retention.decode_archive_chunk",
+        "live15_quant.ws_retention.read_parquet_snapshot",
         lambda _blob: (_ for _ in ()).throw(WsRetentionError("missing replay baseline")),
     )
     with pytest.raises(WsRetentionError, match="missing replay baseline"):
@@ -499,7 +499,7 @@ def test_failed_baseline_reconciliation_requires_explicit_evidence(
 ) -> None:
     service, manifest = _service(tmp_path)
     monkeypatch.setattr(
-        "live15_quant.ws_retention.decode_archive_chunk",
+        "live15_quant.ws_retention.read_parquet_snapshot",
         lambda _blob: (_ for _ in ()).throw(WsRetentionError("checksum failure")),
     )
     with pytest.raises(WsRetentionError, match="checksum failure"):
@@ -515,7 +515,7 @@ def test_mixed_failed_range_quarantines_only_proven_missing_market_baseline(
 ) -> None:
     service, manifest = _service(tmp_path)
     monkeypatch.setattr(
-        "live15_quant.ws_retention.decode_archive_chunk",
+        "live15_quant.ws_retention.read_parquet_snapshot",
         lambda _blob: (_ for _ in ()).throw(WsRetentionError("missing replay baseline")),
     )
     with pytest.raises(WsRetentionError, match="missing replay baseline"):
