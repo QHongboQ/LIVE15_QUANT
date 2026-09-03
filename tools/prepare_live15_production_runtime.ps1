@@ -22,6 +22,18 @@ function Normalize-PackageName([string]$Name) {
     return (($Name.Trim().ToLowerInvariant()) -replace '[-_.]+', '-')
 }
 
+function Get-FileSha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash($stream)
+        return ([System.BitConverter]::ToString($hash)).Replace('-', '')
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Get-PythonVersion([string]$Python) {
     $version = (& $Python -c $PythonVersionExpression | Out-String).Trim()
     if ($LASTEXITCODE) { throw "Python version query failed: $Python" }
@@ -113,8 +125,8 @@ function Get-RuntimeIdentity([string]$RuntimeRoot) {
         RuntimeRoot = $RuntimeRoot
         Python = $python
         PythonVersion = $version
-        PythonSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $python).Hash
-        ProductionLockSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ProductionLock).Hash
+        PythonSha256 = Get-FileSha256 $python
+        ProductionLockSha256 = Get-FileSha256 $ProductionLock
         DependencyInventory = $actual
         DependencyIdentity = Get-DependencyIdentity $actual
     }
@@ -144,7 +156,7 @@ try {
     }
     if ((Get-PythonVersion $BasePython) -ne $ExpectedPython) { throw "Base Python must be $ExpectedPython." }
     Assert-ResolverClosure
-    $lockSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ProductionLock).Hash
+    $lockSha = Get-FileSha256 $ProductionLock
     $runtimeId = "runtime-py$ExpectedPython-$($lockSha.Substring(0, 12))"
     $runtimeRoot = Join-Path $RevisionRoot $runtimeId
 
