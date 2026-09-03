@@ -183,11 +183,13 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
         "GAP002` is **CLOSED / PASS**",
         "Normal feature/model expansion is temporarily paused",
         "upstream-consolidation freeze",
-        "owner resolution -> freeze legacy generic owner",
         "Project Brain authority consolidation COMPLETE",
         "Runtime/Lifecycle consolidation COMPLETE / VERIFIED",
         "Web Application Shell COMPLETE / VERIFIED",
-        "**NEXT:** select the bounded **VECTOR TELEMETRY** replacement responsibility",
+        (
+            "**NEXT:** advance the bounded "
+            "**COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY** responsibility"
+        ),
     ):
         assert expected in roadmap
     current_roadmap = roadmap.split("## Change log", maxsplit=1)[0]
@@ -440,7 +442,8 @@ def test_compact_progress_has_only_current_or_future_gated_rows() -> None:
         "## Planning route", maxsplit=1
     )[0]
 
-    assert "| VECTOR-TELEMETRY | PLANNED / NEXT |" in active
+    assert "| COMMERCIAL-ARCHIVE-PACKAGE-UPSTREAM-ASSEMBLY | PLANNED / NEXT |" in active
+    assert "| VECTOR-TELEMETRY | DEFERRED / LATER |" in active
     assert "| WEB-APPLICATION-SHELL | PLANNED / NEXT |" not in active
     assert "| TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED |" in active
     for historical_or_superseded in (
@@ -486,25 +489,25 @@ def test_next_names_one_concrete_responsibility_class() -> None:
     next_section = roadmap.split("**NEXT:**", maxsplit=1)[1].split(
         "Candidate-specific boundaries", maxsplit=1
     )[0]
-    assert "VECTOR TELEMETRY" in next_section
-    assert "Vector is the default" in next_section
-    assert "Recorder hot path" in next_section
-    assert (
-        "does not begin a Vector POC, authorize adoption,\n"
-        "or authorize Production mutation" in next_section
-    )
+    assert "COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY" in next_section
+    assert "Arrow schema/IPC plus Zstandard" in next_section
+    assert "S3/MinIO" in next_section
+    assert "does not authorize Production mutation or training" in next_section
+    assert "Vector telemetry" not in next_section
 
 
-def test_web_reconciliation_records_one_completed_owner_and_one_next_candidate() -> None:
+def test_web_reconciliation_preserves_completed_owner_while_archive_is_next() -> None:
     progress = read("PROJECT_PROGRESS.md")
     state = read("CURRENT_STATE.md")
     control_center = read("docs/project-brain/capabilities/control-center.md")
     replacement_matrix = read("docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md")
 
     assert "| WEB-APPLICATION-SHELL | COMPLETE / VERIFIED |" in progress
-    assert "| VECTOR-TELEMETRY | PLANNED / NEXT |" in progress
+    assert "| COMMERCIAL-ARCHIVE-PACKAGE-UPSTREAM-ASSEMBLY | PLANNED / NEXT |" in progress
+    assert "| VECTOR-TELEMETRY | DEFERRED / LATER |" in progress
     assert "Web Application Shell replacement are **COMPLETE / VERIFIED**" in state
-    assert "generic replacement class is **VECTOR TELEMETRY**" in state
+    assert "**COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY**" in state
+    assert "Vector telemetry remains a deferred later candidate" in state
     assert "packaged React terminal is the sole ControlCenter web owner" in control_center
     assert "Web Application Shell are **ADOPTED / PRODUCTION VERIFIED**" in replacement_matrix
     assert "Vector is the next default telemetry candidate" in replacement_matrix
