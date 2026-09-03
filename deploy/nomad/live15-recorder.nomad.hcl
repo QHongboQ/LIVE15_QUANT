@@ -146,10 +146,13 @@ job "live15-recorder" {
         LIVE15_KALSHI_RECORDER_PROVIDER            = "sdk"
         LIVE15_KALSHI_PRODUCTION_API_KEY_ID_PATH   = var.kalshi_api_key_id_path
         LIVE15_KALSHI_PRODUCTION_PRIVATE_KEY_PATH  = var.kalshi_private_key_path
-        # Legacy self-managed WS archive/retention is intentionally disabled while
-        # the commercial upstream archive/package replacement is built and verified.
+        # Phase 1 keeps continuous archive work disabled.  The approved roots and
+        # centralized manifest make one bounded manual archive operation possible.
         LIVE15_ENABLE_WS_ARCHIVE                   = "false"
         LIVE15_ENABLE_ADAPTIVE_WS_RETENTION        = "false"
+        LIVE15_WS_ARCHIVE_ROOTS                    = "parquet-01=D:\\LIVE15_ARCHIVE\\parquet-01;parquet-02=D:\\LIVE15_ARCHIVE\\parquet-02;parquet-03=D:\\LIVE15_ARCHIVE\\parquet-03;parquet-04=D:\\LIVE15_ARCHIVE\\parquet-04"
+        LIVE15_WS_ARCHIVE_ACTIVE_ROOT              = "parquet-01"
+        LIVE15_WS_ARCHIVE_MANIFEST_PATH            = "D:\\LIVE15_ARCHIVE\\manifest\\ws_archive_manifest.sqlite3"
         LIVE15_RECORDER_DATA_PATH                  = var.recorder_data_path
         LIVE15_RECORDER_HEALTH_PATH                = var.recorder_health_path
         LIVE15_RECORDER_CONTROL_PATH               = var.recorder_control_path
