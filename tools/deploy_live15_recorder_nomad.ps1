@@ -176,6 +176,27 @@ function Get-RuntimeIdentity([string]$Python, [string]$LivePython) {
     }
 }
 
+function Assert-LiveIdentityBinding($Live, $ReleaseIdentity, $RuntimeIdentity) {
+    $expected = [ordered]@{
+        release_id = [string]$ReleaseIdentity.ReleaseId
+        release_git_sha = [string]$ReleaseIdentity.Manifest.git_commit_sha
+        release_manifest_sha256 = [string]$ReleaseIdentity.ManifestSha256
+        artifact_manifest_sha256 = [string]$ReleaseIdentity.Manifest.artifact_manifest_sha256
+        requirements_lock_sha256 = [string]$ReleaseIdentity.Manifest.requirements_lock_sha256
+        runtime_python_sha256 = [string]$RuntimeIdentity.PythonSha256
+    }
+    foreach ($name in $expected.Keys) {
+        $property = $Live.Task.Meta.PSObject.Properties[$name]
+        $actual = if ($null -eq $property) { '' } else { [string]$property.Value }
+        if ([string]::IsNullOrWhiteSpace($actual)) {
+            throw "Live Recorder metadata is missing identity binding: $name"
+        }
+        if (-not [string]::Equals($actual, [string]$expected[$name], [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Live Recorder metadata mismatch for $name."
+        }
+    }
+}
+
 function Get-RecorderHealth([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
     return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
@@ -285,6 +306,8 @@ $nomadVariableNames = @(
 )
 $previousEnvironment = @{}
 foreach ($name in $nomadVariableNames) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable("NOMAD_VAR_$name", 'Process') }
+$jobSubmitted = $false
+$rollbackVersion = $null
 
 try {
     if ($Apply -and $Preview) { throw 'Specify either Apply or Preview, not both.' }
@@ -295,6 +318,7 @@ try {
     }
     Assert-ReviewedCommit
     $live = Get-LiveJob
+    $rollbackVersion = $live.Version
     $preWriterCount = Assert-AtMostOneRecorderWriter
     $liveRuntimePython = [string]$live.Task.Config.command
     if ([string]::IsNullOrWhiteSpace($liveRuntimePython)) { throw 'Live Recorder job does not declare a runtime Python command.' }
@@ -304,6 +328,7 @@ try {
 
     $currentId = [string]$live.Task.Meta.release_id
     $previous = Get-ReleaseIdentity $currentId $liveRuntimePython
+    Assert-LiveIdentityBinding $live $previous $previousRuntime
     $tree = Invoke-Git @('rev-parse', "$GitSha^{tree}")
     $releaseId = "live15-$($GitSha.Substring(0, 12))-$($tree.Substring(0, 12))"
     $existingManifest = Join-Path $ReleaseRoot "releases\$releaseId\release-manifest.json"
@@ -353,13 +378,18 @@ try {
 
     & $NomadPath job run "-address=$NomadAddress" "-check-index=$($live.JobModifyIndex)" $Jobspec
     if ($LASTEXITCODE) { throw "Nomad job submission failed (exit=$LASTEXITCODE)." }
+    $jobSubmitted = $true
     Wait-OneRecorderWriter
     Assert-HealthyRecorder $droppedBefore $observedBefore $healthPath
     $after = Get-LiveJob
     $receipt = Write-Receipt $previous $next $previousRuntime $nextRuntime $live.Version $after.Version
     Write-Output "RECORDER_DEPLOYMENT = PASS receipt=$receipt rollback='nomad job revert -address=$NomadAddress $JobId $($live.Version)'"
 } catch {
-    [Console]::Error.WriteLine("RECORDER_DEPLOYMENT_ERROR: $($_.Exception.Message)")
+    $message = "RECORDER_DEPLOYMENT_ERROR: $($_.Exception.Message)"
+    if ($jobSubmitted -and $null -ne $rollbackVersion) {
+        $message += " rollback='nomad job revert -address=$NomadAddress $JobId $rollbackVersion'"
+    }
+    [Console]::Error.WriteLine($message)
     exit 1
 } finally {
     foreach ($name in $nomadVariableNames) { [Environment]::SetEnvironmentVariable("NOMAD_VAR_$name", $previousEnvironment[$name], 'Process') }
