@@ -46,6 +46,24 @@ def test_recorder_deploy_helper_uses_reviewed_sha_without_hardcoded_runtime_hash
     assert "IMMUTABLE_REVISION" in source
 
 
+def test_live_job_identity_is_bound_to_verified_release_and_runtime_metadata() -> None:
+    source = _source()
+
+    assert "function Assert-LiveIdentityBinding" in source
+    for field in (
+        "release_id",
+        "release_git_sha",
+        "release_manifest_sha256",
+        "artifact_manifest_sha256",
+        "requirements_lock_sha256",
+        "runtime_python_sha256",
+    ):
+        assert field in source
+    assert "Live Recorder metadata is missing identity binding" in source
+    assert "Live Recorder metadata mismatch" in source
+    assert "Assert-LiveIdentityBinding $live $previous $previousRuntime" in source
+
+
 def test_preview_is_non_mutating_and_runtime_target_is_explicit() -> None:
     source = _source()
 
@@ -197,6 +215,9 @@ def test_rollback_is_owned_by_nomad_job_history_not_custom_state_machine() -> No
     assert "ReceiptPath" not in source
     assert "previous_job_version" in source
     assert "nomad job revert" in source
+    assert "$jobSubmitted" in source
+    assert "$rollbackVersion" in source
+    assert "RECORDER_DEPLOYMENT_ERROR" in source
     assert "nomad job start" in doc
     assert "nomad job revert" in doc
 
