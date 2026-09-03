@@ -1,6 +1,6 @@
 # Commercial archive upstream assembly plan
 
-**Status:** approved non-current design reference.  
+**Status:** approved non-current design reference.
 **Scope:** data archive/package lifecycle only; this does not change the sole current execution mainline or authorize Production mutation.
 
 ## Goal
