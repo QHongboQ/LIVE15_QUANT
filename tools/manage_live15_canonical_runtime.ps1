@@ -4,7 +4,9 @@ param(
     [string]$BasePython = 'C:\Program Files\LIVE15\Python313\python.exe',
     [string]$CanonicalRuntime = 'C:\Program Files\LIVE15\ControlCenterRuntime',
     [string]$RevisionRoot = 'C:\Program Files\LIVE15\CanonicalRuntimeRevisions',
+    [string]$NomadAddress = 'http://127.0.0.1:4646',
     [switch]$Apply,
+    [switch]$MaintenanceConfirmed,
     [switch]$Rollback,
     [string]$ReceiptPath
 )
@@ -32,6 +34,18 @@ function Get-Identity([string]$Runtime) {
     $inventory = Get-Inventory $python
     $identity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($inventory -join "`n"))))
     return [pscustomobject]@{ RuntimeRoot=$Runtime; Python=$python; PythonVersion=$version; PythonSha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $python).Hash; DependencyInventory=$inventory; DependencyIdentity=$identity }
+}
+function Get-Consumers {
+    $result = @()
+    foreach ($jobId in @('live15-recorder', 'live15-control-center')) {
+        $running = 0
+        try {
+            $allocations = @(Invoke-RestMethod -Uri "$NomadAddress/v1/job/$jobId/allocations")
+            $running = @($allocations | Where-Object ClientStatus -eq 'running').Count
+        } catch { $running = -1 }
+        $result += [pscustomobject]@{ owner="Nomad:$jobId"; running_allocations=$running }
+    }
+    return $result
 }
 function Assert-Verified([string]$Runtime) {
     $identity = Get-Identity $Runtime
@@ -63,18 +77,29 @@ try {
     $baseVersion = (& $BasePython -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' | Out-String).Trim()
     if ($baseVersion -ne $ExpectedPython) { throw "Base Python must be $ExpectedPython." }
     $current = Get-Identity $CanonicalRuntime
+    $consumers = Get-Consumers
+    $runningConsumers = @($consumers | Where-Object { $_.running_allocations -gt 0 })
+    if ($runningConsumers.Count -gt 0 -and $Apply -and -not $MaintenanceConfirmed) {
+        throw "REQUIRES_MAINTENANCE_BOUNDARY: stop/drain canonical-runtime consumers through their existing owners, then rerun with -MaintenanceConfirmed. Consumers=$($runningConsumers.owner -join ',')"
+    }
     if ($Rollback) {
         if (-not $ReceiptPath -or -not (Test-Path -LiteralPath $ReceiptPath)) { throw 'Rollback requires a promotion receipt.' }
         $receipt = Get-Content -Raw -LiteralPath $ReceiptPath | ConvertFrom-Json
-        $candidate = [string]$receipt.previous.RuntimeRoot
+        $candidate = [string]$receipt.previous.retained_revision_path
+        if ([string]::IsNullOrWhiteSpace($candidate)) { throw 'Receipt lacks retained previous revision path.' }
     } else {
         $lockHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ProductionLock).Hash.Substring(0,12)
         $candidate = Join-Path $RevisionRoot "python-$ExpectedPython-$lockHash"
     }
-    if (-not $Apply) { [pscustomobject]@{ mode='PREVIEW'; current=$current; candidate_path=$candidate; promotion_path=$CanonicalRuntime; mutation='NONE' } | ConvertTo-Json -Depth 5; exit 0 }
+    if (-not $Apply) {
+        [pscustomobject]@{ mode='PREVIEW'; current=$current; candidate_path=$candidate; promotion_path=$CanonicalRuntime; consumers=$consumers; safety=if($runningConsumers.Count){'REQUIRES_MAINTENANCE_BOUNDARY'}else{'SAFE_NOW'}; mutation='NONE' } | ConvertTo-Json -Depth 5
+        exit 0
+    }
     $next = if ($Rollback) { Assert-Verified $candidate } else { New-Candidate (Split-Path -Leaf $candidate) }
     $backup = Join-Path $RevisionRoot ("previous-" + $current.DependencyIdentity)
-    if (-not (Test-Path -LiteralPath $backup)) { Move-Item -LiteralPath $CanonicalRuntime -Destination $backup }
+    if (Test-Path -LiteralPath $backup) { throw "Retained revision already exists; refusing to overwrite: $backup" }
+    Move-Item -LiteralPath $CanonicalRuntime -Destination $backup
+    $current = $current | Select-Object *, @{Name='retained_revision_path';Expression={$backup}}
     try { Move-Item -LiteralPath $next.RuntimeRoot -Destination $CanonicalRuntime } catch { Move-Item -LiteralPath $backup -Destination $CanonicalRuntime; throw }
     $promoted = Assert-Verified $CanonicalRuntime
     $receipt = Write-Receipt $current $promoted
