@@ -29,6 +29,7 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | MERGED / CONSOLIDATION_COMPLETE | PR #122 | This is a Project Brain governance closeout; it did not perform an upstream replacement. |
 | RUNTIME-LIFECYCLE-CONSOLIDATION | COMPLETE / VERIFIED | `docs/project-brain/dependencies/platform/runtime-ownership.md`; PR #129 | Nomad + Windows SCM lifecycle replacement is adopted and Production verified; cold boot passed, RuntimeSupervisor and the managed `paper_forward` wrapper are retired, and dual owner is absent. |
 | WEB-APPLICATION-SHELL | COMPLETE / VERIFIED | `docs/project-brain/capabilities/control-center.md`; PRs #131–#139 | React Admin + Material UI terminal is the sole ControlCenter Web owner; the legacy handwritten shell is retired and Production verification is complete. |
+| VECTOR-TELEMETRY-BOUNDED-POC-001 | MERGED / TECHNICAL_PASS / PRODUCTION_NO_GO | PR #147 | Vector proved technically feasible in isolation, but no redundant generic telemetry owner was identified to retire; no adoption or Production integration is authorized. |
 
 ## Superseded standalone work
 
@@ -50,7 +51,8 @@ runtime requires concrete incompatibility evidence.
 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
-| VECTOR-TELEMETRY | PLANNED / NEXT | Select the bounded Vector telemetry/log replacement decision or POC. Preserve Recorder truth and keep the collector out of the Recorder hot path; compare OTel only if a measured OTLP/tracing requirement exists. | Separate bounded task; no Vector adoption or Production action in this closeout |
+| COMMERCIAL-ARCHIVE-PACKAGE-UPSTREAM-ASSEMBLY | PLANNED / NEXT | Advance `docs/roadmap/COMMERCIAL_ARCHIVE_UPSTREAM_ASSEMBLY_001.md` one bounded responsibility at a time. Preserve HOT SQLite truth, deterministic replay, manifest state, contiguous-range purge authorization, restart recovery, and fail-closed storage behavior. Prefer mature upstream components over self-reimplementation and require benchmark/equivalence/rollback proof before adoption. | Separate bounded tasks; no Production mutation or purge weakening from this planning change |
+| VECTOR-TELEMETRY | DEFERRED / LATER | The post-Web Vector selection was valid before the storage-capacity problem reprioritized execution. Retain PR #147 evidence; do not deploy or integrate Vector until this responsibility is explicitly promoted again. | No Vector adoption or Production action while deferred |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | A broad local artifact search displayed frozen-holdout rows and was stopped immediately. The previous `UNREVEALED` state is invalid; exposed content was not used for WS/GAP/H2 implementation, test thresholds, parameters, or code changes. Do not reopen it to measure scope. A separate remediation/replacement decision is required before the formal gate or any training. | Training/holdout |
 
 ## Planning route
