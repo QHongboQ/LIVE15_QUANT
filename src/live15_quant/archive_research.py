@@ -16,9 +16,13 @@ from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .archive_arrow import (
+    ArrowArchiveError,
+    canonical_semantic_digest,
+    read_parquet_snapshot,
+)
 from .kalshi_ws import KalshiWsEventKind
 from .records import KalshiWsOrderBookEventRecord
-from .ws_archive import WsArchiveError, decode_archive_chunk
 from .ws_retention import ArchiveState, WsRetentionError, _ReplayState
 
 if TYPE_CHECKING:
@@ -355,7 +359,7 @@ class ArchiveResearchSourceAdapter:
         materializations: list[ArchiveBookMaterialization] = []
         provenance: list[object] = []
         seen_future = False
-        for chunk, (records, header) in decoded:
+        for chunk, (records, _header) in decoded:
             for record in records:
                 state.apply(record)
                 source_time = record.source_timestamp
@@ -413,7 +417,7 @@ class ArchiveResearchSourceAdapter:
                 or state.digest() != str(chunk["source_replay_hash"])
             ):
                 raise _Unavailable("ARCHIVE_REPLAY_HASH_MISMATCH")
-            if str(header.get("checksum_sha256")) != str(chunk["logical_checksum"]):
+            if canonical_semantic_digest(records)[0] != str(chunk["logical_checksum"]):
                 raise _Unavailable("ARCHIVE_LOGICAL_CHECKSUM_MISMATCH")
             provenance.append(
                 (
@@ -481,17 +485,20 @@ class ArchiveResearchSourceAdapter:
         self, chunk: sqlite3.Row
     ) -> tuple[tuple[KalshiWsOrderBookEventRecord, ...], dict[str, Any]]:
         relative = Path(str(chunk["relative_path"]))
-        if relative.is_absolute() or ".." in relative.parts or relative.suffix != ".zlib":
+        if relative.is_absolute() or ".." in relative.parts or relative.suffix != ".parquet":
             raise _Unavailable("ARCHIVE_PATH_INVALID")
         path = (self.archive_root / relative).resolve()
         if self.archive_root not in path.parents or not path.is_file():
             raise _Unavailable("ARCHIVE_FILE_UNAVAILABLE")
-        blob = path.read_bytes()
-        if not chunk["file_checksum"] or hashlib.sha256(blob).hexdigest() != chunk["file_checksum"]:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        if not chunk["file_checksum"] or digest.hexdigest() != chunk["file_checksum"]:
             raise _Unavailable("ARCHIVE_FILE_CHECKSUM_MISMATCH")
         try:
-            records, header = decode_archive_chunk(blob)
-        except WsArchiveError as error:
+            records = read_parquet_snapshot(path)
+        except ArrowArchiveError as error:
             raise _Unavailable("ARCHIVE_CHUNK_DECODE_INVALID") from error
         if (
             records[0].row_id != int(chunk["first_event_id"])
@@ -499,7 +506,7 @@ class ArchiveResearchSourceAdapter:
             or len(records) != int(chunk["event_count"])
         ):
             raise _Unavailable("ARCHIVE_CHUNK_MANIFEST_RANGE_MISMATCH")
-        return records, header
+        return records, {"format": "parquet-zstd"}
 
 
 class ArchiveResearchUnavailable(ValueError):

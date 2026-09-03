@@ -18,13 +18,17 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
+from live15_quant.archive_arrow import (
+    canonical_semantic_digest,
+    read_parquet_snapshot,
+    write_parquet_snapshot,
+)
 from live15_quant.kalshi_ws import KalshiBookSide, KalshiWsEventKind
 from live15_quant.records import KalshiWsOrderBookEventRecord
 from live15_quant.storage import RecorderStore
-from live15_quant.ws_archive import decode_archive_chunk, encode_archive_chunk
 
-ARCHIVE_FORMAT_VERSION = 1
-ARCHIVE_CODEC = "zlib"
+ARCHIVE_FORMAT_VERSION = 2
+ARCHIVE_CODEC = "parquet-zstd"
 
 
 class WsRetentionError(RuntimeError):
@@ -86,6 +90,7 @@ class ArchiveChunk:
     subscription_ids: tuple[int, ...]
     first_sequence: int
     last_sequence: int
+    codec: str
     source_replay_hash: str | None
     archive_replay_hash: str | None
     purged_events: int
@@ -335,6 +340,16 @@ def _fixed_decimal(value: Decimal) -> str:
     return str(value)
 
 
+def _streaming_file_sha256(path: Path, *, block_bytes: int = 1024 * 1024) -> str:
+    """Hash an archive file without materializing it in process memory."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(block_bytes), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 @dataclass(slots=True)
 class _Book:
     market_id: str
@@ -516,7 +531,7 @@ class WsRetentionManifest:
                     first_sequence INTEGER NOT NULL,
                     last_sequence INTEGER NOT NULL,
                     archive_format_version INTEGER NOT NULL,
-                    codec TEXT NOT NULL,
+                    codec TEXT NOT NULL CHECK(codec='parquet-zstd'),
                     source_replay_hash TEXT,
                     archive_replay_hash TEXT,
                     end_replay_state TEXT,
@@ -586,6 +601,9 @@ class WsRetentionManifest:
 
     @staticmethod
     def _chunk(row: sqlite3.Row) -> ArchiveChunk:
+        codec = str(row["codec"])
+        if codec != ARCHIVE_CODEC:
+            raise WsRetentionError("manifest archive codec is unsupported")
         return ArchiveChunk(
             chunk_id=str(row["chunk_id"]),
             first_event_id=int(row["first_event_id"]),
@@ -604,6 +622,7 @@ class WsRetentionManifest:
             subscription_ids=tuple(json.loads(row["subscription_ids"])),
             first_sequence=int(row["first_sequence"]),
             last_sequence=int(row["last_sequence"]),
+            codec=codec,
             source_replay_hash=row["source_replay_hash"],
             archive_replay_hash=row["archive_replay_hash"],
             purged_events=int(row["purged_events"]),
@@ -1494,23 +1513,21 @@ class WsArchiveService:
         records: tuple[KalshiWsOrderBookEventRecord, ...],
         now: datetime,
     ) -> ArchiveChunk:
-        blob, metadata = encode_archive_chunk(records)
-        file_checksum = hashlib.sha256(blob).hexdigest()
+        # The existing manifest/replay contract remains the safety owner.  PyArrow
+        # owns Parquet encoding, ZSTD, dictionaries, and 100k row groups.
+        logical_checksum, logical_bytes = canonical_semantic_digest(records)
         destination = (self.archive_root / chunk.relative_path).resolve()
         if self.archive_root != destination.parent and self.archive_root not in destination.parents:
             raise WsRetentionError("archive path escaped configured root")
         destination.parent.mkdir(parents=True, exist_ok=True)
         partial = destination.with_suffix(f"{destination.suffix}.partial")
         try:
-            with partial.open("wb") as handle:
-                handle.write(blob)
-                handle.flush()
+            write_parquet_snapshot(partial, records)
+            with partial.open("r+b") as handle:
                 os.fsync(handle.fileno())
-            decoded, header = decode_archive_chunk(partial.read_bytes())
+            decoded = read_parquet_snapshot(partial)
             if decoded != records:
                 raise WsRetentionError("archive logical events differ from SQLite source")
-            if header["checksum_sha256"] != metadata.checksum_sha256:
-                raise WsRetentionError("archive logical checksum differs from encoded metadata")
             prior_json = self.manifest.end_state_before(
                 chunk.first_event_id, records[0].connection_id, records[0].subscription_id
             )
@@ -1524,20 +1541,20 @@ class WsArchiveService:
             if source_hash != archive_hash or source_state.as_json() != archive_state.as_json():
                 raise WsRetentionError("archive deterministic replay state differs from source")
             partial.replace(destination)
-            reopened = destination.read_bytes()
-            if hashlib.sha256(reopened).hexdigest() != file_checksum:
+            file_checksum = _streaming_file_sha256(destination)
+            verified = read_parquet_snapshot(destination)
+            if _streaming_file_sha256(destination) != file_checksum:
                 raise WsRetentionError("published archive file checksum mismatch")
-            verified, _ = decode_archive_chunk(reopened)
             if verified != records:
                 raise WsRetentionError("published archive cannot reproduce source events")
             self.manifest.advance(
                 chunk.chunk_id,
                 ArchiveState.WRITTEN,
                 now=now,
-                logical_checksum=metadata.checksum_sha256,
+                logical_checksum=logical_checksum,
                 file_checksum=file_checksum,
-                uncompressed_bytes=metadata.uncompressed_bytes,
-                compressed_bytes=len(blob),
+                uncompressed_bytes=logical_bytes,
+                compressed_bytes=destination.stat().st_size,
             )
             self.manifest.advance(chunk.chunk_id, ArchiveState.CHECKSUM_VERIFIED, now=now)
             self.manifest.advance(
@@ -1597,7 +1614,7 @@ class WsArchiveService:
             first = records[0]
             relative = (
                 f"{first.socket_received_timestamp:%Y-%m-%d/%H}/"
-                f"chunk-{first.row_id}-{records[-1].row_id}.zlib"
+                f"chunk-{first.row_id}-{records[-1].row_id}.parquet"
             )
             chunk = self.manifest.reserve(records, relative_path=relative, created_at=observed)
         leading_delta = next(
@@ -1719,15 +1736,17 @@ class WsPurgeService:
             raise WsRetentionError("purge archive path escaped configured root")
         if not archive.is_file():
             raise WsRetentionError("purge archive file is unavailable")
-        blob = archive.read_bytes()
-        if hashlib.sha256(blob).hexdigest() != chunk.file_checksum:
+        if _streaming_file_sha256(archive) != chunk.file_checksum:
             raise WsRetentionError("purge archive file checksum changed")
-        records, header = decode_archive_chunk(blob)
+        if chunk.codec != ARCHIVE_CODEC:
+            raise WsRetentionError("purge archive codec is unsupported")
+        records = read_parquet_snapshot(archive)
+        logical_checksum, _logical_bytes = canonical_semantic_digest(records)
         if (
             len(records) != chunk.event_count
             or records[0].row_id != chunk.first_event_id
             or records[-1].row_id != chunk.last_event_id
-            or header.get("checksum_sha256") != chunk.logical_checksum
+            or logical_checksum != chunk.logical_checksum
         ):
             raise WsRetentionError("purge archive facts no longer match the manifest")
 

@@ -14,21 +14,36 @@ from itertools import pairwise
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pyarrow as pa
+
+from live15_quant.archive_arrow import (
+    ARROW_WS_EVENT_SCHEMA,
+    batch_to_records,
+    read_parquet_snapshot,
+    records_to_batch,
+    write_parquet_snapshot,
+)
 from live15_quant.kalshi_ws import replay_orderbook_events
 from live15_quant.records import KalshiWsOrderBookEventRecord
 from live15_quant.storage import RecorderStore
-from live15_quant.ws_archive import (
-    WsArchiveManifest,
-    decode_archive_chunk,
-    encode_archive_chunk,
-    event_from_wire,
-    event_to_wire,
-    write_verified_archive_chunk,
-)
 
 
 class StorageScalingError(RuntimeError):
     """The supplied database is not a fixed, read-only analysis snapshot."""
+
+
+def event_to_wire(record: KalshiWsOrderBookEventRecord) -> dict[str, object]:
+    """Offline SQLite benchmark mapping; not an archive serialization codec."""
+
+    return records_to_batch((record,)).to_pylist()[0]
+
+
+def event_from_wire(value: object) -> KalshiWsOrderBookEventRecord:
+    """Inverse of the offline benchmark mapping through the canonical Arrow adapter."""
+
+    if not isinstance(value, dict):
+        raise StorageScalingError("benchmark wire record is malformed")
+    return batch_to_records(pa.RecordBatch.from_pylist([value], schema=ARROW_WS_EVENT_SCHEMA))[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,38 +391,15 @@ def benchmark_storage_schemes(
     compact_rate, compact_hash = _timed_replay(compact_records)
     result("compact_normalized_sqlite", compact, write_elapsed, compact_rate, compact_hash)
 
-    archive = root / "archive"
+    archive = root / "parquet"
     archive.mkdir()
     started = time.perf_counter()
-    blob, _ = encode_archive_chunk(records)
-    archive_file = archive / "chunk.zlib"
-    archive_file.write_bytes(blob)
+    archive_file = archive / "chunk.parquet"
+    write_parquet_snapshot(archive_file, records)
     write_elapsed = time.perf_counter() - started
-    decoded, _ = decode_archive_chunk(archive_file.read_bytes())
+    decoded = read_parquet_snapshot(archive_file)
     decoded_rate, decoded_hash = _timed_replay(decoded)
-    result("chunked_compressed_archive", archive, write_elapsed, decoded_rate, decoded_hash)
-
-    manifested = root / "manifested"
-    manifested.mkdir()
-    started = time.perf_counter()
-    with WsArchiveManifest(manifested / "manifest.sqlite3") as manifest:
-        write_verified_archive_chunk(
-            manifested / "raw_ws",
-            "chunk.zlib",
-            records,
-            manifest,
-            committed_at=records[-1].socket_received_timestamp,
-        )
-    write_elapsed = time.perf_counter() - started
-    verified, _ = decode_archive_chunk((manifested / "raw_ws" / "chunk.zlib").read_bytes())
-    verified_rate, verified_hash = _timed_replay(verified)
-    result(
-        "compressed_archive_with_manifest",
-        manifested,
-        write_elapsed,
-        verified_rate,
-        verified_hash,
-    )
+    result("parquet_zstd_archive", archive, write_elapsed, decoded_rate, decoded_hash)
 
     if any(item.book_hash != expected_hash for item in results):
         raise StorageScalingError("lossless scheme changed reconstructed orderbook state")

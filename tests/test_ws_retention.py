@@ -17,7 +17,6 @@ from live15_quant.kalshi_ws import (
 )
 from live15_quant.models import OrderBookLevel
 from live15_quant.storage import RecorderStore
-from live15_quant.ws_archive import decode_archive_chunk
 from live15_quant.ws_retention import (
     ArchiveState,
     CompactionBenefitGate,
@@ -177,7 +176,22 @@ def test_overlap_conflict_fails_loudly(tmp_path: Path) -> None:
     assert archived is not None
     records = service._range_records(archived)
     with pytest.raises(WsRetentionError, match="overlaps"):
-        manifest.reserve(records[1:], relative_path="conflict.zlib", created_at=NOW)
+        manifest.reserve(records[1:], relative_path="conflict.parquet", created_at=NOW)
+
+
+def test_manifest_accepts_only_the_parquet_archive_codec(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    archived = service.run_once(now=NOW).chunk
+    assert archived is not None
+    assert archived.codec == "parquet-zstd"
+    assert archived.relative_path.endswith(".parquet")
+    connection = sqlite3.connect(manifest.path)
+    with connection, pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "UPDATE ws_retention_chunks SET codec='retired-zlib' WHERE chunk_id=?",
+            (archived.chunk_id,),
+        )
+    connection.close()
 
 
 @pytest.mark.parametrize(
@@ -194,7 +208,7 @@ def test_partial_file_and_manifest_crash_boundaries_recover(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash_state: ArchiveState
 ) -> None:
     service, manifest = _service(tmp_path)
-    partial = tmp_path / "archive" / "2026-08-22" / "04" / "chunk-1-10.zlib.partial"
+    partial = tmp_path / "archive" / "2026-08-22" / "04" / "chunk-1-10.parquet.partial"
     partial.parent.mkdir(parents=True)
     partial.write_bytes(b"truncated")
     original = manifest.advance
@@ -249,7 +263,7 @@ def test_manifest_cannot_skip_verification_states(tmp_path: Path) -> None:
         cutoff=NOW - timedelta(hours=6),
         maximum_records=10,
     )
-    chunk = manifest.reserve(records, relative_path="chunk.zlib", created_at=NOW)
+    chunk = manifest.reserve(records, relative_path="chunk.parquet", created_at=NOW)
     with pytest.raises(WsRetentionError, match="skipped verification"):
         manifest.advance(chunk.chunk_id, ArchiveState.REPLAY_VERIFIED, now=NOW)
 
@@ -445,7 +459,7 @@ def test_failed_verification_keeps_raw_source(tmp_path: Path, monkeypatch) -> No
     service, manifest = _service(tmp_path)
     before = service.source_database.stat().st_size
     monkeypatch.setattr(
-        "live15_quant.ws_retention.decode_archive_chunk",
+        "live15_quant.ws_retention.read_parquet_snapshot",
         lambda _blob: (_ for _ in ()).throw(WsRetentionError("bad checksum")),
     )
     with pytest.raises(WsRetentionError, match="bad checksum"):
@@ -459,7 +473,7 @@ def test_failed_archive_blocks_later_ranges_instead_of_skipping_raw_truth(
 ) -> None:
     service, manifest = _service(tmp_path)
     monkeypatch.setattr(
-        "live15_quant.ws_retention.decode_archive_chunk",
+        "live15_quant.ws_retention.read_parquet_snapshot",
         lambda _blob: (_ for _ in ()).throw(WsRetentionError("verification failed")),
     )
     with pytest.raises(WsRetentionError, match="verification failed"):
@@ -476,7 +490,7 @@ def test_failed_chunk_can_be_explicitly_quarantined_and_resume_pointer_advances(
 ) -> None:
     service, manifest = _service(tmp_path)
     monkeypatch.setattr(
-        "live15_quant.ws_retention.decode_archive_chunk",
+        "live15_quant.ws_retention.read_parquet_snapshot",
         lambda _blob: (_ for _ in ()).throw(WsRetentionError("missing replay baseline")),
     )
     with pytest.raises(WsRetentionError, match="missing replay baseline"):
@@ -499,7 +513,7 @@ def test_failed_baseline_reconciliation_requires_explicit_evidence(
 ) -> None:
     service, manifest = _service(tmp_path)
     monkeypatch.setattr(
-        "live15_quant.ws_retention.decode_archive_chunk",
+        "live15_quant.ws_retention.read_parquet_snapshot",
         lambda _blob: (_ for _ in ()).throw(WsRetentionError("checksum failure")),
     )
     with pytest.raises(WsRetentionError, match="checksum failure"):
@@ -515,7 +529,7 @@ def test_mixed_failed_range_quarantines_only_proven_missing_market_baseline(
 ) -> None:
     service, manifest = _service(tmp_path)
     monkeypatch.setattr(
-        "live15_quant.ws_retention.decode_archive_chunk",
+        "live15_quant.ws_retention.read_parquet_snapshot",
         lambda _blob: (_ for _ in ()).throw(WsRetentionError("missing replay baseline")),
     )
     with pytest.raises(WsRetentionError, match="missing replay baseline"):
@@ -552,7 +566,6 @@ def test_mixed_failed_range_quarantines_only_proven_missing_market_baseline(
     )
     store.close()
     raw_before = service.source_database.stat().st_size
-    monkeypatch.setattr("live15_quant.ws_retention.decode_archive_chunk", decode_archive_chunk)
     service._reconcile_failed_baseline(NOW)
     assert manifest.chunks()[0].state is ArchiveState.QUARANTINED_REPLAY_BASELINE_MISSING
     assert service.source_database.stat().st_size == raw_before
@@ -570,7 +583,7 @@ def test_delta_only_chunk_waits_for_baseline_without_publishing_or_failing(
     assert result.chunk is not None
     assert result.chunk.state is ArchiveState.WAITING_FOR_REPLAY_BASELINE
     assert result.chunk.failure == "REPLAY_BASELINE_MISSING"
-    assert not tuple(service.archive_root.rglob("*.zlib"))
+    assert not tuple(service.archive_root.rglob("*.parquet"))
     with pytest.raises(WsRetentionError, match="unreplayable archive chunk"):
         service.run_once(now=NOW)
 

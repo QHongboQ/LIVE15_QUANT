@@ -193,7 +193,7 @@ jobs:
       - name: Import check
         run: python tools/ci_import_check.py
       - name: Recorder and WS tests
-        run: pytest tests/test_recorder.py tests/test_recorder_control.py tests/test_ws_retention.py tests/test_ws_archive.py tests/test_kalshi_ws.py tests/test_kalshi_ws_recorder.py
+        run: pytest tests/test_recorder.py tests/test_recorder_control.py tests/test_ws_retention.py tests/test_kalshi_ws.py tests/test_kalshi_ws_recorder.py
 
   data-storage:
     name: Data and storage tests
@@ -216,7 +216,7 @@ jobs:
       - name: Import check
         run: python tools/ci_import_check.py
       - name: Data and storage tests
-        run: pytest tests/test_storage.py tests/test_gaps.py tests/test_dataset.py tests/test_ws_archive.py
+        run: pytest tests/test_storage.py tests/test_gaps.py tests/test_dataset.py tests/test_ws_retention.py
 
   research-model:
     name: Research and model tests
