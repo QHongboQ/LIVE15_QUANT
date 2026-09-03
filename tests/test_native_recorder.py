@@ -52,6 +52,16 @@ from tests.test_kalshi_lifecycle import NOW, provider, quote, raw_market
 from tests.test_storage import prediction_quote
 
 
+def _archive_settings(tmp_path, **overrides):
+    return Settings(
+        enable_ws_archive=True,
+        ws_archive_roots=(("parquet-01", tmp_path / "archive"),),
+        ws_archive_active_root="parquet-01",
+        ws_archive_manifest_path=tmp_path / "manifest" / "ws_archive_manifest.sqlite3",
+        **overrides,
+    )
+
+
 class FakeDiscovery:
     def __init__(self, discoveries: tuple[KalshiDiscovery, ...]) -> None:
         self.discoveries = {item.asset: item for item in discoveries}
@@ -1703,7 +1713,8 @@ async def test_archive_failure_isolated_from_core_recorder(
 ) -> None:
     with RecorderStore(tmp_path / "archive-isolation.sqlite3") as store:
         recorder = KalshiNativeRecorder(
-            Settings(
+            _archive_settings(
+                tmp_path,
                 products=("BTC-USD",),
                 recorder_health_path=tmp_path / "health.json",
                 ws_archive_poll_interval_seconds=60,
@@ -1739,7 +1750,8 @@ async def test_adaptive_retention_fail_safe_requests_managed_pause(tmp_path, mon
     pause_reasons: list[str] = []
     with RecorderStore(tmp_path / "adaptive-fail-safe.sqlite3") as store:
         recorder = KalshiNativeRecorder(
-            Settings(
+            _archive_settings(
+                tmp_path,
                 products=("BTC-USD",),
                 recorder_health_path=tmp_path / "health.json",
                 ws_archive_poll_interval_seconds=60,
@@ -1797,7 +1809,8 @@ async def test_adaptive_retention_fail_safe_requests_managed_pause(tmp_path, mon
 async def test_archive_retention_defers_to_live_ws_backpressure(tmp_path, monkeypatch) -> None:
     with RecorderStore(tmp_path / "archive-backpressure.sqlite3") as store:
         recorder = KalshiNativeRecorder(
-            Settings(
+            _archive_settings(
+                tmp_path,
                 products=("BTC-USD",),
                 recorder_health_path=tmp_path / "health.json",
                 ws_archive_poll_interval_seconds=60,
@@ -1841,7 +1854,8 @@ async def test_archive_chunk_work_yields_event_loop_to_control_and_health(
     release = threading.Event()
     with RecorderStore(tmp_path / "archive-fairness.sqlite3") as store:
         recorder = KalshiNativeRecorder(
-            Settings(
+            _archive_settings(
+                tmp_path,
                 products=("BTC-USD",),
                 recorder_health_path=tmp_path / "health.json",
                 ws_archive_poll_interval_seconds=60,
@@ -1927,7 +1941,8 @@ def test_sdk_durable_commit_advances_existing_persistence_health_key(tmp_path) -
 def test_archive_retention_waits_for_current_ws_books_to_synchronize(tmp_path) -> None:
     with RecorderStore(tmp_path / "archive-ws-startup.sqlite3") as store:
         recorder = KalshiNativeRecorder(
-            Settings(
+            _archive_settings(
+                tmp_path,
                 products=("BTC-USD",),
                 recorder_health_path=tmp_path / "health.json",
                 enable_kalshi_production_websocket=True,
@@ -1972,7 +1987,8 @@ def test_archive_retention_waits_for_current_ws_books_to_synchronize(tmp_path) -
 def test_archive_poll_schedule_is_bounded_and_backlog_aware(tmp_path) -> None:
     with RecorderStore(tmp_path / "archive-cadence.sqlite3") as store:
         recorder = KalshiNativeRecorder(
-            Settings(
+            _archive_settings(
+                tmp_path,
                 products=("BTC-USD",),
                 recorder_health_path=tmp_path / "health.json",
             ),

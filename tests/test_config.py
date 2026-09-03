@@ -45,6 +45,50 @@ def test_load_settings_uses_defaults() -> None:
     assert settings.pyth_api_key_path is None
     assert settings.pyth_hermes_base_url == PYTH_HERMES_BASE_URL
     assert settings.pyth_unavailable_reprobe_interval_seconds == 300.0
+    assert settings.enable_ws_archive is False
+    assert settings.ws_archive_roots == ()
+    assert settings.ws_archive_active_root is None
+    assert settings.ws_archive_manifest_path is None
+
+
+def test_load_settings_requires_independent_named_archive_roots_and_manifest() -> None:
+    settings = load_settings(
+        {
+            "LIVE15_WS_ARCHIVE_ROOTS": (
+                "parquet-01=D:/LIVE15_ARCHIVE/parquet-01;parquet-02=D:/LIVE15_ARCHIVE/parquet-02"
+            ),
+            "LIVE15_WS_ARCHIVE_ACTIVE_ROOT": "parquet-01",
+            "LIVE15_WS_ARCHIVE_MANIFEST_PATH": (
+                "D:/LIVE15_ARCHIVE/manifest/ws_archive_manifest.sqlite3"
+            ),
+        }
+    )
+    assert settings.ws_archive_roots == (
+        ("parquet-01", Path("D:/LIVE15_ARCHIVE/parquet-01")),
+        ("parquet-02", Path("D:/LIVE15_ARCHIVE/parquet-02")),
+    )
+    assert settings.ws_archive_active_root == "parquet-01"
+
+    with pytest.raises(ValueError, match="configured together"):
+        load_settings({"LIVE15_WS_ARCHIVE_ROOTS": "parquet-01=D:/LIVE15_ARCHIVE/parquet-01"})
+    with pytest.raises(ValueError, match="active root"):
+        load_settings(
+            {
+                "LIVE15_WS_ARCHIVE_ROOTS": "parquet-01=D:/LIVE15_ARCHIVE/parquet-01",
+                "LIVE15_WS_ARCHIVE_ACTIVE_ROOT": "parquet-02",
+                "LIVE15_WS_ARCHIVE_MANIFEST_PATH": (
+                    "D:/LIVE15_ARCHIVE/manifest/ws_archive_manifest.sqlite3"
+                ),
+            }
+        )
+    with pytest.raises(ValueError, match="independent"):
+        load_settings(
+            {
+                "LIVE15_WS_ARCHIVE_ROOTS": "parquet-01=D:/LIVE15_ARCHIVE/parquet-01",
+                "LIVE15_WS_ARCHIVE_ACTIVE_ROOT": "parquet-01",
+                "LIVE15_WS_ARCHIVE_MANIFEST_PATH": "D:/LIVE15_ARCHIVE/parquet-01/manifest.sqlite3",
+            }
+        )
 
 
 def test_load_settings_allows_pyth_hermes_endpoint_override() -> None:

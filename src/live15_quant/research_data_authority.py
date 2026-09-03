@@ -665,10 +665,19 @@ class ResearchDataAuthority:
 
         from .archive_research import ArchiveResearchSourceAdapter, ArchiveResearchUnavailable
 
-        if self.settings.ws_archive_root is None or self.settings.ws_archive_manifest_path is None:
+        if (
+            not self.settings.ws_archive_roots
+            or self.settings.ws_archive_active_root is None
+            or self.settings.ws_archive_manifest_path is None
+        ):
             raise ArchiveResearchUnavailable("ARCHIVE_NOT_CONFIGURED")
+        from .ws_retention import ArchiveStorageRoots
+
         selection = ArchiveResearchSourceAdapter(
-            self.settings.ws_archive_root, self.settings.ws_archive_manifest_path
+            ArchiveStorageRoots(
+                dict(self.settings.ws_archive_roots), self.settings.ws_archive_active_root
+            ),
+            self.settings.ws_archive_manifest_path,
         ).materialize(query)
         if not selection.available:
             raise ArchiveResearchUnavailable(selection.reason or "ARCHIVE_RESEARCH_UNAVAILABLE")

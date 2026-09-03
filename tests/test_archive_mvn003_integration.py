@@ -32,7 +32,12 @@ from live15_quant.research_runner import (
     write_research_input_snapshot,
 )
 from live15_quant.storage import RecorderStore
-from live15_quant.ws_retention import ArchiveState, WsArchiveService, WsRetentionManifest
+from live15_quant.ws_retention import (
+    ArchiveState,
+    ArchiveStorageRoots,
+    WsArchiveService,
+    WsRetentionManifest,
+)
 
 NOW = datetime(2026, 8, 24, 12, tzinfo=UTC)
 TICKER = "KXBTC15M-26AUG241215-15"
@@ -93,7 +98,7 @@ def _archive(tmp_path: Path) -> tuple[Settings, Path, tuple[object, ...]]:
     manifest = WsRetentionManifest(manifest_path)
     service = WsArchiveService(
         database,
-        root,
+        ArchiveStorageRoots({"parquet-01": root}, "parquet-01"),
         manifest,
         hot_retention=timedelta(hours=6),
         chunk_records=8,
@@ -105,7 +110,8 @@ def _archive(tmp_path: Path) -> tuple[Settings, Path, tuple[object, ...]]:
     settings = Settings(
         recorder_data_path=database,
         current_trainable_path=tmp_path / "current.sqlite3",
-        ws_archive_root=root,
+        ws_archive_roots=(("parquet-01", root),),
+        ws_archive_active_root="parquet-01",
         ws_archive_manifest_path=manifest_path,
         feature_store_path=tmp_path / "features.sqlite3",
         paper_data_path=tmp_path / "paper.sqlite3",

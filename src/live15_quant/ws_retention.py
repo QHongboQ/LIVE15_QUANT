@@ -9,7 +9,7 @@ import shutil
 import sqlite3
 import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -78,6 +78,7 @@ class ArchiveChunk:
     last_event_id: int
     event_count: int
     state: ArchiveState
+    storage_root_id: str
     relative_path: str
     logical_checksum: str | None
     file_checksum: str | None
@@ -111,6 +112,37 @@ class ArchiveRunResult:
         if self.chunk is None or self.chunk.state is not ArchiveState.PURGE_ELIGIBLE:
             return 0
         return self.chunk.event_count
+
+
+class ArchiveStorageRoots:
+    """Stable named roots; each chunk resolves through its manifest root ID."""
+
+    def __init__(self, roots: Mapping[str, Path], active_root_id: str) -> None:
+        normalized = {root_id: path.resolve() for root_id, path in roots.items() if root_id}
+        if (
+            len(normalized) != len(roots)
+            or len(set(normalized.values())) != len(normalized)
+            or active_root_id not in normalized
+        ):
+            raise ValueError("archive roots require unique non-empty IDs and one active root")
+        self._roots = normalized
+        self.active_root_id = active_root_id
+
+    @property
+    def active_root(self) -> Path:
+        return self._roots[self.active_root_id]
+
+    def resolve(self, storage_root_id: str, relative_path: str) -> Path:
+        root = self._roots.get(storage_root_id)
+        relative = Path(relative_path)
+        if root is None:
+            raise WsRetentionError("archive storage root is unknown or unavailable")
+        if relative.is_absolute() or ".." in relative.parts or relative.suffix != ".parquet":
+            raise WsRetentionError("archive path is invalid")
+        path = (root / relative).resolve()
+        if root != path.parent and root not in path.parents:
+            raise WsRetentionError("archive path escaped configured root")
+        return path
 
 
 @dataclass(frozen=True, slots=True)
@@ -516,7 +548,8 @@ class WsRetentionManifest:
                     last_event_id INTEGER NOT NULL,
                     event_count INTEGER NOT NULL,
                     state TEXT NOT NULL,
-                    relative_path TEXT NOT NULL UNIQUE,
+                    storage_root_id TEXT NOT NULL CHECK(length(storage_root_id)>0),
+                    relative_path TEXT NOT NULL,
                     logical_checksum TEXT,
                     file_checksum TEXT,
                     uncompressed_bytes INTEGER,
@@ -540,6 +573,7 @@ class WsRetentionManifest:
                     updated_at TEXT NOT NULL,
                     failure TEXT,
                     UNIQUE(first_event_id,last_event_id),
+                    UNIQUE(storage_root_id,relative_path),
                     CHECK(first_event_id>0 AND last_event_id>=first_event_id),
                     CHECK(event_count>0 AND purged_events>=0 AND purged_events<=event_count)
                 ) STRICT;
@@ -610,6 +644,7 @@ class WsRetentionManifest:
             last_event_id=int(row["last_event_id"]),
             event_count=int(row["event_count"]),
             state=ArchiveState(row["state"]),
+            storage_root_id=str(row["storage_root_id"]),
             relative_path=str(row["relative_path"]),
             logical_checksum=row["logical_checksum"],
             file_checksum=row["file_checksum"],
@@ -648,6 +683,7 @@ class WsRetentionManifest:
         self,
         records: tuple[KalshiWsOrderBookEventRecord, ...],
         *,
+        storage_root_id: str,
         relative_path: str,
         created_at: datetime,
     ) -> ArchiveChunk:
@@ -683,17 +719,18 @@ class WsRetentionManifest:
                 raise WsRetentionError("archive chunk range overlaps an existing manifest fact")
             connection.execute(
                 """INSERT INTO ws_retention_chunks(
-                    chunk_id,first_event_id,last_event_id,event_count,state,relative_path,
+                    chunk_id,first_event_id,last_event_id,event_count,state,storage_root_id,relative_path,
                     first_received_timestamp,last_received_timestamp,first_source_timestamp,
                     last_source_timestamp,event_type_counts,tickers,subscription_ids,
                     first_sequence,last_sequence,archive_format_version,codec,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     chunk_id,
                     first.row_id,
                     last.row_id,
                     len(records),
                     ArchiveState.WRITING.value,
+                    storage_root_id,
                     relative_path,
                     min(record.socket_received_timestamp for record in records).isoformat(),
                     max(record.socket_received_timestamp for record in records).isoformat(),
@@ -1188,7 +1225,7 @@ class WsArchiveService:
     def __init__(
         self,
         source_database: Path,
-        archive_root: Path,
+        storage_roots: ArchiveStorageRoots,
         manifest: WsRetentionManifest,
         *,
         hot_retention: timedelta = timedelta(hours=6),
@@ -1197,7 +1234,7 @@ class WsArchiveService:
         if hot_retention <= timedelta(0) or not 1 <= chunk_records <= 250_000:
             raise ValueError("archive retention/chunk bounds are invalid")
         self.source_database = source_database.resolve()
-        self.archive_root = archive_root.resolve()
+        self.storage_roots = storage_roots
         self.manifest = manifest
         self.hot_retention = hot_retention
         self.chunk_records = chunk_records
@@ -1374,7 +1411,7 @@ class WsArchiveService:
             )
             if leading_delta is None:
                 continue
-            archive_path = (self.archive_root / failed.relative_path).resolve()
+            archive_path = self.storage_roots.resolve(failed.storage_root_id, failed.relative_path)
             if archive_path.exists():
                 continue
             prior = self.manifest.end_state_before(
@@ -1516,9 +1553,7 @@ class WsArchiveService:
         # The existing manifest/replay contract remains the safety owner.  PyArrow
         # owns Parquet encoding, ZSTD, dictionaries, and 100k row groups.
         logical_checksum, logical_bytes = canonical_semantic_digest(records)
-        destination = (self.archive_root / chunk.relative_path).resolve()
-        if self.archive_root != destination.parent and self.archive_root not in destination.parents:
-            raise WsRetentionError("archive path escaped configured root")
+        destination = self.storage_roots.resolve(chunk.storage_root_id, chunk.relative_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         partial = destination.with_suffix(f"{destination.suffix}.partial")
         try:
@@ -1616,7 +1651,12 @@ class WsArchiveService:
                 f"{first.socket_received_timestamp:%Y-%m-%d/%H}/"
                 f"chunk-{first.row_id}-{records[-1].row_id}.parquet"
             )
-            chunk = self.manifest.reserve(records, relative_path=relative, created_at=observed)
+            chunk = self.manifest.reserve(
+                records,
+                storage_root_id=self.storage_roots.active_root_id,
+                relative_path=relative,
+                created_at=observed,
+            )
         leading_delta = next(
             (record for record in records if record.event_kind is KalshiWsEventKind.DELTA),
             None,
@@ -1708,7 +1748,7 @@ class WsPurgeService:
     def __init__(
         self,
         database: Path,
-        archive_root: Path,
+        storage_roots: ArchiveStorageRoots,
         manifest: WsRetentionManifest,
         *,
         batch_rows: int = 20_000,
@@ -1716,7 +1756,7 @@ class WsPurgeService:
         if not 1 <= batch_rows <= 100_000:
             raise ValueError("purge batch must be in [1,100000]")
         self.database = database.resolve()
-        self.archive_root = archive_root.resolve()
+        self.storage_roots = storage_roots
         self.manifest = manifest
         self.batch_rows = batch_rows
 
@@ -1731,9 +1771,7 @@ class WsPurgeService:
             or chunk.last_event_id - chunk.first_event_id + 1 != chunk.event_count
         ):
             raise WsRetentionError("purge chunk is not fully verified and contiguous")
-        archive = (self.archive_root / chunk.relative_path).resolve()
-        if self.archive_root != archive.parent and self.archive_root not in archive.parents:
-            raise WsRetentionError("purge archive path escaped configured root")
+        archive = self.storage_roots.resolve(chunk.storage_root_id, chunk.relative_path)
         if not archive.is_file():
             raise WsRetentionError("purge archive file is unavailable")
         if _streaming_file_sha256(archive) != chunk.file_checksum:
