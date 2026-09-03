@@ -16,10 +16,16 @@ $ErrorActionPreference = 'Stop'
 $ExpectedPython = '3.13.15'
 $ProductionLock = Join-Path $Repository 'requirements.production.lock'
 $DevOnly = @('httpx','pytest','pytest-asyncio','ruff')
+$PythonVersionExpression = "import sys; print('.'.join(map(str, sys.version_info[:3])))"
 
 function Invoke-RuntimePython([string]$Python, [string[]]$Arguments) {
     & $Python @Arguments | Out-Host
     if ($LASTEXITCODE) { throw "Runtime command failed: $($Arguments -join ' ')" }
+}
+function Get-PythonVersion([string]$Python) {
+    $version = (& $Python -c $PythonVersionExpression | Out-String).Trim()
+    if ($LASTEXITCODE) { throw "Python version query failed: $Python" }
+    return $version
 }
 function Get-Inventory([string]$Python) {
     $lines = & $Python -m pip freeze --all
@@ -29,7 +35,7 @@ function Get-Inventory([string]$Python) {
 function Get-Identity([string]$Runtime) {
     $python = Join-Path $Runtime 'Scripts\python.exe'
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "Runtime python is missing: $python" }
-    $version = (& $python -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' | Out-String).Trim()
+    $version = Get-PythonVersion $python
     if ($LASTEXITCODE -or $version -ne $ExpectedPython) { throw "Runtime Python must be $ExpectedPython." }
     $inventory = Get-Inventory $python
     $identity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($inventory -join "`n"))))
@@ -74,7 +80,7 @@ function Write-Receipt($Previous, $Next) {
 }
 try {
     foreach ($path in @($Repository,$BasePython,$ProductionLock)) { if (-not (Test-Path -LiteralPath $path)) { throw "Required path is unavailable: $path" } }
-    $baseVersion = (& $BasePython -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' | Out-String).Trim()
+    $baseVersion = Get-PythonVersion $BasePython
     if ($baseVersion -ne $ExpectedPython) { throw "Base Python must be $ExpectedPython." }
     $current = Get-Identity $CanonicalRuntime
     $consumers = Get-Consumers
