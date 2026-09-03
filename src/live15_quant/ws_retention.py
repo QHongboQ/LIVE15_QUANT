@@ -26,7 +26,6 @@ from live15_quant.archive_arrow import (
 from live15_quant.kalshi_ws import KalshiBookSide, KalshiWsEventKind
 from live15_quant.records import KalshiWsOrderBookEventRecord
 from live15_quant.storage import RecorderStore
-from live15_quant.ws_archive import decode_archive_chunk
 
 ARCHIVE_FORMAT_VERSION = 2
 ARCHIVE_CODEC = "parquet-zstd"
@@ -532,7 +531,7 @@ class WsRetentionManifest:
                     first_sequence INTEGER NOT NULL,
                     last_sequence INTEGER NOT NULL,
                     archive_format_version INTEGER NOT NULL,
-                    codec TEXT NOT NULL,
+                    codec TEXT NOT NULL CHECK(codec='parquet-zstd'),
                     source_replay_hash TEXT,
                     archive_replay_hash TEXT,
                     end_replay_state TEXT,
@@ -602,6 +601,9 @@ class WsRetentionManifest:
 
     @staticmethod
     def _chunk(row: sqlite3.Row) -> ArchiveChunk:
+        codec = str(row["codec"])
+        if codec != ARCHIVE_CODEC:
+            raise WsRetentionError("manifest archive codec is unsupported")
         return ArchiveChunk(
             chunk_id=str(row["chunk_id"]),
             first_event_id=int(row["first_event_id"]),
@@ -620,7 +622,7 @@ class WsRetentionManifest:
             subscription_ids=tuple(json.loads(row["subscription_ids"])),
             first_sequence=int(row["first_sequence"]),
             last_sequence=int(row["last_sequence"]),
-            codec=str(row["codec"]),
+            codec=codec,
             source_replay_hash=row["source_replay_hash"],
             archive_replay_hash=row["archive_replay_hash"],
             purged_events=int(row["purged_events"]),
@@ -1736,13 +1738,10 @@ class WsPurgeService:
             raise WsRetentionError("purge archive file is unavailable")
         if _streaming_file_sha256(archive) != chunk.file_checksum:
             raise WsRetentionError("purge archive file checksum changed")
-        if chunk.codec == "parquet-zstd":
-            records = read_parquet_snapshot(archive)
-            logical_checksum, _logical_bytes = canonical_semantic_digest(records)
-        else:
-            blob = archive.read_bytes()
-            records, header = decode_archive_chunk(blob)
-            logical_checksum = header.get("checksum_sha256")
+        if chunk.codec != ARCHIVE_CODEC:
+            raise WsRetentionError("purge archive codec is unsupported")
+        records = read_parquet_snapshot(archive)
+        logical_checksum, _logical_bytes = canonical_semantic_digest(records)
         if (
             len(records) != chunk.event_count
             or records[0].row_id != chunk.first_event_id

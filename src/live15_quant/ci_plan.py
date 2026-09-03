@@ -96,7 +96,7 @@ _GROUP_PREFIXES: tuple[tuple[TestGroup, tuple[str, ...]], ...] = (
             "src/live15_quant/adaptive_retention",
             "tests/test_storage",
             "tests/test_gaps",
-            "tests/test_ws_archive",
+            "tests/test_ws_retention",
         ),
     ),
     (
