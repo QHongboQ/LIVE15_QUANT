@@ -177,3 +177,5 @@ finally {
 if ($exitCode -ne 0) {
     exit $exitCode
 }
+
+exit 0
