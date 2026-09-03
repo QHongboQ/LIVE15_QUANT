@@ -186,7 +186,10 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
         "Project Brain authority consolidation COMPLETE",
         "Runtime/Lifecycle consolidation COMPLETE / VERIFIED",
         "Web Application Shell COMPLETE / VERIFIED",
-        "**NEXT:** advance the bounded **COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY** responsibility",
+        (
+            "**NEXT:** advance the bounded "
+            "**COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY** responsibility"
+        ),
     ):
         assert expected in roadmap
     current_roadmap = roadmap.split("## Change log", maxsplit=1)[0]
