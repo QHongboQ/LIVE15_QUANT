@@ -61,9 +61,9 @@ def test_deploy_precondition_allows_zero_or_one_writer_but_never_duplicates() ->
     source = _source()
 
     assert "function Assert-AtMostOneRecorderWriter" in source
-    assert 'if ($count -gt 1)' in source
+    assert "if ($count -gt 1)" in source
     assert "function Assert-OneRecorderWriter" in source
-    assert 'if ($count -ne 1)' in source
+    assert "if ($count -ne 1)" in source
     assert "preWriterCount = Assert-AtMostOneRecorderWriter" in source
     assert "freshWriterCount = Assert-AtMostOneRecorderWriter" in source
     assert "Assert-OneRecorderWriter" in source
@@ -157,10 +157,8 @@ def test_jobspec_resolution_uses_repository_default_and_preserves_explicit_path(
     wrapper.write_text(
         "param([string]$Helper, [string]$Repository, [string]$Explicit)\n"
         ". $Helper -Repository $Repository -GitSha ('a' * 40)\n"
-        (
-            "[pscustomobject]@{ default = Resolve-Jobspec $null; "
-            "explicit = Resolve-Jobspec $Explicit } | ConvertTo-Json -Compress\n"
-        ),
+        "[pscustomobject]@{ default = Resolve-Jobspec $null; "
+        "explicit = Resolve-Jobspec $Explicit } | ConvertTo-Json -Compress\n",
         encoding="utf-8",
     )
 
