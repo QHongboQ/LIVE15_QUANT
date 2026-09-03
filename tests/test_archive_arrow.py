@@ -11,6 +11,7 @@ import pytest
 from live15_quant.archive_arrow import (
     ArrowArchiveError,
     batch_to_records,
+    canonical_semantic_digest,
     read_ipc_snapshot,
     read_parquet_snapshot,
     records_to_batch,
@@ -158,6 +159,7 @@ def test_parquet_zstd_round_trip_replay_and_truncation_fail_closed(tmp_path: Pat
     assert write_parquet_snapshot(path, records) == path.stat().st_size
     decoded = read_parquet_snapshot(path)
     assert decoded == records
+    assert canonical_semantic_digest(decoded) == canonical_semantic_digest(records)
     assert replay_orderbook_events(decoded, (TICKER,)) == replay_orderbook_events(
         records, (TICKER,)
     )

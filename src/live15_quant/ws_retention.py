@@ -18,11 +18,15 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
-from live15_quant.archive_arrow import read_parquet_snapshot, write_parquet_snapshot
+from live15_quant.archive_arrow import (
+    canonical_semantic_digest,
+    read_parquet_snapshot,
+    write_parquet_snapshot,
+)
 from live15_quant.kalshi_ws import KalshiBookSide, KalshiWsEventKind
 from live15_quant.records import KalshiWsOrderBookEventRecord
 from live15_quant.storage import RecorderStore
-from live15_quant.ws_archive import decode_archive_chunk, encode_archive_chunk
+from live15_quant.ws_archive import decode_archive_chunk
 
 ARCHIVE_FORMAT_VERSION = 2
 ARCHIVE_CODEC = "parquet-zstd"
@@ -335,6 +339,16 @@ def _parse_time(value: str) -> datetime:
 
 def _fixed_decimal(value: Decimal) -> str:
     return str(value)
+
+
+def _streaming_file_sha256(path: Path, *, block_bytes: int = 1024 * 1024) -> str:
+    """Hash an archive file without materializing it in process memory."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(block_bytes), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 @dataclass(slots=True)
@@ -1499,7 +1513,7 @@ class WsArchiveService:
     ) -> ArchiveChunk:
         # The existing manifest/replay contract remains the safety owner.  PyArrow
         # owns Parquet encoding, ZSTD, dictionaries, and 100k row groups.
-        _legacy_blob, metadata = encode_archive_chunk(records)
+        logical_checksum, logical_bytes = canonical_semantic_digest(records)
         destination = (self.archive_root / chunk.relative_path).resolve()
         if self.archive_root != destination.parent and self.archive_root not in destination.parents:
             raise WsRetentionError("archive path escaped configured root")
@@ -1525,10 +1539,9 @@ class WsArchiveService:
             if source_hash != archive_hash or source_state.as_json() != archive_state.as_json():
                 raise WsRetentionError("archive deterministic replay state differs from source")
             partial.replace(destination)
-            reopened = destination.read_bytes()
-            file_checksum = hashlib.sha256(reopened).hexdigest()
+            file_checksum = _streaming_file_sha256(destination)
             verified = read_parquet_snapshot(destination)
-            if hashlib.sha256(destination.read_bytes()).hexdigest() != file_checksum:
+            if _streaming_file_sha256(destination) != file_checksum:
                 raise WsRetentionError("published archive file checksum mismatch")
             if verified != records:
                 raise WsRetentionError("published archive cannot reproduce source events")
@@ -1536,9 +1549,9 @@ class WsArchiveService:
                 chunk.chunk_id,
                 ArchiveState.WRITTEN,
                 now=now,
-                logical_checksum=metadata.checksum_sha256,
+                logical_checksum=logical_checksum,
                 file_checksum=file_checksum,
-                uncompressed_bytes=metadata.uncompressed_bytes,
+                uncompressed_bytes=logical_bytes,
                 compressed_bytes=destination.stat().st_size,
             )
             self.manifest.advance(chunk.chunk_id, ArchiveState.CHECKSUM_VERIFIED, now=now)
@@ -1721,14 +1734,13 @@ class WsPurgeService:
             raise WsRetentionError("purge archive path escaped configured root")
         if not archive.is_file():
             raise WsRetentionError("purge archive file is unavailable")
-        blob = archive.read_bytes()
-        if hashlib.sha256(blob).hexdigest() != chunk.file_checksum:
+        if _streaming_file_sha256(archive) != chunk.file_checksum:
             raise WsRetentionError("purge archive file checksum changed")
         if chunk.codec == "parquet-zstd":
             records = read_parquet_snapshot(archive)
-            _legacy_blob, metadata = encode_archive_chunk(records)
-            logical_checksum = metadata.checksum_sha256
+            logical_checksum, _logical_bytes = canonical_semantic_digest(records)
         else:
+            blob = archive.read_bytes()
             records, header = decode_archive_chunk(blob)
             logical_checksum = header.get("checksum_sha256")
         if (

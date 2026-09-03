@@ -6,6 +6,8 @@ owns arrays, IPC encoding/decoding, and Zstandard; LIVE15 owns record mapping/va
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -376,3 +378,18 @@ def read_parquet_snapshot(path: Path) -> tuple[KalshiWsOrderBookEventRecord, ...
         raise
     except (OSError, pa.ArrowException) as error:
         raise ArrowArchiveError("Parquet snapshot cannot be decoded") from error
+
+
+def canonical_semantic_digest(records: Sequence[KalshiWsOrderBookEventRecord]) -> tuple[str, int]:
+    """Return the codec-independent exact LIVE15 semantic digest and logical bytes.
+
+    The canonical payload is the existing Arrow semantic mapping, not a file-format
+    encoding. It therefore stays stable across Parquet write/read and does not
+    couple new archive verification to the retired JSONL/zlib codec.
+    """
+
+    batch = records_to_batch(records)
+    payload = json.dumps(
+        batch.to_pylist(), default=str, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest(), len(payload)

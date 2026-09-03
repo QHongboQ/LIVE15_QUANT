@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -17,7 +18,7 @@ from live15_quant.kalshi_ws import (
 )
 from live15_quant.models import OrderBookLevel
 from live15_quant.storage import RecorderStore
-from live15_quant.ws_archive import decode_archive_chunk
+from live15_quant.ws_archive import decode_archive_chunk, encode_archive_chunk
 from live15_quant.ws_retention import (
     ArchiveState,
     CompactionBenefitGate,
@@ -452,6 +453,65 @@ def test_failed_verification_keeps_raw_source(tmp_path: Path, monkeypatch) -> No
         service.run_once(now=NOW)
     assert service.source_database.stat().st_size == before
     assert manifest.chunks()[0].state is ArchiveState.FAILED
+
+
+def test_parquet_archive_path_never_invokes_legacy_encoder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _manifest = _service(tmp_path)
+    monkeypatch.setattr(
+        "live15_quant.ws_archive.encode_archive_chunk",
+        lambda _records: (_ for _ in ()).throw(AssertionError("legacy encoder invoked")),
+    )
+    archived = service.run_once(now=NOW).chunk
+    assert archived is not None
+    assert archived.codec == "parquet-zstd"
+
+
+def test_legacy_zlib_artifact_remains_verifiable(tmp_path: Path) -> None:
+    service, manifest = _service(tmp_path)
+    records = _read_records(
+        service.source_database,
+        after_id=0,
+        cutoff=NOW,
+        maximum_records=10,
+    )
+    blob, metadata = encode_archive_chunk(records)
+    relative_path = "legacy/chunk.zlib"
+    archive = service.archive_root / relative_path
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(blob)
+    chunk = manifest.reserve(records, relative_path=relative_path, created_at=NOW)
+    connection = sqlite3.connect(manifest.path)
+    with connection:
+        connection.execute(
+            "UPDATE ws_retention_chunks SET codec='zlib' WHERE chunk_id=?", (chunk.chunk_id,)
+        )
+    connection.close()
+    file_checksum = hashlib.sha256(blob).hexdigest()
+    for state, facts in (
+        (
+            ArchiveState.WRITTEN,
+            {
+                "logical_checksum": metadata.checksum_sha256,
+                "file_checksum": file_checksum,
+                "uncompressed_bytes": metadata.uncompressed_bytes,
+                "compressed_bytes": len(blob),
+            },
+        ),
+        (ArchiveState.CHECKSUM_VERIFIED, {}),
+        (
+            ArchiveState.REPLAY_VERIFIED,
+            {"source_replay_hash": "legacy", "archive_replay_hash": "legacy"},
+        ),
+        (ArchiveState.COMMITTED, {}),
+        (ArchiveState.PURGE_ELIGIBLE, {}),
+    ):
+        manifest.advance(chunk.chunk_id, state, now=NOW, **facts)
+    verified = manifest.latest()
+    assert verified is not None
+    purge = WsPurgeService(service.source_database, service.archive_root, manifest)
+    purge.verify_preserved_archive(verified)
 
 
 def test_failed_archive_blocks_later_ranges_instead_of_skipping_raw_truth(
