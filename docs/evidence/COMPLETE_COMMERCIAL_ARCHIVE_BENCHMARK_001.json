@@ -1,0 +1,104 @@
+{
+  "benchmark_id": "COMPLETE-COMMERCIAL-ARCHIVE-BENCHMARK-001",
+  "generated_at": "2026-09-03T06:34:09.679979+00:00",
+  "implementations": {
+    "arrow_ipc_zstd": "live15_quant.archive_arrow.write_ipc_snapshot/read_ipc_snapshot",
+    "jsonl_zlib": "live15_quant.ws_archive.encode_archive_chunk/decode_archive_chunk",
+    "replay": "live15_quant.kalshi_ws.replay_orderbook_events"
+  },
+  "runs": {
+    "full_1018676": {
+      "first_row_id": 232652,
+      "formats": [
+        {
+          "bytes_per_event": 22.94342460213061,
+          "decode_events_per_second": 44164.51049077562,
+          "encode_events_per_second": 51950.705977106336,
+          "format": "JSONL+zlib",
+          "replay_events_per_second": 4911.089762572623,
+          "replay_hash": "8d5b466abbf5201ef4cade2fdfff39f6971bb020ed19beeca99db3b1f5539cee",
+          "total_bytes": 23371916,
+          "verification": {
+            "decimal_fidelity": true,
+            "deterministic_replay_equivalence": true,
+            "exact_round_trip": true,
+            "ordering": true,
+            "utc_microsecond_timestamp_fidelity": true
+          }
+        },
+        {
+          "bytes_per_event": 41.88699252755538,
+          "decode_events_per_second": 22731.141993215824,
+          "encode_events_per_second": 43432.48385392768,
+          "format": "Arrow IPC+ZSTD",
+          "replay_events_per_second": 4969.002210043917,
+          "replay_hash": "8d5b466abbf5201ef4cade2fdfff39f6971bb020ed19beeca99db3b1f5539cee",
+          "total_bytes": 42669274,
+          "truncated_arrow_fails_closed": true,
+          "verification": {
+            "decimal_fidelity": true,
+            "deterministic_replay_equivalence": true,
+            "exact_round_trip": true,
+            "ordering": true,
+            "truncated_arrow_fails_closed": true,
+            "utc_microsecond_timestamp_fidelity": true
+          }
+        }
+      ],
+      "last_row_id": 1251327,
+      "records": 1018676
+    },
+    "sample_100000": {
+      "first_row_id": 232652,
+      "formats": [
+        {
+          "bytes_per_event": 23.07882,
+          "decode_events_per_second": 34616.593533210165,
+          "encode_events_per_second": 54234.29366751573,
+          "format": "JSONL+zlib",
+          "replay_events_per_second": 4842.919025464484,
+          "replay_hash": "d98cc51188b0227b10567d82ea0a90aac6405b71c879aa4fc33959540dd68a92",
+          "total_bytes": 2307882,
+          "verification": {
+            "decimal_fidelity": true,
+            "deterministic_replay_equivalence": true,
+            "exact_round_trip": true,
+            "ordering": true,
+            "utc_microsecond_timestamp_fidelity": true
+          }
+        },
+        {
+          "bytes_per_event": 42.12546,
+          "decode_events_per_second": 20986.2337861522,
+          "encode_events_per_second": 51273.17707855511,
+          "format": "Arrow IPC+ZSTD",
+          "replay_events_per_second": 4886.462052482554,
+          "replay_hash": "d98cc51188b0227b10567d82ea0a90aac6405b71c879aa4fc33959540dd68a92",
+          "total_bytes": 4212546,
+          "truncated_arrow_fails_closed": true,
+          "verification": {
+            "decimal_fidelity": true,
+            "deterministic_replay_equivalence": true,
+            "exact_round_trip": true,
+            "ordering": true,
+            "truncated_arrow_fails_closed": true,
+            "utc_microsecond_timestamp_fidelity": true
+          }
+        }
+      ],
+      "last_row_id": 332651,
+      "records": 100000
+    }
+  },
+  "snapshot": {
+    "name": "live15.sqlite3",
+    "sha256": "c5cb81ffcf6af78d51ec9ec32f3ec99e5c541dde70afeefc3faf9f85b1c64590"
+  },
+  "stream": {
+    "connection_id": "sdk-recorder-45e5600463d9451ba28d50a54562b865",
+    "first_row_id": 232652,
+    "last_row_id": 1251327,
+    "records": 1018676,
+    "subscription_id": 3
+  }
+}
