@@ -37,9 +37,11 @@ NAVIGATION / OWNER RESOLUTION
   -> FINAL DEEP CLEAN
 ```
 
-Apply Existing Owner First before selecting upstream. Do not use a big-bang rewrite, keep legacy
-and replacement owners actively evolving in parallel, or delete rollback/evidence before bounded
-replacement proof.
+Apply Owner Resolution First to identify the current authority, capability, implementation, and
+rollback boundary. For generic LIVE15-local infrastructure, that discovery does **not** create a
+retention preference: challenge the local owner through the mandatory Upstream Reuse First gate
+before deciding to repair or extend it. Do not use a big-bang rewrite, keep legacy and replacement
+owners actively evolving in parallel, or delete rollback/evidence before bounded replacement proof.
 
 ## Legacy freeze during migration
 
