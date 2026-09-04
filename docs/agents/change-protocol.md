@@ -21,7 +21,10 @@ Every coding task should make its boundary explicit before editing:
 7. Review the diff and secret/data boundary.
 8. Report facts, changed files, checks, blockers, and rollback/next steps.
 
-## Owner Resolution First
+## Existing Owner First
+
+Existing Owner First means **discover and classify before changing**, not **retain because it
+already exists**.
 
 Before proposing, designing, planning, or implementing a non-trivial component, manager, service,
 framework, abstraction, model layer, data path, controller, registry, dashboard, queue, scheduler,
@@ -49,7 +52,7 @@ The design decision must answer, in substance:
 - `EXISTING_PLAN_FOUND = YES/NO`
 - `RESPONSIBILITY_CLASS = DOMAIN_CORE / THIN_UPSTREAM_ADAPTER / GENERIC_LOCAL_INFRASTRUCTURE`
 - `GENERIC_LOCAL_OWNER_RETENTION_JUSTIFIED = YES/NO/N/A`
-- `WHY_EXISTING_OWNER_CAN_OR_CANNOT_BE_USED =`
+- `WHY_EXISTING_OWNER_CANNOT_BE_USED =`
 - `WHY_NEW_OWNER_IS_REQUIRED =`
 
 This is a mandatory decision boundary for non-trivial additions in both ChatGPT strategy work and
@@ -116,8 +119,8 @@ approved replacement is selected, run that bounded reversible path first and obs
 pre-debug the retiring machinery. If a concrete failure remains, diagnose its owner and consult
 only the targeted upstream evidence needed for the exact observed error text, API, or version.
 Perform the full Upstream Reuse First search below when
-selecting a new owner, deciding whether a generic local owner should be retained, or considering a
-new local implementation:
+selecting a new owner or considering a new local implementation. For an existing generic LIVE15-local
+owner, that same search is also mandatory before deciding to retain, repair, or extend it:
 
 1. official documentation, release notes, migration guides and maintained examples;
 2. the selected/pinned project's source, tests, changelog, Issues, Pull Requests and Discussions;
