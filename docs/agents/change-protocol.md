@@ -61,7 +61,7 @@ has one clear owner. Do not create B when A already owns the same responsibility
 keep repairing A when A is generic local machinery that a mature upstream owner can replace.
 
 For `DOMAIN_CORE` or a selected `THIN_UPSTREAM_ADAPTER`, reuse, extend, consolidate, or replace the
-current owner as appropriate. For `GENERIC_LOCAL_INFSTRUCTURE`, **Upstream Reuse First begins
+current owner as appropriate. For `GENERIC_LOCAL_INFRASTRUCTURE`, **Upstream Reuse First begins
 immediately after owner discovery, even when a local implementation already exists.** The local
 implementation is a migration source and rollback boundary, not evidence that it should remain.
 
