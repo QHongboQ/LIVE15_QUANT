@@ -483,17 +483,34 @@ def test_design_reference_index_is_recursive_and_non_current() -> None:
         assert legacy_root_name not in markdown_path.read_text(encoding="utf-8")
 
 
+def test_archive_design_reference_matches_resolved_bakeoff_and_retention_owner() -> None:
+    design = " ".join(read("docs/roadmap/COMMERCIAL_ARCHIVE_UPSTREAM_ASSEMBLY_001.md").split())
+    evidence = " ".join(read("docs/evidence/LIVE15_COMMERCIAL_STORAGE_BAKEOFF_001.md").split())
+    retention = read("src/live15_quant/ws_retention.py")
+
+    assert "Parquet + ZSTD ranked first" in design
+    assert "Arrow IPC is not the selected cold artifact" in design
+    assert "No S3/MinIO adoption decision has been made" in design
+    assert "Parquet + ZSTD | 19,876,538 | 19.51" in evidence
+    assert "This is not a deployment or an S3/MinIO decision" in evidence
+    assert "write_parquet_snapshot" in retention
+    assert "write_ipc_snapshot" not in retention
+
+
 def test_next_names_one_concrete_responsibility_class() -> None:
     roadmap = read("docs/project-brain/plan/current-roadmap.md")
+    assert roadmap.count("**NEXT:**") == 1
 
     next_section = roadmap.split("**NEXT:**", maxsplit=1)[1].split(
-        "Candidate-specific boundaries", maxsplit=1
+        "Vector telemetry remains deferred", maxsplit=1
     )[0]
-    assert "COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY" in next_section
-    assert "Arrow schema/IPC plus Zstandard" in next_section
-    assert "S3/MinIO" in next_section
-    assert "does not authorize Production mutation or training" in next_section
-    assert "Vector telemetry" not in next_section
+    normalized = " ".join(next_section.split())
+    assert "COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY" in normalized
+    assert "Runtime deployment gate" in normalized
+    assert "Recorder deploy Preview" in normalized
+    assert "Do not activate archive or purge during that gate" in normalized
+    assert "Arrow schema/IPC plus Zstandard" not in normalized
+    assert "S3/MinIO" not in normalized
 
 
 def test_web_reconciliation_preserves_completed_owner_while_archive_is_next() -> None:
