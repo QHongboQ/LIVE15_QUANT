@@ -32,7 +32,6 @@ from live15_quant.models import (
 from live15_quant.native_recorder import (
     KalshiNativeRecorder,
     PythFeedAvailability,
-    PythWorkerUnhealthyError,
     _aggregate_current_health,
     _BoundedEventRate,
     _PythFeedCircuitBreaker,
@@ -92,6 +91,16 @@ class FakeQuotes:
         self.quote_called.set()
         assert market.lifecycle is KalshiLifecycle.OPEN
         return quote(market.ticker, market.event_ticker, NOW)
+
+
+class ReleasedQuotes(FakeQuotes):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = threading.Event()
+
+    def quote_native(self, market):
+        assert self.release.wait(timeout=1), "timed out waiting to release the Kalshi quote"
+        return super().quote_native(market)
 
 
 class OneTickStream:
@@ -308,6 +317,70 @@ class PersistentlyFailingUnderlying:
 
     def close(self):
         return None
+
+
+class PersistentlyFailingUnderlyingFactory:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        return PersistentlyFailingUnderlying()
+
+
+class RecoveringPrimaryUnderlying:
+    def __init__(self) -> None:
+        self.allow_recovery = threading.Event()
+        self.primary_observed = threading.Event()
+        self.release_primary = threading.Event()
+        self.latest_calls = 0
+
+    @staticmethod
+    def batch() -> PythUpdateBatch:
+        return PythUpdateBatch(
+            tuple(
+                UnderlyingObservation(
+                    asset=asset,
+                    provider=UnderlyingProvider.PYTH_HERMES,
+                    symbol=symbol,
+                    feed_id=feed_id,
+                    price=Decimal("100"),
+                    source_timestamp=NOW,
+                    received_timestamp=NOW,
+                    confidence=None,
+                    provenance="official-test",
+                    freshness=FreshnessState.FRESH,
+                )
+                for asset, (symbol, feed_id) in PYTH_FEEDS.items()
+            )
+        )
+
+    def stream_batches(self, *, feed_ids=None):
+        del feed_ids
+        if not self.allow_recovery.is_set():
+            raise PythNetworkError("simulated Pyth stream failure")
+        self.primary_observed.set()
+        yield self.batch()
+        self.release_primary.wait(timeout=1)
+
+    def latest_batch(self, *, feed_ids=None):
+        del feed_ids
+        self.latest_calls += 1
+        raise PythNetworkError("simulated Pyth REST failure")
+
+    def close(self):
+        return None
+
+
+async def wait_for_worker_state(
+    recorder: KalshiNativeRecorder, key: str, expected: str
+) -> dict[str, object]:
+    for _ in range(200):
+        worker = recorder.health().worker_health.get(key)
+        if worker is not None and worker["current_state"] == expected:
+            return worker
+        await asyncio.sleep(0.001)
+    raise AssertionError(f"worker {key!r} did not reach {expected!r}")
 
 
 def discovery() -> KalshiDiscovery:
@@ -781,9 +854,10 @@ def test_pyth_programming_error_fails_recorder_loudly(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_pyth_prolonged_failure_escalates_after_bounded_recovery(tmp_path) -> None:
+def test_pyth_prolonged_failure_remains_unhealthy_and_retries_until_stopped(tmp_path) -> None:
     async def scenario() -> None:
         with RecorderStore(tmp_path / "native.sqlite3") as store:
+            factory = PersistentlyFailingUnderlyingFactory()
             recorder = KalshiNativeRecorder(
                 Settings(
                     products=("BTC-USD",),
@@ -797,15 +871,147 @@ def test_pyth_prolonged_failure_escalates_after_bounded_recovery(tmp_path) -> No
                 discovery=FakeDiscovery(()),
                 quotes=FakeQuotes(),
                 coinbase_factory=OneTickStream,
+                underlying_factory=factory,
+                now=lambda: NOW,
+            )
+            task = asyncio.create_task(recorder._record_pyth())
+            try:
+                worker = await wait_for_worker_state(recorder, "pyth", "UNHEALTHY")
+                attempts_at_unhealthy = factory.calls
+                assert not task.done()
+                assert worker["last_progress_timestamp"] is None
+                assert worker["last_successful_observation_timestamp"] is None
+                assert worker["consecutive_failures"] >= 2
+                next_retry_at = worker["next_retry_at"]
+                assert isinstance(next_retry_at, str)
+                assert next_retry_at > NOW.isoformat()
+                health = recorder.health()
+                assert "pyth" not in health.worker_progress
+                assert health.source_failures["pyth:stream"] == "PythNetworkError"
+                assert health.source_failures["pyth:rest_fallback"] == "PythNetworkError"
+                assert health.as_dict()["status"] == "degraded"
+                for _ in range(100):
+                    if factory.calls > attempts_at_unhealthy:
+                        break
+                    await asyncio.sleep(0.001)
+                assert factory.calls > attempts_at_unhealthy
+            finally:
+                recorder.request_stop()
+                result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+            assert result == [None]
+
+    asyncio.run(scenario())
+
+
+def test_pyth_prolonged_failure_does_not_stop_recorder(tmp_path) -> None:
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            quotes = ReleasedQuotes()
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    enable_pyth_underlying=True,
+                    pyth_rest_fallback_interval_seconds=0.001,
+                    pyth_recovery_critical_timeout_seconds=0.001,
+                    pyth_recovery_max_attempts=2,
+                    recorder_health_path=tmp_path / "health.json",
+                ),
+                store,
+                discovery=FakeDiscovery((discovery(),)),
+                quotes=quotes,
+                coinbase_factory=OneTickStream,
                 underlying_factory=PersistentlyFailingUnderlying,
                 now=lambda: NOW,
             )
-            with pytest.raises(PythWorkerUnhealthyError, match="exhausted bounded recovery"):
-                await asyncio.wait_for(recorder._record_pyth(), 1)
-            worker = recorder.health().worker_health["pyth"]
-            assert worker["current_state"] == "UNHEALTHY"
-            assert worker["last_successful_observation_timestamp"] is None
-            assert worker["consecutive_failures"] >= 2
+            task = asyncio.create_task(recorder.run())
+            try:
+                await wait_for_worker_state(recorder, "pyth", "UNHEALTHY")
+                quotes.release.set()
+                await wait_for_thread_event(
+                    quotes.quote_called, "Kalshi quote after Pyth became unhealthy"
+                )
+                for _ in range(100):
+                    if Asset.BTC in recorder.health().last_quotes:
+                        break
+                    await asyncio.sleep(0.001)
+                await asyncio.sleep(0)
+                assert not task.done()
+                assert recorder.health().fatal_task is None
+                assert recorder.health().last_quotes[Asset.BTC] == NOW
+            finally:
+                recorder.request_stop()
+                result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+            assert result == [None]
+
+    asyncio.run(scenario())
+
+
+def test_real_pyth_observation_recovers_unhealthy_worker(tmp_path) -> None:
+    source = RecoveringPrimaryUnderlying()
+
+    async def scenario() -> None:
+        with RecorderStore(tmp_path / "native.sqlite3") as store:
+            recorder = KalshiNativeRecorder(
+                Settings(
+                    products=("BTC-USD",),
+                    enable_pyth_underlying=True,
+                    pyth_rest_fallback_interval_seconds=0.01,
+                    pyth_recovery_critical_timeout_seconds=0.001,
+                    pyth_recovery_max_attempts=2,
+                    recorder_health_path=tmp_path / "health.json",
+                ),
+                store,
+                discovery=FakeDiscovery(()),
+                quotes=FakeQuotes(),
+                coinbase_factory=OneTickStream,
+                underlying_factory=lambda: source,
+                now=lambda: NOW,
+            )
+            task = asyncio.create_task(recorder._record_pyth())
+            try:
+                unhealthy = await wait_for_worker_state(recorder, "pyth", "UNHEALTHY")
+                assert unhealthy["last_progress_timestamp"] is None
+                assert unhealthy["last_successful_observation_timestamp"] is None
+                assert recorder.health().source_failures["pyth:rest_fallback"] == (
+                    "PythNetworkError"
+                )
+                fallback_attempts = source.latest_calls
+                source.allow_recovery.set()
+                await wait_for_thread_event(
+                    source.primary_observed, "real primary Pyth observation"
+                )
+                healthy = await wait_for_worker_state(recorder, "pyth", "HEALTHY")
+                assert healthy["last_progress_timestamp"] == NOW.isoformat()
+                assert healthy["last_successful_observation_timestamp"] == NOW.isoformat()
+                assert healthy["consecutive_failures"] == 0
+                assert healthy["next_retry_at"] is None
+                assert source.latest_calls == fallback_attempts
+                health = recorder.health()
+                assert "pyth:stream" not in health.source_failures
+                assert "pyth:rest_fallback" not in health.source_failures
+                assert (
+                    "source_failure:pyth:rest_fallback"
+                    not in health.as_dict()["current_health_issues"]
+                )
+                pyth_stale_sources = tuple(
+                    source for source in health.stale_sources if source.startswith("pyth:")
+                )
+                pyth_stale_workers = tuple(
+                    worker for worker in health.stale_workers if worker == "pyth"
+                )
+                status, issues = _aggregate_current_health(
+                    integrity=health.integrity,
+                    source_failures=health.source_failures,
+                    stale_sources=pyth_stale_sources,
+                    stale_workers=pyth_stale_workers,
+                )
+                assert status == "healthy"
+                assert issues == []
+            finally:
+                source.release_primary.set()
+                recorder.request_stop()
+                result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+            assert result == [None]
 
     asyncio.run(scenario())
 
