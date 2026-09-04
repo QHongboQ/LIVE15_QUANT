@@ -9,73 +9,53 @@ The sole current execution-sequence authority.
 
 ## Current truth
 
-`GAP002` is **CLOSED / PASS**. Its first Production FAIL and repaired second Production PASS remain
-immutable evidence; the temporary GAP002 Phase 1/2/3/4A/4B/5 structure is historical and does not
-direct future work.
+`GAP002` is **CLOSED / PASS**. Its Production FAIL/PASS receipts remain immutable evidence; the old
+GAP002 phase structure is historical and does not direct future work.
 
 Normal feature/model expansion is temporarily paused. The sole current mainline is:
 
 ```text
 GAP002 CLOSED
   -> Project Brain authority consolidation COMPLETE
+  -> upstream-consolidation freeze
   -> Runtime/Lifecycle consolidation COMPLETE / VERIFIED
   -> Web Application Shell COMPLETE / VERIFIED
-  -> storage/archive capacity problem reprioritized execution
-  -> commercial storage bakeoff COMPLETE
-       Parquet + ZSTD selected for verified cold archive packaging
-       Arrow IPC prototype/bakeoff is historical evidence, not the selected Production cold format
-  -> Parquet HOT->COLD closed loop MERGED
-       semantic digest + deterministic replay verification + manifest state + bounded purge gates retained
-  -> named multi-root archive layout MERGED
-       centralized manifest; one active writer root; historical roots fail closed
-  -> Production Parquet Phase 1 attempt STOPPED safely before mutation
-       historical PR #159 is a stop receipt only; HOT rows deleted = 0
-  -> Runtime/deploy blocker RESOLVED in PR #167
-       immutable runtime revisions; complete Production dependency closure; native Nomad start/revert ownership
-  -> CURRENT NEXT: prepare and verify the immutable Production runtime, then perform a separately authorized
-       Nomad Recorder rollout and verify the single-writer/heartbeat/WS/no-drop gates
-  -> retire WTI completely as its own narrow task/PR (10 assets -> 9; no compatibility layer)
-  -> rerun fresh PARQUET-PRODUCTION-ACCEPTANCE-PHASE1-002 while Recorder remains RUNNING
-       one bounded historical unit -> Parquet+ZSTD -> semantic/replay verify -> VERIFIED/PURGE_ELIGIBLE
+  -> storage/archive capacity problem reprioritizes execution
+  -> COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY = CURRENT RESPONSIBILITY
+       PR #157 bakeoff COMPLETE: Parquet + ZSTD selected
+       PR #158 HOT->COLD closed loop MERGED; Production activation still disabled
+       PR #160 named multi-root archive layout MERGED
+       PR #159 = historical safe-stop receipt only; HOT rows deleted = 0
+       PR #167 = Runtime/deploy blocker resolved in code; host rollout still pending
+       immediate gate: prepare/verify immutable Production Runtime, then separately authorize
+       Nomad Recorder rollout and verify single-writer/heartbeat/WS/no-drop
+       next narrow gate: retire WTI completely 10 -> 9, no compatibility layer
+       then fresh PARQUET-PRODUCTION-ACCEPTANCE-PHASE1-002 with Recorder RUNNING
        STOP BEFORE PURGE; PRODUCTION HOT ROWS DELETED = 0
-  -> only after separate human authorization may a tiny bounded Production purge be evaluated
   -> Vector telemetry remains deferred
   -> resume data/training/model progression under existing gates
 ```
 
-The Project Brain authority-consolidation step is complete as a governance/status closeout; it was
-not an upstream replacement. Runtime/Lifecycle consolidation is complete and verified: Recorder,
-ControlCenter, and `kalshi_sdk_ws_shadow` are Nomad-managed; `pyth` and `coinbase` remain
-in-process Recorder workers; RuntimeSupervisor and the managed `paper_forward` wrapper are retired.
-Cold-boot proof passed and no dual owner remains.
+The archive responsibility is no longer at candidate-selection stage. Parquet + ZSTD is the selected
+verified cold format; Arrow IPC is retained only as benchmark/prototype history. Existing LIVE15
+semantic digest, deterministic replay verification, manifest state, contiguous-range purge
+authorization, restart recovery, and fail-closed storage behavior remain mandatory.
 
-The Web Application Shell replacement is **COMPLETE / VERIFIED**. React Admin + Material UI owns the
-packaged ControlCenter terminal; the legacy handwritten shell is retired. FastAPI typed domain
-projections, Recorder truth, settlement truth, training truth, Hard Risk, and Production authorization
-remain LIVE15-owned.
+PR #167 replaced movable-venv promotion/custom recovery with immutable runtime revisions and native
+Nomad lifecycle ownership. `MERGED != DEPLOYED`: Runtime preparation and Recorder rollout remain a
+gate inside the archive/package responsibility because Production Parquet acceptance requires the
+PyArrow-capable runtime. Runtime preparation must not stop Recorder; rollout is separately reviewed.
 
-The storage/archive responsibility is no longer at candidate-selection stage. The bounded commercial
-bakeoff in PR #157 selected Parquet + ZSTD for the verified cold path; PR #158 merged the Production-capable
-Parquet closed loop while leaving activation disabled; PR #160 added named multi-root storage. The earlier
-Arrow IPC direction is retained only as benchmark/prototype history and must not be treated as the current
-selected cold format.
+PR #159 must not be merged or extended as the current execution branch. After Runtime rollout is
+verified, WTI retirement is a separate narrow task, followed by a fresh Phase1-002 from current main.
 
-PR #159 is historical evidence of a correctly stopped first Production acceptance attempt. It predates the
-later runtime/deploy work and must not be merged or extended as the current execution branch. A fresh Phase
-1 acceptance must start from current `main` after the runtime rollout and WTI retirement gates are closed.
+**NEXT:** advance the bounded **COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY** responsibility by
+closing its current Runtime deployment gate: prepare/verify the immutable Production Runtime, then
+run Recorder deploy Preview and a separately authorized rollout/verification. Do not activate archive
+or purge during that gate. WTI retirement and fresh Phase1-002 follow as separate narrow tasks.
 
-PR #167 replaced movable-venv promotion and custom lifecycle recovery with immutable runtime revisions plus
-native Nomad lifecycle ownership. Runtime preparation is non-disruptive; it does not require stopping the
-Recorder. A running workload changes runtime only through a separately reviewed Nomad deployment. `MERGED`
-does not mean the new runtime has been prepared or deployed on the host.
-
-**NEXT:** execute the runtime preparation/verification sequence from the runtime authority, then a separately
-authorized Recorder deployment Preview/Apply/verification. Do not activate archive or purge during this
-step. After runtime deployment verification, retire WTI as its own narrow responsibility before starting a
-fresh `PARQUET-PRODUCTION-ACCEPTANCE-PHASE1-002`.
-
-Vector telemetry remains a deferred later candidate. This roadmap does not authorize Production purge,
-training, holdout access, Hard Risk changes, or trading writes.
+Vector telemetry remains deferred. This roadmap does not authorize Production purge, training,
+holdout access, Hard Risk changes, or trading writes.
 
 ## Interfaces / dependencies
 
@@ -87,8 +67,8 @@ training, holdout access, Hard Risk changes, or trading writes.
 
 ## Read next
 
-Use the selected capability and constraint authority before executing a phase. For the immediate next step,
-read `dependencies/platform/runtime-ownership.md` before any host Runtime/Recorder action.
+Use the selected capability/constraint authority before executing a gate. For the immediate Runtime
+gate, read `dependencies/platform/runtime-ownership.md` before any host Runtime/Recorder action.
 
 ## Update rule
 
@@ -106,5 +86,5 @@ Update only when an approved phase, freeze, or gate changes.
 | R6 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 closeout | Completed authority consolidation and selected runtime/lifecycle consolidation as the one concrete next responsibility class. |
 | R7 | RUNTIME-LIFECYCLE-CONSOLIDATION-CLOSEOUT-001 | Recorded verified Nomad/SCM lifecycle adoption, RuntimeSupervisor retirement, and the Web Application Shell as the next generic replacement class. |
 | R8 | PROJECT-BRAIN-POST-WEB-RECONCILIATION-001 | Recorded the complete/verified Web Application Shell replacement and selected Vector telemetry as the next generic replacement responsibility. |
-| R9 | STORAGE-ARCHIVE-REPRIORITIZATION-001 | Reprioritized current execution to the storage/archive packaging responsibility after the storage-capacity problem emerged. |
-| R10 | PROJECT-BRAIN-STORAGE-RUNTIME-RECONCILE-001 | Reconciled PRs #157/#158/#160/#167: Parquet+ZSTD is selected and implemented, the first Production acceptance remains a historical stop receipt, and the immediate next gate is immutable Runtime preparation/Recorder rollout before WTI retirement and fresh Phase1-002. |
+| R9 | STORAGE-ARCHIVE-REPRIORITIZATION-001 | Reprioritized current execution to storage/archive packaging after the capacity problem emerged. |
+| R10 | PROJECT-BRAIN-STORAGE-RUNTIME-RECONCILE-001 | Reconciled PRs #157/#158/#160/#167: Parquet+ZSTD is selected/implemented, #159 is historical stop evidence, and the archive mainline now closes Runtime rollout, WTI retirement, then fresh Phase1-002. |
