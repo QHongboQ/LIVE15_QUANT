@@ -177,7 +177,7 @@ class _BoundedEventRate:
 
 
 class PythWorkerUnhealthyError(RuntimeError):
-    """A critical Pyth worker exhausted its bounded recovery budget."""
+    """The Pyth worker exhausted its bounded recovery budget."""
 
 
 class PythFeedAvailability(StrEnum):
@@ -1173,7 +1173,6 @@ class KalshiNativeRecorder:
             {
                 "current_state": "UNHEALTHY",
                 "last_error_type": type(error).__name__,
-                "next_retry_at": None,
             }
         )
 
@@ -1987,7 +1986,7 @@ class KalshiNativeRecorder:
                 return
 
     async def _record_pyth(self) -> None:
-        """Use bounded stream recreation and REST fallback for the critical Pyth worker."""
+        """Use bounded stream recreation and REST fallback for the Pyth worker."""
 
         demultiplexer = PythFeedDemultiplexer()
         circuit = _PythFeedCircuitBreaker(
@@ -2019,6 +2018,7 @@ class KalshiNativeRecorder:
                             )
                             if accepted_observations:
                                 self._source_ok(stream_key)
+                                self._source_ok("pyth:rest_fallback")
                                 self._worker_observed("pyth")
                                 outage_started = self._monotonic()
                                 recovery_attempts = 0
@@ -2077,12 +2077,11 @@ class KalshiNativeRecorder:
                         )
                         self._worker_retry("pyth", error, delay)
                         if self._pyth_recovery_exhausted(outage_started, recovery_attempts):
-                            fatal = PythWorkerUnhealthyError(
+                            unhealthy = PythWorkerUnhealthyError(
                                 "Pyth worker exhausted bounded recovery "
                                 "without accepted observations"
                             )
-                            self._worker_unhealthy("pyth", fatal)
-                            raise fatal
+                            self._worker_unhealthy("pyth", unhealthy)
                         if await self._wait(delay):
                             return
                 finally:
