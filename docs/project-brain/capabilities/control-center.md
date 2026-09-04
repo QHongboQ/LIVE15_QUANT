@@ -1,7 +1,7 @@
 # ControlCenter
 
-Revision: R4
-Status: Nomad-owned, verified.
+Revision: R5
+Status: recovery required; current host ownership not reconciled.
 
 ## What it is
 
@@ -9,9 +9,15 @@ The read-oriented ControlCenter exposes truthful status and health projections.
 
 ## Current truth
 
-`CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED`. Nomad owns ControlCenter; the stopped WinSW definition is
-rollback only. That cutover did not itself authorize Recorder migration; Recorder lifecycle was
-later migrated and is now resolved through the separate runtime-ownership authority.
+The ControlCenter Nomad cutover and Web Application Shell are merged historical implementation and
+cutover facts, not current host operational verification. The [full-system audit receipt](../../evidence/LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md) found that the main
+`live15-control-center` Nomad job is not proven running, the legacy WinSW service is stopped and its
+start path fails, and the desktop launcher still targets the legacy 127.0.0.1:8765 path. Current Web
+operational status is therefore **BLOCKED / RECOVERY REQUIRED** until one lifecycle owner, desktop
+entry, listener, deployed release identity, and host acceptance result are reconciled.
+
+Do not rewrite historical cutover receipts. A future `CONTROL-CENTER-OWNERSHIP-RECOVERY` task follows
+independent Recorder/Pyth recovery verification.
 
 The packaged React terminal is the sole ControlCenter web owner. The handwritten legacy Web shell
 is retired and is not a source-level fallback. A rollback after deployed cutover uses the prior
@@ -74,3 +80,4 @@ Update only after an approved ControlCenter ownership, retirement, or health-con
 | R2 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Removed the stale implication that Recorder remained outside Nomad ownership. |
 | R3 | WEB-CUTOVER-CLEANUP-AND-RETIRED-SURFACE-001 | Retired the legacy handwritten Web shell and recorded immutable-release rollback. |
 | R4 | WEB-REALTIME-HISTORY-PROJECTION-001 | Made synchronized Recorder WS books primary, added local subscriptions and bounded current-contract/forward account history, and recorded visibility-aware query lifecycle. |
+| R5 | PROJECT-RECOVERY-FREEZE-001 | Downgraded current operational verification after the host audit while preserving historical Nomad cutover and Web-shell implementation evidence. |

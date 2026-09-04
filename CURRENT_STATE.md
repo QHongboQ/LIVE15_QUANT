@@ -6,33 +6,43 @@ This file holds stable workstream orientation only. Runtime facts come from curr
 
 ## Current phase
 
-**Upstream-consolidation freeze with storage/archive Production-acceptance preparation.** GAP002 is closed/pass. Runtime/Lifecycle consolidation and the Web Application Shell replacement are **COMPLETE / VERIFIED**. The current responsibility remains **COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY**.
+**STABILIZATION / RECOVERY FREEZE.** GAP002 remains closed/pass, but normal feature, archive, WTI,
+runtime-rollout, and model progression is on HOLD while two independent Production blockers are
+recovered. The sole current responsibility is **RECORDER-PYTH-CRITICALITY-RECOVERY**.
 
-Storage selection has advanced: PR #157 selected **Parquet + ZSTD**; PR #158 merged the verified HOT->COLD closed loop; PR #160 merged named multi-root storage. PR #159 is historical safe-stop evidence only and deleted no HOT rows. PR #167 resolved the Runtime/deploy blocker in code, but `MERGED != DEPLOYED`: host Runtime/Recorder rollout remains separately gated.
-
-The archive mainline's immediate gate is immutable Runtime preparation/verification followed by a separately authorized Nomad Recorder rollout. Then WTI is retired 10->9 as its own task before fresh Parquet Phase1-002 with Recorder running and STOP BEFORE PURGE. Vector telemetry remains a deferred later candidate; training remains blocked by its existing gates.
+The [audit receipt](docs/evidence/LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md) proved that a complete Pyth transport outage can exhaust bounded recovery,
+terminate the whole Recorder, and trigger a recurring Nomad restart even while Kalshi re-synchronizes.
+It also proved that current ControlCenter Nomad ownership and the desktop Web launch path are not
+reconciled with host reality. Immutable Runtime preparation succeeded but was disproven as the root
+cause of the Recorder loop.
 
 ## Workstream orientation
 
 | Area | State | Authoritative source |
 | --- | --- | --- |
 | Kalshi WS / DataGap reliability | **CLOSED / PASS** | `PROJECT_PROGRESS.md` |
-| Commercial archive/package | **PLANNED / NEXT** | `docs/project-brain/plan/current-roadmap.md` |
+| Stabilization / recovery | **CURRENT / RECOVERY FREEZE** | `docs/project-brain/plan/current-roadmap.md` |
+| Recorder / Pyth criticality | **BLOCKER / SOLE NEXT** | Recorder authority; current roadmap |
+| ControlCenter / Web ownership | **BLOCKER / RECOVERY REQUIRED** | ControlCenter authority; current roadmap |
+| Host Production acceptance | **REQUIRED / AFTER RECOVERY-2** | current roadmap |
+| Commercial archive/package | **HOLD / NORMAL PROGRESSION PAUSED** | `docs/project-brain/plan/current-roadmap.md` |
 | Cold format | **PARQUET+ZSTD SELECTED / MERGED** | PRs #157/#158 |
 | Named multi-root archive layout | **MERGED** | PR #160 |
-| Production Parquet acceptance | **PENDING FRESH PHASE1-002** | current roadmap; PR #159 historical only |
-| Runtime deployment simplification | **MERGED / HOST ROLLOUT PENDING** | runtime authority; PR #167 |
-| WTI retirement | **PLANNED / BEFORE PHASE1-002** | current roadmap |
+| Production Parquet acceptance | **HOLD / AFTER RECOVERY FREEZE** | current roadmap; PR #159 historical only |
+| Runtime deployment simplification | **MERGED / PRESERVED / ROLLOUT HOLD** | runtime authority; PR #167 |
+| WTI retirement | **HOLD / AFTER STABILITY OBSERVATION** | current roadmap |
 | Archive/purge throughput | **CAPACITY PROBLEM / SAFETY GATES PRESERVED** | Recorder throughput authority |
-| Runtime/Lifecycle consolidation | **COMPLETE / VERIFIED** | runtime authority |
-| Web Application Shell | **COMPLETE / VERIFIED** | ControlCenter authority |
+| Runtime/Lifecycle consolidation | **CODE/MIGRATION MERGED; RECORDER RECOVERY REQUIRED** | runtime and Recorder authorities |
+| Web Application Shell | **CODE/MIGRATION MERGED; HOST OWNERSHIP NOT RECONCILED** | ControlCenter authority |
 | Vector telemetry | **DEFERRED / LATER CANDIDATE** | upstream replacement matrix |
 | Dataset/model promotion | **BLOCKED BY EXISTING GATES** | model authorities |
 | Hard Risk / Production writes | **HUMAN-AUTHORIZED ONLY** | `PROJECT_CHARTER.md`, `AGENTS.md` |
 
 ## Current limits
 
-`MERGED != DEPLOYED`; `DEPLOYED != VERIFIED`. Runtime preparation does not authorize Recorder rollout; Recorder rollout does not authorize archive activation; acceptance does not authorize purge. Training, holdout access, Hard Risk changes, and trading writes remain outside this lane.
+`MERGED != DEPLOYED`; `DEPLOYED != VERIFIED`. The recovery freeze does not authorize a Recorder
+restart, ControlCenter restart, Nomad deployment, runtime rollout, archive activation, purge,
+training, holdout access, Hard Risk changes, or trading writes.
 
 ## Current execution route
 

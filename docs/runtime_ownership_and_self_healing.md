@@ -10,15 +10,19 @@ The machine-readable counterpart is [`deploy/windows/runtime-ownership.json`](..
 
 Current component owner, process source, health truth, and restart authority values are owned only
 by `deploy/windows/runtime-ownership.json`; this narrative does not duplicate that registry.
-Recorder, ControlCenter, and `kalshi_sdk_ws_shadow` resolve to Nomad lifecycle ownership.
-RuntimeSupervisor is retired and old supervisor receipts are stale telemetry, never current process
-authority. In-process workers escalate only through their registered parent/restart authority.
+Recorder and `kalshi_sdk_ws_shadow` resolve to Nomad lifecycle ownership. The ControlCenter registry
+entry is the intended Nomad ownership model, not proof of current host operation: current host
+ownership, desktop launch, listener, and deployed identity are **BLOCKED / RECOVERY REQUIRED** in the
+ControlCenter authority. RuntimeSupervisor is retired and old supervisor receipts are stale telemetry,
+never current process authority. In-process workers escalate only through their registered parent/
+restart authority.
 
 ## Service packaging
 
-Nomad owns lifecycle for Recorder, ControlCenter, and `kalshi_sdk_ws_shadow`. Shared WinSW
-bootstrap metadata may remain for bounded retained artifacts, but it does not create a current
-process or restart owner.
+Nomad owns lifecycle for Recorder and `kalshi_sdk_ws_shadow`. The historical ControlCenter Nomad
+cutover is retained implementation evidence, but its current host lifecycle owner is not reconciled.
+Shared WinSW bootstrap metadata may remain for bounded retained artifacts, but it does not create a
+current process or restart owner.
 
 ## Worker recovery
 
@@ -49,6 +53,7 @@ process. `kalshi_sdk_ws_shadow` is Nomad-managed.
 
 ## Migration / deployment boundary
 
-Verified ControlCenter and Recorder Nomad ownership is represented in the machine-readable registry
-and bounded deployment evidence. Runtime ownership changes do not transfer Recorder truth,
-Production execution, Hard Risk, or trading authorization to the scheduler.
+Recorder Nomad ownership and historical ControlCenter cutover are represented in the machine-readable
+registry and bounded deployment evidence. The latter is not current ControlCenter host acceptance.
+Runtime ownership changes do not transfer Recorder truth, Production execution, Hard Risk, or trading
+authorization to the scheduler.

@@ -1,6 +1,6 @@
 # Runtime ownership
 
-Revision: R7
+Revision: R8
 Status: machine-readable authority retained.
 
 ## What it is
@@ -9,10 +9,16 @@ Maps process/service ownership, health truth, and restart authority.
 
 ## Current truth
 
-`deploy/windows/runtime-ownership.json` remains the machine-readable authority. ControlCenter,
-Recorder, and the verified `kalshi_sdk_ws_shadow` lifecycle are Nomad-managed. RuntimeSupervisor
-is fully retired and has no current registry entry. Recorder domain truth remains owned by the
-Recorder authority leaf, not by Nomad.
+`deploy/windows/runtime-ownership.json` remains the machine-readable ownership authority. Recorder
+and the verified `kalshi_sdk_ws_shadow` lifecycle are Nomad-managed; RuntimeSupervisor is fully
+retired and has no current registry entry. Recorder domain truth remains owned by the Recorder
+authority leaf, not by Nomad.
+
+The ControlCenter registry entry records the intended Nomad ownership model, not a current host
+operational verification. The [full-system audit receipt](../../../evidence/LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md) found the main ControlCenter Nomad job unproven and
+the desktop Web entry broken. Current ControlCenter host ownership is therefore routed to its
+capability authority for recovery; this does not rewrite historical cutover evidence or alter the
+machine-readable registry in this governance task.
 
 `current_trainable` is a mutable checkpointed materializer/training projection owned through the
 model/data authorities; it is not a RuntimeSupervisor process and has no runtime-process registry
@@ -105,3 +111,4 @@ first when machine-readable ownership changes.
 | R5 | RUNTIME-PAPER-FORWARD-WRAPPER-RETIREMENT-001 | Retired the paper wrapper and removed stale Supervisor child ownership; RuntimeSupervisor is now a zero-responsibility legacy boundary. |
 | R6 | RUNTIME-SUPERVISOR-FINAL-REPOSITORY-CLEANUP-001 | Retired the final host service and removed RuntimeSupervisor from current repository ownership. |
 | R7 | RUNTIME-DEPLOY-SIMPLIFICATION-001 | Replaced movable-venv promotion and custom lifecycle recovery with immutable runtime revisions plus native Nomad deployment/start/revert ownership; required exact Production dependency closure. |
+| R8 | PROJECT-RECOVERY-FREEZE-001 | Distinguished the declared ControlCenter Nomad ownership model from current host operational verification after the full-system audit. |

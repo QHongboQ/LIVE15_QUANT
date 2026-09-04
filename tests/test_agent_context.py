@@ -148,10 +148,13 @@ def test_authority_leaves_preserve_moved_current_truth() -> None:
     boundary = read("docs/project-brain/constraints/execution/runtime-upstream-boundary.md")
     legacy_receipt = read("docs/project-brain/status/legacy-runtime-receipt.md")
 
-    assert "CONTROL_CENTER_NOMAD_CUTOVER = VERIFIED" in control_center
-    assert "rollback only" in control_center
-    assert "did not itself authorize Recorder migration" in control_center
-    assert "separate runtime-ownership authority" in control_center
+    assert "merged historical implementation and\ncutover facts" in control_center
+    assert (
+        "Current Web\noperational status is therefore **BLOCKED / RECOVERY REQUIRED**"
+        in control_center
+    )
+    assert "future `CONTROL-CENTER-OWNERSHIP-RECOVERY` task follows" in control_center
+    assert "packaged React terminal is the sole ControlCenter web owner" in control_center
     assert "Recorder process lifecycle is Nomad-owned" in recorder_truth
     assert "ST-005" in throughput and "60-minute proof" in throughput
     assert "standalone `ST-005` custom-throughput optimization task is retired" in throughput
@@ -163,15 +166,15 @@ def test_authority_leaves_preserve_moved_current_truth() -> None:
     assert "Holdout-contamination remediation/replacement" in training
     assert "KalshiGateway / immutable adapter" in software
     assert (
-        "ControlCenter,\nRecorder, and the verified `kalshi_sdk_ws_shadow` lifecycle are "
-        "Nomad-managed" in runtime
+        "Recorder\nand the verified `kalshi_sdk_ws_shadow` lifecycle are Nomad-managed" in runtime
     )
+    assert "intended Nomad ownership model, not a current host\noperational verification" in runtime
     assert "Production writes remain disabled" in boundary
     assert "all three WinSW services running" in legacy_receipt
     assert "no current-main deployment claim" in legacy_receipt
 
 
-def test_current_roadmap_remains_the_only_sequence_authority() -> None:
+def test_current_roadmap_remains_the_only_recovery_sequence_authority() -> None:
     state = read("CURRENT_STATE.md")
     roadmap = read("docs/project-brain/plan/current-roadmap.md")
     progress = read("PROJECT_PROGRESS.md")
@@ -181,15 +184,11 @@ def test_current_roadmap_remains_the_only_sequence_authority() -> None:
     assert "current-roadmap.md" in state and "current-roadmap.md" in progress
     for expected in (
         "GAP002` is **CLOSED / PASS**",
-        "Normal feature/model expansion is temporarily paused",
-        "upstream-consolidation freeze",
-        "Project Brain authority consolidation COMPLETE",
-        "Runtime/Lifecycle consolidation COMPLETE / VERIFIED",
-        "Web Application Shell COMPLETE / VERIFIED",
-        (
-            "**NEXT:** advance the bounded "
-            "**COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY** responsibility"
-        ),
+        "Normal feature, archive, and WTI progression is frozen",
+        "RECORDER-PYTH-CRITICALITY-RECOVERY = FIRST BLOCKER",
+        "immutable Runtime preparation is not its\nroot cause",
+        "Historical implementation and cutover receipts remain evidence",
+        "**NEXT:** **RECORDER-PYTH-CRITICALITY-RECOVERY**",
     ):
         assert expected in roadmap
     current_roadmap = roadmap.split("## Change log", maxsplit=1)[0]
@@ -442,7 +441,10 @@ def test_compact_progress_has_only_current_or_future_gated_rows() -> None:
         "## Planning route", maxsplit=1
     )[0]
 
-    assert "| COMMERCIAL-ARCHIVE-PACKAGE-UPSTREAM-ASSEMBLY | PLANNED / NEXT |" in active
+    assert "| RECORDER-PYTH-CRITICALITY-RECOVERY | PLANNED / SOLE_NEXT |" in active
+    assert "| CONTROL-CENTER-OWNERSHIP-RECOVERY | PLANNED / AFTER_RECORDER |" in active
+    assert "| COMMERCIAL-ARCHIVE-PACKAGE-UPSTREAM-ASSEMBLY | HOLD / RECOVERY_FREEZE |" in active
+    assert "| WTI-RETIREMENT | HOLD / AFTER_STABILITY_OBSERVATION |" in active
     assert "| VECTOR-TELEMETRY | DEFERRED / LATER |" in active
     assert "| WEB-APPLICATION-SHELL | PLANNED / NEXT |" not in active
     assert "| TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED |" in active
@@ -502,32 +504,40 @@ def test_next_names_one_concrete_responsibility_class() -> None:
     assert roadmap.count("**NEXT:**") == 1
 
     next_section = roadmap.split("**NEXT:**", maxsplit=1)[1].split(
-        "Vector telemetry remains deferred", maxsplit=1
+        "## Interfaces / dependencies", maxsplit=1
     )[0]
     normalized = " ".join(next_section.split())
-    assert "COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY" in normalized
-    assert "Runtime deployment gate" in normalized
-    assert "Recorder deploy Preview" in normalized
-    assert "Do not activate archive or purge during that gate" in normalized
-    assert "Arrow schema/IPC plus Zstandard" not in normalized
-    assert "S3/MinIO" not in normalized
+    assert "RECORDER-PYTH-CRITICALITY-RECOVERY" in normalized
+    assert "complete Pyth outage" in normalized
+    assert "no fake freshness" in normalized
+    assert "no silent substitution" in normalized
+    assert "Kalshi truth" in normalized
+    assert "COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY" not in normalized
 
 
-def test_web_reconciliation_preserves_completed_owner_while_archive_is_next() -> None:
+def test_web_reconciliation_preserves_historical_implementation_while_recovery_is_next() -> None:
     progress = read("PROJECT_PROGRESS.md")
     state = read("CURRENT_STATE.md")
     control_center = read("docs/project-brain/capabilities/control-center.md")
     replacement_matrix = read("docs/roadmap/UPSTREAM_REPLACEMENT_MATRIX_001.md")
 
-    assert "| WEB-APPLICATION-SHELL | COMPLETE / VERIFIED |" in progress
-    assert "| COMMERCIAL-ARCHIVE-PACKAGE-UPSTREAM-ASSEMBLY | PLANNED / NEXT |" in progress
+    assert "| WEB-APPLICATION-SHELL | MERGED / HISTORICAL_IMPLEMENTATION_COMPLETE |" in progress
+    assert "| RECORDER-PYTH-CRITICALITY-RECOVERY | PLANNED / SOLE_NEXT |" in progress
+    assert "| COMMERCIAL-ARCHIVE-PACKAGE-UPSTREAM-ASSEMBLY | HOLD / RECOVERY_FREEZE |" in progress
     assert "| VECTOR-TELEMETRY | DEFERRED / LATER |" in progress
-    assert "Web Application Shell replacement are **COMPLETE / VERIFIED**" in state
-    assert "**COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY**" in state
-    assert "Vector telemetry remains a deferred later candidate" in state
+    assert (
+        "Web Application Shell | **CODE/MIGRATION MERGED; HOST OWNERSHIP NOT RECONCILED**" in state
+    )
+    assert "**RECORDER-PYTH-CRITICALITY-RECOVERY**" in state
+    assert "Vector telemetry | **DEFERRED / LATER CANDIDATE**" in state
     assert "packaged React terminal is the sole ControlCenter web owner" in control_center
-    assert "Web Application Shell are **ADOPTED / PRODUCTION VERIFIED**" in replacement_matrix
-    assert "Vector is the next default telemetry candidate" in replacement_matrix
+    assert (
+        "Current Web\noperational status is therefore **BLOCKED / RECOVERY REQUIRED**"
+        in control_center
+    )
+    assert "Web Application Shell are **ADOPTED / HISTORICAL IMPLEMENTATION**" in replacement_matrix
+    assert "ControlCenter host ownership remains under recovery" in replacement_matrix
+    assert "Vector is a deferred later candidate" in replacement_matrix
 
 
 def test_task_status_route_is_one_child_at_a_time() -> None:
@@ -588,7 +598,7 @@ def test_upstream_consolidation_is_subtractive_and_classified() -> None:
         assert lifecycle_step in execution
     assert "Current execution ordering is owned only by" in " ".join(matrix.split())
     assert "Current execution ordering is owned only by" in " ".join(execution.split())
-    assert "Normal feature/model expansion is temporarily paused" in roadmap
+    assert "Normal feature, archive, and WTI progression is frozen" in roadmap
     assert "does not authorize DuckDB, Polars, Arrow, NATS" in throughput
 
 
@@ -625,13 +635,40 @@ def test_current_recorder_runtime_owner_is_machine_readable_and_consistent() -> 
     narrative = read("docs/runtime_ownership_and_self_healing.md")
     adr = read("docs/adr/0003-runtime-ownership.md")
     assert "owned only\nby `deploy/windows/runtime-ownership.json`" in narrative
-    assert (
-        "Recorder, ControlCenter, and `kalshi_sdk_ws_shadow` resolve to Nomad lifecycle ownership."
-        in narrative
-    )
+    assert "Recorder and `kalshi_sdk_ws_shadow` resolve to Nomad lifecycle ownership." in narrative
+    assert "ControlCenter registry\nentry is the intended Nomad ownership model" in narrative
+    assert "not proof of current host operation" in narrative
     assert "Recorder and RuntimeSupervisor\nremain independently WinSW-owned" not in narrative
     assert "Current owner\nvalues are resolved from `deploy/windows/runtime-ownership.json`" in adr
     assert "Windows/WinSW owns service lifecycle" not in adr
+
+
+def test_recovery_freeze_routes_to_a_durable_read_only_audit_receipt() -> None:
+    receipt_path = "docs/evidence/LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md"
+    receipt = read(receipt_path)
+    roadmap = read("docs/project-brain/plan/current-roadmap.md")
+    recorder_truth = read("docs/project-brain/capabilities/records/recorder/truth.md")
+    control_center = read("docs/project-brain/capabilities/control-center.md")
+    runtime = read("docs/project-brain/dependencies/platform/runtime-ownership.md")
+    state = read("CURRENT_STATE.md")
+    progress = read("PROJECT_PROGRESS.md")
+    bugs = read("BUG_REGISTRY.md")
+
+    assert "Status: evidence receipt / read-only audit." in receipt
+    assert "AUDIT_MODE = READ_ONLY" in receipt
+    assert "approximately 217-second restart cycle" in receipt
+    assert "PythWorkerUnhealthyError" in receipt
+    assert "Kalshi recovered all `10/10` synchronized books" in receipt
+    assert "immutable-runtime preparation was therefore\ndisproven as the root cause" in receipt
+    assert "ControlCenter host observations" in receipt
+    assert "Archive and storage observations" in receipt
+    assert "## Unresolved questions" in receipt
+    for authority in (state, progress, bugs):
+        assert receipt_path in authority
+    assert "LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md" in roadmap
+    assert "LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md" in recorder_truth
+    assert "LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md" in control_center
+    assert "LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md" in runtime
 
 
 def test_task_time_official_source_safeguards_remain() -> None:
