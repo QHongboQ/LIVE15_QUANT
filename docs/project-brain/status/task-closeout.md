@@ -1,6 +1,6 @@
 # Durable task closeout
 
-Revision: R1
+Revision: R3
 Status: status authority.
 
 ## What it is
@@ -17,8 +17,11 @@ ADR; and vocabulary/routing in `CONTEXT.md`. User-facing Codex task specificatio
 state the selected model and reasoning level, chosen dynamically for the task's complexity, risk,
 and token cost; use the least expensive adequate setting rather than a fixed default. They should
 also state goal, authority, prohibitions, acceptance, validation, and return format. Use Existing
-Owner First to resolve the current authority/capability/implementation/plan, then apply the
-mandatory Upstream Reuse First sequence before inventing a local fix.
+Owner First to locate and classify the current authority/capability/implementation/plan, then apply
+Upstream Reuse First. Existing ownership is discovery, not a retention preference: if the
+responsibility is generic and the current owner is LIVE15-local, upstream comparison is mandatory
+before deciding to repair or extend it. Direct reuse without that comparison is reserved for genuine
+LIVE15 domain core or an already selected upstream-backed thin adapter.
 
 ## Interfaces / dependencies
 
@@ -38,3 +41,4 @@ Update only when the durable closeout authority or copy-ready task requirement c
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-V2-MERGE-GATE-FINAL | Moved closeout detail out of always entry. |
 | R2 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Aligned closeout with Existing Owner First before upstream resolution. |
+| R3 | GENERIC-OWNER-UPSTREAM-RESOLUTION-001 | Clarified that owner discovery prevents duplication but does not justify retaining generic local infrastructure without upstream comparison. |

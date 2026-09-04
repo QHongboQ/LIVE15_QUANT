@@ -3,20 +3,24 @@
 Use the least-cost route for a bug, regression, performance issue, or unexpected runtime state:
 
 ```text
-reuse existing capability / selected replacement → bounded execution → observe
+resolve owner/class → challenge generic local ownership upstream → reuse retained capability / selected replacement
+  → bounded execution → observe
   → diagnose only a concrete remaining failure
   → genuine authoritative defect: reproduce → classify → instrument → fix → regression test
 ```
 
 Approved replacement work does not require speculative reproduction, hypotheses, probes, or
-preflights against the retiring layer. Use the full diagnosis route when the authoritative LIVE15
-behavior is genuinely defective or no selected owner can satisfy the requirement.
+preflights against the retiring layer. Use the full diagnosis route when retained authoritative
+LIVE15 behavior is genuinely defective or no selected upstream owner can satisfy the requirement.
 
-## 1. Select owner and observe
+## 1. Resolve owner, challenge generic retention, and observe
 
-Reuse the project capability that already owns the behavior. If an upstream replacement is approved,
-run its smallest reversible path and observe the actual result. Confirm the concrete symptom before
-spending effort on diagnosis.
+Resolve the project capability and implementation that currently own the behavior. If that owner is
+LIVE15 domain core or an already selected upstream-backed thin adapter, reuse it. If it is generic
+LIVE15-local infrastructure, existing ownership is not a reason to repair it first: run the Upstream
+Reuse First comparison and decide whether the owner should be replaced before extending it. If an
+upstream replacement is approved, run its smallest reversible path and observe the actual result.
+Confirm the concrete symptom before spending effort on diagnosis.
 
 ## 2. Reproduce and classify a remaining defect
 
@@ -32,8 +36,8 @@ before a new local transport implementation. Prefer an SDK upgrade or thin adapt
 
 ## 3. Instrument and repair
 
-For a genuine LIVE15 defect, identify the smallest failing boundary and preserve downstream
-contracts. Use a failing regression test when a correct seam exists; rank falsifiable hypotheses
-and add only the instrumentation needed to distinguish them. Run targeted checks before broader
-relevant checks. Preserve fail-closed behavior in Recorder, settlement, dataset, Risk, and
+For a genuine defect in retained LIVE15 code, identify the smallest failing boundary and preserve
+downstream contracts. Use a failing regression test when a correct seam exists; rank falsifiable
+hypotheses and add only the instrumentation needed to distinguish them. Run targeted checks before
+broader relevant checks. Preserve fail-closed behavior in Recorder, settlement, dataset, Risk, and
 execution paths. Document root cause and evidence.

@@ -23,6 +23,9 @@ Every coding task should make its boundary explicit before editing:
 
 ## Existing Owner First
 
+Existing Owner First means **discover and classify before changing**, not **retain because it
+already exists**.
+
 Before proposing, designing, planning, or implementing a non-trivial component, manager, service,
 framework, abstraction, model layer, data path, controller, registry, dashboard, queue, scheduler,
 helper, or authority:
@@ -33,32 +36,45 @@ helper, or authority:
 4. determine whether the capability already exists;
 5. determine whether an implementation already owns the responsibility;
 6. determine whether an approved plan already covers it; and
-7. reuse, extend, consolidate, or replace that owner by default.
+7. classify the owner as `DOMAIN_CORE`, `THIN_UPSTREAM_ADAPTER`, or `GENERIC_LOCAL_INFRASTRUCTURE`.
 
-Create a new owner only when no existing owner can correctly own the responsibility. The design
-decision must answer, in substance:
+Existing-owner discovery is mandatory because it prevents duplicate ownership and identifies what
+would be reused, migrated, or retired. **It is not a retention preference.** An existing local owner
+for generic/platform behavior does not get repaired or extended merely because it already exists.
+Its continued existence must first survive the Upstream Reuse First comparison.
+
+Create a new owner only when no existing or upstream owner can correctly own the responsibility.
+The design decision must answer, in substance:
 
 - `EXISTING_AUTHORITY_FOUND = YES/NO`
 - `EXISTING_CAPABILITY_FOUND = YES/NO`
 - `EXISTING_IMPLEMENTATION_FOUND = YES/NO`
 - `EXISTING_PLAN_FOUND = YES/NO`
+- `RESPONSIBILITY_CLASS = DOMAIN_CORE / THIN_UPSTREAM_ADAPTER / GENERIC_LOCAL_INFRASTRUCTURE`
+- `GENERIC_LOCAL_OWNER_RETENTION_JUSTIFIED = YES/NO/N/A`
 - `WHY_EXISTING_OWNER_CANNOT_BE_USED =`
 - `WHY_NEW_OWNER_IS_REQUIRED =`
 
 This is a mandatory decision boundary for non-trivial additions in both ChatGPT strategy work and
 Codex implementation planning, not boilerplate for an obvious one-line edit. One responsibility
-has one clear owner. Do not create B when A already owns the same responsibility.
+has one clear owner. Do not create B when A already owns the same responsibility; equally, do not
+keep repairing A when A is generic local machinery that a mature upstream owner can replace.
 
-Only after this internal owner-resolution pass finds no suitable implementation for generic
-behavior does **Upstream Reuse First** begin. The required order is:
+For `DOMAIN_CORE` or a selected `THIN_UPSTREAM_ADAPTER`, reuse, extend, consolidate, or replace the
+current owner as appropriate. For `GENERIC_LOCAL_INFRASTRUCTURE`, **Upstream Reuse First begins
+immediately after owner discovery, even when a local implementation already exists.** The local
+implementation is a migration source and rollback boundary, not evidence that it should remain.
+
+The required order is:
 
 ```text
-existing owner discovery
-  -> reuse / extend / consolidate / replace the LIVE15 owner when appropriate
+existing owner discovery and responsibility classification
+  -> if domain core: reuse / extend / consolidate the LIVE15 owner
+  -> if generic local infrastructure: challenge retention through Upstream Reuse First
   -> official upstream mechanism and sources
   -> mature license-compatible alternatives
   -> pinned configuration plus thin LIVE15 adapter and validation
-  -> LIVE15-specific implementation last-last-last
+  -> LIVE15-specific implementation last-last-last, only with explicit evidence that upstream is unsuitable
 ```
 
 The standing authority for ordinary repo-local engineering fixes and maintenance permits change and
@@ -70,15 +86,16 @@ explicit human authority.
 For behavioral changes, use the least-cost route:
 
 ```text
-reuse existing capability / selected replacement → bounded reversible execution → observe
+resolve owner/class → challenge generic local ownership upstream → reuse selected owner / replacement
+  → bounded reversible execution → observe
   → diagnose only a concrete remaining failure
-  → (genuine authoritative defect) classify → failing regression test → minimal implementation
-  → targeted tests → relevant broader checks
+  → (genuine authoritative defect in retained LIVE15 code) classify → failing regression test
+  → minimal implementation → targeted tests → relevant broader checks
 ```
 
 The reproduction, hypothesis, and regression-test phases are required for a genuine defect in
-authoritative code, not for generic machinery already approved for retirement. A new local generic
-implementation still requires the Upstream Reuse First review before it is written.
+authoritative retained code, not for generic machinery already approved for retirement. A new local
+generic implementation still requires the Upstream Reuse First review before it is written.
 
 Documentation-only, pure metadata, and audit tasks may use validation without artificial tests.
 High-risk changes require explicit review before altering authoritative Recorder writes, gap or
@@ -91,7 +108,9 @@ cause is configuration, environment/operator state, Windows/Linux/macOS platform
 permissions/ACL/ownership, native service management, scheduler/process lifecycle,
 deployment/revert, discovery, telemetry/logging, packaging, or behavior already owned by a selected
 mature upstream project, the default action is **native/upstream remediation plus LIVE15
-validation**, not a new LIVE15 subsystem.
+validation**, not a new LIVE15 subsystem. The same rule applies when LIVE15 already has a generic
+local implementation: existing ownership does not exempt that implementation from upstream
+replacement review before further repair or extension.
 
 ### Upstream resolution at the decision point
 
@@ -100,7 +119,8 @@ approved replacement is selected, run that bounded reversible path first and obs
 pre-debug the retiring machinery. If a concrete failure remains, diagnose its owner and consult
 only the targeted upstream evidence needed for the exact observed error text, API, or version.
 Perform the full Upstream Reuse First search below when
-selecting a new owner or considering a new local implementation:
+selecting a new owner or considering a new local implementation. For an existing generic LIVE15-local
+owner, that same search is also mandatory before deciding to retain, repair, or extend it:
 
 1. official documentation, release notes, migration guides and maintained examples;
 2. the selected/pinned project's source, tests, changelog, Issues, Pull Requests and Discussions;
