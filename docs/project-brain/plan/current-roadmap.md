@@ -1,6 +1,6 @@
 # Current roadmap
 
-Revision: R10
+Revision: R11
 Status: approved execution strategy.
 
 ## What it is
@@ -12,50 +12,42 @@ The sole current execution-sequence authority.
 `GAP002` is **CLOSED / PASS**. Its Production FAIL/PASS receipts remain immutable evidence; the old
 GAP002 phase structure is historical and does not direct future work.
 
-Normal feature/model expansion is temporarily paused. The sole current mainline is:
+Normal feature, archive, and WTI progression is frozen. The sole current mainline is:
 
 ```text
-GAP002 CLOSED
-  -> Project Brain authority consolidation COMPLETE
-  -> upstream-consolidation freeze
-  -> Runtime/Lifecycle consolidation COMPLETE / VERIFIED
-  -> Web Application Shell COMPLETE / VERIFIED
-  -> storage/archive capacity problem reprioritizes execution
-  -> COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY = CURRENT RESPONSIBILITY
-       PR #157 bakeoff COMPLETE: Parquet + ZSTD selected
-       PR #158 HOT->COLD closed loop MERGED; Production activation still disabled
-       PR #160 named multi-root archive layout MERGED
-       PR #159 = historical safe-stop receipt only; HOT rows deleted = 0
-       PR #167 = Runtime/deploy blocker resolved in code; host rollout still pending
-       immediate gate: prepare/verify immutable Production Runtime, then separately authorize
-       Nomad Recorder rollout and verify single-writer/heartbeat/WS/no-drop
-       next narrow gate: retire WTI completely 10 -> 9, no compatibility layer
-       then fresh PARQUET-PRODUCTION-ACCEPTANCE-PHASE1-002 with Recorder RUNNING
-       STOP BEFORE PURGE; PRODUCTION HOT ROWS DELETED = 0
-  -> Vector telemetry remains deferred
-  -> resume data/training/model progression under existing gates
+LIVE15 STABILIZATION / RECOVERY FREEZE
+  -> RECORDER-PYTH-CRITICALITY-RECOVERY = FIRST BLOCKER
+       decide the correct failure boundary for a complete Pyth outage without
+       faking freshness, silently substituting sources, or corrupting Kalshi truth
+  -> CONTROL-CENTER-OWNERSHIP-RECOVERY = BLOCKER / AFTER RECORDER RECOVERY
+       reconcile one lifecycle owner, desktop entry, listener, release identity, and Web surface
+  -> HOST-PRODUCTION-ACCEPTANCE-GATE
+       prove actual Windows/Nomad/Web/runtime/deployed identity before normal progression
+  -> bounded stability observation
+  -> WTI-FULL-STACK-RETIREMENT (10 -> 9)
+  -> PARQUET-PRODUCTION-ACCEPTANCE-PHASE1-002
+  -> normal data/model progression under existing gates
 ```
 
-The archive responsibility is no longer at candidate-selection stage. Parquet + ZSTD is the selected
-verified cold format; Arrow IPC is retained only as benchmark/prototype history. Existing LIVE15
-semantic digest, deterministic replay verification, manifest state, contiguous-range purge
-authorization, restart recovery, and fail-closed storage behavior remain mandatory.
+The completed [full-system audit receipt](../../evidence/LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md) established that a global Pyth transport failure currently escalates
+through bounded recovery to a whole-Recorder exit and Nomad restart, while Kalshi can re-synchronize.
+The same loop occurs on the reverted legacy release/runtime; immutable Runtime preparation is not its
+root cause. The audit also established that ControlCenter's declared Nomad ownership is not reconciled
+with current host truth: the main job is not proven running and the desktop Web entry is broken.
 
-PR #167 replaced movable-venv promotion/custom recovery with immutable runtime revisions and native
-Nomad lifecycle ownership. `MERGED != DEPLOYED`: Runtime preparation and Recorder rollout remain a
-gate inside the archive/package responsibility because Production Parquet acceptance requires the
-PyArrow-capable runtime. Runtime preparation must not stop Recorder; rollout is separately reviewed.
+Historical implementation and cutover receipts remain evidence. They do not establish current host
+operational verification. Parquet + ZSTD selection, the merged archive path, named multi-root layout,
+and the prepared immutable runtime remain preserved, but archive activation, purge, WTI retirement,
+and further runtime rollout are on HOLD during this freeze. Vector remains deferred; training and
+model-promotion gates remain unchanged and blocked.
 
-PR #159 must not be merged or extended as the current execution branch. After Runtime rollout is
-verified, WTI retirement is a separate narrow task, followed by a fresh Phase1-002 from current main.
+**NEXT:** **RECORDER-PYTH-CRITICALITY-RECOVERY**. Its purpose is to decide and implement the correct
+failure boundary for a complete Pyth outage; it is not a task to make Pyth requests succeed. It must
+preserve honest degraded health, no fake freshness, no silent substitution, and Kalshi truth.
 
-**NEXT:** advance the bounded **COMMERCIAL ARCHIVE/PACKAGE UPSTREAM ASSEMBLY** responsibility by
-closing its current Runtime deployment gate: prepare/verify the immutable Production Runtime, then
-run Recorder deploy Preview and a separately authorized rollout/verification. Do not activate archive
-or purge during that gate. WTI retirement and fresh Phase1-002 follow as separate narrow tasks.
-
-Vector telemetry remains deferred. This roadmap does not authorize Production purge, training,
-holdout access, Hard Risk changes, or trading writes.
+During this recovery freeze, if a remediation mechanism requires a second immediate corrective PR
+before Production acceptance, stop at that task's stable entry boundary and re-evaluate the design.
+Do not continue a fix-on-fix chain.
 
 ## Interfaces / dependencies
 
@@ -67,8 +59,9 @@ holdout access, Hard Risk changes, or trading writes.
 
 ## Read next
 
-Use the selected capability/constraint authority before executing a gate. For the immediate Runtime
-gate, read `dependencies/platform/runtime-ownership.md` before any host Runtime/Recorder action.
+Use the selected capability/constraint authority before executing a gate. For the immediate
+Recorder/Pyth recovery task, read the Recorder truth authority before any recovery action; consult
+`dependencies/platform/runtime-ownership.md` only when a later host Runtime/Recorder gate is approved.
 
 ## Update rule
 
@@ -88,3 +81,4 @@ Update only when an approved phase, freeze, or gate changes.
 | R8 | PROJECT-BRAIN-POST-WEB-RECONCILIATION-001 | Recorded the complete/verified Web Application Shell replacement and selected Vector telemetry as the next generic replacement responsibility. |
 | R9 | STORAGE-ARCHIVE-REPRIORITIZATION-001 | Reprioritized current execution to storage/archive packaging after the capacity problem emerged. |
 | R10 | PROJECT-BRAIN-STORAGE-RUNTIME-RECONCILE-001 | Reconciled PRs #157/#158/#160/#167: Parquet+ZSTD is selected/implemented, #159 is historical stop evidence, and the archive mainline now closes Runtime rollout, WTI retirement, then fresh Phase1-002. |
+| R11 | PROJECT-RECOVERY-FREEZE-001 | Froze normal progression after the full-system audit; selected Recorder/Pyth criticality recovery as the sole NEXT and held ControlCenter, host acceptance, WTI, archive, and runtime progression in recovery order. |

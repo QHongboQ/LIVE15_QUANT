@@ -1,7 +1,7 @@
 # Recorder truth and ownership
 
-Revision: R2
-Status: LIVE15 truth authority; Nomad runtime ownership verified.
+Revision: R3
+Status: LIVE15 truth authority; Pyth criticality recovery required.
 
 ## What it is
 
@@ -12,6 +12,13 @@ Recorder/RecorderStore captures authoritative raw truth, persistence, gap/quaran
 Recorder process lifecycle is Nomad-owned under `Nomad:live15-recorder`; truth, quarantine,
 settlement, as-of, freshness, persistence, and gap semantics remain LIVE15-owned. Nomad may own
 allocation/restart/deployment behavior but cannot create, infer, repair, or override Recorder truth.
+
+The [full-system audit receipt](../../../../evidence/LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md) proved that a complete Pyth stream plus REST-fallback transport failure can
+exhaust bounded recovery, terminate the whole Recorder, and cause a recurring Nomad restart while
+Kalshi re-synchronizes. Nomad lifecycle ownership remains established, but the Pyth critical-worker
+failure boundary is a current BLOCKER. `RECORDER-PYTH-CRITICALITY-RECOVERY` is the sole next
+responsibility; it must preserve honest degraded health and Kalshi truth without fake freshness or
+silent substitution.
 
 ## Interfaces / dependencies
 
@@ -32,3 +39,4 @@ Update only for a Recorder authority, truth, or approved ownership decision.
 | --- | --- | --- |
 | R1 | PROJECT-BRAIN-ARCHITECTURE-V2-001 | V2 Recorder truth baseline, moved without semantic change. |
 | R2 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | Reconciled verified Nomad process ownership while preserving LIVE15 truth ownership. |
+| R3 | PROJECT-RECOVERY-FREEZE-001 | Recorded the audit-proven Pyth escalation blocker without changing Nomad lifecycle or Recorder truth ownership. |

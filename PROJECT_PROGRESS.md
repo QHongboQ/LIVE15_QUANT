@@ -27,13 +27,14 @@ Task status is one of `PLANNED`, `IN_PROGRESS`, `BLOCKED`, `PR_OPEN`, `MERGED`, 
 | WS-RESYNC-001 + GAP-002 | CLOSED / PASS | PRs #117/#120 | GAP002 is closed and has no further execution route. |
 | RECORDER_LIFECYCLE_TO_NOMAD | VERIFIED / COMPLETE | runtime/control-center authorities | Recorder Production lifecycle is Nomad-owned. |
 | PROJECT-BRAIN-SINGLE-AUTHORITY-CONSOLIDATION-001 | MERGED / CONSOLIDATION_COMPLETE | PR #122 | Governance closeout only; it did not perform an upstream replacement. |
-| RUNTIME-LIFECYCLE-CONSOLIDATION | COMPLETE / VERIFIED | PR #129 | Nomad + Windows SCM adopted; RuntimeSupervisor and managed paper wrapper retired. |
-| WEB-APPLICATION-SHELL | COMPLETE / VERIFIED | PRs #131–#139 | React Admin + Material UI is the sole ControlCenter Web owner. |
+| RUNTIME-LIFECYCLE-CONSOLIDATION | MERGED / HISTORICAL_IMPLEMENTATION_COMPLETE | PR #129 | Nomad + Windows SCM adoption and RuntimeSupervisor retirement are historical code/migration facts; current Recorder/Pyth operational recovery remains required. |
+| WEB-APPLICATION-SHELL | MERGED / HISTORICAL_IMPLEMENTATION_COMPLETE | PRs #131–#139 | React Admin + Material UI implementation/cutover is historical evidence; current ControlCenter lifecycle ownership and desktop launch require recovery. |
 | VECTOR-TELEMETRY-BOUNDED-POC-001 | MERGED / TECHNICAL_PASS / PRODUCTION_NO_GO | PR #147 | Feasible isolated POC; no adoption or Production integration authorized. |
 | COMMERCIAL-STORAGE-BAKEOFF | MERGED / PARQUET+ZSTD_SELECTED | PR #157 | Parquet + ZSTD ranked first and became the archive-format candidate; Arrow IPC is historical benchmark/prototype evidence and S3/MinIO was not selected. |
 | PARQUET-HOT-COLD-CLOSED-LOOP | MERGED / PRODUCTION_DISABLED | PR #158 | Production-capable Parquet + ZSTD path exists with semantic/replay verification, manifest state, bounded purge gates, and fail-closed recovery; merge did not activate Production archive or purge. |
 | PARQUET-NAMED-MULTI-ROOT | MERGED | PR #160 | Archive chunks bind to named roots with centralized manifest and one active writer root; historical-root lookup fails closed. |
 | RUNTIME-DEPLOY-SIMPLIFICATION | MERGED / HOST_ROLLOUT_PENDING | PR #167 | Movable-venv promotion/custom recovery is retired; immutable runtime revisions and native Nomad lifecycle ownership are merged, but host Runtime/Recorder rollout remains separately gated. |
+| PROJECT-RECOVERY-FREEZE-001 | IN_PROGRESS / RECOVERY_FREEZE | `docs/evidence/LIVE15_FULL_SYSTEM_ROOT_CAUSE_AUDIT_001.md` | Normal feature/archive/WTI progression is frozen. Recorder/Pyth criticality recovery is first; ControlCenter ownership recovery, host acceptance, and stability observation follow before normal progression resumes. |
 
 ## Superseded standalone work
 
@@ -54,10 +55,14 @@ Future LIVE15 Python workloads must resolve that authority before provisioning o
 
 | Task | Status / result | Next action / caution | Human gate |
 | --- | --- | --- | --- |
-| COMMERCIAL-ARCHIVE-PACKAGE-UPSTREAM-ASSEMBLY | PLANNED / NEXT | Current gate: prepare/verify immutable Production Runtime, then Recorder deploy Preview and separately authorized rollout verification. After that retire WTI 10->9, then fresh Phase1-002 with Recorder running. Preserve HOT SQLite truth, semantic/replay verification, manifest state, contiguous-range purge authorization, restart recovery, and fail-closed behavior. | Separate bounded tasks; no archive activation or purge during the Runtime gate |
-| IMMUTABLE-PRODUCTION-RUNTIME-ROLLOUT | PLANNED / CURRENT_GATE | Prepare/verify from current main without stopping Recorder; rollout is separate and Nomad-owned. | Runtime preparation may create only the new immutable revision; Recorder rollout requires explicit authorization |
-| WTI-RETIREMENT | PLANNED / AFTER_RUNTIME_ROLLOUT | Remove WTI completely: universe 10->9, Recorder expectation 9, UI fixed 3x3, and Pyth/health/model/archive future-write assumptions removed; no compatibility layer. | Separate PR and deployment |
-| PARQUET-PRODUCTION-ACCEPTANCE-PHASE1-002 | PLANNED / AFTER_WTI | With Recorder RUNNING, archive one bounded historical unit (~100k–250k rows) to Parquet+ZSTD, semantic/replay verify, reach `VERIFIED/PURGE_ELIGIBLE`, and STOP BEFORE PURGE; `PRODUCTION HOT ROWS DELETED = 0`. | Production archive/manifest write requires explicit authorization; purge is not authorized |
+| RECORDER-PYTH-CRITICALITY-RECOVERY | PLANNED / SOLE_NEXT | Decide and implement the correct boundary for complete Pyth failure without fake freshness, silent substitution, hidden outage, or Kalshi-truth corruption. | Must independently verify before ControlCenter recovery |
+| CONTROL-CENTER-OWNERSHIP-RECOVERY | PLANNED / AFTER_RECORDER | Reconcile one lifecycle owner, desktop entry, listener, release identity, and truthful Web surface. | Must wait for Recorder/Pyth recovery verification |
+| HOST-PRODUCTION-ACCEPTANCE-GATE | PLANNED / AFTER_CONTROLCENTER | Prove real Windows/Nomad/Web/runtime/deployed identity before normal progression. | No deployment or restart is implied by this governance task |
+| STABILITY-OBSERVATION | PLANNED / AFTER_ACCEPTANCE | Observe bounded stability only after the host acceptance gate passes. | Recovery freeze remains active until PASS |
+| COMMERCIAL-ARCHIVE-PACKAGE-UPSTREAM-ASSEMBLY | HOLD / RECOVERY_FREEZE | Code/evidence remains preserved; Production acceptance, activation, and purge are paused. | No archive activation or purge |
+| IMMUTABLE-PRODUCTION-RUNTIME-ROLLOUT | HOLD / RECOVERY_FREEZE | Prepared immutable runtime remains preserved; it is not the root cause of the current Recorder restart loop. | No further rollout until recovery architecture and host acceptance require it |
+| WTI-RETIREMENT | HOLD / AFTER_STABILITY_OBSERVATION | Preserve the unmerged worktree; do not continue, reset, merge, or discard it during recovery. | Separate task only after recovery freeze exits |
+| PARQUET-PRODUCTION-ACCEPTANCE-PHASE1-002 | HOLD / AFTER_WTI | Resume only after recovery gates and WTI retirement; preserve STOP BEFORE PURGE and `PRODUCTION HOT ROWS DELETED = 0`. | Production archive/manifest write requires explicit authorization; purge is not authorized |
 | VECTOR-TELEMETRY | DEFERRED / LATER | Retain PR #147 evidence; no integration while deferred. | No Vector adoption or Production action |
 | TRN-001 | BLOCKED / HOLDOUT_CONTAMINATION_REMEDIATION_REQUIRED | Separate remediation/replacement decision required before the formal training gate; do not reopen the exposed holdout to measure scope. | Training/holdout |
 
