@@ -1,7 +1,8 @@
-"""Fixed-snapshot Arrow IPC adapter for LIVE15 Kalshi WebSocket replay records.
+"""PyArrow semantic adapter and archive codecs for LIVE15 Kalshi replay records.
 
-This is not wired into Recorder, archive publication, retention, or purge. PyArrow
-owns arrays, IPC encoding/decoding, and Zstandard; LIVE15 owns record mapping/validation.
+Arrow RecordBatch owns the file-format-neutral typed schema bridge. Parquet+ZSTD is the selected
+retention format; Arrow IPC remains a benchmark/prototype codec. LIVE15 owns record mapping,
+validation, semantic digest, and deterministic replay semantics.
 """
 
 from __future__ import annotations
@@ -59,9 +60,7 @@ ARROW_WS_EVENT_SCHEMA = pa.schema(
         pa.field("role", pa.string(), nullable=False),
     ],
     metadata={
-        b"live15.archive.format": b"arrow-ipc-file",
         b"live15.archive.schema_version": b"1",
-        b"live15.compression": b"zstd",
         b"live15.decimal.encoding": b"decimal-string-no-fixed-bound",
         b"live15.timestamp.contract": b"utc-microseconds",
         b"live15.truth": b"kalshi-ws-replay",
