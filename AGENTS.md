@@ -13,10 +13,10 @@ recursively and read one necessary child at a time—do not scan the repository.
 - Protected `main` work uses an isolated `agent/<task-id>` branch, Maker, independent Checker,
   push, PR, and green CI; never bypass protection or push directly to `main`.
 - **Existing Owner First precedes Upstream Reuse First as discovery, not retention.** Resolve the
-  current authority/capability/implementation/plan first. If the owner is generic LIVE15-local
-  machinery, its existence does not justify repair or extension: run Upstream Reuse First and prefer
-  mature upstream plus a thin adapter unless no suitable replacement exists. Reuse/extend directly
-  only for LIVE15 domain core or an already selected upstream-backed thin adapter.
+  authority/capability/implementation/plan first. If the owner is generic LIVE15-local machinery,
+  its existence does not justify repair or extension: run Upstream Reuse First and prefer mature
+  upstream plus a thin adapter unless no suitable replacement exists. Reuse/extend directly only
+  for LIVE15 domain core or an already selected upstream-backed thin adapter.
 
 ## Need → read next
 
