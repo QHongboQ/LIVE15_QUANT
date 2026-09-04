@@ -16,12 +16,12 @@ bug in `BUG_REGISTRY.md`; a strategy or architecture decision in the charter or
 ADR; and vocabulary/routing in `CONTEXT.md`. User-facing Codex task specifications must explicitly
 state the selected model and reasoning level, chosen dynamically for the task's complexity, risk,
 and token cost; use the least expensive adequate setting rather than a fixed default. They should
-also state goal, authority, prohibitions, acceptance, validation, and return format. Use Owner
-Resolution First to locate the current authority/capability/implementation/plan. If the responsibility
-is generic and the current owner is LIVE15-local, existing ownership alone is not a reason to keep
-repairing or extending it: apply the mandatory Upstream Reuse First comparison before deciding to
-retain it. Direct reuse without that comparison is reserved for genuine LIVE15 domain core or an
-already selected upstream-backed thin adapter.
+also state goal, authority, prohibitions, acceptance, validation, and return format. Use Existing
+Owner First to locate and classify the current authority/capability/implementation/plan, then apply
+Upstream Reuse First. Existing ownership is discovery, not a retention preference: if the
+responsibility is generic and the current owner is LIVE15-local, upstream comparison is mandatory
+before deciding to repair or extend it. Direct reuse without that comparison is reserved for genuine
+LIVE15 domain core or an already selected upstream-backed thin adapter.
 
 ## Interfaces / dependencies
 
