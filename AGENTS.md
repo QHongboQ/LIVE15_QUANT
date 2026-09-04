@@ -12,15 +12,11 @@ recursively and read one necessary child at a time—do not scan the repository.
   authority before action. Safety and human gates never yield to token efficiency.
 - Protected `main` work uses an isolated `agent/<task-id>` branch, Maker, independent Checker,
   push, PR, and green CI; never bypass protection or push directly to `main`.
-- **Owner Resolution First; generic owners are challengeable.** For non-trivial design or
-  implementation, route through `docs/agents/change-protocol.md` and resolve the current LIVE15
-  authority/capability/implementation/plan before changing anything. Existing-owner discovery
-  prevents duplicate owners; it does **not** automatically justify retaining or extending a local
-  generic/platform owner. For generic infrastructure, process/lifecycle, deployment, queueing,
-  transport, telemetry, packaging, or similar commodity behavior, run the mandatory Upstream Reuse
-  First comparison before repairing or extending the local owner. Reuse/extend the local owner
-  directly only when the responsibility is genuinely LIVE15 domain-specific or already a selected
-  upstream-backed thin adapter.
+- **Existing Owner First precedes Upstream Reuse First as discovery, not retention.** Resolve the
+  current authority/capability/implementation/plan first. If the owner is generic LIVE15-local
+  machinery, its existence does not justify repair or extension: run Upstream Reuse First and prefer
+  mature upstream plus a thin adapter unless no suitable replacement exists. Reuse/extend directly
+  only for LIVE15 domain core or an already selected upstream-backed thin adapter.
 
 ## Need → read next
 
